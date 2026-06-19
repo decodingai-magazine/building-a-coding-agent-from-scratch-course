@@ -44,7 +44,7 @@ decode = "decode.cli:cli"
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "pytest-asyncio>=0.23",
+    "pytest-asyncio>=1.4.0",
     "pytest-mock>=3.12",
     "ruff>=0.15",
     "pre-commit>=4",
