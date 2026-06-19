@@ -28,12 +28,13 @@ from __future__ import annotations
 
 import logging
 
-from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
 from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
+from decode.memory.service import assemble_memory
 from decode.tools.registry import register_tools
 
 logger = logging.getLogger(__name__)
@@ -67,5 +68,24 @@ def build_agent() -> Agent[AgentDeps, str | DeferredToolRequests]:
         instructions=_BASE_INSTRUCTIONS,
     )
     register_tools(agent)
+    _register_memory_instructions(agent)
     logger.debug("built Gemini agent on model=%s (google-gla)", settings.gemini_model)
     return agent
+
+
+def _register_memory_instructions(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:
+    """Append project memory to the prompt via a **dynamic** instructions hook (ADR-0002 §8).
+
+    ``@agent.instructions`` registers a function Pydantic AI calls **per run, at prompt-build
+    time** (confirmed against pydantic-ai 1.107: the decorator takes a sync/async function
+    optionally receiving ``RunContext[AgentDeps]`` and returning a ``str`` that is appended to
+    the static ``instructions=`` base prompt). Reading the files here — rather than baking a
+    snapshot into ``instructions=`` at build time — is what makes editing ``AGENTS.md`` /
+    ``MEMORY.md`` take effect on the next turn with no agent rebuild. ``assemble_memory`` returns
+    ``""`` when no memory file is found, in which case Pydantic AI contributes nothing extra (no
+    empty header) and only the static base prompt rides.
+    """
+
+    @agent.instructions
+    def memory_instructions(ctx: RunContext[AgentDeps]) -> str:
+        return assemble_memory(ctx.deps.cwd)

@@ -7,12 +7,37 @@ even though chat-only has no tools. These tests assert the *construction contrac
 making any network call (no model request is issued just by building the agent).
 """
 
+from pathlib import Path
+
 from pydantic import SecretStr
+from pydantic_ai.messages import ModelRequest
 from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.google import GoogleProvider
 
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
+from decode.entities.permissions import PermissionDecision, PermissionRequest
+from decode.permissions.gate import PermissionGate
+
+
+async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
+    return PermissionDecision.deny(reason="test default deny")
+
+
+async def _no_user_resolver(question: str) -> str:
+    raise RuntimeError("no interactive user in this test")
+
+
+def _deps(cwd: Path) -> AgentDeps:
+    """Minimal AgentDeps for a build-and-run test: only ``cwd`` is exercised here."""
+    return AgentDeps(
+        cwd=cwd,
+        emit=lambda event: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_no_user_resolver,
+    )
 
 
 def test_build_agent_uses_google_model_with_configured_id(mocker):
@@ -81,3 +106,76 @@ def test_build_agent_sets_a_static_base_instruction(mocker):
     static_text = " ".join(p for p in agent._instructions if isinstance(p, str))
     assert "decode" in static_text.lower()
     assert "coding agent" in static_text.lower()
+
+
+def test_build_agent_registers_a_dynamic_memory_instructions_function(mocker):
+    """A dynamic (callable) instructions entry must be present so memory is built per run."""
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+
+    agent = build_agent()
+
+    # Beyond the static base string, at least one callable instructions entry (the per-run
+    # memory hook) must be registered — that is what reads AGENTS.md/MEMORY.md at prompt-build.
+    assert any(callable(p) for p in agent._instructions)
+
+
+async def test_memory_is_injected_into_the_first_request_instructions(tmp_path, mocker):
+    """End-to-end: AGENTS.md content reaches the model via the first ModelRequest instructions."""
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    (tmp_path / "AGENTS.md").write_text("PROJECT RULE: always run the tests", encoding="utf-8")
+
+    agent = build_agent()
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="ok")):
+        result = await agent.run("hi", deps=_deps(tmp_path))
+
+    first = result.all_messages()[0]
+    assert isinstance(first, ModelRequest)
+    assert first.instructions is not None
+    # Both the static base prompt and the injected memory ride in the same instructions block.
+    assert "decode" in first.instructions.lower()
+    assert "PROJECT RULE: always run the tests" in first.instructions
+    assert f"# From {tmp_path / 'AGENTS.md'}" in first.instructions
+
+
+async def test_memory_injection_is_evaluated_per_run(tmp_path, mocker):
+    """Editing AGENTS.md takes effect on the next run without rebuilding the agent."""
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("FIRST", encoding="utf-8")
+
+    agent = build_agent()
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="ok")):
+        first_run = await agent.run("hi", deps=_deps(tmp_path))
+        agents_md.write_text("SECOND", encoding="utf-8")
+        second_run = await agent.run("hi", deps=_deps(tmp_path))
+
+    first_instructions = first_run.all_messages()[0]
+    second_instructions = second_run.all_messages()[0]
+    assert isinstance(first_instructions, ModelRequest)
+    assert isinstance(second_instructions, ModelRequest)
+    assert "FIRST" in (first_instructions.instructions or "")
+    assert "SECOND" in (second_instructions.instructions or "")
+    assert "FIRST" not in (second_instructions.instructions or "")
+
+
+async def test_no_memory_files_yields_only_the_static_base(tmp_path, mocker):
+    """With no memory files, the instructions are just the static base (no empty headers)."""
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+
+    agent = build_agent()
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="ok")):
+        result = await agent.run("hi", deps=_deps(tmp_path))
+
+    first = result.all_messages()[0]
+    assert isinstance(first, ModelRequest)
+    assert first.instructions is not None
+    assert "decode" in first.instructions.lower()
+    assert "# From" not in first.instructions
