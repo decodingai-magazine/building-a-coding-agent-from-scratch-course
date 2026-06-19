@@ -14,9 +14,10 @@ Two construction facts confirmed against the installed SDK (pydantic-ai 1.107, g
   than relying on the ``GEMINI_API_KEY`` env fallback, and we never pass ``vertexai=`` (any
   Vertex/Cloud argument, including ``vertexai=False``, raises a deprecation warning that
   ``filterwarnings=["error"]`` would turn into a test failure).
-* **Deferred-tool seam now.** ``output_type=[str, DeferredToolRequests]`` is set even though
-  chat-only has no tools, so task 005 adds the permission gate without rewriting the factory
-  (a run can already resolve to a deferred-tool-requests result).
+* **Deferred-tool seam now.** ``output_type=[str, DeferredToolRequests]`` is set so a run can
+  resolve to a deferred-tool-requests result. Task 005 uses this to wire the permission gate:
+  the one gated tool (:mod:`decode.tools.noop`) raises ``ApprovalRequired``, the run resolves
+  to ``DeferredToolRequests``, and the loop routes it through the gate before resuming.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from pydantic_ai.providers.google import GoogleProvider
 
 from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
+from decode.tools.noop import register_noop
 
 logger = logging.getLogger(__name__)
 
@@ -43,19 +45,25 @@ _BASE_INSTRUCTIONS = (
 
 
 def build_agent() -> Agent[AgentDeps, str | DeferredToolRequests]:
-    """Construct the chat-only Gemini agent (no tools yet; ADR-0002 §1-2).
+    """Construct the Gemini agent with the one gated ``noop`` tool (ADR-0002 §1-3).
 
     The model id comes from ``settings.gemini_model`` and the API key from
     ``settings.gemini_api_key`` (both config-driven). ``deps_type=AgentDeps`` is what the
-    loop validates ``deps=`` against; ``output_type=[str, DeferredToolRequests]`` keeps the
-    deferred-tool seam ready for task 005.
+    loop validates ``deps=`` against; ``output_type=[str, DeferredToolRequests]`` lets a run
+    resolve to a deferred-tool result so the loop can route gated calls through the gate.
+    The trivial gated :mod:`decode.tools.noop` tool is registered so the whole permission
+    path is exercised end to end (real tools land in 006+).
     """
     provider = GoogleProvider(api_key=settings.gemini_api_key.get_secret_value())
     model = GoogleModel(settings.gemini_model, provider=provider)
-    logger.debug("built Gemini agent on model=%s (google-gla)", settings.gemini_model)
-    return Agent(
+    agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
         model,
         deps_type=AgentDeps,
         output_type=[str, DeferredToolRequests],
         instructions=_BASE_INSTRUCTIONS,
     )
+    register_noop(agent)
+    logger.debug(
+        "built Gemini agent on model=%s (google-gla) with noop tool", settings.gemini_model
+    )
+    return agent

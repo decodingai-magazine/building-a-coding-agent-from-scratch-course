@@ -1,10 +1,14 @@
 """Unit tests for :mod:`decode.agent.loop` — the real Pydantic AI turn handler.
 
-ADR-0002 §1-2,4: the loop drives ``agent.iter()`` as the harness
+ADR-0002 §1-4: the loop drives ``agent.iter()`` as the harness
 :data:`~decode.harness.runner.TurnHandler`. It streams model nodes into
 :mod:`decode.entities.events`, yields the ``MODEL_REQUEST`` / ``WOULD_STOP`` boundaries the
 :class:`~decode.harness.runner.Runner` expects, drains steering into ``message_history``
-before each model request, and carries ``message_history`` across turns.
+before each model request, and carries ``message_history`` across turns. Task 005 adds the
+deferred-tool legs: when a leg resolves to ``DeferredToolRequests`` the loop emits
+``PermissionRequested``, resolves each gated call through the gate + the async resolver,
+builds ``DeferredToolResults`` (approve / ``ToolDenied``), drains steering at the resume
+boundary, and resumes until the output is a plain ``str``.
 
 No network: every test runs the agent against ``TestModel`` / ``FunctionModel`` and asserts
 on the events the loop emitted and the boundaries it yielded. The agent is built once with a
@@ -17,16 +21,38 @@ from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
-from pydantic_ai.messages import ModelMessage, ModelRequest
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ToolReturnPart,
+    UserPromptPart,
+)
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from decode.agent.deps import AgentDeps
+from decode.agent.deps import AgentDeps, PermissionResolver
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
 from decode.entities import events
+from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Boundary, Runner, TurnContext
+from decode.permissions.gate import PermissionGate
 from decode.tui.app import InputIntent
+
+
+async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
+    """Default resolver for tests that don't exercise the gate: always deny."""
+    return PermissionDecision.deny(reason="test default deny")
+
+
+def _deps(emit, *, resolve_permission: PermissionResolver = _deny_resolver) -> AgentDeps:
+    """Build AgentDeps with the task-005 gate + resolver wired (defaults to deny)."""
+    return AgentDeps(
+        cwd=Path("."),
+        emit=emit,
+        gate=PermissionGate(),
+        resolve_permission=resolve_permission,
+    )
 
 
 @pytest.fixture
@@ -76,7 +102,7 @@ def _ctx(turn_id: int, prompt: str, sink: list[events.Event]) -> TurnContext:
 
 async def test_streamed_text_becomes_assistant_text_deltas(agent):
     emitted: list[events.Event] = []
-    handler = AgentTurnHandler(agent, deps=AgentDeps(cwd=Path("."), emit=emitted.append))
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
     with agent.override(model=FunctionModel(stream_function=_stream_words("Hello, ", "world"))):
         boundaries = await _drive_collecting(handler, _ctx(0, "hi", emitted))()
@@ -90,9 +116,9 @@ async def test_streamed_text_becomes_assistant_text_deltas(agent):
 
 async def test_first_boundary_is_model_request(agent):
     emitted: list[events.Event] = []
-    handler = AgentTurnHandler(agent, deps=AgentDeps(cwd=Path("."), emit=emitted.append))
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
-    with agent.override(model=TestModel(custom_output_text="ok")):
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="ok")):
         boundaries = await _drive_collecting(handler, _ctx(0, "hi", emitted))()
 
     assert boundaries[0] is Boundary.MODEL_REQUEST
@@ -100,14 +126,14 @@ async def test_first_boundary_is_model_request(agent):
 
 async def test_message_history_carries_across_turns(agent):
     emitted: list[events.Event] = []
-    handler = AgentTurnHandler(agent, deps=AgentDeps(cwd=Path("."), emit=emitted.append))
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
-    with agent.override(model=TestModel(custom_output_text="first")):
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="first")):
         await _drive_collecting(handler, _ctx(0, "turn one", emitted))()
     after_first = len(handler.message_history)
     assert after_first > 0  # the first turn populated history
 
-    with agent.override(model=TestModel(custom_output_text="second")):
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="second")):
         await _drive_collecting(handler, _ctx(1, "turn two", emitted))()
 
     # The second turn appended to the *same* history rather than starting fresh.
@@ -126,7 +152,7 @@ async def test_steering_is_appended_before_the_model_request(agent):
     before issuing the request, so the model sees them on this leg.
     """
     emitted: list[events.Event] = []
-    handler = AgentTurnHandler(agent, deps=AgentDeps(cwd=Path("."), emit=emitted.append))
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
     captured: list[list[ModelMessage]] = []
 
@@ -159,9 +185,9 @@ async def test_steering_is_appended_before_the_model_request(agent):
 async def test_handler_plugs_into_the_runner_end_to_end(agent):
     """The handler is a real TurnHandler: the Runner can drive it to completion."""
     emitted: list[events.Event] = []
-    handler = AgentTurnHandler(agent, deps=AgentDeps(cwd=Path("."), emit=emitted.append))
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
-    with agent.override(model=TestModel(custom_output_text="all good")):
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="all good")):
         runner = Runner(handler, on_event=emitted.append)
         await runner.submit("hello", InputIntent.STEER)
         await runner.wait_idle()
@@ -175,7 +201,7 @@ async def test_handler_plugs_into_the_runner_end_to_end(agent):
 async def test_model_error_propagates_so_runner_surfaces_it(agent, mocker):
     """A model failure must raise out of the handler so the Runner emits an AgentError."""
     emitted: list[events.Event] = []
-    handler = AgentTurnHandler(agent, deps=AgentDeps(cwd=Path("."), emit=emitted.append))
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
     async def boom_stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
         raise RuntimeError("model exploded")
@@ -195,7 +221,7 @@ async def test_thinking_deltas_become_thinking_events(agent):
     from pydantic_ai.models.function import DeltaThinkingPart
 
     emitted: list[events.Event] = []
-    handler = AgentTurnHandler(agent, deps=AgentDeps(cwd=Path("."), emit=emitted.append))
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
     async def thinking_stream(
         messages: list[ModelMessage], info: AgentInfo
@@ -210,3 +236,199 @@ async def test_thinking_deltas_become_thinking_events(agent):
     answer = "".join(e.text for e in emitted if isinstance(e, events.AssistantTextDelta))
     assert "let me think" in thinking
     assert "the answer" in answer
+
+
+# --- task 005: the permission gate via the deferred-tool flow -------------------------------
+
+
+def _noop_then_text(
+    final_text: str = "all done", *, captured: list[list[ModelMessage]] | None = None
+):
+    """A streaming FunctionModel that calls ``noop`` on the first leg, then returns text.
+
+    The loop streams every model node, so the model must stream. First model request →
+    a streamed ``noop`` tool call (which raises ``ApprovalRequired`` until the call is
+    approved, so the leg resolves to ``DeferredToolRequests``). Every later request (the
+    approved/denied resume leg) → streamed text, so the turn terminates. If ``captured`` is
+    given, each leg's incoming messages are recorded into it (for steering/denial assertions).
+    """
+    state = {"calls": 0}
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        state["calls"] += 1
+        if captured is not None:
+            captured.append(list(messages))
+        if state["calls"] == 1:
+            yield {0: DeltaToolCall(name="noop", json_args='{"text": "hi"}')}
+        else:
+            yield final_text
+
+    return FunctionModel(stream_function=stream_function)
+
+
+def _user_messages_seen(messages: list[ModelMessage]) -> list[str]:
+    """Every user-prompt content string in a message list (for steering assertions)."""
+    seen: list[str] = []
+    for message in messages:
+        if isinstance(message, ModelRequest):
+            for part in message.parts:
+                if isinstance(part, UserPromptPart):
+                    seen.append(str(part.content))
+    return seen
+
+
+async def test_gated_tool_pauses_and_emits_permission_requested(agent):
+    """ADR-0002 §3: a gated call pauses the run and surfaces a PermissionRequested event."""
+    emitted: list[events.Event] = []
+    asked: list[PermissionRequest] = []
+
+    async def approving_resolver(request: PermissionRequest) -> PermissionDecision:
+        asked.append(request)
+        return PermissionDecision.allow()
+
+    handler = AgentTurnHandler(
+        agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
+    )
+
+    with agent.override(model=_noop_then_text()):
+        await _drive_collecting(handler, _ctx(0, "please noop", emitted))()
+
+    perms = [e for e in emitted if isinstance(e, events.PermissionRequested)]
+    assert perms, "a gated tool must emit a PermissionRequested event"
+    assert perms[0].name == "noop"
+    # The gate's ASK was routed to the resolver with a faithful request.
+    assert asked and asked[0].tool_name == "noop"
+    assert asked[0].read_only is False
+    assert asked[0].tool_call_id == perms[0].tool_call_id
+
+
+async def test_approval_resumes_and_executes_the_tool(agent):
+    """An APPROVE resumes the run; the tool executes and the turn ends with text."""
+    emitted: list[events.Event] = []
+
+    async def approving_resolver(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision.allow()
+
+    handler = AgentTurnHandler(
+        agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
+    )
+
+    with agent.override(model=_noop_then_text(final_text="finished after approve")):
+        await _drive_collecting(handler, _ctx(0, "please noop", emitted))()
+
+    # The tool actually ran: its echoed return is in history as a ToolReturnPart.
+    returns = [
+        p.content
+        for m in handler.message_history
+        if isinstance(m, ModelRequest)
+        for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    ]
+    assert "noop: hi" in returns
+    # The turn terminated with plain assistant text (output is a str, not deferred).
+    answer = "".join(e.text for e in emitted if isinstance(e, events.AssistantTextDelta))
+    assert "finished after approve" in answer
+
+
+async def test_denial_feeds_a_tooldenied_result_back_to_the_model(agent):
+    """A DENY returns a denial tool-result the model sees on the next leg (ADR-0002 §3)."""
+    emitted: list[events.Event] = []
+
+    async def denying_resolver(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision.deny(reason="nope, not allowed")
+
+    captured: list[list[ModelMessage]] = []
+
+    handler = AgentTurnHandler(
+        agent, deps=_deps(emitted.append, resolve_permission=denying_resolver)
+    )
+
+    with agent.override(model=_noop_then_text(final_text="ok, understood", captured=captured)):
+        await _drive_collecting(handler, _ctx(0, "please noop", emitted))()
+
+    # The denial message reached the model on the resume leg as a tool result.
+    resume_leg = captured[-1]
+    denial_returns = [
+        str(p.content)
+        for m in resume_leg
+        if isinstance(m, ModelRequest)
+        for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    ]
+    assert any("nope, not allowed" in d for d in denial_returns)
+    # The tool did NOT execute: its echo is never returned.
+    assert not any("noop: hi" in d for d in denial_returns)
+
+
+async def test_steering_message_reaches_the_model_at_the_deferred_resume(agent):
+    """Closes task 004's carryover: steering appended at a real deferred resume is seen.
+
+    A gated call pauses the run; before the resume leg the runner drains steering at the
+    model-request boundary. That steering must be appended to history as a user message so
+    the model sees it on the resume leg (ADR-0002 §4).
+    """
+    emitted: list[events.Event] = []
+
+    async def approving_resolver(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision.allow()
+
+    captured: list[list[ModelMessage]] = []
+
+    handler = AgentTurnHandler(
+        agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
+    )
+
+    async def _run() -> None:
+        agen = handler(_ctx(0, "please noop", emitted))
+        boundary = await agen.asend(None)
+        # Leg 1: model-request boundary, drains nothing, runs the gated leg (pauses).
+        assert boundary is Boundary.MODEL_REQUEST
+        # The deferred resume goes back through a MODEL_REQUEST boundary; inject steering
+        # there, exactly as the runner would after draining its steering queue.
+        sent: list[str] = []
+        with contextlib.suppress(StopAsyncIteration):
+            while True:
+                boundary = await agen.asend(sent)
+                sent = ["STEER-AT-RESUME-123"] if boundary is Boundary.MODEL_REQUEST else []
+        await agen.aclose()
+
+    with agent.override(model=_noop_then_text(final_text="done", captured=captured)):
+        await _run()
+
+    # The steering message reached the model on the resume leg (the second model request).
+    assert len(captured) >= 2, "expected a resume leg after the deferred pause"
+    resume_user_messages = _user_messages_seen(captured[-1])
+    assert any("STEER-AT-RESUME-123" in m for m in resume_user_messages)
+
+
+async def test_single_flight_lock_spans_the_whole_multi_leg_deferred_turn(agent):
+    """ADR-0002 §4: the single-flight lock spans the full deferred (multi-leg) turn.
+
+    Driven through the *real* Runner: a gated tool makes the turn fragment into a request
+    leg + a deferred resume leg. While the turn is in flight a second submit must enqueue
+    (steering), never start a parallel turn; the lock holds until the resume leg finishes.
+    """
+    emitted: list[events.Event] = []
+
+    async def approving_resolver(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision.allow()
+
+    handler = AgentTurnHandler(
+        agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
+    )
+
+    with agent.override(model=_noop_then_text(final_text="multi-leg done")):
+        runner = Runner(handler, on_event=emitted.append)
+        await runner.submit("please noop", InputIntent.STEER)
+        # Exactly one turn in flight across the whole multi-leg (deferred) turn.
+        assert runner.active_turns == 1
+        await runner.wait_idle()
+
+    kinds = [e.kind for e in emitted]
+    assert kinds[0] == "turn_started"
+    assert "permission_requested" in kinds
+    assert kinds[-1] == "turn_finished"
+    answer = "".join(e.text for e in emitted if isinstance(e, events.AssistantTextDelta))
+    assert "multi-leg done" in answer

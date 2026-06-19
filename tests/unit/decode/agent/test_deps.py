@@ -2,19 +2,31 @@
 
 The deps object is what the agent loop hands to Pydantic AI as ``deps``. For chat-only
 (task 004) it carries the working directory and an event sink the loop uses to stream
-:mod:`decode.entities.events` to the TUI. Later tasks widen it (gate/session_log/task_store)
-— these tests only pin the task-004 surface.
+:mod:`decode.entities.events` to the TUI. Task 005 widens it with the permission ``gate``
+(policy) and the async ``resolve_permission`` hook (route an ``ask`` to the human). Later
+tasks widen it further (session_log/task_store).
 """
 
 from pathlib import Path
 
 from decode.agent.deps import AgentDeps
 from decode.entities import events
+from decode.entities.permissions import PermissionDecision, PermissionRequest
+from decode.permissions.gate import PermissionGate
+
+
+async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
+    return PermissionDecision.deny(reason="test default")
 
 
 def test_agent_deps_carries_cwd_and_event_sink():
     seen: list[events.Event] = []
-    deps = AgentDeps(cwd=Path("/tmp/project"), emit=seen.append)
+    deps = AgentDeps(
+        cwd=Path("/tmp/project"),
+        emit=seen.append,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+    )
 
     assert deps.cwd == Path("/tmp/project")
 
@@ -24,11 +36,29 @@ def test_agent_deps_carries_cwd_and_event_sink():
     assert seen == [event]
 
 
+def test_agent_deps_carries_gate_and_resolver():
+    gate = PermissionGate()
+    deps = AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=gate,
+        resolve_permission=_deny_resolver,
+    )
+
+    assert deps.gate is gate
+    assert deps.resolve_permission is _deny_resolver
+
+
 def test_agent_deps_emit_is_a_callable_field():
     # `emit` is data, not a method: swapping the sink rebinds where events go.
     first: list[events.Event] = []
     second: list[events.Event] = []
-    deps = AgentDeps(cwd=Path("."), emit=first.append)
+    deps = AgentDeps(
+        cwd=Path("."),
+        emit=first.append,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+    )
     deps.emit(events.ThinkingDelta(text="a"))
 
     deps.emit = second.append
