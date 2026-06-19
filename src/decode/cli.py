@@ -10,9 +10,12 @@ from decode.logging import init_logger
 
 init_logger()
 
-import logging  # noqa: E402  (intentional post-logger import)
+import asyncio  # noqa: E402  (intentional post-logger import)
+import logging  # noqa: E402
 
 import click  # noqa: E402
+
+from decode.tui.app import run_app  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +32,8 @@ logger = logging.getLogger(__name__)
 def cli(resume: str | None) -> None:
     """decode — a terminal coding agent you run in your terminal."""
     logger.debug("decode starting (resume=%s)", resume)
-    # M1 bootstrap milestone: the interactive REPL + agent loop arrive in tasks 002+.
-    click.echo("decode: bootstrap OK — interactive REPL lands in task 002.")
+    # Task 002: launch the echo REPL. The agent loop is wired in tasks 003+.
+    asyncio.run(run_app())
 
 
 if __name__ == "__main__":
