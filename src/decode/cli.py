@@ -27,13 +27,15 @@ logger = logging.getLogger(__name__)
     flag_value="latest",
     default=None,
     metavar="[SESSION]",
-    help="Resume the latest session, or a named session id. (Wired in task 014.)",
+    help="Resume the latest session, or a named session id / filename.",
 )
 def cli(resume: str | None) -> None:
     """decode — a terminal coding agent you run in your terminal."""
     logger.debug("decode starting (resume=%s)", resume)
-    # Launch the REPL wired to the harness (task 003); the real agent loop lands in task 004.
-    asyncio.run(run_app())
+    # Launch the REPL wired to the harness; the bare ``--resume`` flag arrives as "latest", a
+    # named ``--resume <id>`` as that id, and no flag as None (a fresh session). run_app loads
+    # the matching session log and seeds the conversation (ADR-0002 §9, task 014).
+    asyncio.run(run_app(resume=resume))
 
 
 if __name__ == "__main__":

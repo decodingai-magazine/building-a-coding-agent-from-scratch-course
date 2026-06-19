@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, DeferredToolRequests, ToolDenied
 from pydantic_ai.messages import (
@@ -58,6 +59,9 @@ from decode.entities.permissions import PermissionOutcome, PermissionRequest
 from decode.harness.runner import Boundary, TurnContext
 from decode.tools import is_read_only
 
+if TYPE_CHECKING:
+    from decode.context.session_log import SessionLog
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,15 +71,34 @@ class AgentTurnHandler:
     One instance per REPL session: it owns the cross-turn ``message_history``. Calling it
     with a :class:`~decode.harness.runner.TurnContext` returns the async generator the runner
     drives (so an instance satisfies the ``TurnHandler`` callable type).
+
+    When a :class:`~decode.context.session_log.SessionLog` is wired (``session_log=``), the
+    handler appends each turn's **new** messages to the JSONL log at the would-stop boundary
+    (ADR-0002 §9), so ``decode --resume`` can replay the session. The log is optional: a
+    headless / test run with no log left wired runs unchanged. A resumed session seeds
+    ``message_history`` (and the persisted-count cursor) so resume continues the conversation
+    without re-persisting the replayed prefix.
     """
 
     def __init__(
-        self, agent: Agent[AgentDeps, str | DeferredToolRequests], *, deps: AgentDeps
+        self,
+        agent: Agent[AgentDeps, str | DeferredToolRequests],
+        *,
+        deps: AgentDeps,
+        session_log: SessionLog | None = None,
+        message_history: list[ModelMessage] | None = None,
     ) -> None:
         self._agent = agent
         self._deps = deps
-        # The running conversation, carried across harness turns (ADR-0002 §1).
-        self.message_history: list[ModelMessage] = []
+        # The running conversation, carried across harness turns (ADR-0002 §1). A resumed
+        # session seeds it with the replayed history (``--resume``, task 014).
+        self.message_history: list[ModelMessage] = list(message_history or [])
+        # The append-only JSONL session log (ADR-0002 §9); ``None`` disables persistence.
+        self._session_log = session_log
+        # How many messages have already been persisted: the seeded (replayed) prefix counts as
+        # persisted so resume never re-writes it, and each turn appends only the messages beyond
+        # this cursor.
+        self._persisted_count = len(self.message_history)
 
     async def __call__(self, ctx: TurnContext) -> AsyncGenerator[Boundary, list[str]]:
         """Run one harness turn as a sequence of legs (ADR-0002 §3-4).
@@ -104,6 +127,7 @@ class AgentTurnHandler:
                 if prompt is None:
                     # Nothing to ask the model: stop cleanly (drain follow-up below).
                     output = ""
+                    self._persist_turn()
                     follow_ups = yield Boundary.WOULD_STOP
                     if not follow_ups:
                         return
@@ -116,7 +140,8 @@ class AgentTurnHandler:
                 pending_results = await self._resolve_deferred(ctx, output)
                 continue
 
-            # --- would-stop boundary: drain follow-up; a follow-up adds one more leg (§4) ---
+            # --- would-stop boundary: persist this turn, then drain follow-up (§4, §9) ---
+            self._persist_turn()
             follow_ups = yield Boundary.WOULD_STOP
             if not follow_ups:
                 return
@@ -150,6 +175,28 @@ class AgentTurnHandler:
         content = "\n".join(steering)
         logger.debug("appending steering to history before deferred resume: %r", content)
         self.message_history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+
+    def _persist_turn(self) -> None:
+        """Append the messages added since the last persist to the session log (ADR-0002 §9).
+
+        Called at each would-stop boundary: the slice of ``message_history`` beyond the
+        persisted-count cursor is *this* turn's new messages, which are appended as one typed
+        JSONL line and the cursor advanced. A no-op when no session log is wired or the turn
+        produced nothing new (an empty slice writes nothing — the log stays append-only and
+        clean). Persistence must never break the turn, so a write failure is logged and
+        swallowed rather than propagated.
+        """
+        if self._session_log is None:
+            return
+        new_messages = self.message_history[self._persisted_count :]
+        if not new_messages:
+            return
+        try:
+            self._session_log.append_turn(new_messages)
+        except OSError:
+            logger.warning("failed to persist turn to session log", exc_info=True)
+            return
+        self._persisted_count = len(self.message_history)
 
     async def _run_leg(
         self,

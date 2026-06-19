@@ -39,11 +39,14 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.patch_stdout import patch_stdout
+from pydantic_ai.messages import ModelMessage
 from rich.console import Console
 
 from decode.agent.deps import AgentDeps, PermissionResolver, UserQuestionResolver
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
+from decode.config.settings import settings
+from decode.context.session_log import SessionLog, load, load_latest, resolve_session
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.decisions import DecisionChannel
@@ -53,6 +56,9 @@ from decode.permissions.gate import PermissionGate
 from decode.tui import render
 
 logger = logging.getLogger(__name__)
+
+# The flag value the bare ``--resume`` (no argument) carries: resume the latest session.
+_RESUME_LATEST = "latest"
 
 _QUIT_COMMAND = "/quit"
 _PROMPT = "> "
@@ -202,13 +208,58 @@ def _interpret(submitted: object) -> tuple[InputIntent, str]:
     return InputIntent.STEER, str(submitted)
 
 
-async def run_app(console: Console | None = None) -> None:
+def _load_resume_history(resume: str | None, console: Console) -> list[ModelMessage]:
+    """Replay the requested session into a seed ``message_history`` (ADR-0002 §9, task 014).
+
+    ``None`` → no resume, a fresh conversation (empty history). ``"latest"`` (the bare
+    ``--resume`` flag) → the most recent session under ``settings.sessions_dir``; any other
+    value → the session whose filename embeds that id / filename. When there is nothing to
+    resume the user is told so **once** (a friendly line, not an error) and a fresh
+    conversation starts — a resume should never crash the REPL. Returns the replayed messages
+    (possibly empty).
+    """
+    if resume is None:
+        return []
+
+    if resume == _RESUME_LATEST:
+        history = load_latest(settings.sessions_dir)
+        if history is None:
+            console.print(
+                render.render_event(
+                    events.AssistantTextDelta(text="decode - no prior session to resume.")
+                )
+            )
+            return []
+        logger.debug("resumed latest session with %d message(s)", len(history))
+        return history
+
+    path = resolve_session(settings.sessions_dir, resume)
+    if path is None:
+        console.print(
+            render.render_event(
+                events.AssistantTextDelta(text=f"decode - no session matching {resume!r}.")
+            )
+        )
+        return []
+    history = load(path)
+    logger.debug("resumed session %s with %d message(s)", path.name, len(history))
+    return history
+
+
+async def run_app(console: Console | None = None, *, resume: str | None = None) -> None:
     """Run the REPL until ``Ctrl-D`` or ``/quit``, routing input into the harness.
 
     ``console`` is injectable so callers/tests can capture output; defaults to a real
     stdout-backed :class:`rich.console.Console`. The harness drives the real Pydantic AI
     loop behind the turn-handler seam; gated tool calls (task 005) pause the turn, surface a
     permission prompt via :func:`_make_permission_resolver`, and resume on the answer.
+
+    ``resume`` wires ``decode --resume`` (ADR-0002 §9): ``"latest"`` (the bare flag) replays the
+    most recent session, a session id / filename replays that specific one, and ``None`` (the
+    default) starts fresh. The replayed history seeds the turn handler so the conversation
+    continues; if there is nothing to resume the user is told so and a fresh session starts.
+    Every ``run_app`` opens a **new** session log file, so a resumed run continues the
+    conversation into a fresh append-only log.
 
     The single input loop has two modes (see module docstring): when the
     :class:`~decode.harness.decisions.DecisionChannel` is *awaiting a decision*, the next line
@@ -240,9 +291,17 @@ async def run_app(console: Console | None = None) -> None:
         resolve_permission=_make_permission_resolver(decisions, console),
         resolve_user_question=_make_user_question_resolver(decisions, console),
     )
+    # Persistence (ADR-0002 §9): replay a prior session if asked, then open a fresh append-only
+    # JSONL log this run writes its turns to. The replayed history seeds the handler so the
+    # conversation continues; the new log starts after the replayed prefix (already-persisted).
+    resumed_history = _load_resume_history(resume, console)
+    session_log = SessionLog.create(settings.sessions_dir, cwd=deps.cwd)
+
     # Hold the handler directly: it owns the cross-turn ``message_history`` the on-exit memory
     # write-back summarizes (the runner keeps it private). One handler per session (§1).
-    handler = AgentTurnHandler(agent, deps=deps)
+    handler = AgentTurnHandler(
+        agent, deps=deps, session_log=session_log, message_history=resumed_history
+    )
     runner = Runner(handler, on_event=_on_event)
 
     console.print(

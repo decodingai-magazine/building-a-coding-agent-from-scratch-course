@@ -147,6 +147,9 @@ activemq-data/
 # SageMath parsed files
 *.sage.py
 
+# decode runtime state: JSONL session logs (--resume) and local persistence (ADR-0002 §9).
+.decode/
+
 # Environments
 .env
 .envrc

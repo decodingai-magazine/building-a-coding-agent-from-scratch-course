@@ -55,6 +55,19 @@ _ASK_USER_ANSWER = "deploy-to-staging-please"
 _AFTER_ANSWER_TEXT = "ACK-ANSWER-RECEIVED"
 
 
+@pytest.fixture(autouse=True)
+def sessions_dir(tmp_path, monkeypatch):
+    """Redirect the JSONL session log under a per-test tmp dir (ADR-0002 §9, task 014).
+
+    ``run_app`` now opens a session log under ``settings.sessions_dir``; without this every e2e
+    test would write into the repo's real ``.decode/sessions``. Returns the dir so the tests
+    that assert on the persisted file can read it.
+    """
+    target = tmp_path / "sessions"
+    monkeypatch.setattr(app_mod.settings, "sessions_dir", target, raising=False)
+    return target
+
+
 def _build_gated_agent(
     *, final_text: str, captured: list[list[ModelMessage]]
 ) -> Agent[AgentDeps, str | DeferredToolRequests]:
@@ -311,3 +324,103 @@ async def test_run_app_runs_memory_write_back_on_exit_with_the_session_history(m
     ]
     assert any("summarize my project for me" in t for t in user_text)
     assert captured["cwd"] == Path.cwd()
+
+
+async def test_run_app_persists_the_session_to_a_jsonl_log(monkeypatch, sessions_dir):
+    """ADR-0002 §9: ``run_app`` opens a session log and persists the turn's messages.
+
+    A fresh ``run_app`` opens a new ``.jsonl`` file under ``settings.sessions_dir``; after a
+    turn finishes, replaying that file yields the conversation (the user prompt is in it). No
+    network: the agent runs on a streaming ``FunctionModel``.
+    """
+    from decode.context import session_log
+
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("persist-this-prompt")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    await _drive_run_app(monkeypatch, agent, script=script)
+
+    files = list(sessions_dir.glob("*.jsonl"))
+    assert len(files) == 1, "run_app must open exactly one session file"
+    replayed = session_log.load(files[0])
+    user_text = [
+        str(part.content)
+        for message in replayed
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    ]
+    assert any("persist-this-prompt" in t for t in user_text)
+
+
+async def test_run_app_resume_seeds_history_from_the_prior_session(monkeypatch, sessions_dir):
+    """``run_app(resume="latest")`` replays the latest session into the new turn handler (§9).
+
+    A prior session file in ``sessions_dir`` carries an earlier user turn; resuming seeds the
+    handler's ``message_history`` with it, so the model on the next turn sees the replayed
+    prefix. We assert the replayed prompt reaches the model on the resumed turn.
+    """
+    from datetime import UTC, datetime
+    from uuid import UUID
+
+    from decode.context.session_log import SessionLog
+    from decode.tui import app as app_module
+
+    prior = SessionLog.create(
+        sessions_dir,
+        cwd=sessions_dir,
+        now=datetime(2026, 6, 19, 8, 0, tzinfo=UTC),
+        session_id=UUID("00000000-0000-0000-0000-0000000000cc"),
+    )
+    prior.append_turn(
+        [
+            ModelRequest(parts=[UserPromptPart(content="EARLIER-RESUMED-TURN")]),
+        ]
+    )
+
+    captured: list[list[ModelMessage]] = []
+
+    async def stream_function(messages, info):
+        captured.append(list(messages))
+        yield _CHAT_REPLY
+
+    agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
+        FunctionModel(stream_function=stream_function),
+        deps_type=AgentDeps,
+        output_type=[str, DeferredToolRequests],
+    )
+
+    monkeypatch.setattr(app_module, "build_agent", lambda: agent)
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("new-turn-after-resume")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=100)
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+
+        def send(line: str) -> None:
+            pipe.send_text(f"{line}\r")
+
+        app_task = asyncio.ensure_future(app_module.run_app(console=console, resume="latest"))
+        try:
+            await asyncio.wait_for(script(buf, send), timeout=5.0)
+            await asyncio.wait_for(app_task, timeout=5.0)
+        finally:
+            if not app_task.done():
+                app_task.cancel()
+
+    # The model saw the replayed earlier turn on the resumed conversation.
+    flat = " ".join(
+        str(getattr(part, "content", ""))
+        for messages in captured
+        for message in messages
+        for part in message.parts
+    )
+    assert "EARLIER-RESUMED-TURN" in flat

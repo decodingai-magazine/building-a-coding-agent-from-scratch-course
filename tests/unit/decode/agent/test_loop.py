@@ -547,3 +547,80 @@ async def test_ask_user_model_retries_headless_and_the_turn_still_finishes(agent
     assert kinds[-1] == "turn_finished"  # the turn finished, no hang
     answer = "".join(e.text for e in emitted if isinstance(e, events.AssistantTextDelta))
     assert "proceeding without you" in answer
+
+
+# --- task 014: session-log persistence (append each turn's new messages) --------------------
+
+
+async def test_handler_persists_each_turn_to_the_session_log(agent, tmp_path):
+    """ADR-0002 §9: when a SessionLog is wired, each turn appends its new messages.
+
+    The handler is given a real :class:`~decode.context.session_log.SessionLog`; after a turn
+    finishes, the session file must carry that turn's messages so a later ``--resume`` replays
+    them. Two turns produce a replay equal to the handler's accumulated ``message_history``.
+    """
+    from uuid import UUID
+
+    from decode.context import session_log
+    from decode.context.session_log import SessionLog
+
+    emitted: list[events.Event] = []
+    log = SessionLog.create(
+        tmp_path,
+        cwd=tmp_path,
+        now=__import__("datetime").datetime(2026, 6, 19, 12, 0, tzinfo=__import__("datetime").UTC),
+        session_id=UUID("00000000-0000-0000-0000-0000000000aa"),
+    )
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append), session_log=log)
+
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="first")):
+        await _drive_collecting(handler, _ctx(0, "turn one", emitted))()
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="second")):
+        await _drive_collecting(handler, _ctx(1, "turn two", emitted))()
+
+    # The replayed history equals what the handler accumulated across both turns.
+    replayed = session_log.load(log.path)
+    assert replayed == handler.message_history
+
+
+async def test_handler_works_without_a_session_log(agent):
+    """The session log is optional: with none wired, the handler runs unchanged (no crash)."""
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))  # no session_log
+
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="ok")):
+        await _drive_collecting(handler, _ctx(0, "hi", emitted))()
+
+    assert handler.message_history  # the turn still populated history
+
+
+async def test_session_log_persists_only_new_messages_per_turn(agent, tmp_path):
+    """Each appended batch is that turn's *new* messages, not the whole history re-dumped.
+
+    The file is append-only and a turn's line carries only the messages added on that turn, so
+    the second turn's batch does not contain the first turn's user prompt.
+    """
+    import json
+    from uuid import UUID
+
+    from decode.context.session_log import SessionLog
+
+    emitted: list[events.Event] = []
+    log = SessionLog.create(
+        tmp_path,
+        cwd=tmp_path,
+        now=__import__("datetime").datetime(2026, 6, 19, 12, 0, tzinfo=__import__("datetime").UTC),
+        session_id=UUID("00000000-0000-0000-0000-0000000000bb"),
+    )
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append), session_log=log)
+
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="one")):
+        await _drive_collecting(handler, _ctx(0, "ALPHA-PROMPT", emitted))()
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="two")):
+        await _drive_collecting(handler, _ctx(1, "BETA-PROMPT", emitted))()
+
+    lines = [ln for ln in log.path.read_text(encoding="utf-8").splitlines() if ln]
+    assert len(lines) == 3  # header + two turn batches
+    second_turn_raw = json.dumps(json.loads(lines[2]))
+    assert "BETA-PROMPT" in second_turn_raw
+    assert "ALPHA-PROMPT" not in second_turn_raw  # only this turn's new messages
