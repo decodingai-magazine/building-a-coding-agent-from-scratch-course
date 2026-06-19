@@ -33,6 +33,7 @@ from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import TurnContext
 from decode.permissions.gate import PermissionGate
 from decode.tools import bash as bash_module
+from decode.tools.askuser import deny_user_question_resolver
 
 
 async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
@@ -50,6 +51,7 @@ def _ctx(
         emit=lambda _e: None,
         gate=PermissionGate(),
         resolve_permission=resolve,
+        resolve_user_question=deny_user_question_resolver,
     )
     return RunContext(deps=deps, model=None, usage=None, tool_call_approved=approved)  # type: ignore[arg-type]
 
@@ -267,6 +269,7 @@ async def test_bash_runs_through_the_agent_when_approved(tmp_path: Path, mocker)
         emit=emitted.append,
         gate=PermissionGate(),
         resolve_permission=approving_resolver,
+        resolve_user_question=deny_user_question_resolver,
     )
     agent = _agent(mocker)
     handler = AgentTurnHandler(agent, deps=deps)

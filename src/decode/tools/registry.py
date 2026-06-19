@@ -10,9 +10,16 @@ jobs:
   declared in exactly one place. The loop reads it through :func:`decode.tools.is_read_only`
   when it builds a :class:`~decode.entities.permissions.PermissionRequest`.
 
-Tools land here as they are built (006-011). Every tool gates itself by raising
+Tools land here as they are built (006-011). Every *side-effecting* tool gates itself by raising
 :class:`pydantic_ai.ApprovalRequired` when ``not ctx.tool_call_approved`` (v1 asks on every
 call); the ``read_only`` flag is a *tag* for M3's future auto-allow, not a v1 behaviour change.
+
+``ask_user`` (task 011) is the lone exception: it IS the human-interaction tool, so gating it
+("may I ask you a question?") would double-prompt. It is registered with ``gated=False`` — it
+never raises ``ApprovalRequired`` and so never reaches the permission gate; instead it blocks
+the turn on the human via the same single decision channel the permission resolver uses. The
+``gated`` flag records this on the spec so the policy is visible in one place (the loop's gate
+path is only ever reached by a tool that actually raised ``ApprovalRequired``).
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from dataclasses import dataclass
 from pydantic_ai import Agent, DeferredToolRequests
 
 from decode.agent.deps import AgentDeps
+from decode.tools import askuser as askuser_module
 from decode.tools import bash as bash_module
 from decode.tools import files, noop
 from decode.tools import tasks as tasks_module
@@ -34,16 +42,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
-    """One registered tool: its model-facing ``name``, its ``func``, and its ``read_only`` tag.
+    """One registered tool: ``name``, ``func``, the ``read_only`` tag, and the ``gated`` flag.
 
     ``read_only`` is recorded for M3's read-only auto-allow; v1 asks on every call regardless.
-    ``func`` is the bare tool function (it takes ``ctx`` as its first parameter) — Pydantic AI
-    builds the model-facing schema from its signature and docstring.
+    ``gated`` (default ``True``) records whether the tool goes through the permission gate: every
+    side-effecting tool is gated; ``ask_user`` is the lone ungated tool (it IS the
+    human-interaction tool, so gating it would double-prompt). ``func`` is the bare tool function
+    (it takes ``ctx`` as its first parameter) — Pydantic AI builds the model-facing schema from
+    its signature and docstring.
     """
 
     name: str
     func: Callable[..., object]
     read_only: bool
+    gated: bool = True
 
 
 # The flat catalogue. Source of truth for both registration and the read-only map.
@@ -69,6 +81,15 @@ TOOL_SPECS: list[ToolSpec] = [
         name=web_module.WEB_FETCH_TOOL_NAME,
         func=web_module.web_fetch,
         read_only=web_module.WEB_FETCH_READ_ONLY,
+    ),
+    # AskUser (task 011): the one blocking tool. NOT gated — it IS the human-interaction tool,
+    # so routing it through the permission gate would double-prompt. It never raises
+    # ApprovalRequired; it blocks the turn on the human via the single decision channel instead.
+    ToolSpec(
+        name=askuser_module.ASK_USER_TOOL_NAME,
+        func=askuser_module.ask_user,
+        read_only=askuser_module.ASK_USER_READ_ONLY,
+        gated=False,
     ),
 ]
 

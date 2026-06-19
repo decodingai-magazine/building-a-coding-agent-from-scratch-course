@@ -3,8 +3,9 @@
 The deps object is what the agent loop hands to Pydantic AI as ``deps``. For chat-only
 (task 004) it carries the working directory and an event sink the loop uses to stream
 :mod:`decode.entities.events` to the TUI. Task 005 widens it with the permission ``gate``
-(policy) and the async ``resolve_permission`` hook (route an ``ask`` to the human). Later
-tasks widen it further (session_log/task_store).
+(policy) and the async ``resolve_permission`` hook (route an ``ask`` to the human); task 011
+adds the ``resolve_user_question`` hook (route the ``ask_user`` tool's question to the human).
+Later tasks widen it further (session_log/task_store).
 """
 
 from pathlib import Path
@@ -20,6 +21,10 @@ async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
     return PermissionDecision.deny(reason="test default")
 
 
+async def _user_resolver(question: str) -> str:
+    return "test answer"
+
+
 def test_agent_deps_carries_cwd_and_event_sink():
     seen: list[events.Event] = []
     deps = AgentDeps(
@@ -27,6 +32,7 @@ def test_agent_deps_carries_cwd_and_event_sink():
         emit=seen.append,
         gate=PermissionGate(),
         resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
     )
 
     assert deps.cwd == Path("/tmp/project")
@@ -44,10 +50,13 @@ def test_agent_deps_carries_gate_and_resolver():
         emit=lambda _e: None,
         gate=gate,
         resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
     )
 
     assert deps.gate is gate
     assert deps.resolve_permission is _deny_resolver
+    # Task 011: the ask_user hook rides alongside the permission resolver.
+    assert deps.resolve_user_question is _user_resolver
 
 
 def test_agent_deps_task_store_defaults_to_an_empty_list():
@@ -57,12 +66,14 @@ def test_agent_deps_task_store_defaults_to_an_empty_list():
         emit=lambda _e: None,
         gate=PermissionGate(),
         resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
     )
     second = AgentDeps(
         cwd=Path("."),
         emit=lambda _e: None,
         gate=PermissionGate(),
         resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
     )
 
     assert first.task_store == []
@@ -78,6 +89,7 @@ def test_agent_deps_carries_a_supplied_task_store():
         emit=lambda _e: None,
         gate=PermissionGate(),
         resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
         task_store=store,
     )
 
@@ -93,6 +105,7 @@ def test_agent_deps_emit_is_a_callable_field():
         emit=first.append,
         gate=PermissionGate(),
         resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
     )
     deps.emit(events.ThinkingDelta(text="a"))
 

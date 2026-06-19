@@ -30,13 +30,14 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from decode.agent.deps import AgentDeps, PermissionResolver
+from decode.agent.deps import AgentDeps, PermissionResolver, UserQuestionResolver
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Boundary, Runner, TurnContext
 from decode.permissions.gate import PermissionGate
+from decode.tools.askuser import NoInteractiveUserError
 from decode.tui.app import InputIntent
 
 
@@ -45,13 +46,24 @@ async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
     return PermissionDecision.deny(reason="test default deny")
 
 
-def _deps(emit, *, resolve_permission: PermissionResolver = _deny_resolver) -> AgentDeps:
-    """Build AgentDeps with the task-005 gate + resolver wired (defaults to deny)."""
+async def _no_user_resolver(question: str) -> str:
+    """Default ask_user resolver for tests that don't exercise it: raise (no interactive user)."""
+    raise NoInteractiveUserError("no interactive user in this test")
+
+
+def _deps(
+    emit,
+    *,
+    resolve_permission: PermissionResolver = _deny_resolver,
+    resolve_user_question: UserQuestionResolver = _no_user_resolver,
+) -> AgentDeps:
+    """Build AgentDeps with the task-005 gate + resolvers wired (defaults to deny / no user)."""
     return AgentDeps(
         cwd=Path("."),
         emit=emit,
         gate=PermissionGate(),
         resolve_permission=resolve_permission,
+        resolve_user_question=resolve_user_question,
     )
 
 
@@ -432,3 +444,106 @@ async def test_single_flight_lock_spans_the_whole_multi_leg_deferred_turn(agent)
     assert kinds[-1] == "turn_finished"
     answer = "".join(e.text for e in emitted if isinstance(e, events.AssistantTextDelta))
     assert "multi-leg done" in answer
+
+
+# --- task 011: the blocking ask_user tool (NOT gated; rides the decision channel) -----------
+
+
+def _ask_user_then_text(
+    question: str, final_text: str = "thanks", *, captured: list[list[ModelMessage]] | None = None
+):
+    """A streaming FunctionModel that calls ``ask_user`` on the first leg, then returns text.
+
+    First model request → a streamed ``ask_user`` tool call with ``question``. Unlike ``noop``,
+    ``ask_user`` is NOT gated (it never raises ``ApprovalRequired``); it blocks the run inside
+    the tool body on ``ctx.deps.resolve_user_question`` and returns the human's answer as the
+    tool result. Every later request → streamed ``final_text`` so the turn terminates. If
+    ``captured`` is given, each leg's incoming messages are recorded (to inspect the tool result).
+    """
+    state = {"calls": 0}
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        state["calls"] += 1
+        if captured is not None:
+            captured.append(list(messages))
+        if state["calls"] == 1:
+            yield {0: DeltaToolCall(name="ask_user", json_args=f'{{"question": "{question}"}}')}
+        else:
+            yield final_text
+
+    return FunctionModel(stream_function=stream_function)
+
+
+async def test_ask_user_answer_reaches_the_model_as_the_tool_result(agent):
+    """ADR-0002 §2,7: a forced ask_user call surfaces the question and the typed answer.
+
+    A fake ``resolve_user_question`` supplies the answer; it must (a) be emitted as an
+    ``AskUserRequested`` event so the TUI renders the question, and (b) come back to the model
+    as the ``ask_user`` tool result on the next leg. ask_user is NOT gated, so there is no
+    ``PermissionRequested`` event for it.
+    """
+    emitted: list[events.Event] = []
+    asked: list[str] = []
+
+    async def answering_resolver(question: str) -> str:
+        asked.append(question)
+        return "use the staging database"
+
+    captured: list[list[ModelMessage]] = []
+    handler = AgentTurnHandler(
+        agent, deps=_deps(emitted.append, resolve_user_question=answering_resolver)
+    )
+
+    model = _ask_user_then_text("which database?", final_text="ok", captured=captured)
+    with agent.override(model=model):
+        await _drive_collecting(handler, _ctx(0, "set up the db", emitted))()
+
+    # The question was surfaced to the TUI as an AskUserRequested event.
+    asks = [e for e in emitted if isinstance(e, events.AskUserRequested)]
+    assert asks and asks[0].question == "which database?"
+    assert asked == ["which database?"]  # the tool routed the question to the resolver
+
+    # ask_user is NOT gated: no PermissionRequested event was emitted for it.
+    assert not [e for e in emitted if isinstance(e, events.PermissionRequested)]
+
+    # The typed answer reached the model as the ask_user tool result on the resume leg.
+    resume_leg = captured[-1]
+    returns = [
+        str(part.content)
+        for message in resume_leg
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+    assert any("use the staging database" in r for r in returns)
+
+
+async def test_ask_user_model_retries_headless_and_the_turn_still_finishes(agent):
+    """Headless (no interactive user): ask_user ModelRetries, the model recovers, turn ends.
+
+    With the headless resolver the tool raises a ``ModelRetry`` ("no interactive user");
+    Pydantic AI feeds that back to the model, which then answers with plain text. The turn must
+    finish cleanly (never hang) — the headless-safety guarantee.
+    """
+    emitted: list[events.Event] = []
+
+    async def headless_resolver(question: str) -> str:
+        raise NoInteractiveUserError("no interactive user is attached")
+
+    handler = AgentTurnHandler(
+        agent, deps=_deps(emitted.append, resolve_user_question=headless_resolver)
+    )
+
+    model = _ask_user_then_text("are you there?", final_text="proceeding without you")
+    with agent.override(model=model):
+        runner = Runner(handler, on_event=emitted.append)
+        await runner.submit("do the thing", InputIntent.STEER)
+        await runner.wait_idle()
+
+    kinds = [e.kind for e in emitted]
+    assert kinds[0] == "turn_started"
+    assert kinds[-1] == "turn_finished"  # the turn finished, no hang
+    answer = "".join(e.text for e in emitted if isinstance(e, events.AssistantTextDelta))
+    assert "proceeding without you" in answer

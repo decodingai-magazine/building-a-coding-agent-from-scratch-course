@@ -115,3 +115,32 @@ async def test_interactive_resolver_denies_when_the_decision_is_cancelled():
     decision = await task
     assert decision.outcome is PermissionOutcome.DENY
     assert decision.reason
+
+
+async def test_ask_user_resolver_returns_the_typed_line_verbatim():
+    # The ask_user resolver awaits the SAME single decision channel and returns the raw line as
+    # the free-text answer (no y/N parsing, unlike the permission resolver).
+    channel = DecisionChannel()
+    resolver = app._make_user_question_resolver(channel, _quiet_console())
+
+    task = asyncio.ensure_future(resolver("which file?"))
+    await asyncio.sleep(0)  # let the resolver register the pending decision
+    assert channel.pending is True
+
+    channel.resolve("src/main.py")
+    answer = await task
+    assert answer == "src/main.py"
+
+
+async def test_ask_user_resolver_propagates_cancellation():
+    # A cancelled request (abort / shutdown) must propagate CancelledError out of the resolver
+    # so decode.tools.askuser.ask_user maps it to a clean ModelRetry (never a hang).
+    channel = DecisionChannel()
+    resolver = app._make_user_question_resolver(channel, _quiet_console())
+
+    task = asyncio.ensure_future(resolver("still there?"))
+    await asyncio.sleep(0)
+    channel.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task

@@ -41,7 +41,7 @@ from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
-from decode.agent.deps import AgentDeps, PermissionResolver
+from decode.agent.deps import AgentDeps, PermissionResolver, UserQuestionResolver
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
 from decode.entities import events
@@ -58,6 +58,10 @@ _PROMPT = "> "
 # A minimal inline affordance shown when a decision is pending; the full request was already
 # rendered once by the loop's PermissionRequested event (single render path — no re-print).
 _PERMISSION_AFFORDANCE = "allow this tool call? [y/N]"
+# The matching affordance for an ask_user question: the full question was already rendered once
+# by the tool's AskUserRequested event, so this is only the "type your answer" cue (any line is
+# the answer — no parsing, unlike the permission y/N).
+_ASK_USER_AFFORDANCE = "type your answer:"
 # Answers that count as "yes"; everything else denies (the safe default — ADR-0002 §3).
 _AFFIRMATIVE_ANSWERS = frozenset({"y", "yes", "a", "allow"})
 
@@ -137,6 +141,30 @@ def _make_permission_resolver(channel: DecisionChannel, console: Console) -> Per
     return resolver
 
 
+def _make_user_question_resolver(
+    channel: DecisionChannel, console: Console
+) -> UserQuestionResolver:
+    """Build the interactive ``ask_user`` resolver bound to the decision ``channel`` (§2,7).
+
+    The full question was already rendered once by the tool's ``AskUserRequested`` event (single
+    render path), so the resolver only shows a minimal "type your answer" affordance and then
+    **awaits the next submitted line on the same channel** the permission resolver uses — it
+    never opens a second ``prompt_async()`` (that would deadlock the REPL). Unlike the permission
+    resolver there is no parsing: the raw typed line *is* the answer, returned straight to the
+    model as the ``ask_user`` tool result. A cancelled request (turn aborted / REPL shutting
+    down) propagates :class:`asyncio.CancelledError` out of the channel, which
+    :func:`decode.tools.askuser.ask_user` maps to a model-readable ``ModelRetry`` — so the turn
+    winds down cleanly instead of hanging. Not unit-tested directly; the end-to-end ``run_app``
+    regression test drives the real channel + main loop.
+    """
+
+    async def resolver(question: str) -> str:
+        console.print(render.render_event(events.AssistantTextDelta(text=_ASK_USER_AFFORDANCE)))
+        return await channel.request()
+
+    return resolver
+
+
 def _bottom_toolbar() -> HTML:
     """The footer hint as prompt_toolkit formatted text."""
     return HTML(f"<b>{footer_hint()}</b>")
@@ -198,9 +226,10 @@ async def run_app(console: Console | None = None) -> None:
 
     # The agent loop is the turn handler: build the Gemini agent, bind the event sink so
     # streamed deltas reach the renderer, the gate (policy) + the interactive allow/deny
-    # resolver (ADR-0002 §3). The decision channel is the single mid-turn HITL surface the
-    # resolver awaits on (task 011's AskUser reuses it). One handler per session carries
-    # history (§1).
+    # resolver (ADR-0002 §3) and the interactive ask_user resolver (§2,7). Both resolvers await
+    # on the SAME decision channel — the single mid-turn HITL surface — so a permission ask and
+    # an ask_user question can never collide (the channel is single-flight). One handler per
+    # session carries history (§1).
     decisions = DecisionChannel()
     agent = build_agent()
     deps = AgentDeps(
@@ -208,6 +237,7 @@ async def run_app(console: Console | None = None) -> None:
         emit=_on_event,
         gate=PermissionGate(),
         resolve_permission=_make_permission_resolver(decisions, console),
+        resolve_user_question=_make_user_question_resolver(decisions, console),
     )
     runner = Runner(AgentTurnHandler(agent, deps=deps), on_event=_on_event)
 
@@ -224,8 +254,11 @@ async def run_app(console: Console | None = None) -> None:
 
             intent, text = _interpret(submitted)
 
-            # Awaiting-decision mode: the next line answers the pending mid-turn request
-            # (permission approval today, AskUser next) instead of steering / starting a turn.
+            # Awaiting-decision mode: the next line answers whatever mid-turn request is pending
+            # — a permission approval (parsed y/N inside the permission resolver) OR an ask_user
+            # question (the raw line is the free-text answer inside the ask_user resolver) —
+            # instead of steering / starting a turn. The main loop routes the raw line either
+            # way; the awaiting resolver does any parsing, so the channel stays one input surface.
             if decisions.pending:
                 logger.debug("decision pending: routing %r to the decision channel", text)
                 decisions.resolve(text)
