@@ -48,6 +48,7 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.decisions import DecisionChannel
 from decode.harness.runner import Runner
+from decode.memory.extract import extract_on_exit
 from decode.permissions.gate import PermissionGate
 from decode.tui import render
 
@@ -239,7 +240,10 @@ async def run_app(console: Console | None = None) -> None:
         resolve_permission=_make_permission_resolver(decisions, console),
         resolve_user_question=_make_user_question_resolver(decisions, console),
     )
-    runner = Runner(AgentTurnHandler(agent, deps=deps), on_event=_on_event)
+    # Hold the handler directly: it owns the cross-turn ``message_history`` the on-exit memory
+    # write-back summarizes (the runner keeps it private). One handler per session (§1).
+    handler = AgentTurnHandler(agent, deps=deps)
+    runner = Runner(handler, on_event=_on_event)
 
     console.print(
         render.render_event(events.AssistantTextDelta(text="decode - type a line; /quit exits."))
@@ -284,4 +288,11 @@ async def run_app(console: Console | None = None) -> None:
     # (it falls back to its safe default: deny), then wait for the runner to go idle.
     decisions.cancel()
     await runner.wait_idle()
+
+    # On-exit memory write-back (ADR-0002 §8): one cheap Gemini call summarizes the session into
+    # a dated line appended to the project-root MEMORY.md, picked up next session by
+    # assemble_memory. The accumulated conversation lives on the handler; ``deps.cwd`` is the
+    # project root. Fully non-fatal — extract_on_exit never raises, so it cannot block exit.
+    await extract_on_exit(handler.message_history, deps.cwd)
+
     console.print(render.render_event(events.AssistantTextDelta(text="decode - bye.")))

@@ -25,13 +25,14 @@ gated ``noop`` / blocking ``ask_user`` tools drive a real mid-turn pause/resume.
 import asyncio
 import io
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 
 import pytest
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent, DeferredToolRequests
-from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from rich.console import Console
 
@@ -39,6 +40,9 @@ from decode.agent.deps import AgentDeps
 from decode.tools.askuser import ask_user
 from decode.tools.noop import register_noop
 from decode.tui import app as app_mod
+
+# Marker the simple chat agent streams as its only reply (used by the memory write-back wiring).
+_CHAT_REPLY = "WORK-DONE-THIS-SESSION"
 
 # Marker the resume leg's text carries so the test can prove the turn resumed after approval.
 _FINAL_TEXT = "FINAL-ANSWER-AFTER-APPROVE"
@@ -251,3 +255,59 @@ async def test_run_app_ask_user_surfaces_the_question_and_a_typed_line_answers_i
         if isinstance(part, ToolReturnPart)
     ]
     assert any(_ASK_USER_ANSWER in r for r in returns), "the typed answer must reach the model"
+
+
+def _build_chat_agent() -> Agent[AgentDeps, str | DeferredToolRequests]:
+    """A real agent on a streaming ``FunctionModel`` that just replies with text (no tools)."""
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        yield _CHAT_REPLY
+
+    agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
+        FunctionModel(stream_function=stream_function),
+        deps_type=AgentDeps,
+        output_type=[str, DeferredToolRequests],
+    )
+    return agent
+
+
+async def test_run_app_runs_memory_write_back_on_exit_with_the_session_history(monkeypatch):
+    """On exit, ``run_app`` hands the accumulated history + cwd to the memory write-back (§8).
+
+    This is the headline wiring of task 013: after the REPL loop ends, ``extract_on_exit`` must
+    fire with the conversation the handler accumulated (so next session's ``MEMORY.md`` reflects
+    *this* session) and ``deps.cwd`` (the project root). We capture the call instead of letting
+    the real summarizer run, so no network request is made.
+    """
+    captured: dict[str, object] = {}
+
+    async def fake_extract(messages, cwd):
+        captured["messages"] = messages
+        captured["cwd"] = cwd
+
+    monkeypatch.setattr(app_mod, "extract_on_exit", fake_extract)
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("summarize my project for me")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    await _drive_run_app(monkeypatch, agent, script=script)
+
+    # The write-back fired with the accumulated history (carrying this session's user prompt)
+    # and the launch cwd (the project root).
+    assert "messages" in captured, "extract_on_exit must run on the shutdown path"
+    history = captured["messages"]
+    assert isinstance(history, list) and history, "the accumulated history must be passed in"
+    user_text = [
+        str(part.content)
+        for message in history
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    ]
+    assert any("summarize my project for me" in t for t in user_text)
+    assert captured["cwd"] == Path.cwd()
