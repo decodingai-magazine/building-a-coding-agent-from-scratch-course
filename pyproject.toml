@@ -23,7 +23,7 @@ classifiers = [
 # Runtime deps only. Dev/test go in [dependency-groups]. Kept light on purpose —
 # the course adds the heavier integrations at the step that needs them.
 dependencies = [
-    "pydantic>=2.8",
+    "pydantic>=2.13.4",
     "pydantic-settings>=2.4",
     "click>=8.1",
     "rich>=13",
@@ -43,11 +43,11 @@ decode = "decode.cli:cli"
 
 [dependency-groups]
 dev = [
-    "pytest>=8",
-    "pytest-asyncio>=0.23",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "pytest-mock>=3.12",
-    "ruff>=0.15",
-    "pre-commit>=4",
+    "ruff>=0.15.18",
+    "pre-commit>=4.6.0",
 ]
 
 [tool.hatch.build.targets.wheel]
