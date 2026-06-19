@@ -7,6 +7,92 @@
 
 Milestone 1 builds the first working vertical of `decode`: a terminal REPL running a **Pydantic AI** ReAct loop on **Gemini**, with a core tool set, **ask-on-every-tool** permissions, mid-turn **steering**, a memory layer, and a replayable session log. The design was grilled decision-by-decision and cross-validated against three reference harnesses (claude-code, opencode, pi) from the research wiki. These decisions are interrelated — the loop, permissions, queueing, TUI, memory, and persistence reinforce each other — so they are recorded here as **one** milestone-architecture ADR rather than one-per-task. The ordered task breakdown lives in [`tasks/`](../../tasks/) (feature `m1-vanilla-agent`); this ADR records the *why*. See [ADR-0001](0001-record-architecture-decisions.md).
 
+## System architecture (M1)
+
+**Component view** — modules under `src/decode/` and the in-process flow. Dashed edges mark deliberate seams that later milestones fill (no cycles; `config`/`logging`/`entities` are leaves and omitted for clarity).
+
+```mermaid
+flowchart TB
+    user(["User"])
+
+    subgraph harness["Harness (single-flight, phase machine)"]
+        tui["TUI: prompt_toolkit + Rich<br/>(patch_stdout, append-style)"]
+        queues["Queues:<br/>steering + follow-up"]
+        runner["Runner<br/>(turn lifecycle, abort,<br/>deferred routing)"]
+    end
+
+    subgraph agent["Agent loop (Pydantic AI)"]
+        loop["run_turn / agent.iter<br/>(stream nodes, drain steering)"]
+    end
+
+    gate["Permission gate<br/>(ask every tool: allow/ask/deny + mode)"]
+
+    subgraph tools["Tools (flat registry, sequential)"]
+        files["File I/O<br/>read, write, edit, glob, grep"]
+        bash["Bash<br/>(timeout, truncate, exec seam)"]
+        tasks["Tasks: TodoWrite (in-memory)"]
+        web["Web: httpx then HTML-to-Markdown"]
+        ask["AskUser (deferred)"]
+    end
+
+    subgraph memory["Memory"]
+        mfiles["files: AGENTS.md + MEMORY.md<br/>(cwd to root, 200 lines / 25 KB)"]
+        mextract["extract on exit:<br/>one sentence to MEMORY.md"]
+    end
+
+    gemini["Gemini<br/>(google-gla, streaming)"]
+    log[("Session log: JSONL<br/>.decode/sessions, --resume")]
+    sandbox{{"Sandbox local/Modal (M8)"}}
+
+    user <--> tui
+    tui -->|steer / follow-up| queues
+    queues --> runner
+    runner -->|events| tui
+    runner --> loop
+    loop <--> gemini
+    loop -->|tool calls| tools
+    loop -->|DeferredToolRequests| gate
+    gate -->|prompt user| runner
+    ask -->|question| runner
+    mfiles -->|instructions| loop
+    loop --> mextract
+    runner -->|new_messages per turn| log
+    bash -.->|swap later| sandbox
+```
+
+**Turn lifecycle** — one turn fragments into `iter → deferred pause → resume` legs; each deferred pause is both the permission/AskUser gate (before execution) and the steering injection point.
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant T as TUI
+    participant H as Harness
+    participant A as Agent (iter)
+    participant M as Gemini
+    participant G as Gate
+    participant X as Tool
+
+    U->>T: prompt (idle)
+    T->>H: enqueue, start turn (lock)
+    H->>A: run_turn(history + memory)
+    A->>M: model request (stream)
+    M-->>A: text deltas + tool_use
+    A-->>H: DeferredToolRequests (gate BEFORE exec)
+    Note over H: drain steering here<br/>(append user msg before resume)
+    H->>G: check(tool, args)
+    G->>T: approve? / AskUser question
+    U->>T: allow / deny / answer
+    T->>H: decision
+    H->>A: resume(DeferredToolResults)
+    A->>X: execute (if allowed)
+    X-->>A: result (or ToolDenied)
+    A->>M: next request
+    M-->>A: final text (no tool_use)
+    A-->>H: turn done
+    H->>T: stream answer
+    Note over H: drain follow-up? else idle;<br/>persist new_messages to session log
+```
+
 ## Decision
 
 We build M1 as a standalone single Python package with the following load-bearing choices:
