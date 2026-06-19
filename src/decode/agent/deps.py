@@ -12,21 +12,26 @@ It carries:
 * ``resolve_permission`` — the async hook the loop calls to turn the gate's *ask* into the
   human's terminal allow/deny verdict (task 005). The TUI supplies it; a headless caller
   supplies a safe default (deny). Task 011's ``AskUser`` reuses this same deferred-pause path.
+* ``task_store`` — the per-run TodoWrite task list (task 009): the list the ``todo_write`` tool
+  rewrites in place and the loop/TUI render. A plain mutable ``list[Task]`` (not frozen) because
+  the model maintains it within a session; each :class:`~decode.entities.task.Task` is itself
+  immutable. In-memory and per run — no cross-session persistence (that is later).
 
-Later tasks widen this dataclass further (the session log in 014, the task store in 009) —
-those fields land with the task that uses them. Keeping ``emit`` and ``resolve_permission``
-plain callable fields (not methods) means tools and the loop share one event channel and one
-decision channel without importing the harness or the TUI.
+Later tasks widen this dataclass further (the session log in 014) — those fields land with the
+task that uses them. Keeping ``emit`` and ``resolve_permission`` plain callable fields (not
+methods) means tools and the loop share one event channel and one decision channel without
+importing the harness or the TUI.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
+from decode.entities.task import Task
 from decode.permissions.gate import PermissionGate
 
 EventSink = Callable[[events.Event], None]
@@ -38,13 +43,16 @@ PermissionResolver = Callable[[PermissionRequest], Awaitable[PermissionDecision]
 
 @dataclass(slots=True)
 class AgentDeps:
-    """What the agent run carries: working directory, event sink, gate, decision resolver.
+    """What the agent run carries: cwd, event sink, gate, decision resolver, task store.
 
     Not frozen: the sink may be rebound (e.g. per turn) and the same object accretes mutable
-    collaborators across tasks (gate now; session log / task store later).
+    collaborators across tasks (gate; the ``task_store`` the ``todo_write`` tool rewrites; the
+    session log later). ``task_store`` uses a ``default_factory`` so each run gets its own empty
+    list (no mutable-default aliasing across instances).
     """
 
     cwd: Path
     emit: EventSink
     gate: PermissionGate
     resolve_permission: PermissionResolver
+    task_store: list[Task] = field(default_factory=list)

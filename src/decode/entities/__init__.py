@@ -1,4 +1,5 @@
 """Shared domain models used across modules (events, tasks, permissions).
 
-Concrete models are added by later tasks (events in 003, task in 009, permissions in 005).
+Concrete models land per task: events (003), permissions (005), and the TodoWrite
+:class:`~decode.entities.task.Task` (009). Later tasks add more as they are reached.
 """

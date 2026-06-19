@@ -86,8 +86,13 @@ def _render_ask_user_requested(event: events.AskUserRequested) -> Text:
 
 
 def _render_task_list_updated(event: events.TaskListUpdated) -> Panel:
-    """The current in-memory task list (TodoWrite) as a small checklist panel."""
-    body = Text("\n".join(f"- {task}" for task in event.tasks) or "(no tasks)")
+    """The current in-memory task list (TodoWrite) as a small checklist panel.
+
+    ``event.tasks`` are already status-marked lines (``[x]`` done, ``[~]`` in progress,
+    ``[ ]`` pending) produced by the ``todo_write`` tool, so the renderer shows them verbatim
+    (one per line) and only supplies a placeholder when the list is empty.
+    """
+    body = Text("\n".join(event.tasks) or "(no tasks)")
     return Panel(body, title="[bold]tasks[/bold]", title_align="left", border_style="blue")
 
 

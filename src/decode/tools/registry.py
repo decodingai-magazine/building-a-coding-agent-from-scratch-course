@@ -26,6 +26,7 @@ from pydantic_ai import Agent, DeferredToolRequests
 from decode.agent.deps import AgentDeps
 from decode.tools import bash as bash_module
 from decode.tools import files, noop
+from decode.tools import tasks as tasks_module
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,12 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(name=files.EDIT_TOOL_NAME, func=files.edit, read_only=False),
     # Bash (task 008): gated shell execution behind the executor seam, NOT read-only.
     ToolSpec(name=bash_module.BASH_TOOL_NAME, func=bash_module.bash, read_only=False),
+    # Tasks (task 009): in-memory TodoWrite; rewrites the per-run task store, NOT read-only.
+    ToolSpec(
+        name=tasks_module.TODO_WRITE_TOOL_NAME,
+        func=tasks_module.todo_write,
+        read_only=tasks_module.TODO_WRITE_READ_ONLY,
+    ),
 ]
 
 # Each tool's read-only flag, derived from TOOL_SPECS (single source of truth). Consulted by

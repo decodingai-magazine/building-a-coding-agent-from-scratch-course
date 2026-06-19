@@ -12,6 +12,7 @@ from pathlib import Path
 from decode.agent.deps import AgentDeps
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
+from decode.entities.task import Task
 from decode.permissions.gate import PermissionGate
 
 
@@ -47,6 +48,40 @@ def test_agent_deps_carries_gate_and_resolver():
 
     assert deps.gate is gate
     assert deps.resolve_permission is _deny_resolver
+
+
+def test_agent_deps_task_store_defaults_to_an_empty_list():
+    # Each run carries its own per-run TodoWrite store; it starts empty (task 009).
+    first = AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+    )
+    second = AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+    )
+
+    assert first.task_store == []
+    # The default is not shared across instances (no mutable-default aliasing).
+    first.task_store.append(Task(id="1", content="x"))
+    assert second.task_store == []
+
+
+def test_agent_deps_carries_a_supplied_task_store():
+    store = [Task(id="1", content="x")]
+    deps = AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        task_store=store,
+    )
+
+    assert deps.task_store is store
 
 
 def test_agent_deps_emit_is_a_callable_field():

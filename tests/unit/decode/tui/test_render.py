@@ -97,6 +97,24 @@ def test_render_task_list_updated_lists_the_tasks():
     assert "test" in text
 
 
+def test_render_task_list_updated_shows_a_mixed_status_checklist():
+    # The tasks tool emits already-status-marked lines ([x]/[~]/[ ]); the renderer shows them
+    # as a checklist so a mixed-status list reads sensibly (ADR-0002 §7).
+    text = _render_to_text(
+        render.render_event(events.TaskListUpdated(tasks=("[x] design", "[~] build", "[ ] test")))
+    )
+
+    assert "[x] design" in text
+    assert "[~] build" in text
+    assert "[ ] test" in text
+
+
+def test_render_empty_task_list_shows_a_placeholder():
+    text = _render_to_text(render.render_event(events.TaskListUpdated()))
+
+    assert "no tasks" in text.lower()
+
+
 def test_render_turn_started_echoes_the_prompt():
     text = _render_to_text(render.render_event(events.TurnStarted(turn_id=0, prompt="do a thing")))
 
