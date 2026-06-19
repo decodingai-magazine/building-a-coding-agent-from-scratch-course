@@ -126,3 +126,29 @@ $ GEMINI_API_KEY=dummy uv run python /tmp/adversarial_qa.py
 - `code-review` plugin is enabled but is a `/code-review` slash-command (interactive), not tool-invocable from this session; its function was performed manually as part of the checklist below (no defects found): scope clean (only `memory/` + factory hook + mirrored tests, no `git add -A` spillover), no `print()` in lib code, all signatures annotated, no secret literals, `tests/` mirror `src/` 1:1.
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-20 14:10 — Acceptance Review (feature-level, m1-vanilla-agent)
+
+**VERDICT: ACCEPT** — and the open stop-condition item is **RATIFIED as-is for M1 (option a)**.
+
+Ruling on filesystem-root vs repo-root (ADR-0002 §8 says "cwd→repo-root"; impl walks "cwd→filesystem-root"):
+- **Read side** (`memory/files.py::discover_memory_files`) walks to the filesystem root. The AC *intent* — ancestors contribute, cwd-most wins, `CLAUDE.md` skipped — is fully met and adversarially verified. The only residual is a stray ancestor `AGENTS.md`/`MEMORY.md` outside the project being injected. For a single-developer teaching tool in M1 this is low-impact (read-only context, capped at 200 lines/25 KB, cwd-most still wins).
+- **Write side** (`memory/extract.py::append_session_summary`) is the part that would actually be dangerous if it walked — and it does **not**. It writes to `cwd/MEMORY.md` (the launch cwd, pinned, no walk). So the Tester's forward-looking worry ("write-back may target the nearest ancestor MEMORY.md once 013 lands") does **not** materialize: 013 has landed and write-back is cwd-pinned. There is no data-loss or wrong-file-write path.
+- Decision: keep the implementation; the wording mismatch is resolved by tightening the **ADR §8 wording** to "filesystem-root (cwd-most wins)" so doc and code agree. A `.git`-marker stop is a reasonable M3 hardening (it pairs naturally with permission modes), recorded as out-of-scope-for-M1, **not** a blocker. The ADR wording fix is the only doc edit; it is a documentation-discipline correction, not a code rollup.
+
+Feature walked from the user's perspective against the tasks/001–015 ACs and the capstone test:
+- **Launch / no-key guard** (task 004): `env -u GEMINI_API_KEY uv run decode` prints exactly `decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example).` on stderr and exits 1 — no traceback. `--help` surfaces `--resume [SESSION]`.
+- **Streaming chat** (002/004): append-style `AssistantTextDelta` renders above a pinned `prompt_async()` under `patch_stdout`.
+- **Gated tools** (005–010): `read`/`write`/`bash`/`todo_write`/`web_fetch` each surface `permission? <tool>` and route allow/deny through the single `DecisionChannel`; capstone proves approve creates the file, deny leaves no file and feeds `"the user denied this write"` back to the model (it doesn't pretend it wrote). Bash truncates (2000 lines / 50 KB, temp-file overflow); web_fetch GETs then HTML→Markdown and maps every error to `ModelRetry` (REPL never crashes).
+- **Tasks checklist** (009): blue `tasks` panel with `[ ]`/`[~]`/`[x]`, re-rendered on update.
+- **ask_user** (011): ungated; `ask: <question>` renders with a `type your answer:` cue; the next typed line *is* the answer (same channel, no y/N parse) and resumes the turn.
+- **Steer / follow-up / abort** (003, ADR §4-5): plain Enter = STEER (boundary-injected), Alt+Enter = FOLLOW_UP (drained at would-stop), Esc = cooperative ABORT (`[aborted]` marker, work kept).
+- **Memory load + write-back** (012/013): ancestor `AGENTS.md`+`MEMORY.md` injected via dynamic `@agent.instructions`; on quit one cheap Gemini call appends a dated `- YYYY-MM-DD:` bullet to `cwd/MEMORY.md`, picked up next session. Fully non-fatal.
+- **Resume** (014): `--resume` / `--resume <id>` replays the JSONL session log into a fresh handler; missing session → one friendly line, fresh start (never crashes).
+- **Renderer** is exhaustive over all 10 event kinds in `entities/events.py::Event`; raises loudly on an unknown kind so nothing renders silently.
+
+Evidence: `uv run pytest` → 347 passed; capstone `tests/integration/test_milestone1_capstone.py` → 1 passed (full real stack, network boundary stubbed); no-key guard exit=1 with the exact line.
+
+Real-Gemini round-trip is `[HUMAN]`-gated (no key in CI) — the offline-equivalent coverage (FunctionModel/TestModel + MockTransport through the real `build_agent()`/`Runner`/`render_event`/session-log/memory path) is sufficient for M1 acceptance.
+
+User satisfaction guaranteed. No rollup task filed. Follow-up (non-blocking): edit ADR-0002 §8 wording to "filesystem-root"; hand off to the PR Reviewer.
