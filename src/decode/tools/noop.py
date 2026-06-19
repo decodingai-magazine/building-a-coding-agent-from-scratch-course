@@ -9,7 +9,9 @@ its ``text`` argument — its job is to be *gated*: it raises
 the human resolver; on the resume leg the same tool runs with ``tool_call_approved=True`` and
 returns its echo (or the framework returns the denial message to the model instead).
 
-Registered on the agent by :func:`register_noop` (called from the factory).
+In production ``noop`` is registered via the flat :mod:`decode.tools.registry` (task 006). The
+standalone :func:`register_noop` helper builds a *minimal one-tool* agent — used by tests that
+want the gated flow in isolation, without the read-only file tools.
 """
 
 from __future__ import annotations
@@ -41,5 +43,9 @@ def noop(ctx: RunContext[AgentDeps], text: str) -> str:
 
 
 def register_noop(agent: Agent[AgentDeps, object]) -> None:
-    """Register :func:`noop` on ``agent`` as the one gated tool for task 005."""
+    """Register :func:`noop` on ``agent`` as the sole tool (minimal one-tool agent for tests).
+
+    Production registration goes through :mod:`decode.tools.registry`; this helper exists so a
+    test can build an agent that has *only* the gated ``noop`` and nothing else.
+    """
     agent.tool(noop)
