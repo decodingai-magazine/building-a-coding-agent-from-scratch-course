@@ -1,76 +1,119 @@
 """Unit tests for the pure render functions in ``decode.tui.render``.
 
-These functions map a minimal local event contract to Rich renderables. They are
-pure (no I/O, no global state) so they are exhaustively unit-testable. The full
-``entities.events`` union lands in task 003; this module renders the minimal local
-contract defined alongside it.
+These map the canonical :mod:`decode.entities.events` union to Rich renderables. They are
+pure (no I/O, no global state) so they are exhaustively unit-testable.
 """
 
-from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from decode.entities import events
 from decode.tui import render
 
 
 def _render_to_text(renderable) -> str:
     """Render a Rich renderable to plain text the way a terminal would show it."""
+    from rich.console import Console
+
     console = Console(width=80, file=None, record=True)
     console.print(renderable)
     return console.export_text()
 
 
-def test_render_echo_event_includes_the_text():
-    event = render.EchoEvent(text="hello world")
-
-    renderable = render.render_event(event)
+def test_render_assistant_text_delta_includes_the_text():
+    renderable = render.render_event(events.AssistantTextDelta(text="hello world"))
 
     assert "hello world" in _render_to_text(renderable)
-
-
-def test_render_echo_event_returns_a_rich_renderable():
-    event = render.EchoEvent(text="anything")
-
-    renderable = render.render_event(event)
-
-    # Echo lines are plain text appended above the prompt (no panel chrome).
     assert isinstance(renderable, Text)
 
 
-def test_render_message_event_includes_the_text():
-    event = render.MessageEvent(text="the agent says hi")
+def test_render_thinking_delta_includes_the_text():
+    text = _render_to_text(render.render_event(events.ThinkingDelta(text="pondering")))
 
-    renderable = render.render_event(event)
-
-    assert "the agent says hi" in _render_to_text(renderable)
+    assert "pondering" in text
 
 
-def test_render_tool_call_event_is_a_panel():
-    event = render.ToolCallEvent(name="bash", summary="ls -la", result="ok")
+def test_render_tool_call_started_is_a_line_not_a_panel():
+    renderable = render.render_event(
+        events.ToolCallStarted(tool_call_id="t1", name="bash", args="ls -la")
+    )
 
-    renderable = render.render_event(event)
-
-    # ADR-0002 §6: tool calls render on completion as a panel (no flicker).
-    assert isinstance(renderable, Panel)
-
-
-def test_render_tool_call_event_shows_name_summary_and_result():
-    event = render.ToolCallEvent(name="bash", summary="ls -la", result="file.txt")
-
-    text = _render_to_text(render.render_event(event))
-
+    # The started notice is a one-liner; the panel arrives on the result (no flicker).
+    assert isinstance(renderable, Text)
+    text = _render_to_text(renderable)
     assert "bash" in text
     assert "ls -la" in text
+
+
+def test_render_tool_result_is_a_panel_with_output():
+    renderable = render.render_event(
+        events.ToolResult(tool_call_id="t1", name="bash", output="file.txt")
+    )
+
+    # ADR-0002 §6: completed tool calls render as a panel.
+    assert isinstance(renderable, Panel)
+    text = _render_to_text(renderable)
+    assert "bash" in text
     assert "file.txt" in text
 
 
-def test_render_tool_call_event_without_result_still_renders():
-    event = render.ToolCallEvent(name="read", summary="src/app.py", result=None)
+def test_render_failed_tool_result_marks_the_failure():
+    text = _render_to_text(
+        render.render_event(
+            events.ToolResult(tool_call_id="t1", name="bash", output="boom", ok=False)
+        )
+    )
 
-    text = _render_to_text(render.render_event(event))
+    assert "bash" in text
+    assert "failed" in text.lower()
 
-    assert "read" in text
-    assert "src/app.py" in text
+
+def test_render_permission_requested_shows_the_tool():
+    text = _render_to_text(
+        render.render_event(
+            events.PermissionRequested(tool_call_id="t1", name="write", args="a.txt")
+        )
+    )
+
+    assert "write" in text
+    assert "permission" in text.lower()
+
+
+def test_render_ask_user_requested_shows_the_question():
+    text = _render_to_text(
+        render.render_event(events.AskUserRequested(tool_call_id="t1", question="which env?"))
+    )
+
+    assert "which env?" in text
+
+
+def test_render_task_list_updated_lists_the_tasks():
+    text = _render_to_text(
+        render.render_event(events.TaskListUpdated(tasks=("plan", "code", "test")))
+    )
+
+    assert "plan" in text
+    assert "code" in text
+    assert "test" in text
+
+
+def test_render_turn_started_echoes_the_prompt():
+    text = _render_to_text(render.render_event(events.TurnStarted(turn_id=0, prompt="do a thing")))
+
+    assert "do a thing" in text
+
+
+def test_render_turn_finished_marks_abort():
+    text = _render_to_text(render.render_event(events.TurnFinished(turn_id=0, aborted=True)))
+
+    assert "abort" in text.lower()
+
+
+def test_render_agent_error_shows_the_message():
+    text = _render_to_text(render.render_event(events.AgentError(message="kaboom")))
+
+    assert "kaboom" in text
+    assert "error" in text.lower()
 
 
 def test_render_event_rejects_unknown_event_type():

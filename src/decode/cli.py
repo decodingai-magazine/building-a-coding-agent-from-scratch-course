@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 def cli(resume: str | None) -> None:
     """decode — a terminal coding agent you run in your terminal."""
     logger.debug("decode starting (resume=%s)", resume)
-    # Task 002: launch the echo REPL. The agent loop is wired in tasks 003+.
+    # Launch the REPL wired to the harness (task 003); the real agent loop lands in task 004.
     asyncio.run(run_app())
 
 

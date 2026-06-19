@@ -2,13 +2,18 @@
 
 ADR-0002 §6: input is a concurrent ``prompt_async()`` wrapped in ``patch_stdout()`` so any
 output written while the user is typing scrolls *above* the prompt instead of corrupting
-it (the prompt stays pinned). Output is append-style — no full-screen renderer — and tool
-calls render on completion via :mod:`decode.tui.render`.
+it (the prompt stays pinned). Output is append-style -- no full-screen renderer -- and the
+harness streams :mod:`decode.entities.events` to :func:`decode.tui.render.render_event`.
 
-Task 002 has **no harness and no agent**: a typed line is echoed back. The ``Alt+Enter``
-(follow-up) and ``Esc`` (abort) keybindings are registered now but only *record intent*
-(an :class:`InputIntent`); task 003 wires that intent into the two-queue harness. ``Ctrl-D``
-or typing ``/quit`` exits cleanly.
+Input routing (ADR-0002 §4-5), via :meth:`decode.harness.runner.Runner.submit`:
+
+* idle ``Enter`` -> starts a new turn;
+* plain ``Enter`` while busy -> **steering** (injected at the next model-request boundary);
+* ``Alt+Enter`` -> **follow-up** (drained only at the would-stop boundary);
+* ``Esc`` -> cooperative **abort** (the turn stops at the next boundary).
+
+The harness keeps the turn off the input coroutine (it runs as its own task), so the REPL
+stays responsive while a turn streams. ``Ctrl-D`` or typing ``/quit`` exits cleanly.
 
 The interactive loop reads real stdin, so it is not unit-tested; the decidable pieces
 (:func:`is_quit_command`, :func:`footer_hint`, :class:`InputIntent`) are pure and tested.
@@ -25,6 +30,8 @@ from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
+from decode.entities import events
+from decode.harness.runner import Runner, stub_turn_handler
 from decode.tui import render
 
 logger = logging.getLogger(__name__)
@@ -34,10 +41,11 @@ _PROMPT = "> "
 
 
 class InputIntent(enum.Enum):
-    """What the user signalled with the line they just submitted.
+    """What the user signalled with the line they just submitted (ADR-0002 §4-5).
 
-    Task 002 only records this; task 003 routes ``STEER``/``FOLLOW_UP`` into the harness
-    queues and ``ABORT`` into the cooperative-abort flag (ADR-0002 sections 4-5).
+    ``STEER`` is plain ``Enter`` (start a turn when idle, steer when busy); ``FOLLOW_UP`` is
+    ``Alt+Enter``; ``ABORT`` is ``Esc``. The runner maps ``STEER``/``FOLLOW_UP`` onto the two
+    queues and ``ABORT`` onto the cooperative-abort flag.
     """
 
     STEER = "steer"
@@ -68,9 +76,8 @@ def _bottom_toolbar() -> HTML:
 def _build_key_bindings() -> KeyBindings:
     """Register the follow-up (Alt+Enter) and abort (Esc) keybindings.
 
-    For task 002 these only *record intent* on the running app, then accept/exit the
-    prompt so the loop can observe it. ``Alt+Enter`` arrives as the ``escape, enter``
-    sequence in prompt_toolkit.
+    Each accepts the prompt with an explicit ``(intent, text)`` result so the loop can route
+    it. ``Alt+Enter`` arrives as the ``escape, enter`` sequence in prompt_toolkit.
     """
     bindings = KeyBindings()
 
@@ -98,19 +105,26 @@ def _interpret(submitted: object) -> tuple[InputIntent, str]:
 
 
 async def run_app(console: Console | None = None) -> None:
-    """Run the echo REPL until ``Ctrl-D`` or ``/quit``.
+    """Run the REPL until ``Ctrl-D`` or ``/quit``, routing input into the harness.
 
     ``console`` is injectable so callers/tests can capture output; defaults to a real
-    stdout-backed :class:`rich.console.Console`.
+    stdout-backed :class:`rich.console.Console`. The harness drives a stub multi-step turn
+    (task 003) -- task 004 swaps in the real Pydantic AI loop behind the same seam.
     """
     console = console or Console()
+
+    def _on_event(event: events.Event) -> None:
+        # The harness streams events here; render append-style above the pinned prompt.
+        console.print(render.render_event(event))
+
+    runner = Runner(stub_turn_handler, on_event=_on_event)
     session: PromptSession[object] = PromptSession(
         key_bindings=_build_key_bindings(),
         bottom_toolbar=_bottom_toolbar,
     )
 
     console.print(
-        render.render_event(render.MessageEvent(text="decode - type a line; /quit exits."))
+        render.render_event(events.AssistantTextDelta(text="decode - type a line; /quit exits."))
     )
 
     with patch_stdout(raw=True):
@@ -125,15 +139,17 @@ async def run_app(console: Console | None = None) -> None:
                 break
 
             if intent is InputIntent.ABORT:
-                logger.debug("abort intent recorded (no harness until task 003)")
-                console.print(render.render_event(render.MessageEvent(text="[abort]")))
+                logger.debug("abort intent: setting cooperative-abort flag")
+                runner.abort()
                 continue
 
             if not text.strip():
                 continue
 
-            # No agent yet: echo the line back. Follow-up intent is recorded only.
-            logger.debug("input intent=%s text=%r", intent.value, text)
-            console.print(render.render_event(render.EchoEvent(text=text)))
+            logger.debug(
+                "submit intent=%s phase=%s text=%r", intent.value, runner.phase.value, text
+            )
+            await runner.submit(text, intent)
 
-    console.print(render.render_event(render.MessageEvent(text="decode - bye.")))
+    await runner.wait_idle()
+    console.print(render.render_event(events.AssistantTextDelta(text="decode - bye.")))
