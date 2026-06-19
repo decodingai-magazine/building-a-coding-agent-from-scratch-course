@@ -49,6 +49,9 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(name=files.READ_TOOL_NAME, func=files.read, read_only=True),
     ToolSpec(name=files.GLOB_TOOL_NAME, func=files.glob, read_only=True),
     ToolSpec(name=files.GREP_TOOL_NAME, func=files.grep, read_only=True),
+    # The mutating file tools (task 007): gated, NOT read-only, still asked on every call.
+    ToolSpec(name=files.WRITE_TOOL_NAME, func=files.write, read_only=False),
+    ToolSpec(name=files.EDIT_TOOL_NAME, func=files.edit, read_only=False),
 ]
 
 # Each tool's read-only flag, derived from TOOL_SPECS (single source of truth). Consulted by

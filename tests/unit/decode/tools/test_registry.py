@@ -28,7 +28,7 @@ def _agent(mocker):
 
 def test_registry_lists_the_expected_tools():
     names = {spec.name for spec in TOOL_SPECS}
-    assert names == {"noop", "read", "glob", "grep"}
+    assert names == {"noop", "read", "glob", "grep", "write", "edit"}
 
 
 def test_read_only_flags_match_each_spec():
@@ -38,6 +38,9 @@ def test_read_only_flags_match_each_spec():
     assert by_name["grep"].read_only is True
     # noop stands in for a mutating tool, so it is NOT read-only (still gated/asked).
     assert by_name["noop"].read_only is False
+    # The mutating file tools are NOT read-only (gated/asked on every call).
+    assert by_name["write"].read_only is False
+    assert by_name["edit"].read_only is False
 
 
 def test_is_read_only_reflects_the_registered_flags():
@@ -46,6 +49,8 @@ def test_is_read_only_reflects_the_registered_flags():
     assert is_read_only("glob") is True
     assert is_read_only("grep") is True
     assert is_read_only("noop") is False
+    assert is_read_only("write") is False
+    assert is_read_only("edit") is False
     # Unknown tools default to mutating (gated).
     assert is_read_only("does-not-exist") is False
 
@@ -55,7 +60,7 @@ def test_register_tools_registers_every_spec_on_the_agent(mocker):
 
     # build_agent already registers via the registry; the tools must be on the agent.
     registered = set(agent._function_toolset.tools)
-    assert {"noop", "read", "glob", "grep"} <= registered
+    assert {"noop", "read", "glob", "grep", "write", "edit"} <= registered
 
 
 def test_register_tools_registers_every_spec_onto_a_bare_agent():

@@ -1,21 +1,28 @@
-"""The read-only file tools: ``read``, ``glob``, ``grep`` (ADR-0002 §7).
+"""The file tools: ``read`` / ``glob`` / ``grep`` (read-only) and ``write`` / ``edit`` (ADR-0002 §7).
 
-These are the three ways the agent inspects the working tree without changing it:
+How the agent touches the working tree:
 
 * :func:`read` — print a file with 1-indexed, ``cat -n``-style numbered lines, optionally
   windowed by ``offset`` / ``limit``, and truncated through :mod:`decode.tools.truncate`;
 * :func:`glob` — list paths matching a shell glob, relative to ``cwd``, paths only;
-* :func:`grep` — regex-search file contents, returning ``path:lineno:line`` hits.
+* :func:`grep` — regex-search file contents, returning ``path:lineno:line`` hits;
+* :func:`write` — create or overwrite a file (creating parent dirs), written atomically;
+* :func:`edit` — replace a **unique** occurrence of ``old_string`` (BOM-stripped, EOL-normalized
+  for matching; exact-then-whitespace-fuzzy), restoring the file's original BOM / line endings.
 
 **Gating (ADR-0002 §3).** v1 asks on *every* tool call — read-only tools included — so each
 function raises :class:`pydantic_ai.ApprovalRequired` until ``ctx.tool_call_approved`` is set,
-exactly like :mod:`decode.tools.noop`. They are nonetheless *tagged* ``read_only=True`` (see
-:data:`FILE_TOOLS_READ_ONLY`) so M3 can auto-allow them later without touching this code.
+exactly like :mod:`decode.tools.noop`. The read-only trio is *tagged* ``read_only=True`` (see
+:data:`FILE_TOOLS_READ_ONLY`) so M3 can auto-allow them later without touching this code;
+``write`` / ``edit`` are tagged ``read_only=False`` (see :data:`FILE_TOOLS_MUTATING`) and stay
+gated. Because the gate fires *before* any path is resolved or any byte is read or written, a
+**denied write/edit leaves the target byte-for-byte untouched** (never created, never truncated).
 
 **Path safety.** Every path is resolved under ``ctx.deps.cwd`` and is never allowed to escape
-it (``..`` traversal, absolute paths pointing elsewhere). A missing / unreadable path, an empty
-result set, or a bad regex returns a model-readable :class:`pydantic_ai.ModelRetry` so the model
-can correct itself — the REPL never crashes on bad tool input.
+it (``..`` traversal, absolute paths pointing elsewhere, in-tree symlinks resolving outside).
+A missing / unreadable path, an empty result set, a bad regex, or an unmatchable / ambiguous
+``edit`` target returns a model-readable :class:`pydantic_ai.ModelRetry` so the model can
+correct itself — the REPL never crashes on bad tool input.
 
 **Sync, not async.** Filesystem access here is local and the tool layer runs **sequentially**
 in v1 (ADR-0002 §7), so there is no concurrency to win back by going async; Pydantic AI already
@@ -27,7 +34,9 @@ on a single local file read).
 from __future__ import annotations
 
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 
 from pydantic_ai import ApprovalRequired, ModelRetry, RunContext
@@ -41,6 +50,8 @@ logger = logging.getLogger(__name__)
 READ_TOOL_NAME = "read"
 GLOB_TOOL_NAME = "glob"
 GREP_TOOL_NAME = "grep"
+WRITE_TOOL_NAME = "write"
+EDIT_TOOL_NAME = "edit"
 
 # All three file tools are read-only (they never mutate the tree). Tagged here for M3's
 # read-only auto-allow; v1 still asks for each (see the module docstring).
@@ -49,6 +60,17 @@ FILE_TOOLS_READ_ONLY: dict[str, bool] = {
     GLOB_TOOL_NAME: True,
     GREP_TOOL_NAME: True,
 }
+
+# The two mutating file tools (task 007): NOT read-only, gated, always asked. Tagged here so the
+# registry stays a single declaration site and M3's read-only auto-allow never touches them.
+FILE_TOOLS_MUTATING: dict[str, bool] = {
+    WRITE_TOOL_NAME: False,
+    EDIT_TOOL_NAME: False,
+}
+
+# A UTF-8 byte-order mark. Some editors prepend it; we strip it before matching and restore it
+# verbatim on write so an ``edit`` never silently drops (or adds) a BOM.
+_UTF8_BOM = "﻿"
 
 
 def _is_within(base: Path, candidate: Path) -> bool:
@@ -254,3 +276,211 @@ def _grep_candidates(base: Path, *, path: str | None, glob: str | None) -> list[
     pattern = glob or "**/*"
     _reject_escaping_pattern(pattern)
     return _contain(base, list(base.glob(pattern)))
+
+
+def write(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
+    """Create or overwrite a file with ``content`` (ADR-0002 §7).
+
+    Resolves ``path`` under ``ctx.deps.cwd`` (an escape — ``..`` / absolute / an in-tree
+    symlink pointing outside — is rejected with :class:`pydantic_ai.ModelRetry`). **Missing
+    parent directories are created** so the model can scaffold a tree in one call; this is the
+    only directory side effect ``write`` has. The file is written as UTF-8.
+
+    Gated (ADR-0002 §3): raises :class:`pydantic_ai.ApprovalRequired` until the call is
+    approved — and crucially *before* the path is resolved or any byte is written, so a denied
+    write leaves the target byte-for-byte untouched (it is never created, never truncated).
+    """
+    if not ctx.tool_call_approved:
+        logger.debug("write requires approval (path=%r)", path)
+        raise ApprovalRequired
+
+    target = _resolve_in_cwd(ctx.deps.cwd, path)
+    if target.is_dir():
+        raise ModelRetry(f"{path!r} is a directory; choose a file path to write.")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_bytes(target, content.encode("utf-8"))
+    logger.debug("wrote %d bytes to %r", len(content), path)
+    return f"Wrote {path!r} ({len(content)} characters)."
+
+
+def edit(ctx: RunContext[AgentDeps], path: str, old_string: str, new_string: str) -> str:
+    """Replace a **unique** occurrence of ``old_string`` with ``new_string`` (ADR-0002 §7).
+
+    The matching pipeline, in order:
+
+    #. Read the file, **strip a leading UTF-8 BOM** and **detect the line-ending style**
+       (CRLF / CR / LF), normalizing everything to ``\\n`` before matching so the model never
+       has to reason about the file's physical newlines or BOM.
+    #. Match ``old_string`` (also LF-normalized) **exactly first** (``str.count`` / ``find``).
+       If there is no exact match, fall back to a **whitespace-normalized fuzzy** match — runs
+       of whitespace are collapsed on both sides — that must still map back to a *single* span
+       in the original text.
+    #. Require a **unique** match: ``0`` matches → ``not found``; ``>1`` → ``ambiguous, N
+       matches``; an empty ``old_string`` → ``empty``. Each is a model-readable
+       :class:`pydantic_ai.ModelRetry` so the model can widen/narrow ``old_string`` and retry.
+
+    On success the replacement is applied, the **original BOM and line-ending style are
+    restored**, and the file is written atomically (temp file + ``os.replace``). Same cwd
+    containment as :func:`write`.
+
+    Gated (ADR-0002 §3): raises :class:`pydantic_ai.ApprovalRequired` *before* the file is read
+    or written, so a denied edit leaves it byte-for-byte untouched.
+    """
+    if not ctx.tool_call_approved:
+        logger.debug("edit requires approval (path=%r)", path)
+        raise ApprovalRequired
+
+    if old_string == "":
+        raise ModelRetry("old_string is empty; provide the exact text to replace.")
+
+    target = _resolve_in_cwd(ctx.deps.cwd, path)
+    if not target.is_file():
+        raise ModelRetry(f"No such file to edit: {path!r}.")
+    try:
+        # Decode raw bytes (not ``read_text``): universal-newline translation would collapse
+        # the file's CR/CRLF on read, so we could never detect and restore the original style.
+        raw = target.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ModelRetry(f"Could not read {path!r} to edit: {exc}.") from exc
+
+    had_bom = raw.startswith(_UTF8_BOM)
+    body = raw[len(_UTF8_BOM) :] if had_bom else raw
+    eol = _detect_eol(body)
+    normalized = _to_lf(body)
+    needle = _to_lf(old_string)
+
+    new_normalized = _replace_unique(normalized, needle, _to_lf(new_string))
+
+    restored = new_normalized.replace("\n", eol) if eol != "\n" else new_normalized
+    final = (_UTF8_BOM + restored) if had_bom else restored
+    _atomic_write_bytes(target, final.encode("utf-8"))
+    logger.debug("edited %r (eol=%r, bom=%s)", path, eol, had_bom)
+    return f"Edited {path!r} (replaced 1 occurrence)."
+
+
+def _detect_eol(text: str) -> str:
+    """Return the dominant line-ending style of ``text``: ``"\\r\\n"``, ``"\\r"``, or ``"\\n"``.
+
+    CRLF is checked first (a ``\\r\\n`` file also contains ``\\r`` and ``\\n``); a lone ``\\r``
+    (classic Mac) is checked next; everything else (including a file with no newline at all)
+    is treated as LF, which is the safe default for a freshly created or single-line file.
+    """
+    if "\r\n" in text:
+        return "\r\n"
+    if "\r" in text:
+        return "\r"
+    return "\n"
+
+
+def _to_lf(text: str) -> str:
+    """Normalize CRLF and lone-CR line endings to LF (so matching is newline-agnostic)."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _replace_unique(haystack: str, needle: str, replacement: str) -> str:
+    """Replace the single occurrence of ``needle`` in ``haystack`` (exact, then fuzzy).
+
+    Exact (``str.count``/``find``) is tried first: ``0`` → ``not found``, ``>1`` → ``ambiguous``.
+    Only when there is no exact match do we fall back to a whitespace-normalized fuzzy search
+    (:func:`_fuzzy_unique_span`) that must still resolve to a single span in ``haystack``.
+    Raises a model-readable :class:`pydantic_ai.ModelRetry` on 0 / >1 matches.
+    """
+    exact = haystack.count(needle)
+    if exact == 1:
+        return haystack.replace(needle, replacement, 1)
+    if exact > 1:
+        raise ModelRetry(
+            f"old_string is ambiguous, {exact} matches found; add surrounding context to "
+            "old_string so it identifies exactly one location."
+        )
+
+    # No exact match: try a whitespace-normalized fuzzy match that maps to a unique span.
+    span = _fuzzy_unique_span(haystack, needle)
+    if span is None:
+        raise ModelRetry(
+            "old_string not found in the file; it must match the file's current text "
+            "(check for typos, indentation, or stale content)."
+        )
+    start, end = span
+    return haystack[:start] + replacement + haystack[end:]
+
+
+def _normalize_ws(text: str) -> str:
+    """Collapse every run of whitespace to a single space and strip the ends.
+
+    This is the fuzzy-match key: two strings that differ only in indentation, trailing
+    whitespace, or LF-vs-spacing compare equal under it.
+    """
+    return " ".join(text.split())
+
+
+def _fuzzy_unique_span(haystack: str, needle: str) -> tuple[int, int] | None:
+    """Find the unique ``[start, end)`` span in ``haystack`` matching ``needle`` fuzzily.
+
+    "Fuzzily" means after collapsing whitespace runs (:func:`_normalize_ws`). We scan every
+    substring of ``haystack`` that begins and ends on a non-whitespace character (whitespace at
+    a span's edges is never load-bearing) and keep those whose normalized form equals the
+    normalized ``needle``. Returns the single matching span, ``None`` if there are zero, and
+    raises :class:`pydantic_ai.ModelRetry` (``ambiguous``) if more than one *distinct* span
+    matches — mirroring the exact-match uniqueness rule.
+    """
+    target = _normalize_ws(needle)
+    if target == "":
+        return None
+
+    starts = [i for i, ch in enumerate(haystack) if not ch.isspace()]
+    ends = [i + 1 for i, ch in enumerate(haystack) if not ch.isspace()]
+    matches: list[tuple[int, int]] = []
+    for start in starts:
+        for end in ends:
+            if end <= start:
+                continue
+            if _normalize_ws(haystack[start:end]) == target:
+                matches.append((start, end))
+
+    # Keep only minimal (non-overlapping-superset) spans: for a given start, the shortest end
+    # that matches is the intended span; a longer end with the same normalized form only differs
+    # by trailing whitespace already absorbed by normalization.
+    minimal = _minimal_spans(matches)
+    if not minimal:
+        return None
+    if len(minimal) > 1:
+        raise ModelRetry(
+            f"old_string is ambiguous, {len(minimal)} matches found (after normalizing "
+            "whitespace); add surrounding context so it identifies exactly one location."
+        )
+    return minimal[0]
+
+
+def _minimal_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Reduce ``spans`` to the distinct minimal-length match per start position.
+
+    For a fixed start, several ends can share the same normalized form (they differ only by
+    trailing whitespace); the shortest is the real span. Distinct starts that yield distinct
+    minimal spans count as distinct matches (→ ambiguous upstream).
+    """
+    shortest_by_start: dict[int, tuple[int, int]] = {}
+    for start, end in spans:
+        current = shortest_by_start.get(start)
+        if current is None or end < current[1]:
+            shortest_by_start[start] = (start, end)
+    return sorted(shortest_by_start.values())
+
+
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    """Write ``data`` to ``target`` atomically-ish (temp file in the same dir + ``os.replace``).
+
+    Writing to a sibling temp file and renaming means a reader never sees a half-written file,
+    and a crash mid-write leaves the original intact (the rename is the commit point). The temp
+    file shares ``target``'s directory so the rename stays on one filesystem (``os.replace`` is
+    atomic only within a filesystem).
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=".decode-write-")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.replace(tmp_path, target)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
