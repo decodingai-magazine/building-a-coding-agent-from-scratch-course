@@ -10,16 +10,23 @@ import pytest
 from click.testing import CliRunner
 from pydantic import SecretStr
 
+from decode import cli as cli_mod
 from decode.cli import cli
 from decode.tui import app as app_mod
 
 
 @pytest.fixture(autouse=True)
 def _dummy_gemini_key(mocker):
-    """Give the agent factory a non-empty key so startup construction succeeds (offline)."""
+    """Give the agent factory a non-empty key so startup construction succeeds (offline).
+
+    Both the CLI's no-key startup guard (``decode.cli.settings``) and the agent factory
+    (``decode.agent.factory.settings``) read the same singleton, so a non-empty key here lets
+    the default test runs reach ``run_app`` without tripping the guard.
+    """
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
+    mocker.patch.object(cli_mod.settings, "gemini_api_key", SecretStr("test-key"))
 
 
 @pytest.fixture(autouse=True)
@@ -79,3 +86,40 @@ def test_cli_passes_named_resume_through(mocker):
 
     run_app.assert_awaited_once()
     assert run_app.await_args.kwargs.get("resume") == "2026-06-19_abc"
+
+
+# --- task 004 carryover: the no-key startup guard (friendly line, no traceback) -------------
+
+
+def test_cli_with_no_gemini_key_exits_nonzero_with_a_friendly_line(mocker):
+    """No ``GEMINI_API_KEY`` → one friendly line on stderr, non-zero exit, NO traceback.
+
+    Without the guard, ``build_agent()`` raises a raw ``pydantic_ai.UserError`` from
+    ``GoogleProvider`` (mentioning ``GOOGLE_API_KEY`` — the wrong var for this project), which
+    surfaces as an ugly traceback. The guard checks ``settings.gemini_api_key`` *before* building
+    the agent and exits cleanly instead.
+    """
+    mocker.patch.object(cli_mod.settings, "gemini_api_key", SecretStr(""))
+    # run_app must never be reached — the guard fires first, so a stub proves it is not called.
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code != 0
+    # A friendly one-liner naming the fix, not a traceback.
+    assert "GEMINI_API_KEY" in result.output
+    assert ".env.example" in result.output
+    assert "Traceback" not in result.output
+    # The guard short-circuited before the REPL / agent build.
+    run_app.assert_not_awaited()
+
+
+def test_cli_with_a_present_gemini_key_does_not_trip_the_guard(mocker):
+    """A present key does NOT trigger the guard: the CLI proceeds to ``run_app`` normally."""
+    mocker.patch.object(cli_mod.settings, "gemini_api_key", SecretStr("a-real-looking-key"))
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code == 0
+    run_app.assert_awaited_once()
