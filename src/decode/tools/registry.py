@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pydantic_ai import Agent, DeferredToolRequests
 
 from decode.agent.deps import AgentDeps
+from decode.tools import bash as bash_module
 from decode.tools import files, noop
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,8 @@ TOOL_SPECS: list[ToolSpec] = [
     # The mutating file tools (task 007): gated, NOT read-only, still asked on every call.
     ToolSpec(name=files.WRITE_TOOL_NAME, func=files.write, read_only=False),
     ToolSpec(name=files.EDIT_TOOL_NAME, func=files.edit, read_only=False),
+    # Bash (task 008): gated shell execution behind the executor seam, NOT read-only.
+    ToolSpec(name=bash_module.BASH_TOOL_NAME, func=bash_module.bash, read_only=False),
 ]
 
 # Each tool's read-only flag, derived from TOOL_SPECS (single source of truth). Consulted by
