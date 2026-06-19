@@ -29,6 +29,8 @@ dependencies = [
     "rich>=13",
     "prompt-toolkit>=3",
     "pydantic-ai>=1.107.0",
+    "httpx>=0.28.1",
+    "markdownify>=1.2.2",
 ]
 
 # pydantic-ai (above) is the agent loop (ReAct) for src/decode/agent/; it pulls in

@@ -27,6 +27,7 @@ from decode.agent.deps import AgentDeps
 from decode.tools import bash as bash_module
 from decode.tools import files, noop
 from decode.tools import tasks as tasks_module
+from decode.tools import web as web_module
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,13 @@ TOOL_SPECS: list[ToolSpec] = [
         name=tasks_module.TODO_WRITE_TOOL_NAME,
         func=tasks_module.todo_write,
         read_only=tasks_module.TODO_WRITE_READ_ONLY,
+    ),
+    # Web (task 010): httpx GET → HTML-to-Markdown. No local side effect (network egress), so
+    # tagged read_only for M3's future auto-allow — but STILL asked on every call in v1.
+    ToolSpec(
+        name=web_module.WEB_FETCH_TOOL_NAME,
+        func=web_module.web_fetch,
+        read_only=web_module.WEB_FETCH_READ_ONLY,
     ),
 ]
 
