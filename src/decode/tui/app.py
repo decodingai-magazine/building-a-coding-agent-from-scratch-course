@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import enum
 import logging
+from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
@@ -30,8 +31,11 @@ from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
+from decode.agent.deps import AgentDeps
+from decode.agent.factory import build_agent
+from decode.agent.loop import AgentTurnHandler
 from decode.entities import events
-from decode.harness.runner import Runner, stub_turn_handler
+from decode.harness.runner import Runner
 from decode.tui import render
 
 logger = logging.getLogger(__name__)
@@ -108,8 +112,8 @@ async def run_app(console: Console | None = None) -> None:
     """Run the REPL until ``Ctrl-D`` or ``/quit``, routing input into the harness.
 
     ``console`` is injectable so callers/tests can capture output; defaults to a real
-    stdout-backed :class:`rich.console.Console`. The harness drives a stub multi-step turn
-    (task 003) -- task 004 swaps in the real Pydantic AI loop behind the same seam.
+    stdout-backed :class:`rich.console.Console`. The harness drives the real Pydantic AI
+    chat loop (task 004) behind the turn-handler seam; tools land in task 005+.
     """
     console = console or Console()
 
@@ -117,7 +121,11 @@ async def run_app(console: Console | None = None) -> None:
         # The harness streams events here; render append-style above the pinned prompt.
         console.print(render.render_event(event))
 
-    runner = Runner(stub_turn_handler, on_event=_on_event)
+    # The agent loop is the turn handler now: build the Gemini agent and bind the event sink
+    # so streamed deltas reach the renderer. One handler per session carries history (§1).
+    agent = build_agent()
+    deps = AgentDeps(cwd=Path.cwd(), emit=_on_event)
+    runner = Runner(AgentTurnHandler(agent, deps=deps), on_event=_on_event)
     session: PromptSession[object] = PromptSession(
         key_bindings=_build_key_bindings(),
         bottom_toolbar=_bottom_toolbar,

@@ -14,8 +14,9 @@ This is the heart of the harness (ADR-0002 §4-5). It owns:
 
 The agent loop is decoupled behind the **turn handler**: an async generator that ``yield``s
 a :class:`Boundary` at each model-request / would-stop point and receives back the messages
-the runner drained for it. Task 004 plugs the real Pydantic AI loop in here; the
-:func:`stub_turn_handler` below stands in until then so the semantics are real and testable.
+the runner drained for it. :class:`decode.agent.loop.AgentTurnHandler` (task 004) is the real
+Pydantic AI implementation; the runner stays agnostic of it so the seam remains testable with
+a controllable stub handler (see ``tests/unit/decode/harness/test_runner.py``).
 """
 
 from __future__ import annotations
@@ -190,35 +191,3 @@ class Runner:
             self._phase = Phase.IDLE
             self._abort = False
             self._turn_task = None
-
-
-async def stub_turn_handler(
-    ctx: TurnContext, *, steps: int = 2
-) -> AsyncGenerator[Boundary, list[str]]:
-    """A fake multi-step turn so the runner's semantics are exercisable without an agent.
-
-    Each leg drains steering at the model-request boundary (the runner injects it), emits a
-    little assistant text plus a fake tool leg, and on the last leg drains follow-up at the
-    would-stop boundary. A follow-up adds one more leg. Replaced by the real Pydantic AI
-    loop in task 004; here only to prove the drain/abort/single-flight wiring end to end.
-    """
-    remaining = steps
-    leg = 0
-    while remaining > 0:
-        steering = yield Boundary.MODEL_REQUEST
-        for message in steering:
-            ctx.emit(events.AssistantTextDelta(text=f"(steered: {message})"))
-
-        leg += 1
-        ctx.emit(events.ThinkingDelta(text=f"thinking about leg {leg}..."))
-        ctx.emit(events.AssistantTextDelta(text=f"step {leg} of the stub turn"))
-        call_id = f"stub-{ctx.turn_id}-{leg}"
-        ctx.emit(events.ToolCallStarted(tool_call_id=call_id, name="noop", args="{}"))
-        ctx.emit(events.ToolResult(tool_call_id=call_id, name="noop", output="(stub) ok"))
-        remaining -= 1
-
-        if remaining == 0:
-            follow_ups = yield Boundary.WOULD_STOP
-            remaining += len(follow_ups)
-            for message in follow_ups:
-                ctx.emit(events.AssistantTextDelta(text=f"(follow-up: {message})"))

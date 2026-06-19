@@ -28,12 +28,13 @@ dependencies = [
     "click>=8.1",
     "rich>=13",
     "prompt-toolkit>=3",
+    "pydantic-ai>=1.107.0",
 ]
 
+# pydantic-ai (above) is the agent loop (ReAct) for src/decode/agent/; it pulls in
+# google-genai (the Gemini LLM API) transitively, so both are now installed.
 # Added as the course progresses — `uv add <pkg>` when you reach the step:
-#   pydantic-ai    — agent loop (ReAct)            → src/decode/agent/
 #   fastmcp        — MCP tool factory + servers     → src/decode/tools/, services/
-#   google-genai   — Gemini LLM API                 → src/decode/services/ (LLM gateway)
 #   opik           — observability / tracing        → src/decode/observability/
 #   modal          — remote sandbox + model serving → src/decode/sandbox/, services/
 #   kitaru         — durability runtime (confirm package name/source) → src/decode/runtime/
