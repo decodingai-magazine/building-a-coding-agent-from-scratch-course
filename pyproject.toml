@@ -23,7 +23,7 @@ classifiers = [
 # Runtime deps only. Dev/test go in [dependency-groups]. Kept light on purpose —
 # the course adds the heavier integrations at the step that needs them.
 dependencies = [
-    "pydantic>=2.8",
+    "pydantic>=2.13.4",
     "pydantic-settings>=2.4",
     "click>=8.1",
     "rich>=13",
