@@ -1,0 +1,22 @@
+# Project-side git hooks (https://pre-commit.com). Python-led repo → `pre-commit`.
+# Install once: `make install` (runs `pre-commit install` for pre-commit + pre-push).
+# Fast checks run on every commit; the slower unit suite runs on push. CI re-runs the same.
+repos:
+  - repo: local
+    hooks:
+      - id: format-check
+        name: format check
+        language: system
+        entry: make format-check
+        pass_filenames: false
+      - id: lint-check
+        name: lint check
+        language: system
+        entry: make lint-check
+        pass_filenames: false
+      - id: unit-tests
+        name: unit tests
+        language: system
+        entry: make unit-tests
+        pass_filenames: false
+        stages: [pre-push] # too slow for every commit

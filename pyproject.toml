@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "decode"
+version = "0.1.0"
+description = "A terminal coding agent (agentic harness) built from scratch, step by step — the artifact of the building-a-coding-agent-from-scratch course."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Paul Iusztin", email = "p.e.iusztin@gmail.com" },
+]
+keywords = ["coding-agent", "llm", "agent", "tui", "pydantic-ai", "mcp"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+# Runtime deps only. Dev/test go in [dependency-groups]. Kept light on purpose —
+# the course adds the heavier integrations at the step that needs them.
+dependencies = [
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "click>=8.1",
+    "rich>=13",
+    "prompt-toolkit>=3",
+]
+
+# Added as the course progresses — `uv add <pkg>` when you reach the step:
+#   pydantic-ai    — agent loop (ReAct)            → src/decode/agent/
+#   fastmcp        — MCP tool factory + servers     → src/decode/tools/, services/
+#   google-genai   — Gemini LLM API                 → src/decode/services/ (LLM gateway)
+#   opik           — observability / tracing        → src/decode/observability/
+#   modal          — remote sandbox + model serving → src/decode/sandbox/, services/
+#   kitaru         — durability runtime (confirm package name/source) → src/decode/runtime/
+
+[project.scripts]
+decode = "decode.cli:cli"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.12",
+    "ruff>=0.15",
+    "pre-commit>=4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/decode"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["generated_client"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "B",        # flake8-bugbear
+    "UP",       # pyupgrade (PEP 585/604)
+    "SIM",      # flake8-simplify
+    "RUF",      # ruff-specific
+]
+ignore = [
+    "E501",     # line length — the formatter owns this
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]    # assert is the whole point of tests
+"scripts/**/*.py" = ["T201"]  # operator scripts may print
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration"]
+python_files = "test_*.py"
+python_functions = "test_*"
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["src"]
+filterwarnings = ["error"]
