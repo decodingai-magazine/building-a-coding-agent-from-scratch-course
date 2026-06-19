@@ -16,7 +16,7 @@ from pydantic_ai.models.test import TestModel
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
 from decode.tools import is_read_only
-from decode.tools.registry import TOOL_SPECS, register_tools
+from decode.tools.registry import TOOL_READ_ONLY, TOOL_SPECS, register_tools
 
 
 def _agent(mocker):
@@ -29,7 +29,6 @@ def _agent(mocker):
 def test_registry_lists_the_expected_tools():
     names = {spec.name for spec in TOOL_SPECS}
     assert names == {
-        "noop",
         "read",
         "glob",
         "grep",
@@ -42,13 +41,21 @@ def test_registry_lists_the_expected_tools():
     }
 
 
+def test_registry_does_not_expose_the_scaffolding_noop_tool():
+    # ADR-0002 §7 + AGENTS.md: the task-005 ``noop`` scaffolding is superseded by the real
+    # tools (006-011) and must NOT ride on the production agent. It survives only as a
+    # TEST-ONLY helper (decode.tools.noop.register_noop), never in the registry.
+    assert "noop" not in {spec.name for spec in TOOL_SPECS}
+    assert "noop" not in TOOL_READ_ONLY
+    # Unknown tools (including ``noop``) default to mutating via the loop's lookup.
+    assert is_read_only("noop") is False
+
+
 def test_read_only_flags_match_each_spec():
     by_name = {spec.name: spec for spec in TOOL_SPECS}
     assert by_name["read"].read_only is True
     assert by_name["glob"].read_only is True
     assert by_name["grep"].read_only is True
-    # noop stands in for a mutating tool, so it is NOT read-only (still gated/asked).
-    assert by_name["noop"].read_only is False
     # The mutating file tools are NOT read-only (gated/asked on every call).
     assert by_name["write"].read_only is False
     assert by_name["edit"].read_only is False
@@ -77,7 +84,6 @@ def test_is_read_only_reflects_the_registered_flags():
     assert is_read_only("read") is True
     assert is_read_only("glob") is True
     assert is_read_only("grep") is True
-    assert is_read_only("noop") is False
     assert is_read_only("write") is False
     assert is_read_only("edit") is False
     assert is_read_only("bash") is False
@@ -93,10 +99,9 @@ def test_is_read_only_reflects_the_registered_flags():
 def test_register_tools_registers_every_spec_on_the_agent(mocker):
     agent = _agent(mocker)
 
-    # build_agent already registers via the registry; the tools must be on the agent.
+    # build_agent already registers via the registry; the real M1 tools must be on the agent...
     registered = set(agent._function_toolset.tools)
     assert {
-        "noop",
         "read",
         "glob",
         "grep",
@@ -107,6 +112,8 @@ def test_register_tools_registers_every_spec_on_the_agent(mocker):
         "web_fetch",
         "ask_user",
     } <= registered
+    # ...and the scaffolding ``noop`` must NOT be (it is never registered in production).
+    assert "noop" not in registered
 
 
 def test_register_tools_registers_every_spec_onto_a_bare_agent():

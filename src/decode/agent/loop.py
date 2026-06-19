@@ -13,6 +13,12 @@ more *legs*; the handler:
 * **streams each model node** with ``node.stream(...)``, mapping text → ``AssistantTextDelta``
   and thinking → ``ThinkingDelta`` via the event sink on
   :class:`~decode.agent.deps.AgentDeps`;
+* **streams each call-tools node** (``Agent.is_call_tools_node``), mapping Pydantic AI's
+  ``FunctionToolCallEvent`` → :class:`~decode.entities.events.ToolCallStarted` (deduped per
+  ``tool_call_id`` so a gated call — which is replayed on the resume leg — only announces once)
+  and ``FunctionToolResultEvent`` → :class:`~decode.entities.events.ToolResult`, so the live
+  REPL renders a tool panel on completion (ADR-0002 §6). A deferred (gated) call streams only
+  the *call* event on the pause leg; its *result* event lands on the approved/denied resume leg;
 * **routes gated tool calls through the permission gate (§3).** When a leg resolves to
   :class:`~pydantic_ai.DeferredToolRequests` (a tool raised ``ApprovalRequired``), it asks the
   gate for a policy decision (v1 → always *ask*), emits a
@@ -40,15 +46,19 @@ from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, DeferredToolRequests, ToolDenied
 from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
     ModelMessage,
     ModelRequest,
     PartDeltaEvent,
     PartStartEvent,
+    RetryPromptPart,
     TextPart,
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
     ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.tools import DeferredToolResults
@@ -99,6 +109,9 @@ class AgentTurnHandler:
         # persisted so resume never re-writes it, and each turn appends only the messages beyond
         # this cursor.
         self._persisted_count = len(self.message_history)
+        # tool_call_ids that have already emitted a ToolCallStarted. A gated call is streamed on
+        # both the deferred-pause leg and the resume leg, so we announce each call only once.
+        self._announced_tool_calls: set[str] = set()
 
     async def __call__(self, ctx: TurnContext) -> AsyncGenerator[Boundary, list[str]]:
         """Run one harness turn as a sequence of legs (ADR-0002 §3-4).
@@ -220,6 +233,8 @@ class AgentTurnHandler:
             async for node in run:
                 if Agent.is_model_request_node(node):
                     await self._stream_model_node(ctx, node, run)
+                elif Agent.is_call_tools_node(node):
+                    await self._stream_tool_node(ctx, node, run)
         # Carry the whole conversation (prior history + this leg) into the next turn.
         self.message_history = run.all_messages()
         return run.result.output
@@ -278,6 +293,68 @@ class AgentTurnHandler:
         async with node.stream(run.ctx) as request_stream:  # type: ignore[attr-defined]
             async for event in request_stream:
                 self._emit_for_stream_event(ctx, event)
+
+    async def _stream_tool_node(self, ctx: TurnContext, node: object, run: object) -> None:
+        """Stream one call-tools node, emitting ToolCallStarted / ToolResult (ADR-0002 §6).
+
+        Pydantic AI's call-tools node streams a ``FunctionToolCallEvent`` when a tool call
+        begins and a ``FunctionToolResultEvent`` when it returns. We map those to the canonical
+        :class:`~decode.entities.events.ToolCallStarted` / :class:`~decode.entities.events.ToolResult`
+        so the live REPL renders a tool panel on completion. A gated call is streamed on both
+        the deferred-pause leg and the resume leg, so the started event is deduped per
+        ``tool_call_id`` (the result only ever lands on the resume leg).
+        """
+        async with node.stream(run.ctx) as tool_stream:  # type: ignore[attr-defined]
+            async for event in tool_stream:
+                self._emit_for_tool_event(ctx, event)
+
+    def _emit_for_tool_event(self, ctx: TurnContext, event: object) -> None:
+        """Map one Pydantic AI tool-stream event to a canonical decode tool event (or ignore it).
+
+        ``FunctionToolCallEvent`` → :class:`~decode.entities.events.ToolCallStarted` (once per
+        ``tool_call_id``); ``FunctionToolResultEvent`` → :class:`~decode.entities.events.ToolResult`.
+        ``ok`` is ``False`` whenever the tool did not succeed — i.e. a ``RetryPromptPart`` (the
+        tool errored/retried) **or** a ``ToolReturnPart`` whose ``outcome`` is not ``"success"``.
+        Crucially, pydantic-ai returns a *gate deny* as a ``ToolReturnPart`` with
+        ``outcome == "denied"`` (its content is the denial reason), not a ``RetryPromptPart``; a
+        plain return has ``outcome == "success"``. So a bare ``isinstance(result, ToolReturnPart)``
+        check would mis-render a denial as a green success panel — we key ``ok`` off ``outcome``
+        instead, matching the event contract (``events.py``: "ok is False … or was denied").
+        Everything else is irrelevant to the tool panel and skipped.
+        """
+        if isinstance(event, FunctionToolCallEvent):
+            call = event.part
+            if call.tool_call_id in self._announced_tool_calls:
+                return
+            self._announced_tool_calls.add(call.tool_call_id)
+            ctx.emit(
+                events.ToolCallStarted(
+                    tool_call_id=call.tool_call_id,
+                    name=call.tool_name,
+                    args=call.args_as_json_str(),
+                )
+            )
+        elif isinstance(event, FunctionToolResultEvent):
+            result = event.part
+            if isinstance(result, ToolReturnPart):
+                # outcome ∈ {"success", "failed", "denied"}; only "success" is ok. A gate deny
+                # arrives here (not as a RetryPromptPart) with outcome == "denied".
+                ok = result.outcome == "success"
+                output = result.model_response_str()
+            elif isinstance(result, RetryPromptPart):
+                ok = False
+                output = result.model_response()
+            else:  # pragma: no cover - defensive: the union is exhausted above
+                ok = False
+                output = str(getattr(result, "content", ""))
+            ctx.emit(
+                events.ToolResult(
+                    tool_call_id=result.tool_call_id,
+                    name=result.tool_name or "",
+                    output=output,
+                    ok=ok,
+                )
+            )
 
     def _emit_for_stream_event(self, ctx: TurnContext, event: object) -> None:
         """Map one Pydantic AI stream event to a canonical decode event (or ignore it).

@@ -56,8 +56,9 @@ def build_agent() -> Agent[AgentDeps, str | DeferredToolRequests]:
     ``settings.gemini_api_key`` (both config-driven). ``deps_type=AgentDeps`` is what the
     loop validates ``deps=`` against; ``output_type=[str, DeferredToolRequests]`` lets a run
     resolve to a deferred-tool result so the loop can route gated calls through the gate. The
-    flat :mod:`decode.tools.registry` registers every tool (the gated ``noop`` plus the
-    read-only ``read`` / ``glob`` / ``grep``) so the whole permission path is exercised.
+    flat :mod:`decode.tools.registry` registers the real M1 tools (``read`` / ``glob`` /
+    ``grep`` / ``write`` / ``edit`` / ``bash`` / ``todo_write`` / ``web_fetch`` / ``ask_user``);
+    the task-005 scaffolding ``noop`` is deliberately not among them.
     """
     provider = GoogleProvider(api_key=settings.gemini_api_key.get_secret_value())
     model = GoogleModel(settings.gemini_model, provider=provider)

@@ -423,6 +423,10 @@ def _fuzzy_unique_span(haystack: str, needle: str) -> tuple[int, int] | None:
     normalized ``needle``. Returns the single matching span, ``None`` if there are zero, and
     raises :class:`pydantic_ai.ModelRetry` (``ambiguous``) if more than one *distinct* span
     matches — mirroring the exact-match uniqueness rule.
+
+    Cold path: reached only when the exact match misses, on bounded files, and every ``edit``
+    is human-gated — so the all-pairs span scan here is acceptable for M1 (a rolling-window
+    matcher is a fine later optimization if ``edit`` ever sees large files).
     """
     target = _normalize_ws(needle)
     if target == "":

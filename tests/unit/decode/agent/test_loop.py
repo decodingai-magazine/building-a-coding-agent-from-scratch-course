@@ -38,6 +38,7 @@ from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Boundary, Runner, TurnContext
 from decode.permissions.gate import PermissionGate
 from decode.tools.askuser import NoInteractiveUserError
+from decode.tools.noop import register_noop
 from decode.tui.app import InputIntent
 
 
@@ -74,6 +75,18 @@ def agent(mocker):
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
     return build_agent()
+
+
+@pytest.fixture
+def gated_agent(agent):
+    """The production agent plus the TEST-ONLY gated ``noop`` (decode.tools.noop.register_noop).
+
+    The permission/loop tests drive a minimal gated flow with the scaffolding ``noop`` tool,
+    which is intentionally NOT in the production registry (task 016). Registering it here on the
+    test agent keeps those tests independent of the production tool set.
+    """
+    register_noop(agent)
+    return agent
 
 
 def _stream_words(*words: str):
@@ -250,6 +263,81 @@ async def test_thinking_deltas_become_thinking_events(agent):
     assert "the answer" in answer
 
 
+# --- task 016: tool-call panels (ToolCallStarted / ToolResult) emitted from the loop --------
+
+
+async def test_tool_call_emits_started_and_result_events_and_renders_a_panel(agent):
+    """ADR-0002 §6: a tool-calling turn emits ToolCallStarted + ToolResult and renders a panel.
+
+    A non-gated tool call streams through the call-tools node; the loop must emit a
+    ``ToolCallStarted`` (name + args summary) when the call begins and a ``ToolResult`` (the
+    tool's output) when it returns, so the live REPL renders a tool panel on completion. The
+    rendered ``ToolResult`` is the bordered Rich panel the user actually sees.
+    """
+    from rich.console import Console
+    from rich.panel import Panel
+
+    from decode.tui.render import render_event
+
+    @agent.tool_plain
+    def echo_tool(text: str) -> str:
+        return f"echo: {text}"
+
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
+
+    with agent.override(model=TestModel(call_tools=["echo_tool"], custom_output_text="done")):
+        await _drive_collecting(handler, _ctx(0, "use the tool", emitted))()
+
+    started = [e for e in emitted if isinstance(e, events.ToolCallStarted)]
+    results = [e for e in emitted if isinstance(e, events.ToolResult)]
+    assert len(started) == 1, "the tool call must be announced exactly once"
+    assert started[0].name == "echo_tool"
+    assert "text" in started[0].args  # the args summary carries the call arguments
+    assert len(results) == 1, "the tool result must be emitted exactly once"
+    assert results[0].name == "echo_tool"
+    assert results[0].ok is True
+    assert "echo:" in results[0].output
+    # The started and result events correlate by tool_call_id.
+    assert started[0].tool_call_id == results[0].tool_call_id
+
+    # The ToolResult renders as the bordered Rich panel the user sees in the REPL.
+    panel = render_event(results[0])
+    assert isinstance(panel, Panel)
+    buf = Console(width=80, file=__import__("io").StringIO())
+    buf.print(panel)
+    rendered = buf.file.getvalue()
+    assert "echo_tool" in rendered  # the panel title names the tool
+    assert "echo:" in rendered  # the panel body carries the tool output
+
+
+async def test_gated_tool_is_announced_once_across_the_deferred_resume(gated_agent):
+    """A gated call is replayed on the resume leg, but ToolCallStarted is emitted only once.
+
+    The deferred-pause leg streams the call event; the approved resume leg streams it again
+    plus the result. The loop dedupes the started event per ``tool_call_id`` so the user sees a
+    single announce and a single result panel (no flicker, ADR-0002 §6).
+    """
+    emitted: list[events.Event] = []
+
+    async def approving_resolver(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision.allow()
+
+    handler = AgentTurnHandler(
+        gated_agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
+    )
+
+    with gated_agent.override(model=_noop_then_text(final_text="finished")):
+        await _drive_collecting(handler, _ctx(0, "please noop", emitted))()
+
+    started = [e for e in emitted if isinstance(e, events.ToolCallStarted) and e.name == "noop"]
+    results = [e for e in emitted if isinstance(e, events.ToolResult) and e.name == "noop"]
+    assert len(started) == 1, "a gated call must be announced exactly once across both legs"
+    assert len(results) == 1, "the gated call's result lands once on the resume leg"
+    assert results[0].ok is True
+    assert "noop: hi" in results[0].output
+
+
 # --- task 005: the permission gate via the deferred-tool flow -------------------------------
 
 
@@ -291,7 +379,7 @@ def _user_messages_seen(messages: list[ModelMessage]) -> list[str]:
     return seen
 
 
-async def test_gated_tool_pauses_and_emits_permission_requested(agent):
+async def test_gated_tool_pauses_and_emits_permission_requested(gated_agent):
     """ADR-0002 §3: a gated call pauses the run and surfaces a PermissionRequested event."""
     emitted: list[events.Event] = []
     asked: list[PermissionRequest] = []
@@ -301,10 +389,10 @@ async def test_gated_tool_pauses_and_emits_permission_requested(agent):
         return PermissionDecision.allow()
 
     handler = AgentTurnHandler(
-        agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
+        gated_agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
     )
 
-    with agent.override(model=_noop_then_text()):
+    with gated_agent.override(model=_noop_then_text()):
         await _drive_collecting(handler, _ctx(0, "please noop", emitted))()
 
     perms = [e for e in emitted if isinstance(e, events.PermissionRequested)]
@@ -316,7 +404,7 @@ async def test_gated_tool_pauses_and_emits_permission_requested(agent):
     assert asked[0].tool_call_id == perms[0].tool_call_id
 
 
-async def test_approval_resumes_and_executes_the_tool(agent):
+async def test_approval_resumes_and_executes_the_tool(gated_agent):
     """An APPROVE resumes the run; the tool executes and the turn ends with text."""
     emitted: list[events.Event] = []
 
@@ -324,10 +412,10 @@ async def test_approval_resumes_and_executes_the_tool(agent):
         return PermissionDecision.allow()
 
     handler = AgentTurnHandler(
-        agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
+        gated_agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
     )
 
-    with agent.override(model=_noop_then_text(final_text="finished after approve")):
+    with gated_agent.override(model=_noop_then_text(final_text="finished after approve")):
         await _drive_collecting(handler, _ctx(0, "please noop", emitted))()
 
     # The tool actually ran: its echoed return is in history as a ToolReturnPart.
@@ -344,7 +432,7 @@ async def test_approval_resumes_and_executes_the_tool(agent):
     assert "finished after approve" in answer
 
 
-async def test_denial_feeds_a_tooldenied_result_back_to_the_model(agent):
+async def test_denial_feeds_a_tooldenied_result_back_to_the_model(gated_agent):
     """A DENY returns a denial tool-result the model sees on the next leg (ADR-0002 §3)."""
     emitted: list[events.Event] = []
 
@@ -354,10 +442,12 @@ async def test_denial_feeds_a_tooldenied_result_back_to_the_model(agent):
     captured: list[list[ModelMessage]] = []
 
     handler = AgentTurnHandler(
-        agent, deps=_deps(emitted.append, resolve_permission=denying_resolver)
+        gated_agent, deps=_deps(emitted.append, resolve_permission=denying_resolver)
     )
 
-    with agent.override(model=_noop_then_text(final_text="ok, understood", captured=captured)):
+    with gated_agent.override(
+        model=_noop_then_text(final_text="ok, understood", captured=captured)
+    ):
         await _drive_collecting(handler, _ctx(0, "please noop", emitted))()
 
     # The denial message reached the model on the resume leg as a tool result.
@@ -374,7 +464,50 @@ async def test_denial_feeds_a_tooldenied_result_back_to_the_model(agent):
     assert not any("noop: hi" in d for d in denial_returns)
 
 
-async def test_steering_message_reaches_the_model_at_the_deferred_resume(agent):
+async def test_denied_tool_emits_a_failed_result_and_renders_a_red_panel(gated_agent):
+    """A DENY must surface as ToolResult(ok=False) and render the RED "(failed)" panel.
+
+    pydantic-ai returns a gate deny as a ``ToolReturnPart`` with ``outcome == "denied"`` (content
+    = the denial reason), NOT a ``RetryPromptPart``. The loop must key ``ok`` off ``outcome`` so a
+    denial does not masquerade as a green success panel (events.py: "ok is False … or was
+    denied"; render.py: ok=False → red "(failed)" panel). This is the regression gap the existing
+    message-history-only denial test never covered.
+    """
+    from rich.console import Console
+    from rich.panel import Panel
+
+    from decode.tui.render import render_event
+
+    emitted: list[events.Event] = []
+
+    async def denying_resolver(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision.deny(reason="nope, not allowed")
+
+    handler = AgentTurnHandler(
+        gated_agent, deps=_deps(emitted.append, resolve_permission=denying_resolver)
+    )
+
+    with gated_agent.override(model=_noop_then_text(final_text="ok, understood")):
+        await _drive_collecting(handler, _ctx(0, "please noop", emitted))()
+
+    # The denied tool emits exactly one ToolResult, and it is NOT ok.
+    results = [e for e in emitted if isinstance(e, events.ToolResult) and e.name == "noop"]
+    assert len(results) == 1, "the denied gated call still emits a single ToolResult"
+    assert results[0].ok is False, "a denied tool must emit ToolResult(ok=False), not a success"
+    # The tool body never ran, so its echo is absent from the rendered outcome.
+    assert "noop: hi" not in results[0].output
+
+    # render_event of that result is the RED "(failed)" panel the user must see for a denial.
+    panel = render_event(results[0])
+    assert isinstance(panel, Panel)
+    assert panel.border_style == "red"  # denial → red border (not green success)
+    buf = Console(width=80, file=__import__("io").StringIO())
+    buf.print(panel)
+    rendered = buf.file.getvalue()
+    assert "noop (failed)" in rendered  # the title flags the failure, not a bare success title
+
+
+async def test_steering_message_reaches_the_model_at_the_deferred_resume(gated_agent):
     """Closes task 004's carryover: steering appended at a real deferred resume is seen.
 
     A gated call pauses the run; before the resume leg the runner drains steering at the
@@ -389,7 +522,7 @@ async def test_steering_message_reaches_the_model_at_the_deferred_resume(agent):
     captured: list[list[ModelMessage]] = []
 
     handler = AgentTurnHandler(
-        agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
+        gated_agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
     )
 
     async def _run() -> None:
@@ -406,7 +539,7 @@ async def test_steering_message_reaches_the_model_at_the_deferred_resume(agent):
                 sent = ["STEER-AT-RESUME-123"] if boundary is Boundary.MODEL_REQUEST else []
         await agen.aclose()
 
-    with agent.override(model=_noop_then_text(final_text="done", captured=captured)):
+    with gated_agent.override(model=_noop_then_text(final_text="done", captured=captured)):
         await _run()
 
     # The steering message reached the model on the resume leg (the second model request).
@@ -415,7 +548,7 @@ async def test_steering_message_reaches_the_model_at_the_deferred_resume(agent):
     assert any("STEER-AT-RESUME-123" in m for m in resume_user_messages)
 
 
-async def test_single_flight_lock_spans_the_whole_multi_leg_deferred_turn(agent):
+async def test_single_flight_lock_spans_the_whole_multi_leg_deferred_turn(gated_agent):
     """ADR-0002 §4: the single-flight lock spans the full deferred (multi-leg) turn.
 
     Driven through the *real* Runner: a gated tool makes the turn fragment into a request
@@ -428,10 +561,10 @@ async def test_single_flight_lock_spans_the_whole_multi_leg_deferred_turn(agent)
         return PermissionDecision.allow()
 
     handler = AgentTurnHandler(
-        agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
+        gated_agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
     )
 
-    with agent.override(model=_noop_then_text(final_text="multi-leg done")):
+    with gated_agent.override(model=_noop_then_text(final_text="multi-leg done")):
         runner = Runner(handler, on_event=emitted.append)
         await runner.submit("please noop", InputIntent.STEER)
         # Exactly one turn in flight across the whole multi-leg (deferred) turn.

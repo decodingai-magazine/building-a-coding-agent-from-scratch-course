@@ -33,7 +33,7 @@ from pydantic_ai import Agent, DeferredToolRequests
 from decode.agent.deps import AgentDeps
 from decode.tools import askuser as askuser_module
 from decode.tools import bash as bash_module
-from decode.tools import files, noop
+from decode.tools import files
 from decode.tools import tasks as tasks_module
 from decode.tools import web as web_module
 
@@ -59,8 +59,14 @@ class ToolSpec:
 
 
 # The flat catalogue. Source of truth for both registration and the read-only map.
+#
+# The scaffolding ``noop`` tool (task 005, :mod:`decode.tools.noop`) is deliberately ABSENT: it
+# was the stand-in that made the permission-gate-via-deferred-tools path real *before* the real
+# tools existed, and 006-011 fully superseded it. It is kept under ``src/`` only as a TEST-ONLY
+# helper (``register_noop``) for the permission/loop tests that want a minimal one-gated-tool
+# agent; the production agent never exposes it (AGENTS.md: remove scaffolding once the real
+# thing lands; no abstraction without a second concrete caller).
 TOOL_SPECS: list[ToolSpec] = [
-    ToolSpec(name=noop.NOOP_TOOL_NAME, func=noop.noop, read_only=noop.NOOP_READ_ONLY),
     ToolSpec(name=files.READ_TOOL_NAME, func=files.read, read_only=True),
     ToolSpec(name=files.GLOB_TOOL_NAME, func=files.glob, read_only=True),
     ToolSpec(name=files.GREP_TOOL_NAME, func=files.grep, read_only=True),

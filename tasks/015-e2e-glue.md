@@ -187,3 +187,23 @@ exit_code=1 ; stdout=0 bytes ; stderr="decode: set GEMINI_API_KEY ... (see .env.
   `/review` per the SWE note — not re-litigated here.
 
 **VERDICT: PASS**
+
+### [PR Reviewer] 2026-06-20 02:00 — Review (rollup)
+
+**VERDICT: BLOCKERS**
+
+Reviewed 100 changed files (~16.8k lines incl. uv.lock/tasks/tests; every src module read in
+full). Filed rollup task: `tasks/016-pr-review-rollup.md`.
+
+Blockers: 1 (the do-nothing `noop` tool is still registered on the production agent via
+`tools/registry.py` → `build_agent()`; task-005 scaffolding the real 006–011 tools superseded —
+dead/scaffolding code shipped to the live model). Nits: 4 (unemitted `ToolCallStarted`/`ToolResult`
+events + render branches; O(n^3) fuzzy-`edit` fallback on a cold path; stale "repo-root" claim in
+the PR body vs the ADR's filesystem-root wording; glossary not updated for `DecisionChannel`).
+
+Verified sound (no regressions): `files.py` path containment (glob/grep cwd-escape + symlink),
+`exec.py` process-group kill + partial-output-on-timeout, `web.py` RecursionError guard, the
+single-input `DecisionChannel`, and the deferred-approval deny path. 347 tests pass; ruff
+format + lint clean; tests mirror src 1:1; capstone integration test has meaningful assertions.
+
+Pipeline re-runs from inner loop on rollup; re-invoke me after PA ACCEPT + re-push.
