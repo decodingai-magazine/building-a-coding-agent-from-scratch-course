@@ -19,6 +19,16 @@ cd building-a-coding-agent-from-scratch-course
 make install        # uv sync + wire git hooks   (or just: uv sync)
 ```
 
+### Run `decode` from anywhere (optional)
+
+`make install` lets you run the agent with `uv run decode`. To type just **`decode`** from any directory, put it on your PATH:
+
+```bash
+make install-cli    # uv tool install --editable .  — the command tracks your source
+```
+
+If `decode` isn't found afterward, run `uv tool update-shell` and restart your shell. Uninstall with `make uninstall-cli`.
+
 ## Configure
 
 `decode` reads its config from environment variables, including a local `.env` file (loaded via pydantic-settings):
@@ -35,7 +45,7 @@ cp .env.example .env
 ## Use
 
 ```bash
-uv run decode
+uv run decode      # or just `decode` after `make install-cli`
 ```
 
 You get an interactive REPL. Type a message and the agent streams a reply; when it wants to use a tool it **asks for approval first** (every tool, every time, in M1).
