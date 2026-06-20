@@ -10,9 +10,10 @@ Three layers are exercised independently:
 * :func:`summarize_session` — the one cheap LLM call. Driven by ``TestModel`` /
   ``FunctionModel`` (no network): returns the model's sentence, returns ``None`` on an
   empty/trivial conversation (no call made), and returns ``None`` when the call fails.
-* :func:`append_session_summary` — pure filesystem. Creates ``MEMORY.md`` if absent, appends a
-  dated line, and trims the file to ``settings.memory_max_lines`` / ``settings.memory_max_bytes``
-  keeping the most-recent lines. ``now`` is injected (timezone-aware UTC) for determinism.
+* :func:`append_session_summary` — pure filesystem. Creates ``cwd/.decode/MEMORY.md`` (and its
+  ``.decode/`` parent) if absent, appends a dated line, and trims the file to
+  ``settings.memory_max_lines`` / ``settings.memory_max_bytes`` keeping the most-recent lines.
+  ``now`` is injected (timezone-aware UTC) for determinism.
 * :func:`extract_on_exit` — the orchestrator. Fully non-fatal: it must never raise, even when the
   summarizer blows up, so it can never block process exit.
 
@@ -44,6 +45,11 @@ from decode.memory.extract import (
 from decode.memory.service import assemble_memory
 
 _NOW = datetime(2026, 6, 19, 12, 30, tzinfo=UTC)
+
+
+def _memory(cwd: Path) -> Path:
+    """The harness MEMORY.md path under ``cwd`` (Fix 1: ``cwd/.decode/MEMORY.md``)."""
+    return cwd / ".decode" / "MEMORY.md"
 
 
 def _conversation(user: str, assistant: str) -> list[ModelMessage]:
@@ -150,24 +156,27 @@ async def test_summarize_session_returns_none_when_the_model_returns_blank():
 # --------------------------------------------------------------------------------------------
 
 
-def test_append_creates_memory_md_when_absent(tmp_path: Path):
+def test_append_creates_memory_md_under_decode_dir_when_absent(tmp_path: Path):
     append_session_summary(tmp_path, "Did some work", now=_NOW)
 
-    memory = tmp_path / "MEMORY.md"
+    memory = _memory(tmp_path)
     assert memory.is_file()
+    # The harness MEMORY.md lands under <cwd>/.decode (Fix 1), not at the project root.
+    assert not (tmp_path / "MEMORY.md").exists()
     assert "Did some work" in memory.read_text(encoding="utf-8")
 
 
 def test_append_writes_a_dated_line(tmp_path: Path):
     append_session_summary(tmp_path, "Added pagination", now=_NOW)
 
-    content = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+    content = _memory(tmp_path).read_text(encoding="utf-8")
     # A dated bullet: the UTC date (YYYY-MM-DD) and the summary on one line.
     assert "- 2026-06-19: Added pagination" in content
 
 
 def test_append_keeps_existing_content_and_adds_below(tmp_path: Path):
-    memory = tmp_path / "MEMORY.md"
+    memory = _memory(tmp_path)
+    memory.parent.mkdir(parents=True, exist_ok=True)
     memory.write_text("- 2026-06-01: earlier note\n", encoding="utf-8")
 
     append_session_summary(tmp_path, "later note", now=_NOW)
@@ -189,7 +198,8 @@ def test_append_rejects_a_naive_datetime(tmp_path: Path):
 def test_append_trims_to_the_line_cap_keeping_most_recent(tmp_path: Path):
     # Pre-fill well past the line cap with tiny lines (byte cap never bites); appending one more
     # must drop the OLDEST lines, keeping the most recent + the just-appended summary.
-    memory = tmp_path / "MEMORY.md"
+    memory = _memory(tmp_path)
+    memory.parent.mkdir(parents=True, exist_ok=True)
     overflow = settings.memory_max_lines + 50
     memory.write_text(
         "\n".join(f"- 2026-01-01: note{i}" for i in range(overflow)) + "\n",
@@ -198,7 +208,7 @@ def test_append_trims_to_the_line_cap_keeping_most_recent(tmp_path: Path):
 
     append_session_summary(tmp_path, "the newest summary", now=_NOW)
 
-    lines = (tmp_path / "MEMORY.md").read_text(encoding="utf-8").splitlines()
+    lines = _memory(tmp_path).read_text(encoding="utf-8").splitlines()
     assert len(lines) <= settings.memory_max_lines
     # The just-appended summary survives (it is the most recent).
     assert any("the newest summary" in line for line in lines)
@@ -210,13 +220,14 @@ def test_append_trims_to_the_line_cap_keeping_most_recent(tmp_path: Path):
 
 def test_append_trims_to_the_byte_cap_keeping_most_recent(tmp_path: Path):
     # Few but huge lines so the BYTE cap bites first; the most-recent content must survive.
-    memory = tmp_path / "MEMORY.md"
+    memory = _memory(tmp_path)
+    memory.parent.mkdir(parents=True, exist_ok=True)
     big = "z" * (settings.memory_max_bytes // 2)
     memory.write_text(f"- old: {big}\n- mid: {big}\n", encoding="utf-8")
 
     append_session_summary(tmp_path, "fresh", now=_NOW)
 
-    content = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+    content = _memory(tmp_path).read_text(encoding="utf-8")
     assert len(content.encode("utf-8")) <= settings.memory_max_bytes
     # The just-appended (most recent) line survives the byte trim.
     assert "fresh" in content
@@ -240,7 +251,7 @@ async def test_extract_on_exit_writes_a_summary(tmp_path: Path, mocker):
     await extract_on_exit(_conversation("build it", "built"), tmp_path)
 
     fixed_now.assert_called_once()
-    content = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+    content = _memory(tmp_path).read_text(encoding="utf-8")
     assert "- 2026-06-19: Built the thing" in content
 
 
@@ -253,7 +264,7 @@ async def test_extract_on_exit_writes_nothing_when_summary_is_none(tmp_path: Pat
 
     await extract_on_exit(_conversation("hi", "hello"), tmp_path)
 
-    assert not (tmp_path / "MEMORY.md").exists()
+    assert not _memory(tmp_path).exists()
 
 
 async def test_extract_on_exit_is_a_noop_on_empty_conversation(tmp_path: Path, mocker):
@@ -263,7 +274,7 @@ async def test_extract_on_exit_is_a_noop_on_empty_conversation(tmp_path: Path, m
     await extract_on_exit([], tmp_path)
 
     spy.assert_not_called()
-    assert not (tmp_path / "MEMORY.md").exists()
+    assert not _memory(tmp_path).exists()
 
 
 async def test_extract_on_exit_is_a_noop_without_an_api_key(tmp_path: Path, mocker):
@@ -276,7 +287,7 @@ async def test_extract_on_exit_is_a_noop_without_an_api_key(tmp_path: Path, mock
     await extract_on_exit(_conversation("do it", "done"), tmp_path)
 
     spy.assert_not_called()
-    assert not (tmp_path / "MEMORY.md").exists()
+    assert not _memory(tmp_path).exists()
 
 
 async def test_extract_on_exit_never_raises_when_summarize_blows_up(tmp_path: Path, mocker):
@@ -291,7 +302,7 @@ async def test_extract_on_exit_never_raises_when_summarize_blows_up(tmp_path: Pa
     # Must return cleanly (no exception propagates out of the shutdown path).
     await extract_on_exit(_conversation("do it", "done"), tmp_path)
 
-    assert not (tmp_path / "MEMORY.md").exists()
+    assert not _memory(tmp_path).exists()
 
 
 async def test_extract_on_exit_logs_a_warning_when_summarize_blows_up(tmp_path: Path, mocker):
@@ -332,5 +343,6 @@ def test_written_summary_is_picked_up_by_assemble_memory_next_session(tmp_path: 
 
     assert "Wired memory write-back on exit" in assembled
     assert "2026-06-19" in assembled
-    # It rides under MEMORY.md's provenance header (the file assemble_memory caps).
-    assert f"# From {(tmp_path / 'MEMORY.md').resolve()}" in assembled
+    # It rides under MEMORY.md's provenance header (the file assemble_memory caps), now under
+    # the consolidated <cwd>/.decode dir (Fix 1).
+    assert f"# From {_memory(tmp_path).resolve()}" in assembled

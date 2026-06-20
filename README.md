@@ -19,13 +19,29 @@ cd building-a-coding-agent-from-scratch-course
 make install        # uv sync + wire git hooks   (or just: uv sync)
 ```
 
-### Run `decode` from anywhere (optional)
+### Run `decode` as a CLI tool (recommended)
 
-`make install` lets you run the agent with `uv run decode`. To type just **`decode`** from any directory, put it on your PATH:
+`make install` lets you run the agent with `uv run decode`. To type just **`decode`** from **any project directory**, put it on your PATH:
 
 ```bash
 make install-cli    # uv tool install --editable .  — the command tracks your source
 ```
+
+Then `cd` into any project and run it directly:
+
+```bash
+cd ~/my-project
+decode              # start a fresh session in this directory
+decode --resume     # continue the most recent session here
+```
+
+`decode` always operates on the directory you launch it from (its working dir), and writes everything it produces under **`<cwd>/.decode/`** in that project:
+
+- `.decode/sessions/*.jsonl` — replayable session transcripts (used by `decode --resume`).
+- `.decode/MEMORY.md` — the one-sentence-per-session memory the agent appends on exit and reloads next time.
+- `.decode/logs/decode.log` — the log file (logs go here, **not** to the terminal, so the REPL stays clean).
+
+The whole `.decode/` directory is gitignored.
 
 If `decode` isn't found afterward, run `uv tool update-shell` and restart your shell. Uninstall with `make uninstall-cli`.
 
@@ -45,10 +61,10 @@ cp .env.example .env
 ## Use
 
 ```bash
-uv run decode      # or just `decode` after `make install-cli`
+decode             # after `make install-cli` (or `uv run decode`)
 ```
 
-You get an interactive REPL. Type a message and the agent streams a reply; when it wants to use a tool it **asks for approval first** (every tool, every time, in M1).
+You get an interactive REPL. Type a message and the agent streams a reply; when it wants to use a tool it **asks for approval first** (every tool, every time, in M1). Your messages echo as `you "…"` and the agent's streamed answer is labelled `Decode …`, so the conversation reads clearly.
 
 | Action | Key |
 |---|---|
@@ -64,11 +80,11 @@ You get an interactive REPL. Type a message and the agent streams a reply; when 
 **Resume a previous session:**
 
 ```bash
-uv run decode --resume            # the most recent session
-uv run decode --resume <session>  # a specific session id / filename
+decode --resume            # the most recent session
+decode --resume <session>  # a specific session id / filename
 ```
 
-**Memory.** `decode` loads `AGENTS.md` and `MEMORY.md` (walking from the working dir upward) into its context, and on exit appends a one-sentence summary of the session to `MEMORY.md` so the next session has a little context. Full transcripts are saved to `.decode/sessions/*.jsonl` (gitignored).
+**Memory.** `decode` loads `AGENTS.md` (walking from the working dir upward) and the harness `.decode/MEMORY.md` into its context, and on exit appends a one-sentence summary of the session to `.decode/MEMORY.md` so the next session has a little context. Full transcripts are saved to `.decode/sessions/*.jsonl` and logs to `.decode/logs/decode.log` (all gitignored under `<cwd>/.decode/`).
 
 ## Develop
 

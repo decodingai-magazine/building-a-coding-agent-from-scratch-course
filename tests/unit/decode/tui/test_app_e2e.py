@@ -326,6 +326,29 @@ async def test_run_app_runs_memory_write_back_on_exit_with_the_session_history(m
     assert captured["cwd"] == Path.cwd()
 
 
+async def test_run_app_renders_you_quote_decode_prefix_and_capital_goodbye(monkeypatch):
+    """Fix 2/4 through the real wiring: `you "…"`, one `Decode ` answer prefix, capital goodbye.
+
+    Drives the real ``run_app`` (real ``_make_event_sink``, real renderer) with a one-turn chat
+    and asserts the rendered conversation: the user line is double-quoted after ``you``, the
+    streamed answer is prefixed with ``Decode `` exactly once for the turn, and the goodbye prose
+    is capitalized.
+    """
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("hello world")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert 'you "hello world"' in output  # Fix 2: user message double-quoted after `you`
+    # Fix 2: the answer carries the `Decode ` lead-in, immediately before the streamed reply.
+    assert f"Decode {_CHAT_REPLY}" in output
+    assert "Decode - bye." in output  # Fix 4: capitalized goodbye prose
+
+
 async def test_run_app_persists_the_session_to_a_jsonl_log(monkeypatch, sessions_dir):
     """ADR-0002 §9: ``run_app`` opens a session log and persists the turn's messages.
 

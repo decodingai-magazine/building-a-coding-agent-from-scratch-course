@@ -1,10 +1,15 @@
-"""Unit tests for :func:`decode.memory.files.discover_memory_files` (ADR-0002 §8).
+"""Unit tests for :func:`decode.memory.files.discover_memory_files` (ADR-0002 §8, Fix 1).
 
-Discovery walks from ``cwd`` **up to the filesystem root**, collecting ``AGENTS.md`` and
-``MEMORY.md`` at every level and **skipping** ``CLAUDE.md`` (the Claude-Code shim). The order
-is **root-most first, cwd-most last** so the cwd-most file "wins" (appears last) when the
-assembler concatenates — the most specific memory has the final word. These tests build a fake
-``cwd → root`` tree under ``tmp_path`` so the walk is hermetic (no real filesystem layout).
+Discovery has two kinds of memory, found differently:
+
+* ``AGENTS.md`` — human/project memory, **walked** from ``cwd`` up to the filesystem root,
+  ordered **root-most first, cwd-most last** so the cwd-most file "wins" (appears last). The
+  Claude-Code shim ``CLAUDE.md`` is skipped.
+* ``MEMORY.md`` — the harness-extracted scratch memory. **Not walked**: it is the single file
+  ``cwd/.decode/MEMORY.md``, appended **last** of all so it has the final word.
+
+These tests build a fake ``cwd → root`` tree under ``tmp_path`` so the walk is hermetic (no real
+filesystem layout).
 """
 
 from pathlib import Path
@@ -31,17 +36,22 @@ def _write(path: Path, text: str = "x") -> Path:
     return path
 
 
-def test_discovers_agents_and_memory_at_a_single_level(root):
+def _harness_memory(cwd: Path) -> Path:
+    """The single harness MEMORY.md path under ``cwd`` (Fix 1: ``cwd/.decode/MEMORY.md``)."""
+    return cwd / ".decode" / "MEMORY.md"
+
+
+def test_discovers_agents_and_harness_memory_at_cwd(root):
     agents = _write(root / "AGENTS.md")
-    memory = _write(root / "MEMORY.md")
+    memory = _write(_harness_memory(root))
 
     found = discover_memory_files(root)
 
     assert set(found) == {agents, memory}
 
 
-def test_walks_cwd_up_to_root_collecting_each_level(root):
-    # A three-level tree: tmp_path (root-most) → mid → leaf (cwd).
+def test_walks_cwd_up_to_root_collecting_each_agents_md(root):
+    # A three-level tree: tmp_path (root-most) → mid → leaf (cwd). AGENTS.md is walked.
     root_agents = _write(root / "AGENTS.md")
     mid = root / "mid"
     mid_agents = _write(mid / "AGENTS.md")
@@ -54,8 +64,8 @@ def test_walks_cwd_up_to_root_collecting_each_level(root):
     assert set(found) == {root_agents, mid_agents, leaf_agents}
 
 
-def test_orders_root_most_first_cwd_most_last(root):
-    # cwd-most must appear LAST so it wins when concatenated.
+def test_orders_agents_root_most_first_cwd_most_last(root):
+    # cwd-most AGENTS.md must appear LAST so it wins when concatenated.
     root_agents = _write(root / "AGENTS.md")
     leaf = root / "a" / "b"
     leaf_agents = _write(leaf / "AGENTS.md")
@@ -66,13 +76,31 @@ def test_orders_root_most_first_cwd_most_last(root):
     assert found[-1] == leaf_agents
 
 
-def test_agents_md_precedes_memory_md_within_a_level(root):
-    agents = _write(root / "AGENTS.md")
-    memory = _write(root / "MEMORY.md")
+def test_harness_memory_is_not_walked_only_cwd_decode_dir_counts(root):
+    # An ancestor MEMORY.md (or a project-root MEMORY.md) is NOT memory anymore: only the single
+    # cwd/.decode/MEMORY.md is the harness file (Fix 1).
+    leaf = root / "a" / "b"
+    leaf.mkdir(parents=True)
+    _write(root / "MEMORY.md")  # an ancestor MEMORY.md — must be ignored
+    _write(leaf / "MEMORY.md")  # a project-root MEMORY.md — must be ignored
+    harness = _write(_harness_memory(leaf))  # the real harness file
 
-    found = discover_memory_files(root)
+    found = discover_memory_files(leaf)
 
-    assert found.index(agents) < found.index(memory)
+    assert found == [harness]
+
+
+def test_harness_memory_appears_last_after_agents(root):
+    # The harness MEMORY.md has the final word: it is appended after every AGENTS.md.
+    root_agents = _write(root / "AGENTS.md")
+    leaf_agents = _write(root / "sub" / "AGENTS.md")
+    harness = _write(_harness_memory(root / "sub"))
+
+    found = discover_memory_files(root / "sub")
+
+    assert found[-1] == harness
+    assert found.index(root_agents) < found.index(harness)
+    assert found.index(leaf_agents) < found.index(harness)
 
 
 def test_skips_claude_md(root):
@@ -92,9 +120,9 @@ def test_returns_empty_list_when_no_memory_files_exist(root):
     assert discover_memory_files(leaf) == []
 
 
-def test_only_lists_files_that_exist_at_a_level(root):
-    # Level has MEMORY.md but no AGENTS.md — only the existing file is collected.
-    memory = _write(root / "MEMORY.md")
+def test_only_lists_files_that_exist(root):
+    # cwd has the harness MEMORY.md but no AGENTS.md anywhere — only the existing file is collected.
+    memory = _write(_harness_memory(root))
 
     found = discover_memory_files(root)
 

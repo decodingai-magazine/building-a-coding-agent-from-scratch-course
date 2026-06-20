@@ -343,8 +343,9 @@ async def test_milestone1_capstone_full_stack(tmp_path, monkeypatch):
     )
     await extract_on_exit(handler.message_history, working_dir)
 
-    memory_file = working_dir / "MEMORY.md"
-    assert memory_file.is_file(), "the on-exit write-back must create MEMORY.md"
+    # The harness MEMORY.md is consolidated under <cwd>/.decode (Fix 1).
+    memory_file = working_dir / ".decode" / "MEMORY.md"
+    assert memory_file.is_file(), "the on-exit write-back must create .decode/MEMORY.md"
     memory_text = memory_file.read_text(encoding="utf-8")
     assert _MEMORY_SUMMARY in memory_text, "the summary sentence must be in MEMORY.md"
     assert "2026-06-20" in memory_text, "the summary line must be dated (UTC)"

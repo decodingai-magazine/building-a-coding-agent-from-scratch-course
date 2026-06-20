@@ -27,6 +27,14 @@ def test_render_assistant_text_delta_includes_the_text():
     assert isinstance(renderable, Text)
 
 
+def test_render_assistant_text_delta_has_a_subtle_gray_background():
+    # Fix 2: conversation text (assistant) carries a soft gray background for readability.
+    renderable = render.render_event(events.AssistantTextDelta(text="hello world"))
+
+    assert isinstance(renderable, Text)
+    assert renderable.style.bgcolor is not None
+
+
 def test_render_thinking_delta_includes_the_text():
     text = _render_to_text(render.render_event(events.ThinkingDelta(text="pondering")))
 
@@ -115,10 +123,19 @@ def test_render_empty_task_list_shows_a_placeholder():
     assert "no tasks" in text.lower()
 
 
-def test_render_turn_started_echoes_the_prompt():
+def test_render_turn_started_quotes_the_prompt_after_you():
     text = _render_to_text(render.render_event(events.TurnStarted(turn_id=0, prompt="do a thing")))
 
-    assert "do a thing" in text
+    # Fix 2: the user message renders as `you "<message>"` (double-quoted).
+    assert 'you "do a thing"' in text
+
+
+def test_render_turn_started_has_a_subtle_gray_background():
+    # Fix 2: the user (`you "…"`) line carries a soft gray background for readability.
+    renderable = render.render_event(events.TurnStarted(turn_id=0, prompt="do a thing"))
+
+    assert isinstance(renderable, Text)
+    assert renderable.style.bgcolor is not None
 
 
 def test_render_turn_finished_marks_abort():

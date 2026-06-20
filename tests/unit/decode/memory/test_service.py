@@ -10,8 +10,6 @@ and an empty discovery yields ``""``. The line cap and the byte cap are exercise
 
 from pathlib import Path
 
-import pytest
-
 from decode.config.settings import settings
 from decode.memory.service import assemble_memory
 
@@ -20,6 +18,11 @@ def _write(path: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def _harness_memory(cwd: Path) -> Path:
+    """The single harness MEMORY.md path under ``cwd`` (Fix 1: ``cwd/.decode/MEMORY.md``)."""
+    return cwd / ".decode" / "MEMORY.md"
 
 
 def test_returns_empty_string_when_no_files_found(tmp_path):
@@ -62,7 +65,7 @@ def test_unreadable_file_is_skipped_without_raising(tmp_path, mocker):
     # A discovered file that errors on read must be silently skipped, not crash assembly.
     # Compare resolved paths: discovery resolves cwd, so the file the service reads is the
     # resolved path (macOS /var → /private/var), not the raw tmp_path-relative one.
-    bad = _write(tmp_path / "MEMORY.md", "secret").resolve()
+    bad = _write(_harness_memory(tmp_path), "secret").resolve()
     _write(tmp_path / "AGENTS.md", "VISIBLE")
 
     real_read_text = Path.read_text
@@ -85,7 +88,7 @@ def test_memory_md_is_capped_by_line_count_with_a_visible_note(tmp_path):
     # line cap can clip this. Lines are well under memory_max_bytes in total.
     line_count = settings.memory_max_lines + 50
     body = "\n".join(f"line{i}" for i in range(line_count))
-    _write(tmp_path / "MEMORY.md", body)
+    _write(_harness_memory(tmp_path), body)
 
     assembled = assemble_memory(tmp_path)
 
@@ -100,7 +103,7 @@ def test_memory_md_is_capped_by_byte_count_with_a_visible_note(tmp_path):
     # Few lines (well under the line cap) but each line is huge, so the BYTE cap bites first.
     big_line = "z" * (settings.memory_max_bytes // 2)
     body = "\n".join([big_line, big_line, big_line])  # 3 lines, ~1.5x the byte cap
-    _write(tmp_path / "MEMORY.md", body)
+    _write(_harness_memory(tmp_path), body)
 
     assembled = assemble_memory(tmp_path)
 
@@ -122,7 +125,7 @@ def test_agents_md_is_not_capped(tmp_path):
 
 
 def test_short_memory_md_is_not_marked_truncated(tmp_path):
-    _write(tmp_path / "MEMORY.md", "one short note")
+    _write(_harness_memory(tmp_path), "one short note")
 
     assembled = assemble_memory(tmp_path)
 
@@ -130,10 +133,18 @@ def test_short_memory_md_is_not_marked_truncated(tmp_path):
     assert "truncated" not in assembled.lower()
 
 
-@pytest.mark.parametrize("filename", ["AGENTS.md", "MEMORY.md"])
-def test_includes_each_memory_file_kind(tmp_path, filename):
-    _write(tmp_path / filename, f"content of {filename}")
+def test_includes_agents_md(tmp_path):
+    _write(tmp_path / "AGENTS.md", "content of AGENTS.md")
 
     assembled = assemble_memory(tmp_path)
 
-    assert f"content of {filename}" in assembled
+    assert "content of AGENTS.md" in assembled
+
+
+def test_includes_harness_memory_md(tmp_path):
+    # The harness MEMORY.md is the single cwd/.decode/MEMORY.md (Fix 1).
+    _write(_harness_memory(tmp_path), "content of MEMORY.md")
+
+    assembled = assemble_memory(tmp_path)
+
+    assert "content of MEMORY.md" in assembled

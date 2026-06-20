@@ -11,8 +11,9 @@ and the dynamic ``@agent.instructions`` hook in :mod:`decode.agent.factory`. It:
    note** so the model knows there is more it cannot see.
 
 Why cap ``MEMORY.md`` but not ``AGENTS.md``: ``AGENTS.md`` is project-authored and trusted to be
-deliberately sized; ``MEMORY.md`` is **model-maintained** (task 013 appends to it every session)
-and can grow without bound, so it is the file that needs a budget. Caps are config-driven
+deliberately sized; ``MEMORY.md`` (the single harness file ``cwd/.decode/MEMORY.md``, Fix 1) is
+**model-maintained** (task 013 appends to it every session) and can grow without bound, so it is
+the file that needs a budget. Caps are config-driven
 (``settings.memory_max_*``) — the same single-config-reader rule the rest of the package follows.
 
 **Missing / unreadable files are skipped, not errors.** A file can vanish or become unreadable

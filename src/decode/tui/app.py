@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -41,6 +42,7 @@ from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.patch_stdout import patch_stdout
 from pydantic_ai.messages import ModelMessage
 from rich.console import Console
+from rich.text import Text
 
 from decode.agent.deps import AgentDeps, PermissionResolver, UserQuestionResolver
 from decode.agent.factory import build_agent
@@ -62,6 +64,10 @@ _RESUME_LATEST = "latest"
 
 _QUIT_COMMAND = "/quit"
 _PROMPT = "> "
+# The capital-D label printed once before a turn's first streamed answer chunk (Fix 2). The
+# trailing space separates it from the answer; it is added in the event sink (the deltas stream,
+# so the once-per-turn prefix cannot live in the pure renderer).
+_ASSISTANT_PREFIX = "Decode "
 # A minimal inline affordance shown when a decision is pending; the full request was already
 # rendered once by the loop's PermissionRequested event (single render path — no re-print).
 _PERMISSION_AFFORDANCE = "allow this tool call? [y/N]"
@@ -226,7 +232,7 @@ def _load_resume_history(resume: str | None, console: Console) -> list[ModelMess
         if history is None:
             console.print(
                 render.render_event(
-                    events.AssistantTextDelta(text="decode - no prior session to resume.")
+                    events.AssistantTextDelta(text="Decode - no prior session to resume.")
                 )
             )
             return []
@@ -237,13 +243,40 @@ def _load_resume_history(resume: str | None, console: Console) -> list[ModelMess
     if path is None:
         console.print(
             render.render_event(
-                events.AssistantTextDelta(text=f"decode - no session matching {resume!r}.")
+                events.AssistantTextDelta(text=f"Decode - no session matching {resume!r}.")
             )
         )
         return []
     history = load(path)
     logger.debug("resumed session %s with %d message(s)", path.name, len(history))
     return history
+
+
+def _make_event_sink(console: Console) -> Callable[[events.Event], None]:
+    """Build the harness event sink that renders events append-style above the pinned prompt.
+
+    Beyond rendering each event via the pure :func:`decode.tui.render.render_event`, the sink
+    owns the one piece of state the pure renderer cannot: the once-per-turn ``Decode `` prefix
+    (Fix 2). Assistant answer text **streams** as many :class:`~decode.entities.events.AssistantTextDelta`
+    events, so the capital-D label must be printed **once**, just before the first delta of a
+    turn — and the small ``need_prefix`` flag is **reset on each**
+    :class:`~decode.entities.events.TurnStarted` so every turn gets exactly one prefix. Keeping
+    this flag here (not in the renderer) is what lets the render functions stay pure and
+    stateless.
+    """
+    state = {"need_prefix": False}
+
+    def on_event(event: events.Event) -> None:
+        if isinstance(event, events.TurnStarted):
+            state["need_prefix"] = True
+        elif isinstance(event, events.AssistantTextDelta) and state["need_prefix"]:
+            # Print the `Decode ` label once (on the conversation background, no newline) so it
+            # reads as the lead-in to the streamed answer that immediately follows.
+            console.print(Text(_ASSISTANT_PREFIX, style=render.CONVERSATION_BG), end="")
+            state["need_prefix"] = False
+        console.print(render.render_event(event))
+
+    return on_event
 
 
 async def run_app(console: Console | None = None, *, resume: str | None = None) -> None:
@@ -267,9 +300,9 @@ async def run_app(console: Console | None = None, *, resume: str | None = None) 
     """
     console = console or Console()
 
-    def _on_event(event: events.Event) -> None:
-        # The harness streams events here; render append-style above the pinned prompt.
-        console.print(render.render_event(event))
+    # The harness streams events into this sink; it renders append-style above the pinned prompt
+    # and owns the once-per-turn ``Decode `` answer prefix (Fix 2 — the pure renderer can't).
+    _on_event = _make_event_sink(console)
 
     session: PromptSession[object] = PromptSession(
         key_bindings=_build_key_bindings(),
@@ -305,7 +338,7 @@ async def run_app(console: Console | None = None, *, resume: str | None = None) 
     runner = Runner(handler, on_event=_on_event)
 
     console.print(
-        render.render_event(events.AssistantTextDelta(text="decode - type a line; /quit exits."))
+        render.render_event(events.AssistantTextDelta(text="Decode - type a line; /quit exits."))
     )
 
     with patch_stdout(raw=True):
@@ -354,4 +387,4 @@ async def run_app(console: Console | None = None, *, resume: str | None = None) 
     # project root. Fully non-fatal — extract_on_exit never raises, so it cannot block exit.
     await extract_on_exit(handler.message_history, deps.cwd)
 
-    console.print(render.render_event(events.AssistantTextDelta(text="decode - bye.")))
+    console.print(render.render_event(events.AssistantTextDelta(text="Decode - bye.")))

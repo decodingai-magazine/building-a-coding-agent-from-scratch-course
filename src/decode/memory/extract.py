@@ -2,7 +2,7 @@
 
 The deliberately minimal M1 memory-write loop. When a session ends, one cheap Gemini call
 summarizes the whole conversation into a **single sentence**, which is appended (dated) to the
-project-root ``MEMORY.md`` and trimmed back to the configured caps. Next session,
+harness ``cwd/.decode/MEMORY.md`` and trimmed back to the configured caps. Next session,
 :func:`decode.memory.service.assemble_memory` picks that line up and injects it into the prompt —
 so the agent carries a thin thread of memory across sessions.
 
@@ -19,8 +19,9 @@ Three layers, each independently testable:
   or the call fails. Model-agnostic: ``model_or_settings`` is either a concrete
   :class:`~pydantic_ai.models.Model` (tests pass ``TestModel`` / ``FunctionModel`` — no network)
   or the :class:`~decode.config.settings.Settings` from which the production Gemini model is built.
-* :func:`append_session_summary` — pure filesystem. Appends a dated bullet to ``cwd/MEMORY.md``
-  (the **project root** = the launch ``cwd``; created if absent) and trims the file to
+* :func:`append_session_summary` — pure filesystem. Appends a dated bullet to
+  ``cwd/.decode/MEMORY.md`` (the **project root** = the launch ``cwd``; the file and its
+  ``.decode/`` parent are created if absent) and trims the file to
   ``settings.memory_max_lines`` / ``settings.memory_max_bytes``, **keeping the most-recent lines**.
   ``now`` is injected (timezone-aware UTC) so the dated line is deterministic in tests.
 * :func:`extract_on_exit` — the shutdown orchestrator. Summarize → if non-``None``, append.
@@ -106,14 +107,26 @@ async def summarize_session(
     return summary or None
 
 
-def append_session_summary(cwd: Path, summary: str, *, now: datetime) -> None:
-    """Append a dated summary line to ``cwd/MEMORY.md`` and trim it to the caps (ADR-0002 §8).
+def _memory_path(cwd: Path) -> Path:
+    """The harness MEMORY.md path: ``cwd/.decode/MEMORY.md`` (Fix 1).
 
-    "Project root" is the launch ``cwd``: the file written is ``cwd/MEMORY.md`` (created if
-    absent). The summary is appended as a dated bullet — ``- {YYYY-MM-DD}: {summary}`` using the
-    UTC date from ``now`` — then the whole file is trimmed to ``settings.memory_max_lines`` lines
-    AND ``settings.memory_max_bytes`` bytes, **keeping the most-recent lines** (the oldest are
-    dropped first), so the model-maintained file can never grow without bound.
+    All harness-extracted memory lives under ``<cwd>/.decode`` alongside ``sessions/`` and
+    ``logs/`` so a project root stays clean. The location is config-driven via
+    ``settings.decode_dir`` (the single config reader), matching ``assemble_memory`` on the read
+    side. ``AGENTS.md`` is unchanged — it is human/project memory, still walked cwd→root.
+    """
+    return cwd / settings.decode_dir / _MEMORY_FILENAME
+
+
+def append_session_summary(cwd: Path, summary: str, *, now: datetime) -> None:
+    """Append a dated summary line to ``cwd/.decode/MEMORY.md`` and trim to the caps (ADR-0002 §8).
+
+    "Project root" is the launch ``cwd``: the file written is ``cwd/.decode/MEMORY.md`` — the
+    single harness MEMORY.md, created (with its ``.decode/`` parent) if absent. The summary is
+    appended as a dated bullet — ``- {YYYY-MM-DD}: {summary}`` using the UTC date from ``now`` —
+    then the whole file is trimmed to ``settings.memory_max_lines`` lines AND
+    ``settings.memory_max_bytes`` bytes, **keeping the most-recent lines** (the oldest are dropped
+    first), so the model-maintained file can never grow without bound.
 
     ``now`` is injected and **must be timezone-aware** (UTC) — a naive datetime is rejected, the
     same boundary rule the rest of the package follows. Filesystem reads/writes are local and the
@@ -122,7 +135,8 @@ def append_session_summary(cwd: Path, summary: str, *, now: datetime) -> None:
     if now.tzinfo is None:
         raise ValueError("now must be a timezone-aware (UTC) datetime, not naive")
 
-    memory = cwd / _MEMORY_FILENAME
+    memory = _memory_path(cwd)
+    memory.parent.mkdir(parents=True, exist_ok=True)
     existing = memory.read_text(encoding="utf-8") if memory.is_file() else ""
 
     dated_line = f"- {now.astimezone(UTC):%Y-%m-%d}: {summary}"
@@ -157,7 +171,7 @@ async def extract_on_exit(messages: list[ModelMessage], cwd: Path) -> None:
         if summary is None:
             return
         append_session_summary(cwd, summary, now=_utc_now())
-        logger.debug("wrote session summary to %s", cwd / _MEMORY_FILENAME)
+        logger.debug("wrote session summary to %s", _memory_path(cwd))
     except Exception:
         logger.warning("memory write-back on exit failed; continuing shutdown", exc_info=True)
 

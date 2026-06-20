@@ -12,9 +12,54 @@ import asyncio
 import pytest
 from rich.console import Console
 
+from decode.entities import events
 from decode.entities.permissions import PermissionOutcome, PermissionRequest
 from decode.harness.decisions import DecisionChannel
 from decode.tui import app
+
+
+def _record_console() -> Console:
+    """A console that records its output so the event-sink prefix can be asserted (Fix 2)."""
+    return Console(width=100, record=True)
+
+
+def test_event_sink_prefixes_the_assistant_answer_with_decode_once_per_turn():
+    # Fix 2: `Decode ` is added once, before the first AssistantTextDelta of a turn.
+    console = _record_console()
+    sink = app._make_event_sink(console)
+
+    sink(events.TurnStarted(turn_id=0, prompt="hi"))
+    sink(events.AssistantTextDelta(text="hello "))
+    sink(events.AssistantTextDelta(text="world"))
+    sink(events.TurnFinished(turn_id=0))
+
+    out = console.export_text()
+    assert "Decode " in out
+    assert out.count("Decode ") == 1  # exactly once for the turn
+
+
+def test_event_sink_resets_the_decode_prefix_each_turn():
+    # A new turn re-emits the `Decode ` prefix before its first delta.
+    console = _record_console()
+    sink = app._make_event_sink(console)
+
+    sink(events.TurnStarted(turn_id=0, prompt="first"))
+    sink(events.AssistantTextDelta(text="one"))
+    sink(events.TurnStarted(turn_id=1, prompt="second"))
+    sink(events.AssistantTextDelta(text="two"))
+
+    assert console.export_text().count("Decode ") == 2
+
+
+def test_event_sink_does_not_prefix_non_assistant_events():
+    # Tool/permission/etc. events never get the `Decode ` prefix.
+    console = _record_console()
+    sink = app._make_event_sink(console)
+
+    sink(events.TurnStarted(turn_id=0, prompt="hi"))
+    sink(events.ToolResult(tool_call_id="t1", name="bash", output="ok"))
+
+    assert "Decode " not in console.export_text()
 
 
 def test_is_quit_command_matches_slash_quit():

@@ -14,9 +14,18 @@ from __future__ import annotations
 
 from rich.console import RenderableType
 from rich.panel import Panel
+from rich.style import Style
 from rich.text import Text
 
 from decode.entities import events
+
+# A subtle gray background applied to the conversation lines — the user (`you "…"`) line and the
+# assistant (`Decode …`) stream — so the conversation text reads as visually distinct from the
+# tool panels / errors (Fix 2). Kept deliberately soft (``grey15``); a true full-terminal
+# background is not possible in append-style mode (ADR-0002 §6), so we style the renderables and
+# pad them to the console width (:meth:`Text.pad_right` at print time would over-pad streamed
+# deltas, so the background simply rides the text plus its leading label).
+CONVERSATION_BG = Style(bgcolor="grey15")
 
 
 def render_event(event: events.Event) -> RenderableType:
@@ -49,8 +58,13 @@ def render_event(event: events.Event) -> RenderableType:
 
 
 def _render_assistant_delta(event: events.AssistantTextDelta) -> Text:
-    """A chunk of the assistant's answer, appended above the prompt."""
-    return Text(event.text)
+    """A chunk of the assistant's answer, appended above the prompt.
+
+    Carries the subtle gray conversation background (Fix 2). The ``Decode `` prefix is added
+    once per turn by the app's event sink (before the first delta), not here — these functions
+    stay pure and stateless, so a per-turn prefix cannot live in the renderer.
+    """
+    return Text(event.text, style=CONVERSATION_BG)
 
 
 def _render_thinking_delta(event: events.ThinkingDelta) -> Text:
@@ -97,8 +111,17 @@ def _render_task_list_updated(event: events.TaskListUpdated) -> Panel:
 
 
 def _render_turn_started(event: events.TurnStarted) -> Text:
-    """A dim marker that a turn began, echoing the prompt that opened it."""
-    return Text.assemble(("you ", "dim cyan"), (event.prompt, "default"))
+    """The user's message, echoed as ``you "<message>"`` on a subtle gray background (Fix 2).
+
+    The prompt is double-quoted so the user's text reads as a quoted utterance, and the whole
+    line carries the conversation background that distinguishes user/assistant lines from the
+    tool panels / errors (ADR-0002 §6 — append-style, so we style the renderable).
+    """
+    return Text.assemble(
+        ("you ", "dim cyan"),
+        (f'"{event.prompt}"', "default"),
+        style=CONVERSATION_BG,
+    )
 
 
 def _render_turn_finished(event: events.TurnFinished) -> Text:

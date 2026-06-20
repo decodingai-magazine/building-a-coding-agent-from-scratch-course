@@ -2,10 +2,11 @@
 
 Two pure-ish modules, no agent dependency:
 
-* :mod:`decode.memory.files` — :func:`~decode.memory.files.discover_memory_files` walks from the
-  agent's ``cwd`` **up to the filesystem root**, collecting ``AGENTS.md`` and ``MEMORY.md`` at
-  each level (``CLAUDE.md`` is the Claude-Code shim and is skipped). The walk is ordered
-  **root-most first, cwd-most last** so the most specific memory wins.
+* :mod:`decode.memory.files` — :func:`~decode.memory.files.discover_memory_files` walks
+  ``AGENTS.md`` from the agent's ``cwd`` **up to the filesystem root** (``CLAUDE.md`` is the
+  Claude-Code shim and is skipped), ordered **root-most first, cwd-most last** so the most
+  specific memory wins, then appends the single harness ``cwd/.decode/MEMORY.md`` last (the
+  write-back's output, Fix 1 — not walked).
 * :mod:`decode.memory.service` — :func:`~decode.memory.service.assemble_memory` reads those files,
   joins them with a provenance header per file, and caps ``MEMORY.md`` at
   ``settings.memory_max_lines`` lines AND ``settings.memory_max_bytes`` bytes with a visible

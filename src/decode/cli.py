@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # The one friendly line shown when no Gemini key is configured, instead of the raw
 # ``pydantic_ai.UserError`` traceback ``build_agent()`` would otherwise raise (ADR-0002 §1).
 _NO_KEY_MESSAGE = (
-    "decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example)."
+    "Decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example)."
 )
 
 
@@ -37,7 +37,7 @@ _NO_KEY_MESSAGE = (
     help="Resume the latest session, or a named session id / filename.",
 )
 def cli(resume: str | None) -> None:
-    """decode — a terminal coding agent you run in your terminal."""
+    """Decode — a terminal coding agent you run in your terminal."""
     logger.debug("decode starting (resume=%s)", resume)
     # No-key startup guard (task 004 carryover): build_agent() constructs the Gemini provider,
     # which raises a raw pydantic_ai.UserError (mentioning GOOGLE_API_KEY — the wrong var for

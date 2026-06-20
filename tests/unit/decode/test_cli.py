@@ -45,7 +45,8 @@ def _isolate_sessions_dir(tmp_path, monkeypatch):
 def test_cli_runs_and_exits_zero():
     result = CliRunner().invoke(cli, [])
     assert result.exit_code == 0
-    assert "decode" in result.output
+    # Fix 4: user-facing prose says "Decode" (the banner/goodbye); the command stays lowercase.
+    assert "Decode" in result.output
 
 
 def test_cli_accepts_resume_flag():
@@ -110,6 +111,8 @@ def test_cli_with_no_gemini_key_exits_nonzero_with_a_friendly_line(mocker):
     assert "GEMINI_API_KEY" in result.output
     assert ".env.example" in result.output
     assert "Traceback" not in result.output
+    # Fix 4: user-facing prose capitalizes "Decode".
+    assert "Decode:" in result.output
     # The guard short-circuited before the REPL / agent build.
     run_app.assert_not_awaited()
 
