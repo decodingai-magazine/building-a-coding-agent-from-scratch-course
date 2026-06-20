@@ -24,7 +24,7 @@ classifiers = [
 # the course adds the heavier integrations at the step that needs them.
 dependencies = [
     "pydantic>=2.13.4",
-    "pydantic-settings>=2.4",
+    "pydantic-settings[dotenv]>=2.4",  # [dotenv] = explicit .env support (python-dotenv)
     "click>=8.1",
     "rich>=13",
     "prompt-toolkit>=3",
