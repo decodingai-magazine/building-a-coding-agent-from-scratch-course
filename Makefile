@@ -34,6 +34,13 @@ pre-commit:  ## Fast gate: format-check + lint-check + unit tests.
 build:  ## Build wheel + sdist into dist/.
 	uv build
 
+install-cli:  ## Put `decode` on your PATH (editable: tracks your source). Then just type `decode`.
+	uv tool install --editable .
+	@echo "Installed. If 'decode' is not found, add uv's tool bin to PATH: run 'uv tool update-shell' then restart your shell."
+
+uninstall-cli:  ## Remove the `decode` command from your PATH.
+	uv tool uninstall decode
+
 ci:  ## What CI runs: lockfile check + format-check + lint-check + full tests.
 	uv lock --check
 	$(MAKE) format-check
@@ -44,4 +51,4 @@ help:  ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit build ci help
+.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit build install-cli uninstall-cli ci help

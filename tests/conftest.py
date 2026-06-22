@@ -1,1 +1,35 @@
-# Shared pytest fixtures live here only. Mirror src/ 1:1 under tests/unit and tests/integration.
+"""Shared pytest fixtures. Mirror src/ 1:1 under tests/unit and tests/integration."""
+
+import os
+
+# Disable file logging for the whole suite BEFORE any decode import (Fix 3). ``init_logger`` runs
+# at import time in the ``decode.cli`` entrypoint; an empty ``DECODE_LOG_FILE`` installs a
+# NullHandler so the suite never creates ``.decode/logs/`` in the repo. The individual
+# ``test_logging`` tests set their own value via ``monkeypatch.setenv`` (which wins per-test).
+os.environ["DECODE_LOG_FILE"] = ""
+
+import pytest
+from pydantic import SecretStr
+
+
+@pytest.fixture(autouse=True)
+def _no_real_provider_key(monkeypatch):
+    """Hermeticity guard — no test may reach a real LLM provider.
+
+    ``decode.config.settings.settings`` is built at import time and may have loaded a real
+    ``GEMINI_API_KEY`` from a developer's local ``.env``. Without scrubbing it, any test that
+    drives the real :func:`decode.tui.app.run_app` would, on exit, run the memory write-back
+    (:func:`decode.memory.extract.extract_on_exit` → a *live* Gemini call) — leaking sockets and
+    writing the repo's ``MEMORY.md``. CI has no key so it never hit this; a developer with a key
+    did. We delete the env var and blank the singleton's key so that path no-ops everywhere.
+
+    Tests that need the agent to *build* inject their own dummy key in a module-local autouse
+    fixture (which runs after this conftest one, so it wins); tests that exercise the summarizer
+    pass an explicit stub ``Model``. Settings instances built with an explicit ``_env_file`` are
+    unaffected (they don't touch this singleton).
+    """
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    from decode.config.settings import settings
+
+    monkeypatch.setattr(settings, "gemini_api_key", SecretStr(""), raising=False)

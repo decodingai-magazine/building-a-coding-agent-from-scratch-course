@@ -150,7 +150,57 @@ Project-specific invariants the agents can't infer:
 
 # Testing E2E
 
-*AGENT: fill in the concrete way to exercise THIS project end-to-end as each surface lands — e.g. for the TUI bootstrap: the exact launch command (`uv run decode`), any service that must be running first, required env (`GEMINI_API_KEY` / `OPENROUTER_API_KEY`), and what "working" looks like (a prompt renders, a message round-trips through the agent loop, the answer streams back). Keep it project-specific and runnable.* The generic "use it like a user, then try to break it" pass is the Tester's job.
+The automated proof that the whole M1 stack hangs together is the capstone integration test
+[`tests/integration/test_milestone1_capstone.py`](tests/integration/test_milestone1_capstone.py):
+it drives a six-step conversation (read → gated write approve → gated write deny → todo_write →
+ask_user → web_fetch) through the **real** `build_agent()` + `Runner` + `render_event` + session
+log + memory write-back, swapping only the network boundary (`FunctionModel` for the model,
+`httpx.MockTransport` for the web tool). Run it with `make integration-tests` (or the full gate,
+`make ci`). It needs no API key and makes no network call.
+
+What follows is the **manual** e2e pass against a real Gemini — exercise each surface like a user,
+then try to break it (the adversarial half is the Tester's job).
+
+**Launch.** One env var, no service to start first:
+
+```bash
+export GEMINI_API_KEY=…        # the only required secret (see .env.example); or put it in .env
+uv run decode                  # the REPL: a "> " prompt + a footer hint render
+```
+
+A bare `uv run decode` with **no** `GEMINI_API_KEY` must print one friendly line on stderr —
+`decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example).` — and exit
+non-zero, **not** a traceback (the task-004 startup guard in `cli.py`).
+
+For each surface below: the thing to type, and what "working" looks like.
+
+| Surface | Type this | Working looks like |
+|---|---|---|
+| **Plain chat** | `what can you do?` | the answer **streams** in token-by-token above the prompt; the prompt stays pinned at the bottom. |
+| **Read (gated)** | `read pyproject.toml` | a `permission? read …` prompt appears; type `y` → a panel with the numbered file contents; type `n` → the model is told it was denied and adapts. |
+| **Write (gated, approve)** | `create a file hello.txt that says hi` | `permission? write …` → `y` → the file **appears** on disk (`cat hello.txt`) and the model confirms. |
+| **Write (gated, deny)** | repeat the write, answer `n` | the file is **not** created (`ls hello.txt` → absent) and the model is told the write was denied (it does not pretend it wrote it). |
+| **Bash** | `run the tests with make unit-tests` | `permission? bash …` → `y` → a panel with the command's stdout/stderr (truncated past the cap); a runaway command is bounded by `bash_timeout_s`. |
+| **Todo checklist** | `make a 3-step plan to add a CLI flag and track it` | a blue **tasks** panel renders the checklist (`[ ]` / `[~]` / `[x]`) and re-renders as the model updates statuses. |
+| **web_fetch** | `fetch https://example.com and summarize it` | `permission? web_fetch …` → `y` → the page comes back as Markdown (HTML stripped) and the model summarizes it. |
+| **ask_user** | `deploy my app` (something underspecified) | the model calls `ask_user`; an `ask: …` question renders with a `type your answer:` cue; your next typed line **is** the answer and the turn resumes with it. |
+
+**Mid-turn interaction** (while a turn is streaming — ADR-0002 §4-5):
+
+- **Steer** — start a long turn, then type a line and press plain **Enter**. It is injected at the
+  next model-request boundary (never mid-stream/mid-tool); the model sees it on the next leg.
+- **Follow-up** — press **Alt+Enter** instead. It is queued and drained only when the turn would
+  otherwise stop, continuing the conversation as a new turn.
+- **Abort** — press **Esc**. The turn stops at the next boundary, keeps the work done so far, and
+  the REPL returns to idle (a `[aborted]` marker renders).
+
+**Persistence + memory across sessions:**
+
+- `decode --resume` (or `decode --resume <session-id>`) replays the latest (or named) session log
+  from `.decode/sessions/*.jsonl` — the prior conversation is seeded and you continue it.
+- On quit (`/quit` or `Ctrl-D`), one cheap Gemini call appends a dated one-line summary to
+  `./MEMORY.md`. Quit, `cat MEMORY.md` (a new `- YYYY-MM-DD: …` bullet), then relaunch — that line
+  is injected back into the agent's instructions (it can recall what the last session did).
 
 # Documentation Conventions
 
