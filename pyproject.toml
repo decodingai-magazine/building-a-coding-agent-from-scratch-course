@@ -91,5 +91,7 @@ python_functions = "test_*"
 addopts = "-ra --strict-markers --import-mode=importlib"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-pythonpath = ["src"]
+# ``tests/support`` carries shared test-only helpers (e.g. the gated ``noop`` tool the
+# permission/loop/e2e tests drive) that the shipped ``decode`` package must not contain.
+pythonpath = ["src", "tests"]
 filterwarnings = ["error"]

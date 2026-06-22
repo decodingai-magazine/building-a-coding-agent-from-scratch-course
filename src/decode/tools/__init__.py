@@ -8,9 +8,9 @@ tool — with no plugin machinery (MCP is M12). M1's production tools are ``read
   the gated ``write`` / ``edit`` (task 006-007), backed by the shared
   :mod:`decode.tools.truncate` output cap.
 
-:mod:`decode.tools.noop` (task 005's gated echo) is **not** in the production catalogue — it
-was scaffolding for the permission path before any real tool existed and is kept only as a
-TEST-ONLY helper (``register_noop``); the registry never registers it.
+The task-005 gated ``noop`` echo is **not** part of this package — it was scaffolding for the
+permission path before any real tool existed and now lives only as a TEST-ONLY helper under
+``tests/support`` (``support.noop_helper.register_noop``); production never registers it.
 
 Every tool gates itself by raising :class:`pydantic_ai.ApprovalRequired` when its run context
 has not been approved, which makes the Pydantic AI run resolve to ``DeferredToolRequests`` so

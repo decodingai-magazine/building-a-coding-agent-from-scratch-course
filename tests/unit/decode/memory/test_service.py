@@ -11,7 +11,7 @@ and an empty discovery yields ``""``. The line cap and the byte cap are exercise
 from pathlib import Path
 
 from decode.config.settings import settings
-from decode.memory.service import assemble_memory
+from decode.memory.service import assemble_memory, clip_lines_to_budget
 
 
 def _write(path: Path, text: str) -> Path:
@@ -148,3 +148,43 @@ def test_includes_harness_memory_md(tmp_path):
     assembled = assemble_memory(tmp_path)
 
     assert "content of MEMORY.md" in assembled
+
+
+# clip_lines_to_budget — the one shared core of both memory budgeters (task: structural tidy).
+# It replaced the head-keeping ``service._clip_to_budget`` and the tail-keeping
+# ``extract._trim_keeping_recent``; these pin the two ends differ ONLY in which end survives.
+
+_FIVE = ["aaaa", "bbbb", "cccc", "dddd", "eeee"]
+
+
+def test_clip_keep_head_keeps_the_first_lines():
+    # Line cap of 2 keeps the first two whole lines; bytes are not the binding constraint here.
+    assert clip_lines_to_budget(_FIVE, max_lines=2, max_bytes=1000, keep="head") == "aaaa\nbbbb"
+
+
+def test_clip_keep_tail_keeps_the_last_lines():
+    # Same inputs, tail-keeping: the last two whole lines survive instead.
+    assert clip_lines_to_budget(_FIVE, max_lines=2, max_bytes=1000, keep="tail") == "dddd\neeee"
+
+
+def test_clip_keep_head_drops_trailing_lines_to_hit_the_byte_budget():
+    # Line cap admits all 3, but 14 bytes only fits two 4-byte lines + 1 newline (9 bytes).
+    assert (
+        clip_lines_to_budget(["aaaa", "bbbb", "cccc"], max_lines=10, max_bytes=9, keep="head")
+        == "aaaa\nbbbb"
+    )
+
+
+def test_clip_keep_tail_drops_leading_lines_to_hit_the_byte_budget():
+    # Same byte budget, tail-keeping: the two FRESHEST lines survive, the oldest is dropped.
+    assert (
+        clip_lines_to_budget(["aaaa", "bbbb", "cccc"], max_lines=10, max_bytes=9, keep="tail")
+        == "bbbb\ncccc"
+    )
+
+
+def test_clip_keeps_at_least_one_whole_line_even_when_it_overflows():
+    # A single line longer than the byte budget is never split away to nothing — both ends agree.
+    long = "x" * 100
+    assert clip_lines_to_budget([long, "y"], max_lines=10, max_bytes=5, keep="head") == long
+    assert clip_lines_to_budget(["y", long], max_lines=10, max_bytes=5, keep="tail") == long

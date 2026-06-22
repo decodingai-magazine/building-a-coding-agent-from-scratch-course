@@ -29,6 +29,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
+from support.noop_helper import register_noop
 
 from decode.agent.deps import AgentDeps, PermissionResolver, UserQuestionResolver
 from decode.agent.factory import build_agent
@@ -38,7 +39,6 @@ from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Boundary, Runner, TurnContext
 from decode.permissions.gate import PermissionGate
 from decode.tools.askuser import NoInteractiveUserError
-from decode.tools.noop import register_noop
 from decode.tui.app import InputIntent
 
 
@@ -79,11 +79,12 @@ def agent(mocker):
 
 @pytest.fixture
 def gated_agent(agent):
-    """The production agent plus the TEST-ONLY gated ``noop`` (decode.tools.noop.register_noop).
+    """The production agent plus the TEST-ONLY gated ``noop`` (support.noop_helper.register_noop).
 
     The permission/loop tests drive a minimal gated flow with the scaffolding ``noop`` tool,
-    which is intentionally NOT in the production registry (task 016). Registering it here on the
-    test agent keeps those tests independent of the production tool set.
+    which is intentionally NOT in the production registry (task 016) and lives under
+    ``tests/support``. Registering it here on the test agent keeps those tests independent of the
+    production tool set.
     """
     register_noop(agent)
     return agent

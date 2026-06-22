@@ -44,7 +44,7 @@ def test_registry_lists_the_expected_tools():
 def test_registry_does_not_expose_the_scaffolding_noop_tool():
     # ADR-0002 §7 + AGENTS.md: the task-005 ``noop`` scaffolding is superseded by the real
     # tools (006-011) and must NOT ride on the production agent. It survives only as a
-    # TEST-ONLY helper (decode.tools.noop.register_noop), never in the registry.
+    # TEST-ONLY helper (support.noop_helper.register_noop), never in the registry.
     assert "noop" not in {spec.name for spec in TOOL_SPECS}
     assert "noop" not in TOOL_READ_ONLY
     # Unknown tools (including ``noop``) default to mutating via the loop's lookup.

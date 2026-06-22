@@ -9,11 +9,12 @@ which fully superseded it). It does nothing but echo its ``text`` argument — i
 the human resolver; on the resume leg the same tool runs with ``tool_call_approved=True`` and
 returns its echo (or the framework returns the denial message to the model instead).
 
-``noop`` is **not** in the production tool set — the flat :mod:`decode.tools.registry` does
-**not** register it, so the live Gemini agent never exposes it (AGENTS.md: remove scaffolding
-once the real thing lands). It survives only because :func:`register_noop` builds a *minimal
-one-gated-tool* agent that the permission / loop / e2e tests drive in isolation, without the
-read-only file tools — those tests register it explicitly on their own test agent.
+``noop`` is **not** part of the shipped ``decode`` package — the flat
+:mod:`decode.tools.registry` never registers it, so the live Gemini agent never exposes it
+(AGENTS.md: remove scaffolding once the real thing lands). It lives here, under ``tests/support``,
+purely so the permission / loop / e2e tests can build a *minimal one-gated-tool* agent in
+isolation, without the read-only file tools — those tests register it explicitly on their own
+test agent via :func:`register_noop`.
 """
 
 from __future__ import annotations

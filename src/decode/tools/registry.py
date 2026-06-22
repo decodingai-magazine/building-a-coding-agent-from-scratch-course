@@ -55,12 +55,12 @@ class ToolSpec:
 
 # The flat catalogue. Source of truth for both registration and the read-only map.
 #
-# The scaffolding ``noop`` tool (task 005, :mod:`decode.tools.noop`) is deliberately ABSENT: it
-# was the stand-in that made the permission-gate-via-deferred-tools path real *before* the real
-# tools existed, and 006-011 fully superseded it. It is kept under ``src/`` only as a TEST-ONLY
-# helper (``register_noop``) for the permission/loop tests that want a minimal one-gated-tool
-# agent; the production agent never exposes it (AGENTS.md: remove scaffolding once the real
-# thing lands; no abstraction without a second concrete caller).
+# The scaffolding ``noop`` tool (task 005) is deliberately ABSENT: it was the stand-in that made
+# the permission-gate-via-deferred-tools path real *before* the real tools existed, and 006-011
+# fully superseded it. It is no longer in this package — it survives only as a TEST-ONLY helper
+# (``support.noop_helper.register_noop``) for the permission/loop tests that want a minimal
+# one-gated-tool agent; the production agent never exposes it (AGENTS.md: remove scaffolding once
+# the real thing lands; no abstraction without a second concrete caller).
 TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(name=files.READ_TOOL_NAME, func=files.read, read_only=True),
     ToolSpec(name=files.GLOB_TOOL_NAME, func=files.glob, read_only=True),

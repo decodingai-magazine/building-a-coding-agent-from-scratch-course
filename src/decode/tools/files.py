@@ -11,8 +11,8 @@ How the agent touches the working tree:
   for matching; exact-then-whitespace-fuzzy), restoring the file's original BOM / line endings.
 
 **Gating (ADR-0002 §3).** v1 asks on *every* tool call — read-only tools included — so each
-function raises :class:`pydantic_ai.ApprovalRequired` until ``ctx.tool_call_approved`` is set,
-exactly like :mod:`decode.tools.noop`. The read-only trio is *tagged* ``read_only=True`` (see
+function raises :class:`pydantic_ai.ApprovalRequired` until ``ctx.tool_call_approved`` is set.
+The read-only trio is *tagged* ``read_only=True`` (see
 :data:`FILE_TOOLS_READ_ONLY`) so M3 can auto-allow them later without touching this code;
 ``write`` / ``edit`` are tagged ``read_only=False`` (see :data:`FILE_TOOLS_MUTATING`) and stay
 gated. Because the gate fires *before* any path is resolved or any byte is read or written, a
@@ -26,9 +26,8 @@ correct itself — the REPL never crashes on bad tool input.
 
 **Sync, not async.** Filesystem access here is local and the tool layer runs **sequentially**
 in v1 (ADR-0002 §7), so there is no concurrency to win back by going async; Pydantic AI already
-runs a sync tool in a worker thread. Keeping these sync matches :mod:`decode.tools.noop` and
-keeps the code readable (the network/DB-only "async-for-IO" rule from AGENTS.md does not bite
-on a single local file read).
+runs a sync tool in a worker thread. Keeping these sync keeps the code readable (the
+network/DB-only "async-for-IO" rule from AGENTS.md does not bite on a single local file read).
 """
 
 from __future__ import annotations

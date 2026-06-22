@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
 
 from decode.config.settings import settings
 from decode.memory.files import MEMORY_FILENAMES, discover_memory_files
@@ -94,7 +95,7 @@ def _cap(content: str) -> str:
     if fits_lines and fits_bytes:
         return content
 
-    kept = _clip_to_budget(lines, max_lines=max_lines, max_bytes=max_bytes)
+    kept = clip_lines_to_budget(lines, max_lines=max_lines, max_bytes=max_bytes, keep="head")
     note = (
         f"\n\n[memory truncated to {max_lines} lines / {max_bytes} bytes; "
         f"the file continues beyond this point]"
@@ -102,15 +103,31 @@ def _cap(content: str) -> str:
     return kept + note
 
 
-def _clip_to_budget(lines: list[str], *, max_lines: int, max_bytes: int) -> str:
-    """Return the head of ``lines`` capped by line count then by byte count (line-aligned).
+def clip_lines_to_budget(
+    lines: list[str], *, max_lines: int, max_bytes: int, keep: Literal["head", "tail"]
+) -> str:
+    """Clip ``lines`` to a line AND byte budget, keeping whole lines from one end (ADR-0002 §8).
 
-    Keeps at most ``max_lines`` whole lines, then drops trailing whole lines until the UTF-8
-    byte length is within ``max_bytes``. If even the first line alone exceeds ``max_bytes`` we
-    still keep that one whole line — the model needs *something* readable and the truncation note
-    flags that there is more.
+    The shared core of the two memory budgeters — :func:`_cap` here (``keep="head"``: clip a
+    file's leading lines so the model reads the start) and
+    :func:`decode.memory.extract.append_session_summary` (``keep="tail"``: drop the oldest
+    ``MEMORY.md`` lines so the freshest survive). Both cap by line count first, then drop whole
+    lines until the UTF-8 byte length is within ``max_bytes``; a line is never split, and at least
+    one whole line is always kept (the truncation note, if any, flags that there is more).
+
+    ``keep`` is the *only* axis they differ on:
+
+    * ``"head"`` keeps the first ``max_lines`` lines and drops from the **tail** to hit the byte
+      budget — so the *first* line always survives.
+    * ``"tail"`` keeps the last ``max_lines`` lines and drops from the **front** — so the *last*
+      line always survives.
     """
-    head = lines[:max_lines]
-    while len(head) > 1 and len("\n".join(head).encode("utf-8")) > max_bytes:
-        head = head[:-1]
-    return "\n".join(head)
+    if keep == "head":
+        kept = lines[:max_lines]
+        while len(kept) > 1 and len("\n".join(kept).encode("utf-8")) > max_bytes:
+            kept = kept[:-1]  # drop the oldest-readable trailing line
+    else:
+        kept = lines[-max_lines:] if max_lines > 0 else lines[-1:]
+        while len(kept) > 1 and len("\n".join(kept).encode("utf-8")) > max_bytes:
+            kept = kept[1:]  # drop the oldest leading line
+    return "\n".join(kept)
