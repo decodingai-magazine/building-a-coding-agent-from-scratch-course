@@ -15,11 +15,10 @@ Tools land here as they are built (006-011). Every *side-effecting* tool gates i
 call); the ``read_only`` flag is a *tag* for M3's future auto-allow, not a v1 behaviour change.
 
 ``ask_user`` (task 011) is the lone exception: it IS the human-interaction tool, so gating it
-("may I ask you a question?") would double-prompt. It is registered with ``gated=False`` — it
-never raises ``ApprovalRequired`` and so never reaches the permission gate; instead it blocks
-the turn on the human via the same single decision channel the permission resolver uses. The
-``gated`` flag records this on the spec so the policy is visible in one place (the loop's gate
-path is only ever reached by a tool that actually raised ``ApprovalRequired``).
+("may I ask you a question?") would double-prompt. It never raises ``ApprovalRequired`` and so
+never reaches the permission gate; instead it blocks the turn on the human via the same single
+decision channel the permission resolver uses (the loop's gate path is only ever reached by a
+tool that actually raised ``ApprovalRequired``).
 """
 
 from __future__ import annotations
@@ -42,20 +41,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
-    """One registered tool: ``name``, ``func``, the ``read_only`` tag, and the ``gated`` flag.
+    """One registered tool: ``name``, ``func``, and the ``read_only`` tag.
 
     ``read_only`` is recorded for M3's read-only auto-allow; v1 asks on every call regardless.
-    ``gated`` (default ``True``) records whether the tool goes through the permission gate: every
-    side-effecting tool is gated; ``ask_user`` is the lone ungated tool (it IS the
-    human-interaction tool, so gating it would double-prompt). ``func`` is the bare tool function
-    (it takes ``ctx`` as its first parameter) — Pydantic AI builds the model-facing schema from
-    its signature and docstring.
+    ``func`` is the bare tool function (it takes ``ctx`` as its first parameter) — Pydantic AI
+    builds the model-facing schema from its signature and docstring.
     """
 
     name: str
     func: Callable[..., object]
     read_only: bool
-    gated: bool = True
 
 
 # The flat catalogue. Source of truth for both registration and the read-only map.
@@ -95,7 +90,6 @@ TOOL_SPECS: list[ToolSpec] = [
         name=askuser_module.ASK_USER_TOOL_NAME,
         func=askuser_module.ask_user,
         read_only=askuser_module.ASK_USER_READ_ONLY,
-        gated=False,
     ),
 ]
 

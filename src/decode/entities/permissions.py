@@ -71,11 +71,9 @@ class PermissionDecision:
     reason: str | None = None
 
     @classmethod
-    def allow(
-        cls, *, mode: PermissionMode = PermissionMode.ASK, reason: str | None = None
-    ) -> PermissionDecision:
+    def allow(cls) -> PermissionDecision:
         """A terminal *allow* verdict (the tool will execute)."""
-        return cls(outcome=PermissionOutcome.ALLOW, mode=mode, reason=reason)
+        return cls(outcome=PermissionOutcome.ALLOW)
 
     @classmethod
     def deny(

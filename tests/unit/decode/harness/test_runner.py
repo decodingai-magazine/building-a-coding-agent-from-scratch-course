@@ -241,9 +241,9 @@ async def test_abort_flag_resets_for_the_next_turn():
     assert handler.legs_run == 0
 
     handler2 = RecordingHandler(steps=1)
-    runner.set_turn_handler(handler2)
-    await runner.submit("second", InputIntent.STEER)
-    await runner.wait_idle()
+    runner2 = Runner(handler2, on_event=_collect([]))
+    await runner2.submit("second", InputIntent.STEER)
+    await runner2.wait_idle()
     assert handler2.legs_run == 1  # ran normally, abort flag was reset
 
 

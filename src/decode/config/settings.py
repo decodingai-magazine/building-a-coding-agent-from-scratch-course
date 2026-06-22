@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,14 +23,6 @@ class Settings(BaseSettings):
 
     # --- Logging ---
     log_level: str = "INFO"
-    # Log file path (Fix 3). Logs go to a file, off the terminal; default <cwd>/.decode/logs/
-    # decode.log. Empty string disables file logging. Read from env ``DECODE_LOG_FILE``. NB:
-    # ``logging.init_logger`` reads ``DECODE_LOG_FILE`` from the environment directly (it must
-    # configure logging before importing this settings module), so this field exists for
-    # documentation / a single declared surface, not as its reader.
-    log_file: str = Field(
-        default=str(Path(".decode") / "logs" / "decode.log"), alias="DECODE_LOG_FILE"
-    )
 
     # --- Tool execution / output truncation (tasks 006/008/010) ---
     bash_timeout_s: float = 120.0

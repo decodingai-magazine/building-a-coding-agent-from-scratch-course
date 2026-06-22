@@ -115,10 +115,6 @@ class Runner:
         """How many turns are in flight (0 or 1 — single-flight)."""
         return 1 if self._turn_task is not None and not self._turn_task.done() else 0
 
-    def set_turn_handler(self, turn_handler: TurnHandler) -> None:
-        """Swap the turn handler (used by tests and by task 004's wiring)."""
-        self._turn_handler = turn_handler
-
     async def submit(self, text: str, intent: InputIntent) -> None:
         """Route one user submission by intent (ADR-0002 §4).
 

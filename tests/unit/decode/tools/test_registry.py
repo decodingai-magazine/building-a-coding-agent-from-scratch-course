@@ -69,16 +69,6 @@ def test_read_only_flags_match_each_spec():
     assert by_name["ask_user"].read_only is False
 
 
-def test_every_tool_is_gated_except_ask_user():
-    # ADR-0002 §3: every side-effecting tool is gated; ask_user is the lone exception —
-    # it IS the human-interaction tool, so gating it would double-prompt.
-    by_name = {spec.name: spec for spec in TOOL_SPECS}
-    assert by_name["ask_user"].gated is False
-    for name, spec in by_name.items():
-        if name != "ask_user":
-            assert spec.gated is True, f"{name} must be gated"
-
-
 def test_is_read_only_reflects_the_registered_flags():
     # The loop consults this exact function when building a PermissionRequest.
     assert is_read_only("read") is True
