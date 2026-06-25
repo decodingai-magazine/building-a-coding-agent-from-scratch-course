@@ -8,14 +8,22 @@ and tested here.
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from rich.console import Console
 
+from decode.agent.deps import AgentDeps
+from decode.agents.loader import load_agent
 from decode.entities import events
-from decode.entities.permissions import PermissionOutcome, PermissionRequest
+from decode.entities.permissions import (
+    PermissionDecision,
+    PermissionOutcome,
+    PermissionRequest,
+)
 from decode.harness.decisions import DecisionChannel
 from decode.permissions.gate import PermissionGate
+from decode.permissions.types import PermissionMode
 from decode.tui import app
 
 
@@ -78,7 +86,7 @@ def test_is_quit_command_is_false_for_other_input():
 
 
 def test_footer_hint_mentions_steer_followup_and_abort():
-    hint = app.footer_hint()
+    hint = app.footer_hint("build", "default")
 
     assert "steer" in hint.lower()
     assert "follow-up" in hint.lower()
@@ -88,9 +96,25 @@ def test_footer_hint_mentions_steer_followup_and_abort():
 
 
 def test_footer_hint_mentions_quit():
-    hint = app.footer_hint()
+    hint = app.footer_hint("build", "default")
 
     assert "/quit" in hint
+
+
+def test_footer_hint_includes_the_active_agent_and_mode():
+    # ADR-0003 §9: the footer shows the live agent + mode so the user always knows the state.
+    hint = app.footer_hint("plan", "edit")
+
+    assert "agent:plan" in hint
+    assert "mode:edit" in hint
+
+
+def test_footer_hint_mentions_the_mode_cycle_and_slash_commands():
+    hint = app.footer_hint("build", "default")
+
+    assert "Shift+Tab" in hint
+    assert "/agent" in hint
+    assert "/mode" in hint
 
 
 def test_input_intent_enum_has_steer_followup_and_abort():
@@ -271,3 +295,180 @@ async def test_ask_user_resolver_propagates_cancellation():
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# --- control-surface parsers (ADR-0003 §9, task 022) — pure, mirror is_quit_command -----------
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("/agent build", "build"),
+        ("  /agent   plan  ", "plan"),
+        ("/agent code-reviewer", "code-reviewer"),
+        ("/agent", ""),  # the command with no name (a usage error for the handler)
+        ("/agentx", None),  # not the command
+        ("hello", None),
+        ("/mode plan", None),  # a different command
+    ],
+)
+def test_parse_agent_command(line, expected):
+    assert app.parse_agent_command(line) == expected
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("/mode plan", "plan"),
+        ("  /mode   bypass  ", "bypass"),
+        ("/mode", ""),  # the command with no mode (a usage error for the handler)
+        ("/modex", None),
+        ("hello", None),
+        ("/agent build", None),  # a different command
+    ],
+)
+def test_parse_mode_command(line, expected):
+    assert app.parse_mode_command(line) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("default", PermissionMode.DEFAULT),
+        ("plan", PermissionMode.PLAN),
+        ("edit", PermissionMode.EDIT),
+        ("bypass", PermissionMode.BYPASS),
+        ("  PLAN  ", PermissionMode.PLAN),  # whitespace + case insensitive
+        ("nope", None),
+        ("", None),
+    ],
+)
+def test_parse_mode_name(name, expected):
+    assert app.parse_mode_name(name) is expected
+
+
+def test_next_mode_cycles_default_edit_plan_bypass_default():
+    # ADR-0003 §9: Shift+Tab cycles default -> edit -> plan -> bypass -> default.
+    assert app.next_mode(PermissionMode.DEFAULT) is PermissionMode.EDIT
+    assert app.next_mode(PermissionMode.EDIT) is PermissionMode.PLAN
+    assert app.next_mode(PermissionMode.PLAN) is PermissionMode.BYPASS
+    assert app.next_mode(PermissionMode.BYPASS) is PermissionMode.DEFAULT
+
+
+def test_mode_switch_confirmation_names_the_mode():
+    line = app.mode_switch_confirmation("edit")
+
+    assert "edit" in line
+    assert "Decode" in line  # rendered through the same Decode-prefixed prose path
+
+
+def test_agent_switch_confirmation_names_the_agent_and_mode():
+    line = app.agent_switch_confirmation("plan", "plan")
+
+    assert "plan" in line
+    assert "Decode" in line
+
+
+# --- the live bottom toolbar (reads agent + mode each render) ---------------------------------
+
+
+async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
+    return PermissionDecision.deny(reason="test default deny")
+
+
+async def _no_user_resolver(question: str) -> str:
+    raise RuntimeError("no interactive user in this test")
+
+
+def _deps(gate: PermissionGate) -> AgentDeps:
+    return AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=gate,
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_no_user_resolver,
+    )
+
+
+def test_bottom_toolbar_reads_the_live_agent_and_mode():
+    # The footer must reflect a mode change after Shift+Tab / /mode, so the toolbar reads the
+    # gate + deps live each render (not a snapshot taken when the session was built).
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+
+    before = app._bottom_toolbar(deps, gate).value
+    assert "agent:build" in before
+    assert "mode:default" in before
+
+    gate.set_mode(PermissionMode.EDIT)
+    after = app._bottom_toolbar(deps, gate).value
+    assert "mode:edit" in after  # the live mode change is reflected on the next render
+
+
+# --- the /mode and /agent handlers (mutate gate/deps, render one confirmation line) -----------
+
+
+def test_handle_mode_command_sets_the_gate_and_confirms():
+    gate = PermissionGate()
+    lines: list[str] = []
+
+    app._handle_mode_command("plan", gate=gate, emit=lines.append)
+
+    assert gate.mode is PermissionMode.PLAN
+    assert any("plan" in line for line in lines)
+
+
+def test_handle_mode_command_unknown_mode_is_a_friendly_inline_line():
+    gate = PermissionGate()
+    lines: list[str] = []
+
+    app._handle_mode_command("nope", gate=gate, emit=lines.append)
+
+    assert gate.mode is PermissionMode.DEFAULT  # unchanged
+    assert any("nope" in line for line in lines)  # names the bad mode, no crash
+
+
+def test_handle_mode_command_missing_name_shows_usage():
+    gate = PermissionGate()
+    lines: list[str] = []
+
+    app._handle_mode_command("", gate=gate, emit=lines.append)
+
+    assert gate.mode is PermissionMode.DEFAULT
+    assert any("/mode" in line for line in lines)
+
+
+def test_handle_agent_command_selects_the_agent_and_confirms():
+    gate = PermissionGate()
+    deps = _deps(gate)
+    lines: list[str] = []
+
+    app._handle_agent_command("plan", deps=deps, gate=gate, emit=lines.append)
+
+    assert deps.active_agent.name == "plan"
+    assert gate.mode is PermissionMode.PLAN  # selecting plan resets the mode
+    assert any("plan" in line for line in lines)
+
+
+def test_handle_agent_command_unknown_agent_is_a_friendly_inline_line():
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+    lines: list[str] = []
+
+    app._handle_agent_command("nope", deps=deps, gate=gate, emit=lines.append)
+
+    assert deps.active_agent.name == "build"  # unchanged — the session stays alive
+    assert gate.mode is PermissionMode.DEFAULT
+    assert any("nope" in line for line in lines)
+
+
+def test_handle_agent_command_missing_name_shows_usage():
+    gate = PermissionGate()
+    deps = _deps(gate)
+    lines: list[str] = []
+
+    app._handle_agent_command("", deps=deps, gate=gate, emit=lines.append)
+
+    assert any("/agent" in line for line in lines)

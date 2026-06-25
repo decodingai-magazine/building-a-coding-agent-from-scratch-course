@@ -17,6 +17,7 @@ import click  # noqa: E402
 
 from decode.agents.loader import load_agent  # noqa: E402
 from decode.config.settings import settings  # noqa: E402
+from decode.permissions.types import PermissionMode  # noqa: E402
 from decode.tui.app import run_app  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -47,9 +48,17 @@ _DEFAULT_AGENT = "build"
     metavar="NAME",
     help="Start with this agent persona (build / plan / explore / code-reviewer).",
 )
-def cli(resume: str | None, agent: str) -> None:
+@click.option(
+    "--mode",
+    "mode",
+    default=None,
+    metavar="NAME",
+    help="Start in this permission mode (default / plan / edit / bypass); "
+    "defaults to the agent's own default mode.",
+)
+def cli(resume: str | None, agent: str, mode: str | None) -> None:
     """Decode — a terminal coding agent you run in your terminal."""
-    logger.debug("decode starting (resume=%s, agent=%s)", resume, agent)
+    logger.debug("decode starting (resume=%s, agent=%s, mode=%s)", resume, agent, mode)
     # No-key startup guard (task 004 carryover): build_agent() constructs the Gemini provider,
     # which raises a raw pydantic_ai.UserError (mentioning GOOGLE_API_KEY — the wrong var for
     # this project) when no key is set. Catch it *here*, before any agent is built, and exit
@@ -69,11 +78,24 @@ def cli(resume: str | None, agent: str) -> None:
         click.echo(f"Decode: {exc}", err=True)
         raise click.exceptions.Exit(1) from exc
 
+    # Unknown-mode startup guard (ADR-0003 §9): validate ``--mode`` against the four permission mode
+    # names *before* the REPL, mirroring the no-key / unknown-agent guards — a bad mode exits with
+    # one friendly line listing the valid modes instead of a traceback. ``None`` (no flag) keeps the
+    # agent's own default mode, so it is not validated.
+    if mode is not None:
+        try:
+            PermissionMode(mode.strip().lower())
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in PermissionMode)
+            logger.debug("unknown --mode %r; refusing to start", mode)
+            click.echo(f"Decode: unknown mode {mode!r}; valid modes: {valid}.", err=True)
+            raise click.exceptions.Exit(1) from exc
+
     # Launch the REPL wired to the harness; the bare ``--resume`` flag arrives as "latest", a
     # named ``--resume <id>`` as that id, and no flag as None (a fresh session). run_app loads
     # the matching session log and seeds the conversation (ADR-0002 §9, task 014) and starts with
-    # the selected ``agent`` persona (ADR-0003 §7,9).
-    asyncio.run(run_app(resume=resume, agent=agent))
+    # the selected ``agent`` persona (ADR-0003 §7,9), in ``--mode`` if given (else the agent default).
+    asyncio.run(run_app(resume=resume, agent=agent, mode=mode))
 
 
 if __name__ == "__main__":

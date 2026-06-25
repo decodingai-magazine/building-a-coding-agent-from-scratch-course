@@ -12,6 +12,7 @@ from pydantic import SecretStr
 
 from decode import cli as cli_mod
 from decode.cli import cli
+from decode.permissions.types import PermissionMode
 from decode.tui import app as app_mod
 
 
@@ -196,3 +197,70 @@ def test_cli_agent_plan_starts_the_real_repl_in_plan_mode(mocker):
     selected = spy.spy_return
     assert selected.name == "plan"
     assert selected.mode.value == "plan"
+
+
+# --- the --mode startup flag (ADR-0003 §9, task 022) ----------------------------------------
+
+
+def test_cli_passes_no_mode_by_default(mocker):
+    # No --mode → the agent's own default mode is used (run_app gets mode=None).
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    CliRunner().invoke(cli, [])
+
+    run_app.assert_awaited_once()
+    assert run_app.await_args.kwargs.get("mode") is None
+
+
+def test_cli_passes_a_named_mode_through(mocker):
+    # --mode plan → run_app gets mode="plan".
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["--mode", "plan"])
+
+    assert result.exit_code == 0
+    run_app.assert_awaited_once()
+    assert run_app.await_args.kwargs.get("mode") == "plan"
+
+
+def test_cli_with_an_unknown_mode_exits_nonzero_with_a_friendly_line(mocker):
+    """``--mode nope`` → one friendly stderr line + non-zero exit, NO traceback (like no-key)."""
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["--mode", "nope"])
+
+    assert result.exit_code != 0
+    assert "nope" in result.output  # names the bad mode
+    assert "Traceback" not in result.output
+    # The valid modes are listed so the user can pick one.
+    assert "default" in result.output
+    # The guard short-circuited before the REPL.
+    run_app.assert_not_awaited()
+
+
+def test_cli_mode_plan_starts_the_real_repl_in_plan_mode(mocker):
+    """End-to-end through the real ``run_app``: ``--mode plan`` overrides the agent default mode.
+
+    ``CliRunner`` feeds empty stdin so the REPL hits EOF immediately. The build agent's default is
+    ``DEFAULT``; ``--mode plan`` must override it, so the gate ``run_app`` built ends in plan mode.
+    We spy on the gate constructor and assert its final mode (proving the override reaches the gate,
+    not just the ``run_app`` kwarg).
+    """
+    gate_spy = mocker.spy(app_mod, "PermissionGate")
+
+    result = CliRunner().invoke(cli, ["--mode", "plan"])
+
+    assert result.exit_code == 0
+    gate = gate_spy.spy_return
+    assert gate.mode is PermissionMode.PLAN
+
+
+def test_cli_mode_overrides_the_selected_agents_default_mode(mocker):
+    """``--agent plan --mode default`` overrides plan's default mode back to ``DEFAULT``."""
+    gate_spy = mocker.spy(app_mod, "PermissionGate")
+
+    result = CliRunner().invoke(cli, ["--agent", "plan", "--mode", "default"])
+
+    assert result.exit_code == 0
+    gate = gate_spy.spy_return
+    assert gate.mode is PermissionMode.DEFAULT

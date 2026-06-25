@@ -25,7 +25,9 @@ stays responsive while a turn streams. ``Ctrl-D`` or typing ``/quit`` exits clea
 The interactive loop reads real stdin, so its plumbing is exercised by the
 ``run_app`` regression test (a piped prompt_toolkit input); the decidable pieces
 (:func:`is_quit_command`, :func:`footer_hint`, :class:`InputIntent`,
-:func:`parse_permission_answer`) are pure and unit-tested.
+:func:`parse_permission_answer`, the control-surface parsers
+:func:`parse_agent_command` / :func:`parse_mode_command` / :func:`parse_mode_name`, and the
+Shift+Tab :func:`next_mode` cycle) are pure and unit-tested.
 """
 
 from __future__ import annotations
@@ -61,6 +63,7 @@ from decode.harness.runner import Runner
 from decode.memory.extract import extract_on_exit
 from decode.permissions import rules
 from decode.permissions.gate import PermissionGate
+from decode.permissions.types import PermissionMode
 from decode.tui import render
 
 logger = logging.getLogger(__name__)
@@ -72,6 +75,18 @@ _RESUME_LATEST = "latest"
 _DEFAULT_AGENT = "build"
 
 _QUIT_COMMAND = "/quit"
+# The mid-session control slash commands (ADR-0003 §9): switch the active agent / mode. Parsed on
+# the single input surface alongside ``/quit`` (never a second ``prompt_async``).
+_AGENT_COMMAND = "/agent"
+_MODE_COMMAND = "/mode"
+# The order Shift+Tab cycles the gate mode through (ADR-0003 §9): default -> edit -> plan ->
+# bypass -> back to default. A tuple so :func:`next_mode` is a pure index step.
+_MODE_CYCLE: tuple[PermissionMode, ...] = (
+    PermissionMode.DEFAULT,
+    PermissionMode.EDIT,
+    PermissionMode.PLAN,
+    PermissionMode.BYPASS,
+)
 _PROMPT = "> "
 # The capital-D label printed once before a turn's first streamed answer chunk (Fix 2). The
 # trailing space separates it from the answer; it is added in the event sink (the deltas stream,
@@ -110,14 +125,147 @@ def is_quit_command(line: str) -> bool:
     return line.strip() == _QUIT_COMMAND
 
 
-def footer_hint() -> str:
-    """The bottom-toolbar hint listing the interaction keys (plain text).
+def footer_hint(agent: str, mode: str) -> str:
+    """The bottom-toolbar hint: the live agent + mode, then the interaction keys (plain text).
 
-    Kept pure and string-returning so it is unit-testable; :func:`_bottom_toolbar` wraps it
-    for prompt_toolkit. Mentions steer (plain Enter), follow-up (Alt+Enter), abort (Esc),
-    and how to quit.
+    Kept pure and string-returning so it is unit-testable; :func:`_bottom_toolbar` wraps it for
+    prompt_toolkit and supplies the **live** ``agent`` / ``mode`` each render (ADR-0003 §9), so the
+    footer updates after a ``/agent`` / ``/mode`` switch or a Shift+Tab cycle. Lists steer (plain
+    Enter), follow-up (Alt+Enter), abort (Esc), the Shift+Tab mode cycle, and the slash commands.
     """
-    return "Enter steer | Alt+Enter follow-up | Esc abort | Ctrl-D or /quit to exit"
+    return (
+        f"agent:{agent} mode:{mode} | Enter steer | Alt+Enter follow-up | "
+        "Esc abort | Shift+Tab mode | /agent /mode /quit"
+    )
+
+
+def parse_agent_command(line: str) -> str | None:
+    """Return the name argument of a ``/agent <name>`` line, or ``None`` if not that command.
+
+    Pure (mirrors :func:`is_quit_command`): ``"/agent build"`` → ``"build"``; bare ``"/agent"`` →
+    ``""`` (the command with no name — the handler turns that into a usage line); anything that is
+    not the ``/agent`` command (``"hello"``, ``"/agentx"``, ``"/mode plan"``) → ``None`` so the
+    main loop falls through to its normal routing.
+    """
+    return _parse_slash_arg(line, _AGENT_COMMAND)
+
+
+def parse_mode_command(line: str) -> str | None:
+    """Return the mode argument of a ``/mode <name>`` line, or ``None`` if not that command.
+
+    Pure (mirrors :func:`parse_agent_command`): ``"/mode plan"`` → ``"plan"``; bare ``"/mode"`` →
+    ``""``; not the command → ``None``.
+    """
+    return _parse_slash_arg(line, _MODE_COMMAND)
+
+
+def _parse_slash_arg(line: str, command: str) -> str | None:
+    """Split a ``<command> <arg>`` slash line, returning the (stripped) arg or ``None``.
+
+    ``None`` means the line is not ``command`` at all (fall through to normal routing); ``""`` means
+    ``command`` was typed with no argument (a usage error for the caller); otherwise the trailing
+    argument, stripped.
+    """
+    stripped = line.strip()
+    if stripped == command:
+        return ""
+    prefix = f"{command} "
+    if stripped.startswith(prefix):
+        return stripped[len(prefix) :].strip()
+    return None
+
+
+def parse_mode_name(name: str) -> PermissionMode | None:
+    """Map a typed mode name to a :class:`PermissionMode`, or ``None`` if it is not one (§1,9).
+
+    Case-insensitive and whitespace-tolerant (``"  PLAN  "`` → ``PLAN``). Pure so it is
+    unit-testable; ``None`` lets the caller render a friendly "unknown mode" line instead of crashing.
+    """
+    try:
+        return PermissionMode(name.strip().lower())
+    except ValueError:
+        return None
+
+
+def next_mode(mode: PermissionMode) -> PermissionMode:
+    """The next mode in the Shift+Tab ring: default → edit → plan → bypass → default (§9).
+
+    Pure (a single index step around :data:`_MODE_CYCLE`) so the cycle is unit-testable; the
+    keybind just calls it, sets the gate, and renders the new mode.
+    """
+    index = _MODE_CYCLE.index(mode)
+    return _MODE_CYCLE[(index + 1) % len(_MODE_CYCLE)]
+
+
+def mode_switch_confirmation(mode: str) -> str:
+    """The one-line confirmation rendered after a mode switch (Shift+Tab / ``/mode``; §9)."""
+    return f"Decode - mode: {mode}."
+
+
+def agent_switch_confirmation(name: str, mode: str) -> str:
+    """The one-line confirmation rendered after an agent switch (``/agent``; §9).
+
+    Names the new agent and the mode it reset the gate to (selecting an agent resets the mode to
+    that agent's default — ADR-0003 §7).
+    """
+    return f"Decode - agent: {name} (mode: {mode})."
+
+
+# The inline usage lines shown when ``/agent`` / ``/mode`` are typed with no argument.
+_AGENT_USAGE = "Decode - usage: /agent <name> (build / plan / explore / code-reviewer)."
+_MODE_USAGE = "Decode - usage: /mode <name> (default / plan / edit / bypass)."
+
+
+def _handle_agent_command(
+    name: str,
+    *,
+    deps: AgentDeps,
+    gate: PermissionGate,
+    emit: Callable[[str], None],
+) -> None:
+    """Apply a ``/agent <name>`` switch: select the agent, render one confirmation (§7,9).
+
+    Runs the task-020 :func:`~decode.agents.select.select_agent` helper (sets ``deps.active_agent``,
+    resets the gate to the agent's default mode, loads its catalog rules). An empty ``name`` shows a
+    usage line; an unknown name renders a friendly inline error (``select_agent`` leaves ``deps`` /
+    ``gate`` untouched on failure) and the REPL stays alive — never a crash.
+    """
+    if not name:
+        emit(_AGENT_USAGE)
+        return
+    try:
+        agent_def = select_agent(name, deps=deps, gate=gate)
+    except ValueError as exc:
+        logger.debug("/agent %r rejected: %s", name, exc)
+        emit(f"Decode - {exc}")
+        return
+    logger.debug("/agent switched to %s (mode=%s)", agent_def.name, gate.mode.value)
+    emit(agent_switch_confirmation(agent_def.name, gate.mode.value))
+
+
+def _handle_mode_command(
+    name: str,
+    *,
+    gate: PermissionGate,
+    emit: Callable[[str], None],
+) -> None:
+    """Apply a ``/mode <name>`` switch: set the gate mode, render one confirmation (§3,9).
+
+    An empty ``name`` shows a usage line; an unknown mode renders a friendly inline error (listing
+    the valid modes) and leaves the gate untouched — never a crash.
+    """
+    if not name:
+        emit(_MODE_USAGE)
+        return
+    mode = parse_mode_name(name)
+    if mode is None:
+        valid = ", ".join(m.value for m in PermissionMode)
+        logger.debug("/mode %r rejected (unknown)", name)
+        emit(f"Decode - unknown mode {name!r}; valid modes: {valid}.")
+        return
+    gate.set_mode(mode)
+    logger.debug("/mode switched to %s", mode.value)
+    emit(mode_switch_confirmation(mode.value))
 
 
 def parse_permission_answer(answer: str) -> PermissionDecision:
@@ -232,16 +380,25 @@ def _make_user_question_resolver(
     return resolver
 
 
-def _bottom_toolbar() -> HTML:
-    """The footer hint as prompt_toolkit formatted text."""
-    return HTML(f"<b>{footer_hint()}</b>")
+def _bottom_toolbar(deps: AgentDeps, gate: PermissionGate) -> HTML:
+    """The footer hint as prompt_toolkit formatted text, reading the **live** agent + mode (§9).
+
+    Called by prompt_toolkit on every render with the session's ``deps`` + ``gate``, so the footer
+    reflects the current ``deps.active_agent`` and ``gate.mode`` — it updates immediately after a
+    ``/agent`` / ``/mode`` switch or a Shift+Tab cycle (it reads them live, never a snapshot).
+    """
+    return HTML(f"<b>{footer_hint(deps.active_agent.name, gate.mode.value)}</b>")
 
 
-def _build_key_bindings() -> KeyBindings:
-    """Register the follow-up (Alt+Enter) and abort (Esc) keybindings.
+def _build_key_bindings(*, on_cycle_mode: Callable[[], None]) -> KeyBindings:
+    """Register the follow-up (Alt+Enter), abort (Esc), and mode-cycle (Shift+Tab) keybindings.
 
-    Each accepts the prompt with an explicit ``(intent, text)`` result so the loop can route
-    it. ``Alt+Enter`` arrives as the ``escape, enter`` sequence in prompt_toolkit.
+    Alt+Enter / Esc accept the prompt with an explicit ``(intent, text)`` result so the loop can
+    route it (``Alt+Enter`` arrives as the ``escape, enter`` sequence). **Shift+Tab** (``s-tab`` /
+    ``Keys.BackTab``, ADR-0003 §9) is different: it does *not* submit a line — it calls
+    ``on_cycle_mode`` (which cycles the gate mode and renders the new one) and invalidates the app
+    so the bottom toolbar redraws with the new mode, leaving the typed buffer intact. The three
+    bindings are distinct keys (``s-tab`` never collides with ``escape`` / ``escape enter``).
     """
     bindings = KeyBindings()
 
@@ -252,6 +409,11 @@ def _build_key_bindings() -> KeyBindings:
     @bindings.add("escape")
     def _abort(event: KeyPressEvent) -> None:
         event.app.exit(result=(InputIntent.ABORT, event.app.current_buffer.text))
+
+    @bindings.add("s-tab")
+    def _cycle_mode(event: KeyPressEvent) -> None:
+        on_cycle_mode()
+        event.app.invalidate()  # redraw the bottom toolbar with the new mode
 
     return bindings
 
@@ -333,11 +495,27 @@ def _make_event_sink(console: Console) -> Callable[[events.Event], None]:
     return on_event
 
 
+def _apply_startup_mode(mode: str | None, gate: PermissionGate) -> None:
+    """Override the gate mode from the optional ``--mode`` startup flag (ADR-0003 §9).
+
+    ``None`` keeps the selected agent's default mode. An unknown value (the CLI validates first, so
+    this is belt-and-suspenders) is logged and ignored rather than crashing the launch.
+    """
+    if mode is None:
+        return
+    parsed = parse_mode_name(mode)
+    if parsed is None:
+        logger.warning("ignoring unknown startup mode %r", mode)
+        return
+    gate.set_mode(parsed)
+
+
 async def run_app(
     console: Console | None = None,
     *,
     resume: str | None = None,
     agent: str = _DEFAULT_AGENT,
+    mode: str | None = None,
 ) -> None:
     """Run the REPL until ``Ctrl-D`` or ``/quit``, routing input into the harness.
 
@@ -359,7 +537,14 @@ async def run_app(
     to the agent's default mode, and loads the agent's catalog rules. The CLI already validated the
     name, so selection here does not fail for a startup launch.
 
-    The single input loop has two modes (see module docstring): when the
+    ``mode`` is the optional startup permission mode (``--mode``; ADR-0003 §9). ``None`` keeps the
+    selected agent's default mode; otherwise it **overrides** that default (applied *after*
+    ``select_agent``, which resets the gate to the agent's default). The CLI validated it, so an
+    unknown value here is logged and ignored (never crashes the launch).
+
+    The single input loop has three control surfaces, all on the **one** input surface (ADR-0003
+    §9): the ``/agent`` / ``/mode`` slash commands (parsed before submit) and the Shift+Tab mode
+    cycle keybind, alongside the two awaiting-decision modes (see module docstring): when the
     :class:`~decode.harness.decisions.DecisionChannel` is *awaiting a decision*, the next line
     fulfils the pending mid-turn request; otherwise it routes to the runner normally.
     """
@@ -373,11 +558,6 @@ async def run_app(
     # The harness streams events into this sink; it renders append-style above the pinned prompt
     # and owns the once-per-turn ``Decode `` answer prefix (Fix 2 — the pure renderer can't).
     _on_event = _make_event_sink(console)
-
-    session: PromptSession[object] = PromptSession(
-        key_bindings=_build_key_bindings(),
-        bottom_toolbar=_bottom_toolbar,
-    )
 
     # The agent loop is the turn handler: build the Gemini agent, bind the event sink so
     # streamed deltas reach the renderer, the gate (policy) + the interactive allow/deny
@@ -404,6 +584,27 @@ async def run_app(
     # allowlist the factory reads per turn), reset the gate to the agent's default mode, and load the
     # agent's catalog rules. The CLI validated the name already, so this does not fail at startup.
     select_agent(agent_name, deps=deps, gate=gate)
+    # Apply the optional ``--mode`` override AFTER selection (which reset the gate to the agent's
+    # default mode): an explicit ``--mode`` wins over the agent default (ADR-0003 §9). The CLI
+    # already validated it; an unexpected value is logged and ignored (never crashes the launch).
+    _apply_startup_mode(mode, gate)
+
+    # The single input surface (ADR-0003 §9): a confirmation sink that renders one line through the
+    # existing event/render path (no second render surface), plus the Shift+Tab mode-cycle closure
+    # the keybind calls. The bottom toolbar reads ``deps`` / ``gate`` live each render, so the footer
+    # updates the moment a switch lands.
+    def emit_line(text: str) -> None:
+        console.print(render.render_event(events.AssistantTextDelta(text=text)))
+
+    def cycle_mode() -> None:
+        new_mode = next_mode(gate.mode)
+        gate.set_mode(new_mode)
+        emit_line(mode_switch_confirmation(new_mode.value))
+
+    session: PromptSession[object] = PromptSession(
+        key_bindings=_build_key_bindings(on_cycle_mode=cycle_mode),
+        bottom_toolbar=lambda: _bottom_toolbar(deps, gate),
+    )
     # Persistence (ADR-0002 §9): replay a prior session if asked, then open a fresh append-only
     # JSONL log this run writes its turns to. The replayed history seeds the handler so the
     # conversation continues; the new log starts after the replayed prefix (already-persisted).
@@ -446,6 +647,19 @@ async def run_app(
             if intent is InputIntent.ABORT:
                 logger.debug("abort intent: setting cooperative-abort flag")
                 runner.abort()
+                continue
+
+            # Control slash commands (ADR-0003 §9), parsed on the single input surface *before*
+            # submit: switch the active agent / mode and render one confirmation (or a friendly
+            # inline line on a bad name). Never opens a second prompt — the line is consumed here.
+            agent_arg = parse_agent_command(text)
+            if agent_arg is not None:
+                _handle_agent_command(agent_arg, deps=deps, gate=gate, emit=emit_line)
+                continue
+
+            mode_arg = parse_mode_command(text)
+            if mode_arg is not None:
+                _handle_mode_command(mode_arg, gate=gate, emit=emit_line)
                 continue
 
             if not text.strip():
