@@ -17,15 +17,14 @@ approved, which makes the Pydantic AI run resolve to ``DeferredToolRequests`` so
 route the call through the gate. The loop looks up each gated call's
 :class:`~decode.permissions.types.ToolKind` via :func:`tool_kind` (default ``OTHER`` — mutating)
 when building the :class:`~decode.entities.permissions.PermissionRequest`; the gate then decides
-allow/ask/deny by mode x kind (ADR-0003 §1) — read-only tools auto-allow. :func:`is_read_only` is
-the derived convenience (``kind is READ_ONLY``) kept for existing callers.
+allow/ask/deny by mode x kind (ADR-0003 §1) — read-only tools auto-allow.
 """
 
 from __future__ import annotations
 
 from decode.permissions.types import ToolKind
 from decode.tools.orchestration import ORCHESTRATION_TOOL_NAMES
-from decode.tools.registry import TOOL_KIND, TOOL_READ_ONLY
+from decode.tools.registry import TOOL_KIND
 
 # Every tool name an agent's catalog allowlist may reference (ADR-0003 §5): the registered tools
 # (``TOOL_KIND`` keys, which since task 021 include the ungated ``enter_plan_mode`` /
@@ -35,7 +34,7 @@ from decode.tools.registry import TOOL_KIND, TOOL_READ_ONLY
 # each ``tools`` entry against this set, so an unknown tool fails loudly regardless of task ordering.
 KNOWN_TOOL_NAMES: frozenset[str] = frozenset(TOOL_KIND) | ORCHESTRATION_TOOL_NAMES
 
-__all__ = ["KNOWN_TOOL_NAMES", "TOOL_KIND", "TOOL_READ_ONLY", "is_read_only", "tool_kind"]
+__all__ = ["KNOWN_TOOL_NAMES", "TOOL_KIND", "tool_kind"]
 
 
 def tool_kind(tool_name: str) -> ToolKind:
@@ -44,8 +43,3 @@ def tool_kind(tool_name: str) -> ToolKind:
     Unknown tools default to ``OTHER`` (treat as mutating → gated/asked).
     """
     return TOOL_KIND.get(tool_name, ToolKind.OTHER)
-
-
-def is_read_only(tool_name: str) -> bool:
-    """Whether ``tool_name`` is read-only (derived: ``kind is READ_ONLY``; default ``False``)."""
-    return tool_kind(tool_name) is ToolKind.READ_ONLY

@@ -340,16 +340,6 @@ def test_grep_missing_explicit_path_returns_model_retry(tmp_path: Path):
         files.grep(_ctx(tmp_path), pattern="x", path="nope.txt")
 
 
-# --- read-only registration tags ------------------------------------------------------------
-
-
-def test_file_tools_are_tagged_read_only():
-    assert files.READ_TOOL_NAME == "read"
-    assert files.GLOB_TOOL_NAME == "glob"
-    assert files.GREP_TOOL_NAME == "grep"
-    assert files.FILE_TOOLS_READ_ONLY == {"read": True, "glob": True, "grep": True}
-
-
 # --- write: create / overwrite, gated, contained (task 007) ---------------------------------
 
 

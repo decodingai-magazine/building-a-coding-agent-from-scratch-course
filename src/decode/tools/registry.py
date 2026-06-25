@@ -9,8 +9,7 @@ jobs:
 * :data:`TOOL_KIND` is *derived from the same list*, so a tool's
   :class:`~decode.permissions.types.ToolKind` is declared in exactly one place. The loop reads it
   through :func:`decode.tools.tool_kind` when it builds a
-  :class:`~decode.entities.permissions.PermissionRequest`. :data:`TOOL_READ_ONLY` is *also*
-  derived (``kind is READ_ONLY``) so existing :func:`decode.tools.is_read_only` callers work.
+  :class:`~decode.entities.permissions.PermissionRequest`.
 
 Tools land here as they are built (006-011). Every *gated* tool raises
 :class:`pydantic_ai.ApprovalRequired` when ``not ctx.tool_call_approved`` so the run resolves to
@@ -128,12 +127,6 @@ TOOL_SPECS: list[ToolSpec] = [
 # Each tool's kind, derived from TOOL_SPECS (single source of truth). Consulted by the loop via
 # decode.tools.tool_kind; unknown tools default to OTHER (mutating → gated/asked).
 TOOL_KIND: dict[str, ToolKind] = {spec.name: spec.kind for spec in TOOL_SPECS}
-
-# Read-only map, derived from the kinds (``kind is READ_ONLY``). Kept so existing
-# decode.tools.is_read_only callers work unchanged.
-TOOL_READ_ONLY: dict[str, bool] = {
-    name: kind is ToolKind.READ_ONLY for name, kind in TOOL_KIND.items()
-}
 
 
 def register_tools(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:

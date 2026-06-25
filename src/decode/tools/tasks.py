@@ -33,9 +33,6 @@ from decode.entities.task import Task
 logger = logging.getLogger(__name__)
 
 TODO_WRITE_TOOL_NAME = "todo_write"
-# An in-memory checklist with no disk/exec side effect → READ_ONLY (ADR-0003 §2): the gate
-# auto-allows it under every mode (incl. plan), so it never prompts.
-TODO_WRITE_READ_ONLY = True
 
 # Status -> checklist marker the TUI renders. A small, stable mapping so the renderer stays a pure
 # string formatter and never has to know the Task status vocabulary.

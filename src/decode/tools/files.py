@@ -12,8 +12,6 @@ How the agent touches the working tree:
 
 **Gating (ADR-0002 §3).** v1 asks on *every* tool call — read-only tools included — so each
 function raises :class:`pydantic_ai.ApprovalRequired` until ``ctx.tool_call_approved`` is set.
-The read-only trio is *tagged* ``read_only=True`` (see
-:data:`FILE_TOOLS_READ_ONLY`) so M3 can auto-allow them later without touching this code;
 ``write`` / ``edit`` are tagged ``read_only=False`` (see :data:`FILE_TOOLS_MUTATING`) and stay
 gated. Because the gate fires *before* any path is resolved or any byte is read or written, a
 **denied write/edit leaves the target byte-for-byte untouched** (never created, never truncated).
@@ -51,14 +49,6 @@ GLOB_TOOL_NAME = "glob"
 GREP_TOOL_NAME = "grep"
 WRITE_TOOL_NAME = "write"
 EDIT_TOOL_NAME = "edit"
-
-# All three file tools are read-only (they never mutate the tree). Tagged here for M3's
-# read-only auto-allow; v1 still asks for each (see the module docstring).
-FILE_TOOLS_READ_ONLY: dict[str, bool] = {
-    READ_TOOL_NAME: True,
-    GLOB_TOOL_NAME: True,
-    GREP_TOOL_NAME: True,
-}
 
 # The two mutating file tools (task 007): NOT read-only, gated, always asked. Tagged here so the
 # registry stays a single declaration site and M3's read-only auto-allow never touches them.

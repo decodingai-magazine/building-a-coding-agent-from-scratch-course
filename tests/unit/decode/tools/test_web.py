@@ -90,13 +90,6 @@ async def test_web_fetch_requires_approval_when_not_approved(tmp_path: Path, moc
     handler.assert_not_called()
 
 
-def test_web_fetch_is_tagged_read_only():
-    # No local side effect (network egress only) → READ_ONLY, so the gate auto-allows it under
-    # every mode (ADR-0003 §1; see the auto-allow path test below).
-    assert web_module.WEB_FETCH_TOOL_NAME == "web_fetch"
-    assert web_module.WEB_FETCH_READ_ONLY is True
-
-
 # --- HTML -> Markdown conversion ------------------------------------------------------------
 
 

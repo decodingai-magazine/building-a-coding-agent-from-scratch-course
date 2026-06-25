@@ -119,13 +119,6 @@ async def test_ask_user_model_retries_when_the_request_is_cancelled():
         await askuser_module.ask_user(ctx, question="still there?")
 
 
-async def test_ask_user_is_registered_as_not_read_only():
-    # ask_user has a human-interaction side effect (it blocks the turn on the user), so it is
-    # tagged NOT read-only — but it is registered to SKIP the permission gate (see registry).
-    assert askuser_module.ASK_USER_TOOL_NAME == "ask_user"
-    assert askuser_module.ASK_USER_READ_ONLY is False
-
-
 async def test_deny_user_question_resolver_raises_no_interactive_user_error():
     with pytest.raises(askuser_module.NoInteractiveUserError):
         await askuser_module.deny_user_question_resolver("a question")

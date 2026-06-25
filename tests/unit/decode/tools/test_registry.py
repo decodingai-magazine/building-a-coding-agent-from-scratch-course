@@ -4,8 +4,7 @@ ADR-0002 §7 / ADR-0003 §2: tools live in a **flat registry** — no plugin mac
 is the one place that (a) registers every tool on the :class:`~pydantic_ai.Agent` and (b) records
 each tool's :class:`~decode.permissions.types.ToolKind`, which the loop reads via
 :func:`decode.tools.tool_kind` when it builds a
-:class:`~decode.entities.permissions.PermissionRequest`. ``is_read_only`` is now derived from the
-kind (``kind is READ_ONLY``) so existing callers keep working.
+:class:`~decode.entities.permissions.PermissionRequest`.
 
 These tests assert the registry's two jobs without a network call: the agent ends up with all
 the expected tools, and the tool-kind map matches each tool's declared classification.
@@ -18,8 +17,8 @@ from pydantic_ai.models.test import TestModel
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
 from decode.permissions.types import ToolKind
-from decode.tools import is_read_only, tool_kind
-from decode.tools.registry import TOOL_KIND, TOOL_READ_ONLY, TOOL_SPECS, register_tools
+from decode.tools import tool_kind
+from decode.tools.registry import TOOL_KIND, TOOL_SPECS, register_tools
 
 
 def _agent(mocker):
@@ -54,10 +53,8 @@ def test_registry_does_not_expose_the_scaffolding_noop_tool():
     # TEST-ONLY helper (support.noop_helper.register_noop), never in the registry.
     assert "noop" not in {spec.name for spec in TOOL_SPECS}
     assert "noop" not in TOOL_KIND
-    assert "noop" not in TOOL_READ_ONLY
     # Unknown tools (including ``noop``) default to OTHER (mutating) via the loop's lookup.
     assert tool_kind("noop") is ToolKind.OTHER
-    assert is_read_only("noop") is False
 
 
 def test_tool_kinds_match_each_spec():
@@ -101,23 +98,6 @@ def test_tool_kind_reflects_the_registered_kinds():
     assert tool_kind("sleep") is ToolKind.OTHER
     # Unknown tools default to OTHER (mutating/gated).
     assert tool_kind("does-not-exist") is ToolKind.OTHER
-
-
-def test_is_read_only_is_derived_from_the_kind():
-    # ADR-0003 §2: read_only is kept (derived as ``kind is READ_ONLY``) so existing callers work.
-    assert is_read_only("read") is True
-    assert is_read_only("glob") is True
-    assert is_read_only("grep") is True
-    assert is_read_only("web_fetch") is True
-    # todo_write is now READ_ONLY (in-memory checklist, no side effect).
-    assert is_read_only("todo_write") is True
-    assert is_read_only("write") is False
-    assert is_read_only("edit") is False
-    assert is_read_only("bash") is False
-    # ask_user is OTHER (it blocks the turn on the user, ungated).
-    assert is_read_only("ask_user") is False
-    # Unknown tools default to mutating (gated).
-    assert is_read_only("does-not-exist") is False
 
 
 def test_register_tools_registers_every_spec_on_the_agent(mocker):

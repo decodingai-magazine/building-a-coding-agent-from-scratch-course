@@ -119,13 +119,6 @@ def test_todo_write_can_clear_the_store():
     assert updates and updates[-1].tasks == ()
 
 
-def test_todo_write_is_registered_as_read_only():
-    # An in-memory checklist with no disk/exec side effect → READ_ONLY (ADR-0003 §2): the gate
-    # auto-allows it under every mode, so it never prompts (and stays usable in plan mode).
-    assert tasks_module.TODO_WRITE_TOOL_NAME == "todo_write"
-    assert tasks_module.TODO_WRITE_READ_ONLY is True
-
-
 # --- end-to-end: a real agent forced to call the tool, then approved ------------------------
 
 

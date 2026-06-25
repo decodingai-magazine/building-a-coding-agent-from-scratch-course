@@ -24,10 +24,9 @@ to chew through an unbounded document.
 
 **Gating (ADR-0002 §3).** v1 asks on *every* tool call, so the function raises
 :class:`pydantic_ai.ApprovalRequired` until ``ctx.tool_call_approved`` is set — *before* any
-connection is opened, so a denied call makes no network request at all. It is tagged
-``read_only=True`` (see :data:`WEB_FETCH_READ_ONLY`): a GET has **no local side effect** (network
-egress only), so M3 may auto-allow it later — but in v1 it is **still asked**, exactly like the
-read-only file tools.
+connection is opened, so a denied call makes no network request at all. A GET has **no local
+side effect** (network egress only), so M3 may auto-allow it later — but in v1 it is **still
+asked**, exactly like the read-only file tools.
 
 **Errors never crash the REPL.** A non-2xx status, a timeout, a connection error, or non-text
 content all map to a model-readable :class:`pydantic_ai.ModelRetry` so the model can correct
@@ -53,10 +52,6 @@ from decode.config.settings import settings
 logger = logging.getLogger(__name__)
 
 WEB_FETCH_TOOL_NAME = "web_fetch"
-# A GET has no local side effect (network egress only), so it is tagged read-only for M3's
-# future auto-allow. v1 STILL asks on every call (see the module docstring) — the tag is not a
-# behaviour change, exactly like the read-only file tools.
-WEB_FETCH_READ_ONLY = True
 
 # The largest decoded response body we hand onward, in **raw UTF-8 bytes**. A page above this is
 # hard-truncated to the cap (at a valid character boundary) before conversion so neither the
