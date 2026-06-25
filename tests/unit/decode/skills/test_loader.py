@@ -21,6 +21,7 @@ import logging
 from pathlib import Path
 
 import pytest
+import yaml
 
 from decode.config.settings import settings
 from decode.entities.skill_def import SkillDef
@@ -285,6 +286,56 @@ def test_discover_skips_an_unreadable_project_skill_with_a_warning(tmp_path, cap
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
+# Frontmatter whose YAML is *syntactically* malformed — each raises ``yaml.YAMLError``
+# (``ScannerError``), which is NOT a ``ValueError``. The wrapping ``---`` fences are added by the
+# test; only the inner lines below are the (broken) frontmatter. (task-030 / ADR-0004 §3.)
+_MALFORMED_YAML_FRONTMATTER = {
+    "unquoted_colon": "name: ok\ndescription: a value: with an unquoted colon",
+    "unterminated_quote": 'name: ok\ndescription: "unterminated',
+    "tab_indent": "name: ok\n\tdescription: tab-indented",
+}
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    list(_MALFORMED_YAML_FRONTMATTER.values()),
+    ids=list(_MALFORMED_YAML_FRONTMATTER),
+)
+def test_discover_skips_a_malformed_yaml_project_skill_with_a_warning(
+    tmp_path, caplog, frontmatter
+):
+    # A project skill whose frontmatter is broken YAML (``yaml.YAMLError``, not ``ValueError``) must be
+    # skipped with a WARNING, not crash the session — load_skills runs every turn (ADR-0004 §3).
+    skills_dir = _skills_dir(tmp_path)
+    _write_skill(skills_dir, "good.md", name="good")
+    (skills_dir / "bad.md").write_text(f"---\n{frontmatter}\n---\nBody.\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        found = loader.discover_project_skills(tmp_path)
+
+    # The sibling valid skill still loads; the malformed one is skipped (no raise).
+    assert set(found) == {"good"}
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+def test_discover_malformed_yaml_warning_names_the_offending_file(tmp_path, caplog):
+    # The WARNING must name the offending file (its ``source`` path) so the typo is debuggable.
+    skills_dir = _skills_dir(tmp_path)
+    bad = skills_dir
+    bad.mkdir(parents=True, exist_ok=True)
+    bad_path = bad / "typo.md"
+    bad_path.write_text('---\nname: ok\ndescription: "unterminated\n---\nBody.\n', encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        loader.discover_project_skills(tmp_path)
+
+    source = str(bad_path.resolve())
+    assert any(
+        record.levelno == logging.WARNING and source in record.getMessage()
+        for record in caplog.records
+    )
+
+
 # --- load_skills (merge) --------------------------------------------------------------------
 
 
@@ -330,3 +381,33 @@ def test_load_skills_working_looks_like_project_commit_wins(tmp_path):
 
     assert skills["commit"].body.strip() == "Project commit body."
     assert skills["commit"].source == str(path.resolve())
+
+
+def test_load_skills_does_not_raise_on_a_malformed_yaml_project_skill(tmp_path, caplog):
+    # The live-session crash path: load_skills runs every turn via the catalog hook, so a single
+    # typo'd `.decode/skills/*.md` with broken YAML must NOT propagate — built-ins + valid project
+    # skills come back, the bad one is skipped (ADR-0004 §3).
+    skills_dir = _skills_dir(tmp_path)
+    _write_skill(skills_dir, "deploy.md", name="deploy")
+    (skills_dir / "broken.md").write_text(
+        '---\nname: ok\ndescription: "unterminated\n---\nBody.\n', encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        skills = loader.load_skills(tmp_path)
+
+    assert set(skills) == _BUILTIN_NAMES | {"deploy"}
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+# --- built-in / project asymmetry (ADR-0004 §3) ---------------------------------------------
+
+
+def test_parse_skill_file_propagates_malformed_yaml_frontmatter():
+    # The built-in path (`load_builtin_skills`) catches only ValueError, so a malformed-YAML built-in
+    # still raises loudly — the built-in/project asymmetry (ADR-0004 §3): a packaging bug surfaces, a
+    # user's project typo is skipped. parse_skill_file must NOT swallow yaml errors.
+    text = '---\nname: demo\ndescription: "unterminated\n---\nBody.\n'
+
+    with pytest.raises(yaml.YAMLError):
+        loader.parse_skill_file(text, source="builtin")

@@ -106,7 +106,11 @@ def discover_project_skills(cwd: Path) -> dict[str, SkillDef]:
         try:
             text = path.read_text(encoding="utf-8")
             skill = parse_skill_file(text, source=source)
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, yaml.YAMLError) as exc:
+            # ``yaml.YAMLError`` (e.g. ``ScannerError`` on a typo'd frontmatter) is NOT a ``ValueError``,
+            # so it must be caught explicitly — else a single broken project skill crashes the live
+            # session (the loader runs every turn via the catalog hook). The built-in path keeps catching
+            # only ``ValueError``, so a malformed built-in still raises loudly (ADR-0004 §3 asymmetry).
             logger.warning("skipping malformed/unreadable project skill %s: %s", source, exc)
             continue
         skills[skill.name] = skill
