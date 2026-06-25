@@ -39,7 +39,7 @@ def test_build_agent_has_the_full_tool_set_and_default_mode():
     assert build.mode is PermissionMode.DEFAULT
     expected = {
         "read", "glob", "grep", "write", "edit", "bash", "todo_write", "web_fetch",
-        "ask_user", "enter_plan_mode", "exit_plan_mode", "sleep",
+        "ask_user", "enter_plan_mode", "exit_plan_mode", "sleep", "skill",
     }  # fmt: skip
     assert set(build.tools) == expected
     assert build.prompt.strip()
@@ -49,7 +49,12 @@ def test_plan_agent_is_plan_mode_and_read_only():
     plan = loader.load_agent("plan")
 
     assert plan.mode is PermissionMode.PLAN
-    assert set(plan.tools) == _READ_ONLY_TOOLS | {"enter_plan_mode", "exit_plan_mode", "ask_user"}
+    assert set(plan.tools) == _READ_ONLY_TOOLS | {
+        "enter_plan_mode",
+        "exit_plan_mode",
+        "ask_user",
+        "skill",
+    }
     for mutating in ("write", "edit", "bash"):
         assert mutating not in plan.tools
 
@@ -58,7 +63,7 @@ def test_explore_agent_is_read_only_default_mode():
     explore = loader.load_agent("explore")
 
     assert explore.mode is PermissionMode.DEFAULT
-    assert set(explore.tools) == _READ_ONLY_TOOLS | {"ask_user"}
+    assert set(explore.tools) == _READ_ONLY_TOOLS | {"ask_user", "skill"}
     for mutating in ("write", "edit", "bash"):
         assert mutating not in explore.tools
 
@@ -67,7 +72,7 @@ def test_code_reviewer_carries_the_git_allow_rule():
     reviewer = loader.load_agent("code-reviewer")
 
     assert reviewer.mode is PermissionMode.DEFAULT
-    assert set(reviewer.tools) == _READ_ONLY_TOOLS | {"bash", "ask_user"}
+    assert set(reviewer.tools) == _READ_ONLY_TOOLS | {"bash", "ask_user", "skill"}
     assert "bash(git *)" in reviewer.allow
     assert Rule(tool_name="bash", pattern="git *") in reviewer.allow_rules
 

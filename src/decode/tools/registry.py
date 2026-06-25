@@ -19,9 +19,11 @@ allow/ask/deny by mode x the tool's ``kind`` (ADR-0003 §1) — read-only tools 
 The **ungated** tools never raise ``ApprovalRequired`` and so never reach the permission gate (the
 gate path is only reached by a tool that actually raised it; their ``kind`` is ``OTHER`` but is
 never consulted): ``ask_user`` (task 011), which IS the human-interaction tool — gating it ("may I
-ask you a question?") would double-prompt — and the orchestration controls ``enter_plan_mode`` /
+ask you a question?") would double-prompt — the orchestration controls ``enter_plan_mode`` /
 ``exit_plan_mode`` / ``sleep`` (task 021 / ADR-0003 §8), which touch no filesystem and only steer
-the session (mode flips, a bounded ``sleep``). ``exit_plan_mode`` rides the same single decision
+the session (mode flips, a bounded ``sleep``), and the ``skill`` dispatcher (task 026 / ADR-0004 §7),
+which only returns a skill's instruction body — the gated ``bash`` / ``write`` / ``edit`` calls that
+body *induces* are what the gate still governs. ``exit_plan_mode`` rides the same single decision
 channel ``ask_user`` uses for its plan-approval HITL.
 """
 
@@ -40,6 +42,7 @@ from decode.tools import askuser as askuser_module
 from decode.tools import bash as bash_module
 from decode.tools import files
 from decode.tools import orchestration as orchestration_module
+from decode.tools import skills as skills_module
 from decode.tools import sleep as sleep_module
 from decode.tools import tasks as tasks_module
 from decode.tools import web as web_module
@@ -120,6 +123,16 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         name=sleep_module.SLEEP_TOOL_NAME,
         func=sleep_module.sleep,
+        kind=ToolKind.OTHER,
+    ),
+    # The skill dispatcher (task 026 / ADR-0004 §7): returns a skill's instruction body on demand.
+    # UNGATED like ask_user / the orchestration controls — it never raises ApprovalRequired and so
+    # never reaches the gate (loading instructions is harmless; its kind is OTHER but never
+    # consulted). The gated bash/write/edit calls the returned body INDUCES are what the gate still
+    # governs — e.g. the commit skill's git commit rides the gated bash tool (default asks, plan denies).
+    ToolSpec(
+        name=skills_module.SKILL_TOOL_NAME,
+        func=skills_module.skill,
         kind=ToolKind.OTHER,
     ),
 ]

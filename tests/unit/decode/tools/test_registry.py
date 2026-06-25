@@ -44,6 +44,8 @@ def test_registry_lists_the_expected_tools():
         "enter_plan_mode",
         "exit_plan_mode",
         "sleep",
+        # The ungated skill dispatcher (task 026 / ADR-0004 §7).
+        "skill",
     }
 
 
@@ -79,6 +81,8 @@ def test_tool_kinds_match_each_spec():
     assert by_name["enter_plan_mode"].kind is ToolKind.OTHER
     assert by_name["exit_plan_mode"].kind is ToolKind.OTHER
     assert by_name["sleep"].kind is ToolKind.OTHER
+    # The skill dispatcher is ungated too (kind OTHER, never consulted; ADR-0004 §7).
+    assert by_name["skill"].kind is ToolKind.OTHER
 
 
 def test_tool_kind_reflects_the_registered_kinds():
@@ -96,6 +100,8 @@ def test_tool_kind_reflects_the_registered_kinds():
     assert tool_kind("enter_plan_mode") is ToolKind.OTHER
     assert tool_kind("exit_plan_mode") is ToolKind.OTHER
     assert tool_kind("sleep") is ToolKind.OTHER
+    # The ungated skill dispatcher is OTHER too (never consulted; ADR-0004 §7).
+    assert tool_kind("skill") is ToolKind.OTHER
     # Unknown tools default to OTHER (mutating/gated).
     assert tool_kind("does-not-exist") is ToolKind.OTHER
 
@@ -118,6 +124,7 @@ def test_register_tools_registers_every_spec_on_the_agent(mocker):
         "enter_plan_mode",
         "exit_plan_mode",
         "sleep",
+        "skill",
     } <= registered
     # ...and the scaffolding ``noop`` must NOT be (it is never registered in production).
     assert "noop" not in registered

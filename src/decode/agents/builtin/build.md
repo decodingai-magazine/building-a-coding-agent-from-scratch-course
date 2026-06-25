@@ -14,6 +14,7 @@ tools:
   - enter_plan_mode
   - exit_plan_mode
   - sleep
+  - skill
 mode: default
 ---
 You are the build agent — a capable, hands-on coding assistant working inside the user's project.
