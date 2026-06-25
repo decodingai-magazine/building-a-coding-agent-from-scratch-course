@@ -15,6 +15,7 @@ from rich.console import Console
 from decode.entities import events
 from decode.entities.permissions import PermissionOutcome, PermissionRequest
 from decode.harness.decisions import DecisionChannel
+from decode.permissions.gate import PermissionGate
 from decode.tui import app
 
 
@@ -115,6 +116,17 @@ def test_parse_permission_answer_denies_on_anything_else(answer):
     assert decision.reason  # a human-facing reason is fed back to the model
 
 
+@pytest.mark.parametrize("answer", ["a", "A", "always", "ALWAYS", "  always  "])
+def test_is_always_answer_true_for_always_variants(answer):
+    # `a`/`always` means allow AND persist a rule (task 018); `y`/`yes` is allow-once.
+    assert app.is_always_answer(answer) is True
+
+
+@pytest.mark.parametrize("answer", ["y", "yes", "n", "no", "", "allow"])
+def test_is_always_answer_false_for_everything_else(answer):
+    assert app.is_always_answer(answer) is False
+
+
 def test_deny_permission_resolver_is_the_safe_headless_default():
     # Headless / no-TUI callers get a resolver that always denies (safe default).
     request = PermissionRequest(tool_name="noop", args="{}")
@@ -130,11 +142,20 @@ def _quiet_console() -> Console:
     return Console(file=io.StringIO(), force_terminal=False)
 
 
-async def test_interactive_resolver_awaits_the_channel_then_parses_the_answer():
+def _make_resolver(channel, *, permissions_file):
+    """Build the interactive permission resolver wired to a fresh gate + a tmp rules file."""
+    gate = PermissionGate()
+    resolver = app._make_permission_resolver(
+        channel, _quiet_console(), gate=gate, permissions_file=permissions_file
+    )
+    return resolver, gate
+
+
+async def test_interactive_resolver_awaits_the_channel_then_parses_the_answer(tmp_path):
     # The interactive resolver collects the verdict from the single decision channel (no
     # second prompt): the next resolved line is parsed into the allow/deny decision.
     channel = DecisionChannel()
-    resolver = app._make_permission_resolver(channel, _quiet_console())
+    resolver, _ = _make_resolver(channel, permissions_file=tmp_path / "settings.json")
     request = PermissionRequest(tool_name="noop", args="{}")
 
     task = asyncio.ensure_future(resolver(request))
@@ -146,11 +167,11 @@ async def test_interactive_resolver_awaits_the_channel_then_parses_the_answer():
     assert decision.outcome is PermissionOutcome.ALLOW
 
 
-async def test_interactive_resolver_denies_when_the_decision_is_cancelled():
+async def test_interactive_resolver_denies_when_the_decision_is_cancelled(tmp_path):
     # Turn aborted / REPL shutting down cancels the pending request; the resolver denies
     # (the safe default) instead of hanging.
     channel = DecisionChannel()
-    resolver = app._make_permission_resolver(channel, _quiet_console())
+    resolver, _ = _make_resolver(channel, permissions_file=tmp_path / "settings.json")
     request = PermissionRequest(tool_name="noop", args="{}")
 
     task = asyncio.ensure_future(resolver(request))
@@ -160,6 +181,67 @@ async def test_interactive_resolver_denies_when_the_decision_is_cancelled():
     decision = await task
     assert decision.outcome is PermissionOutcome.DENY
     assert decision.reason
+
+
+async def test_always_answer_persists_an_allow_rule_and_reloads_the_gate(tmp_path):
+    # `a`/`always` allows AND persists a matching allow rule, then reloads the gate so the next
+    # identical call auto-allows (ADR-0003 §4, task 018).
+    import json
+
+    perms = tmp_path / "settings.json"
+    channel = DecisionChannel()
+    resolver, gate = _make_resolver(channel, permissions_file=perms)
+    request = PermissionRequest(
+        tool_name="bash", args='{"command": "npm run test:unit"}', subject="npm run test:unit"
+    )
+
+    task = asyncio.ensure_future(resolver(request))
+    await asyncio.sleep(0)
+    channel.resolve("a")
+    decision = await task
+
+    assert decision.outcome is PermissionOutcome.ALLOW
+    # The rule was persisted to the user settings file.
+    data = json.loads(perms.read_text(encoding="utf-8"))
+    assert "bash(npm run test:unit)" in data["permissions"]["allow"]
+    # The gate reloaded the rule: the next identical call auto-allows (no ASK).
+    assert gate.check(request).outcome is PermissionOutcome.ALLOW
+
+
+async def test_plain_yes_does_not_persist_a_rule(tmp_path):
+    # `y`/`yes` is allow-once: nothing is written and the gate stays mode-only.
+    perms = tmp_path / "settings.json"
+    channel = DecisionChannel()
+    resolver, gate = _make_resolver(channel, permissions_file=perms)
+    request = PermissionRequest(
+        tool_name="bash", args='{"command": "npm run test:unit"}', subject="npm run test:unit"
+    )
+
+    task = asyncio.ensure_future(resolver(request))
+    await asyncio.sleep(0)
+    channel.resolve("y")
+    decision = await task
+
+    assert decision.outcome is PermissionOutcome.ALLOW
+    assert not perms.exists()  # nothing persisted
+    assert gate.check(request).outcome is PermissionOutcome.ASK  # still mode-only
+
+
+async def test_always_answer_write_failure_falls_back_to_allow_once(tmp_path, mocker):
+    # A persist write failure is non-fatal: the resolver still allows once and does not raise.
+    perms = tmp_path / "settings.json"
+    channel = DecisionChannel()
+    resolver, gate = _make_resolver(channel, permissions_file=perms)
+    request = PermissionRequest(tool_name="bash", args="{}", subject="rm -rf x")
+    mocker.patch.object(app.rules, "persist_allow_rule", side_effect=OSError("read-only"))
+
+    task = asyncio.ensure_future(resolver(request))
+    await asyncio.sleep(0)
+    channel.resolve("always")
+    decision = await task
+
+    assert decision.outcome is PermissionOutcome.ALLOW  # still allowed once
+    assert gate.check(request).outcome is PermissionOutcome.ASK  # rule NOT loaded
 
 
 async def test_ask_user_resolver_returns_the_typed_line_verbatim():

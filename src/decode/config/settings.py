@@ -40,5 +40,10 @@ class Settings(BaseSettings):
     # --- Persistence: JSONL session log (task 014) ---
     sessions_dir: Path = Path(".decode/sessions")
 
+    # --- Permissions: user allow/deny rules file (task 018) ---
+    # Optional personalization: {"permissions": {"allow": [...], "deny": [...]}}. Missing/malformed
+    # is non-fatal (the gate falls back to mode-only). Read only via this singleton.
+    permissions_file: Path = Path(".decode/settings.json")
+
 
 settings = Settings()

@@ -50,10 +50,15 @@ from decode.agent.loop import AgentTurnHandler
 from decode.config.settings import settings
 from decode.context.session_log import SessionLog, load, load_latest, resolve_session
 from decode.entities import events
-from decode.entities.permissions import PermissionDecision, PermissionRequest
+from decode.entities.permissions import (
+    PermissionDecision,
+    PermissionOutcome,
+    PermissionRequest,
+)
 from decode.harness.decisions import DecisionChannel
 from decode.harness.runner import Runner
 from decode.memory.extract import extract_on_exit
+from decode.permissions import rules
 from decode.permissions.gate import PermissionGate
 from decode.tui import render
 
@@ -69,14 +74,18 @@ _PROMPT = "> "
 # so the once-per-turn prefix cannot live in the pure renderer).
 _ASSISTANT_PREFIX = "Decode "
 # A minimal inline affordance shown when a decision is pending; the full request was already
-# rendered once by the loop's PermissionRequested event (single render path — no re-print).
-_PERMISSION_AFFORDANCE = "allow this tool call? [y/N]"
+# rendered once by the loop's PermissionRequested event (single render path — no re-print). ``a``
+# is "always" — allow AND persist a rule so the next identical call auto-allows (task 018).
+_PERMISSION_AFFORDANCE = "allow this tool call? [y/N/a=always]"
 # The matching affordance for an ask_user question: the full question was already rendered once
 # by the tool's AskUserRequested event, so this is only the "type your answer" cue (any line is
 # the answer — no parsing, unlike the permission y/N).
 _ASK_USER_AFFORDANCE = "type your answer:"
-# Answers that count as "yes"; everything else denies (the safe default — ADR-0002 §3).
-_AFFIRMATIVE_ANSWERS = frozenset({"y", "yes", "a", "allow"})
+# Answers that mean "always": allow AND persist a matching allow rule (task 018 / ADR-0003 §4).
+_ALWAYS_ANSWERS = frozenset({"a", "always"})
+# Answers that count as "yes" (allow); everything else denies (the safe default — ADR-0002 §3).
+# ``always`` answers also allow, so they are a subset of the affirmative set.
+_AFFIRMATIVE_ANSWERS = frozenset({"y", "yes", "allow"}) | _ALWAYS_ANSWERS
 
 
 class InputIntent(enum.Enum):
@@ -108,16 +117,27 @@ def footer_hint() -> str:
 
 
 def parse_permission_answer(answer: str) -> PermissionDecision:
-    """Map a typed allow/deny answer to a :class:`PermissionDecision` (ADR-0002 §3).
+    """Map a typed allow/deny answer to a :class:`PermissionDecision` (ADR-0002 §3, ADR-0003 §4).
 
-    ``y`` / ``yes`` / ``a`` / ``allow`` (case-insensitive) allow; **anything else denies** —
-    the safe default. A denial carries a human-facing reason that is fed back to the model.
-    Kept pure (string in, decision out) so it is unit-testable; the interactive prompt that
-    reads the answer is not.
+    ``y`` / ``yes`` / ``allow`` and ``a`` / ``always`` (case-insensitive) all allow; **anything
+    else denies** — the safe default. ``a``/``always`` *also* persists a rule (see
+    :func:`is_always_answer`), but the verdict itself is just allow. A denial carries a
+    human-facing reason that is fed back to the model. Kept pure (string in, decision out) so it
+    is unit-testable; the interactive prompt that reads the answer is not.
     """
     if answer.strip().lower() in _AFFIRMATIVE_ANSWERS:
         return PermissionDecision.allow()
     return PermissionDecision.deny(reason="The user denied this tool call.")
+
+
+def is_always_answer(answer: str) -> bool:
+    """Whether ``answer`` is the "always" allow (``a`` / ``always``, case-insensitive; §4).
+
+    An "always" answer allows the call **and** signals the resolver to persist a matching allow
+    rule to the user ``.decode/settings.json`` so the next identical call auto-allows. ``y``/``yes``
+    is allow-once and returns ``False`` here. Pure so it is unit-testable.
+    """
+    return answer.strip().lower() in _ALWAYS_ANSWERS
 
 
 async def deny_permission_resolver(request: PermissionRequest) -> PermissionDecision:
@@ -130,14 +150,23 @@ async def deny_permission_resolver(request: PermissionRequest) -> PermissionDeci
     return PermissionDecision.deny(reason="No interactive terminal to approve this tool call.")
 
 
-def _make_permission_resolver(channel: DecisionChannel, console: Console) -> PermissionResolver:
-    """Build the interactive allow/deny resolver bound to the decision ``channel``.
+def _make_permission_resolver(
+    channel: DecisionChannel,
+    console: Console,
+    *,
+    gate: PermissionGate,
+    permissions_file: Path,
+) -> PermissionResolver:
+    """Build the interactive allow/deny resolver bound to the decision ``channel`` (ADR-0003 §4).
 
     The full request was already rendered once by the loop's ``PermissionRequested`` event
     (single render path), so the resolver only shows a minimal inline ``allow/deny?``
     affordance and then **awaits the next submitted line on the channel** — it never opens a
     second ``prompt_async()`` on the live session (that would deadlock the REPL). The answer
-    is parsed by :func:`parse_permission_answer`. If the request is cancelled (turn aborted /
+    is parsed by :func:`parse_permission_answer`. An ``a``/``always`` answer additionally
+    **persists** a matching allow rule to the user ``permissions_file`` and **reloads** the
+    gate's user rules so the next identical call auto-allows; a persist write failure is
+    non-fatal (logged, falls back to allow-once). If the request is cancelled (turn aborted /
     REPL shutting down) it denies — the safe default. Not unit-tested directly; the
     end-to-end ``run_app`` regression test drives the real channel + main loop, and the
     decidable parsing lives in :func:`parse_permission_answer`.
@@ -149,9 +178,30 @@ def _make_permission_resolver(channel: DecisionChannel, console: Console) -> Per
             answer = await channel.request()
         except asyncio.CancelledError:
             return PermissionDecision.deny(reason="The user dismissed the approval prompt.")
-        return parse_permission_answer(answer)
+        decision = parse_permission_answer(answer)
+        if decision.outcome is PermissionOutcome.ALLOW and is_always_answer(answer):
+            _persist_always_rule(gate, permissions_file, request)
+        return decision
 
     return resolver
+
+
+def _persist_always_rule(
+    gate: PermissionGate, permissions_file: Path, request: PermissionRequest
+) -> None:
+    """Persist an allow rule for ``request`` and reload the gate's user rules (ADR-0003 §4).
+
+    Called when the human answers ``a``/``always``: write a matching allow rule to the user
+    ``permissions_file`` and reload it onto the gate so the next identical call auto-allows. A
+    write failure (e.g. a read-only dir) is **non-fatal** — it is logged and the turn proceeds as
+    a plain allow-once, never breaking the turn (ADR-0003 §4 / Consequences).
+    """
+    try:
+        rules.persist_allow_rule(permissions_file, request)
+    except OSError:
+        logger.warning("failed to persist always-allow rule; allowing once", exc_info=True)
+        return
+    gate.set_user_rules(rules.load_rule_set(permissions_file))
 
 
 def _make_user_question_resolver(
@@ -317,11 +367,17 @@ async def run_app(console: Console | None = None, *, resume: str | None = None) 
     # session carries history (§1).
     decisions = DecisionChannel()
     agent = build_agent()
+    # The gate loads the user's optional allow/deny rules from ``.decode/settings.json`` (ADR-0003
+    # §4); a missing/malformed file is non-fatal (empty rules → mode-only). The interactive
+    # ``a``/``always`` answer persists into and reloads this same file via the resolver below.
+    gate = PermissionGate(user_rules=rules.load_rule_set(settings.permissions_file))
     deps = AgentDeps(
         cwd=Path.cwd(),
         emit=_on_event,
-        gate=PermissionGate(),
-        resolve_permission=_make_permission_resolver(decisions, console),
+        gate=gate,
+        resolve_permission=_make_permission_resolver(
+            decisions, console, gate=gate, permissions_file=settings.permissions_file
+        ),
         resolve_user_question=_make_user_question_resolver(decisions, console),
     )
     # Persistence (ADR-0002 §9): replay a prior session if asked, then open a fresh append-only

@@ -46,13 +46,17 @@ class PermissionRequest:
     serializes the tool-call args before constructing the request — the gate never sees raw
     argument objects). ``kind`` is the tool's :class:`~decode.permissions.types.ToolKind`: the
     gate evaluates it against the active mode (default ``OTHER`` — the safe, ask/deny-leaning
-    classification for an unclassified call). ``tool_call_id`` ties the request to the Pydantic
-    AI deferred call it came from (``None`` for ad-hoc checks).
+    classification for an unclassified call). ``subject`` is the per-kind string that allow/deny
+    Permission Rules glob against (ADR-0003 §4): ``bash`` → the command, file tools → the path,
+    ``web_fetch`` → the url, everything else → the tool name; the loop fills it via
+    :func:`decode.permissions.rules.subject_for` and it defaults to ``""``. ``tool_call_id`` ties
+    the request to the Pydantic AI deferred call it came from (``None`` for ad-hoc checks).
     """
 
     tool_name: str
     args: str
     kind: ToolKind = ToolKind.OTHER
+    subject: str = ""
     tool_call_id: str | None = None
 
     @property

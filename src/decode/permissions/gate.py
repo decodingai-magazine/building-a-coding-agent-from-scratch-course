@@ -1,12 +1,18 @@
-"""The permission gate: the allow/ask/deny **policy** object (ADR-0003 §1,3).
+"""The permission gate: the allow/ask/deny **policy** object (ADR-0003 §1,3,4).
 
 :class:`PermissionGate` answers one question — given a
 :class:`~decode.entities.permissions.PermissionRequest`, should the tool run? In Milestone 2 the
-gate is a **real decision**: :meth:`PermissionGate.check` evaluates the active
-:class:`~decode.permissions.types.PermissionMode` against the request's
-:class:`~decode.permissions.types.ToolKind` and returns ALLOW / ASK / DENY (ADR-0003 §1). No
-project/agent rules yet — that precedence layer (``deny → allow → mode``) lands in task 018; this
-ships the *mode decision* floor. The mode is mutable via :meth:`set_mode`.
+gate is a **real decision**: :meth:`PermissionGate.check` evaluates, in precedence order,
+**deny rule → allow rule → mode decision → ask** and returns ALLOW / ASK / DENY (ADR-0003 §4). The
+mode is mutable via :meth:`set_mode`; the user rule set (loaded from ``.decode/settings.json``) is
+held on the gate and reloadable via :meth:`set_user_rules` (the always-allow flow persists a rule
+then reloads so the next identical call auto-allows).
+
+Two rule **sources** are designed in from the start: the **user** ``.decode/settings.json`` rules
+(wired here) and, from task 020, the **active agent**'s catalog rules. The gate evaluates them as
+a **union** — a deny from *either* source beats an allow from *either* — by walking every source's
+deny list before any allow list. Today there is one source (the user set); task 020 adds the agent
+set with no precedence rewrite.
 
 The gate is **policy only** — it does *not* prompt the user or own the terminal UI. On an ``ASK``
 the loop turns the verdict into the human's terminal allow/deny via the resolver on
@@ -19,6 +25,7 @@ from __future__ import annotations
 import logging
 
 from decode.entities.permissions import PermissionDecision, PermissionRequest
+from decode.permissions.rules import Rule, RuleSet
 from decode.permissions.types import PermissionMode, ToolKind
 
 logger = logging.getLogger(__name__)
@@ -29,15 +36,22 @@ _PLAN_DENY_REASON = "Plan mode is read-only — present your plan and call exit_
 
 
 class PermissionGate:
-    """Decide allow/ask/deny for a tool call by mode x kind (ADR-0003 §1,3).
+    """Decide allow/ask/deny for a tool call by rule + mode x kind (ADR-0003 §1,3,4).
 
     Holds the active :class:`~decode.permissions.types.PermissionMode` (mutable via
-    :meth:`set_mode`); the gate default is ``DEFAULT``. Stateless beyond that mode, so one
-    instance is shared for a whole session.
+    :meth:`set_mode`; gate default ``DEFAULT``) and a user :class:`~decode.permissions.rules.RuleSet`
+    (mutable via :meth:`set_user_rules`; empty by default). One instance is shared for a whole
+    session.
     """
 
-    def __init__(self, mode: PermissionMode = PermissionMode.DEFAULT) -> None:
+    def __init__(
+        self,
+        mode: PermissionMode = PermissionMode.DEFAULT,
+        *,
+        user_rules: RuleSet | None = None,
+    ) -> None:
         self._mode = mode
+        self._user_rules = user_rules if user_rules is not None else RuleSet()
 
     @property
     def mode(self) -> PermissionMode:
@@ -49,27 +63,56 @@ class PermissionGate:
         logger.debug("gate mode %s -> %s", self._mode.value, mode.value)
         self._mode = mode
 
-    def check(self, request: PermissionRequest) -> PermissionDecision:
-        """Return the gate's verdict for ``request`` by evaluating mode x kind (ADR-0003 §1).
-
-        * ``BYPASS`` → ALLOW everything.
-        * read-only kind → ALLOW under every mode.
-        * ``PLAN`` → DENY any mutation (reason points at ``exit_plan_mode``).
-        * ``EDIT`` → ALLOW file edits, ASK for other mutations (``bash``).
-        * ``DEFAULT`` → ASK for any mutation.
-        """
-        decision = self._decide(request.kind)
+    def set_user_rules(self, user_rules: RuleSet) -> None:
+        """Replace the user rule set (the always-allow flow reloads it after persisting a rule)."""
         logger.debug(
-            "gate.check tool=%s kind=%s mode=%s -> %s",
+            "gate user rules: %d allow, %d deny", len(user_rules.allow), len(user_rules.deny)
+        )
+        self._user_rules = user_rules
+
+    def check(self, request: PermissionRequest) -> PermissionDecision:
+        """Return the gate's verdict for ``request`` (ADR-0003 §4): deny → allow → mode → ask.
+
+        1. A **deny** rule (any source) → DENY, with a reason citing the rule.
+        2. An **allow** rule (any source) → ALLOW.
+        3. Otherwise the **mode x kind** decision (the task-017 floor): BYPASS allows; read-only
+           allows under every mode; PLAN denies mutations; EDIT allows file edits; DEFAULT/EDIT
+           ASK for other mutations.
+        """
+        decision = self._decide_with_rules(request)
+        logger.debug(
+            "gate.check tool=%s kind=%s subject=%r mode=%s -> %s",
             request.tool_name,
             request.kind.value,
+            request.subject,
             self._mode.value,
             decision.outcome.value,
         )
         return decision
 
-    def _decide(self, kind: ToolKind) -> PermissionDecision:
-        """The pure mode x kind decision (no rules yet — task 018 adds the rule layer)."""
+    def _decide_with_rules(self, request: PermissionRequest) -> PermissionDecision:
+        """Walk deny → allow across every rule source, then fall through to the mode (ADR-0003 §4).
+
+        Every source's **deny** list is checked before any **allow** list, so a deny from one
+        source beats an allow from another (the union semantics task 020 relies on). Today there is
+        one source (the user set).
+        """
+        sources = self._rule_sources()
+        for rule_set in sources:
+            denied = rule_set.matching_deny(request)
+            if denied is not None:
+                return PermissionDecision.deny(mode=self._mode, reason=_deny_reason(denied))
+        for rule_set in sources:
+            if rule_set.matching_allow(request) is not None:
+                return PermissionDecision.allow(mode=self._mode)
+        return self._decide_by_mode(request.kind)
+
+    def _rule_sources(self) -> tuple[RuleSet, ...]:
+        """The rule sources evaluated as a union (user today; + active agent from task 020)."""
+        return (self._user_rules,)
+
+    def _decide_by_mode(self, kind: ToolKind) -> PermissionDecision:
+        """The pure mode x kind decision (the task-017 floor, below the rule layer)."""
         mode = self._mode
         if mode is PermissionMode.BYPASS:
             return PermissionDecision.allow(mode=mode)
@@ -82,3 +125,9 @@ class PermissionGate:
             return PermissionDecision.allow(mode=mode)
         # DEFAULT (any mutation) and EDIT (non-file-edit, i.e. bash) ask the human.
         return PermissionDecision.ask(mode=mode)
+
+
+def _deny_reason(rule: Rule) -> str:
+    """The human-/model-facing reason for a deny-rule hit, citing the matched rule."""
+    cited = rule.tool_name if rule.pattern is None else f"{rule.tool_name}({rule.pattern})"
+    return f"Denied by permission rule {cited}."

@@ -68,6 +68,7 @@ from decode.agent.deps import AgentDeps
 from decode.entities import events
 from decode.entities.permissions import PermissionOutcome, PermissionRequest
 from decode.harness.runner import Boundary, TurnContext
+from decode.permissions.rules import subject_for
 from decode.tools import tool_kind
 
 if TYPE_CHECKING:
@@ -262,17 +263,20 @@ class AgentTurnHandler:
     async def _decide(self, ctx: TurnContext, call: ToolCallPart) -> str:
         """Decide one gated call; return ``"allow"`` or a denial message string (ADR-0003 §3).
 
-        Builds the request with the tool's :class:`~decode.permissions.types.ToolKind`, asks the
-        gate, and **honors the verdict**: an ``ALLOW`` runs the tool with no prompt and no event;
-        a ``DENY`` returns the gate's reason (the model sees it on the resume leg) with no prompt;
-        an ``ASK`` surfaces a ``PermissionRequested`` event and routes to
-        ``deps.resolve_permission`` for the human's terminal allow/deny (M1's path).
+        Builds the request with the tool's :class:`~decode.permissions.types.ToolKind` and the
+        per-kind **subject** (``bash`` → command, file tools → path, ``web_fetch`` → url; ADR-0003
+        §4) that allow/deny rules glob against, asks the gate, and **honors the verdict**: an
+        ``ALLOW`` runs the tool with no prompt and no event; a ``DENY`` returns the gate's reason
+        (the model sees it on the resume leg) with no prompt; an ``ASK`` surfaces a
+        ``PermissionRequested`` event and routes to ``deps.resolve_permission`` for the human's
+        terminal allow/deny (M1's path).
         """
         args_summary = call.args_as_json_str()
         request = PermissionRequest(
             tool_name=call.tool_name,
             args=args_summary,
             kind=tool_kind(call.tool_name),
+            subject=subject_for(call.tool_name, args_summary),
             tool_call_id=call.tool_call_id,
         )
         decision = self._deps.gate.check(request)

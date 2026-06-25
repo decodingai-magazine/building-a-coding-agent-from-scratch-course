@@ -1,16 +1,17 @@
 """Unit tests for :class:`decode.permissions.gate.PermissionGate`.
 
-ADR-0003 §1,3: the gate is now a **real decision**. ``check(request)`` evaluates the active
-:class:`~decode.permissions.types.PermissionMode` against the request's
-:class:`~decode.permissions.types.ToolKind` and returns ALLOW / ASK / DENY (no rules yet — that
-is task 018). The mode is mutable via :meth:`PermissionGate.set_mode`. The gate is still
-policy-only: it never owns the terminal UI; turning an ASK into a human verdict is the resolver's
-job.
+ADR-0003 §1,3,4: the gate is a **real decision**. ``check(request)`` evaluates, in precedence
+order, **deny rule → allow rule → mode decision → ask** and returns ALLOW / ASK / DENY. The mode
+is mutable via :meth:`PermissionGate.set_mode`; the user rule set is loaded from
+``.decode/settings.json`` and reloadable via :meth:`PermissionGate.set_user_rules`. The gate is
+still policy-only: it never owns the terminal UI; turning an ASK into a human verdict is the
+resolver's job.
 """
 
 import pytest
 
 from decode.entities.permissions import PermissionOutcome, PermissionRequest
+from decode.permissions import rules
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode, ToolKind
 
@@ -22,6 +23,13 @@ def gate() -> PermissionGate:
 
 def _request(kind: ToolKind) -> PermissionRequest:
     return PermissionRequest(tool_name="t", args="", kind=kind)
+
+
+def _rule_set(*, allow: list[str] | None = None, deny: list[str] | None = None) -> rules.RuleSet:
+    return rules.RuleSet(
+        allow=[rules.parse_rule(r) for r in (allow or [])],
+        deny=[rules.parse_rule(r) for r in (deny or [])],
+    )
 
 
 def test_gate_defaults_to_default_mode(gate):
@@ -126,3 +134,58 @@ def test_set_mode_makes_the_mode_mutable(gate):
     # A read-only call is still allowed; a bash call is now denied (plan is read-only).
     assert gate.check(_request(ToolKind.READ_ONLY)).outcome is PermissionOutcome.ALLOW
     assert gate.check(_request(ToolKind.OTHER)).outcome is PermissionOutcome.DENY
+
+
+# --- rule layer: deny → allow → mode → ask (ADR-0003 §4) -------------------------------------
+
+
+def _bash(subject: str) -> PermissionRequest:
+    return PermissionRequest(tool_name="bash", args="", kind=ToolKind.OTHER, subject=subject)
+
+
+def test_with_no_rules_the_gate_is_mode_only(gate):
+    # A gate with an empty rule set behaves exactly as task 017 (mode-only floor).
+    assert gate.check(_bash("rm -rf x")).outcome is PermissionOutcome.ASK
+
+
+def test_deny_rule_beats_bypass_mode(gate):
+    # A deny rule beats everything — even bypass (ADR-0003 §4 acceptance).
+    gate.set_mode(PermissionMode.BYPASS)
+    gate.set_user_rules(_rule_set(deny=["bash(rm *)"]))
+
+    decision = gate.check(_bash("rm -rf x"))
+
+    assert decision.outcome is PermissionOutcome.DENY
+    assert decision.reason is not None
+    assert "rm *" in decision.reason  # the reason cites the rule
+
+
+def test_allow_rule_beats_the_mode_ask(gate):
+    # An allow rule turns an otherwise-ASK bash command into ALLOW under default mode.
+    gate.set_user_rules(_rule_set(allow=["bash(npm run test:*)"]))
+
+    assert gate.check(_bash("npm run test:unit")).outcome is PermissionOutcome.ALLOW
+    # A non-matching command still falls through to the mode (which ASKs).
+    assert gate.check(_bash("npm run build")).outcome is PermissionOutcome.ASK
+
+
+def test_bare_allow_rule_allows_any_call_of_that_tool(gate):
+    gate.set_user_rules(_rule_set(allow=["bash"]))
+
+    assert gate.check(_bash("anything at all")).outcome is PermissionOutcome.ALLOW
+
+
+def test_deny_beats_allow_when_both_match(gate):
+    # Precedence proof: a subject matching BOTH an allow and a deny rule → DENY (deny first).
+    gate.set_user_rules(_rule_set(allow=["bash(rm *)"], deny=["bash(rm *)"]))
+
+    assert gate.check(_bash("rm -rf x")).outcome is PermissionOutcome.DENY
+
+
+def test_set_user_rules_reloads_in_place(gate):
+    # The always-allow flow persists a rule then reloads — a later identical call auto-allows.
+    assert gate.check(_bash("npm run test:unit")).outcome is PermissionOutcome.ASK
+
+    gate.set_user_rules(_rule_set(allow=["bash(npm run test:*)"]))
+
+    assert gate.check(_bash("npm run test:unit")).outcome is PermissionOutcome.ALLOW

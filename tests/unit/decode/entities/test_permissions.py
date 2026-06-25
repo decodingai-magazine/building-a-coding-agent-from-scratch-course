@@ -39,6 +39,21 @@ def test_permission_request_kind_defaults_to_other():
     assert request.tool_call_id is None
 
 
+def test_permission_request_subject_defaults_to_empty():
+    # The subject (matched against allow/deny rule patterns, task 018) defaults to "".
+    request = PermissionRequest(tool_name="noop", args="")
+
+    assert request.subject == ""
+
+
+def test_permission_request_carries_the_subject():
+    request = PermissionRequest(
+        tool_name="bash", args='{"command": "rm -rf x"}', subject="rm -rf x"
+    )
+
+    assert request.subject == "rm -rf x"
+
+
 def test_permission_decision_allow_and_deny_constructors():
     allow = PermissionDecision.allow()
     deny = PermissionDecision.deny(reason="user said no")
