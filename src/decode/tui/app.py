@@ -26,8 +26,8 @@ The interactive loop reads real stdin, so its plumbing is exercised by the
 ``run_app`` regression test (a piped prompt_toolkit input); the decidable pieces
 (:func:`is_quit_command`, :func:`footer_hint`, :class:`InputIntent`,
 :func:`parse_permission_answer`, the control-surface parsers
-:func:`parse_agent_command` / :func:`parse_mode_command` / :func:`parse_mode_name`, and the
-Shift+Tab :func:`next_mode` cycle) are pure and unit-tested.
+:func:`parse_agent_command` / :func:`parse_mode_command` / :func:`parse_mode_name` /
+:func:`parse_skill_command`, and the Shift+Tab :func:`next_mode` cycle) are pure and unit-tested.
 """
 
 from __future__ import annotations
@@ -64,6 +64,7 @@ from decode.memory.extract import extract_on_exit
 from decode.permissions import rules
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
+from decode.skills.loader import load_skills
 from decode.tui import render
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,10 @@ _QUIT_COMMAND = "/quit"
 # the single input surface alongside ``/quit`` (never a second ``prompt_async``).
 _AGENT_COMMAND = "/agent"
 _MODE_COMMAND = "/mode"
+# The reserved TUI slash commands that take precedence over a same-named skill (ADR-0004 §5): the
+# built-in handlers run earlier in the loop, so :func:`parse_skill_command` returns ``None`` for
+# these to never shadow them. ``/resume`` is a CLI flag, not a TUI command — not reserved here.
+_RESERVED_COMMANDS = frozenset({_QUIT_COMMAND, _AGENT_COMMAND, _MODE_COMMAND})
 # The order Shift+Tab cycles the gate mode through (ADR-0003 §9): default -> edit -> plan ->
 # bypass -> back to default. A tuple so :func:`next_mode` is a pure index step.
 _MODE_CYCLE: tuple[PermissionMode, ...] = (
@@ -175,6 +180,30 @@ def _parse_slash_arg(line: str, command: str) -> str | None:
     return None
 
 
+def parse_skill_command(line: str) -> tuple[str, str] | None:
+    """Split a ``/<skill-name> [trailing]`` line into ``(name, trailing)``, or ``None`` (§5).
+
+    The user-facing second entry point into a skill body (ADR-0004 §5), alongside the model's
+    ``skill`` dispatcher (task 026) — both resolve through the same ``load_skills(cwd)``. Pure
+    (mirrors :func:`parse_agent_command`): ``"/commit"`` → ``("commit", "")``; ``"/commit fix the
+    bug"`` → ``("commit", "fix the bug")`` (name + trailing text, both stripped). A non-slash line
+    (``"hello"``) → ``None`` so the main loop falls through to its normal ``runner.submit`` routing.
+    A **reserved** slash command (``/quit`` / ``/agent …`` / ``/mode …``) → ``None`` so the existing
+    handlers win — belt-and-suspenders, since they are already matched earlier in the loop; a
+    same-named skill stays reachable via the dispatcher. A bare ``"/"`` (no name) → ``None``.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("/"):
+        return None
+    name, _, trailing = stripped[1:].partition(" ")
+    name = name.strip()
+    if not name:
+        return None
+    if f"/{name}" in _RESERVED_COMMANDS:
+        return None
+    return name, trailing.strip()
+
+
 def parse_mode_name(name: str) -> PermissionMode | None:
     """Map a typed mode name to a :class:`PermissionMode`, or ``None`` if it is not one (§1,9).
 
@@ -266,6 +295,43 @@ def _handle_mode_command(
     gate.set_mode(mode)
     logger.debug("/mode switched to %s", mode.value)
     emit(mode_switch_confirmation(mode.value))
+
+
+# The friendly inline lines for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirror the
+# ``/agent`` / ``/mode`` unknown-argument style (a single ``Decode - …`` line); the available-skills
+# list doubles as discovery. ``_SKILL_NO_MATCH`` lists the sorted skills; ``_SKILL_NONE`` is shown
+# when the catalog is empty.
+_SKILL_NO_MATCH = "Decode - unknown command '/{name}'; available skills: {skills}."
+_SKILL_NONE = "Decode - unknown command '/{name}'; no skills available."
+
+
+def _handle_skill_command(
+    name: str, trailing: str, *, cwd: Path, emit: Callable[[str], None]
+) -> str | None:
+    """Resolve a ``/<name>`` skill into the turn input, or ``emit`` a discovery line (§5).
+
+    The user-facing entry point into a skill body (ADR-0004 §5): resolves ``name`` against the
+    merged catalog (:func:`decode.skills.loader.load_skills` for ``cwd`` — the **same** loader the
+    model's ``skill`` dispatcher uses). On a match, returns the skill ``body`` as the turn input
+    (the caller submits it through the existing ``runner.submit`` pipeline); a non-empty ``trailing``
+    is appended after a blank line (``f"{body}\\n\\n{trailing}"``). On no match, ``emit`` a friendly
+    one-line message listing the available (sorted) skill names — discovery — and return ``None`` so
+    no turn runs. ``name`` is used **only** as a dict key (never interpolated into a filesystem path
+    or shell command — ADR-0004 §3,7), so a bad name just yields the available-skills line.
+    """
+    catalog = load_skills(cwd)
+    found = catalog.get(name)
+    if found is None:
+        if catalog:
+            emit(_SKILL_NO_MATCH.format(name=name, skills=", ".join(sorted(catalog))))
+        else:
+            emit(_SKILL_NONE.format(name=name))
+        logger.debug("/%s is not a known skill (available: %s)", name, sorted(catalog))
+        return None
+    logger.debug("/%s resolved to skill body (source=%s)", name, found.source)
+    if trailing:
+        return f"{found.body}\n\n{trailing}"
+    return found.body
 
 
 def parse_permission_answer(answer: str) -> PermissionDecision:
@@ -660,6 +726,19 @@ async def run_app(
             mode_arg = parse_mode_command(text)
             if mode_arg is not None:
                 _handle_mode_command(mode_arg, gate=gate, emit=emit_line)
+                continue
+
+            # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved
+            # ``/agent`` / ``/mode`` checks so a same-named built-in command always wins. A
+            # resolved skill injects its body as the turn input through the existing submit
+            # pipeline; an unrecognised ``/<x>`` (neither reserved nor a known skill) is
+            # intercepted with the available-skills discovery line and runs no turn.
+            skill_cmd = parse_skill_command(text)
+            if skill_cmd is not None:
+                name, trailing = skill_cmd
+                turn_input = _handle_skill_command(name, trailing, cwd=deps.cwd, emit=emit_line)
+                if turn_input is not None:
+                    await runner.submit(turn_input, intent)
                 continue
 
             if not text.strip():

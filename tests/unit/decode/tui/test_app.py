@@ -472,3 +472,91 @@ def test_handle_agent_command_missing_name_shows_usage():
     app._handle_agent_command("", deps=deps, gate=gate, emit=lines.append)
 
     assert any("/agent" in line for line in lines)
+
+
+# --- the user-facing /<skill-name> command (ADR-0004 §5, task 028) ----------------------------
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("/commit", ("commit", "")),  # bare name -> empty trailing
+        ("/commit fix the bug", ("commit", "fix the bug")),  # name + trailing
+        ("  /commit   ship it  ", ("commit", "ship it")),  # name + trailing, both stripped
+        ("hello", None),  # not a slash line -> fall through to runner.submit
+        ("/", None),  # a bare slash is no name at all
+        ("/quit", None),  # reserved -> the /quit handler wins
+        ("/agent build", None),  # reserved -> the /agent handler wins
+        ("/agent", None),  # reserved (bare) -> the /agent handler wins
+        ("/mode plan", None),  # reserved -> the /mode handler wins
+        ("/mode", None),  # reserved (bare) -> the /mode handler wins
+    ],
+)
+def test_parse_skill_command(line, expected):
+    assert app.parse_skill_command(line) == expected
+
+
+def _write_skill(skills_dir: Path, name: str, body: str = "do the thing") -> None:
+    """Drop a minimal valid project skill file under ``skills_dir`` (frontmatter + body)."""
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / f"{name}.md").write_text(
+        f"---\nname: {name}\ndescription: a test skill\n---\n{body}\n", encoding="utf-8"
+    )
+
+
+def test_handle_skill_command_returns_the_known_skill_body(tmp_path):
+    # A known skill resolves to its full body (the built-in `commit` ships with the package).
+    from decode.skills.loader import load_skills
+
+    lines: list[str] = []
+    result = app._handle_skill_command("commit", "", cwd=tmp_path, emit=lines.append)
+
+    assert result == load_skills(tmp_path)["commit"].body
+    assert "Conventional Commits" in result  # the body, not the literal `/commit`
+    assert not lines  # a match emits nothing — it returns the turn input
+
+
+def test_handle_skill_command_appends_trailing_text(tmp_path):
+    # Trailing text after the name is appended to the body separated by a blank line.
+    from decode.skills.loader import load_skills
+
+    body = load_skills(tmp_path)["commit"].body
+    result = app._handle_skill_command("commit", "ship it", cwd=tmp_path, emit=lambda _l: None)
+
+    assert result == f"{body}\n\nship it"
+
+
+def test_handle_skill_command_unknown_emits_available_skills_and_returns_none(tmp_path):
+    # An unknown name returns no turn input and emits a friendly line listing the sorted skills.
+    lines: list[str] = []
+    result = app._handle_skill_command("nope", "", cwd=tmp_path, emit=lines.append)
+
+    assert result is None  # no turn submitted
+    assert len(lines) == 1
+    message = lines[0]
+    assert "nope" in message  # names the bad command
+    assert "commit" in message and "review-diff" in message  # discovery: lists available skills
+    assert message.index("commit") < message.index("review-diff")  # sorted
+
+
+def test_handle_skill_command_with_no_skills_available_emits_a_friendly_line(tmp_path, mocker):
+    # When the catalog is empty, the unknown-skill line says so instead of listing nothing.
+    mocker.patch.object(app, "load_skills", return_value={})
+    lines: list[str] = []
+
+    result = app._handle_skill_command("anything", "", cwd=tmp_path, emit=lines.append)
+
+    assert result is None
+    assert len(lines) == 1
+    assert "no skills available" in lines[0]
+
+
+def test_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
+    # ADR-0004 §3,5: a project skill named `mode` is reachable via the dispatcher (load_skills),
+    # but `/mode plan` is NOT parsed as a skill command — the reserved `/mode` handler wins.
+    from decode.skills.loader import load_skills
+
+    _write_skill(tmp_path / ".decode" / "skills", "mode")
+
+    assert "mode" in load_skills(tmp_path)  # still reachable via the skill dispatcher
+    assert app.parse_skill_command("/mode plan") is None  # the /mode handler intercepts it first

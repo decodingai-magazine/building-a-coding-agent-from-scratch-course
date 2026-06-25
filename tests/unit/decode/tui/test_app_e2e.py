@@ -658,6 +658,106 @@ async def test_run_app_shift_tab_to_edit_lets_a_write_run_without_a_prompt(monke
     assert "permission? write" not in output
 
 
+def _build_capturing_chat_agent(
+    captured: list[list[ModelMessage]],
+) -> Agent[AgentDeps, str | DeferredToolRequests]:
+    """A chat agent that records each leg's incoming messages, then replies with text.
+
+    Lets a test inspect exactly what user prompt the model saw — used to prove a ``/<skill>``
+    command submits the skill *body* (not the literal ``/commit``) as the turn input.
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        captured.append(list(messages))
+        yield _CHAT_REPLY
+
+    agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
+        FunctionModel(stream_function=stream_function),
+        deps_type=AgentDeps,
+        output_type=[str, DeferredToolRequests],
+    )
+    return agent
+
+
+def _user_prompts(captured: list[list[ModelMessage]]) -> list[str]:
+    """Flatten every ``UserPromptPart`` text the model saw across all captured legs."""
+    return [
+        str(part.content)
+        for leg in captured
+        for message in leg
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    ]
+
+
+async def test_run_app_skill_slash_injects_the_body_and_runs_a_turn(monkeypatch):
+    """ADR-0004 §5, task 028: ``/commit`` submits the built-in skill *body* as the turn input.
+
+    Driven through the real ``run_app`` (single input surface): the slash command is parsed in
+    the main loop, resolved via ``load_skills(cwd)``, and the body — not the literal ``/commit`` —
+    is what the model receives as the user prompt; a turn actually runs.
+    """
+    captured: list[list[ModelMessage]] = []
+    agent = _build_capturing_chat_agent(captured)
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/commit")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert _CHAT_REPLY in output  # a turn actually ran off the slash command
+    prompts = _user_prompts(captured)
+    # The commit skill body (not the literal `/commit`) was submitted as the turn input.
+    assert any("Conventional Commits" in p for p in prompts)
+    assert not any(p.strip() == "/commit" for p in prompts)
+
+
+async def test_run_app_skill_slash_appends_trailing_text(monkeypatch):
+    """Trailing text after ``/commit`` is appended to the body and submitted with it."""
+    captured: list[list[ModelMessage]] = []
+    agent = _build_capturing_chat_agent(captured)
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/commit ship the parser fix")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    await _drive_run_app(monkeypatch, agent, script=script)
+
+    prompts = _user_prompts(captured)
+    assert any("Conventional Commits" in p and "ship the parser fix" in p for p in prompts)
+
+
+async def test_run_app_unknown_slash_is_intercepted_and_runs_no_turn(monkeypatch):
+    """Behavior change (task 028): an unknown ``/<x>`` emits the available-skills line, no turn.
+
+    Previously a stray ``/foo`` fell through to ``runner.submit("/foo", …)`` and reached the
+    model; now it is intercepted with a discovery line and no turn runs. The REPL stays alive (a
+    later normal line still runs a turn).
+    """
+    captured: list[list[ModelMessage]] = []
+    agent = _build_capturing_chat_agent(captured)
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/definitely-not-a-skill")
+        await _wait_for(buf, "available skills")
+        send("still here?")  # the session survived the unknown command
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "available skills" in output  # the discovery line rendered
+    prompts = _user_prompts(captured)
+    assert not any("definitely-not-a-skill" in p for p in prompts)  # never reached the model
+    assert any("still here?" in p for p in prompts)  # the REPL kept running
+
+
 async def test_run_app_mode_plan_denies_a_write_without_asking(monkeypatch):
     """Working-looks-like (ADR-0003 §9): ``/mode plan`` → a ``write`` is denied, never asked.
 
