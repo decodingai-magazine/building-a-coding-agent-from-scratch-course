@@ -8,11 +8,12 @@ mode is mutable via :meth:`set_mode`; the user rule set (loaded from ``.decode/s
 held on the gate and reloadable via :meth:`set_user_rules` (the always-allow flow persists a rule
 then reloads so the next identical call auto-allows).
 
-Two rule **sources** are designed in from the start: the **user** ``.decode/settings.json`` rules
-(wired here) and, from task 020, the **active agent**'s catalog rules. The gate evaluates them as
-a **union** — a deny from *either* source beats an allow from *either* — by walking every source's
-deny list before any allow list. Today there is one source (the user set); task 020 adds the agent
-set with no precedence rewrite.
+Two rule **sources** drive the gate: the **user** ``.decode/settings.json`` rules (loaded at
+startup, reloadable via :meth:`set_user_rules`) and the **active agent**'s catalog rules (loaded
+when an agent is selected, replaceable via :meth:`set_agent_rules`). The gate evaluates them as a
+**union** — a deny from *either* source beats an allow from *either* — by walking every source's
+deny list before any allow list. This is what makes the code-reviewer's catalog ``allow:
+["bash(git *)"]`` auto-allow ``git diff`` while a user ``deny`` can still tighten an agent allow.
 
 The gate is **policy only** — it does *not* prompt the user or own the terminal UI. On an ``ASK``
 the loop turns the verdict into the human's terminal allow/deny via the resolver on
@@ -39,9 +40,10 @@ class PermissionGate:
     """Decide allow/ask/deny for a tool call by rule + mode x kind (ADR-0003 §1,3,4).
 
     Holds the active :class:`~decode.permissions.types.PermissionMode` (mutable via
-    :meth:`set_mode`; gate default ``DEFAULT``) and a user :class:`~decode.permissions.rules.RuleSet`
-    (mutable via :meth:`set_user_rules`; empty by default). One instance is shared for a whole
-    session.
+    :meth:`set_mode`; gate default ``DEFAULT``), a user :class:`~decode.permissions.rules.RuleSet`
+    (mutable via :meth:`set_user_rules`; empty by default), and the active-agent rule set (mutable
+    via :meth:`set_agent_rules`; empty until an agent is selected). One instance is shared for a
+    whole session.
     """
 
     def __init__(
@@ -52,6 +54,7 @@ class PermissionGate:
     ) -> None:
         self._mode = mode
         self._user_rules = user_rules if user_rules is not None else RuleSet()
+        self._agent_rules = RuleSet()
 
     @property
     def mode(self) -> PermissionMode:
@@ -69,6 +72,19 @@ class PermissionGate:
             "gate user rules: %d allow, %d deny", len(user_rules.allow), len(user_rules.deny)
         )
         self._user_rules = user_rules
+
+    def set_agent_rules(self, agent_rules: RuleSet) -> None:
+        """Replace the active-agent rule set (selecting an agent loads its catalog rules; §4,7).
+
+        Called by the agent-selection helper when an agent is selected: it loads that agent's
+        ``allow`` / ``deny`` catalog rules so e.g. the code-reviewer's ``bash(git *)`` takes effect
+        for the run, merged (union) with the user rules. Replacing in place means the prior agent's
+        rules never linger after a switch.
+        """
+        logger.debug(
+            "gate agent rules: %d allow, %d deny", len(agent_rules.allow), len(agent_rules.deny)
+        )
+        self._agent_rules = agent_rules
 
     def check(self, request: PermissionRequest) -> PermissionDecision:
         """Return the gate's verdict for ``request`` (ADR-0003 §4): deny → allow → mode → ask.
@@ -94,8 +110,8 @@ class PermissionGate:
         """Walk deny → allow across every rule source, then fall through to the mode (ADR-0003 §4).
 
         Every source's **deny** list is checked before any **allow** list, so a deny from one
-        source beats an allow from another (the union semantics task 020 relies on). Today there is
-        one source (the user set).
+        source beats an allow from another (the union semantics ADR-0003 §4 relies on): the user
+        ``.decode/settings.json`` rules and the active agent's catalog rules.
         """
         sources = self._rule_sources()
         for rule_set in sources:
@@ -108,8 +124,8 @@ class PermissionGate:
         return self._decide_by_mode(request.kind)
 
     def _rule_sources(self) -> tuple[RuleSet, ...]:
-        """The rule sources evaluated as a union (user today; + active agent from task 020)."""
-        return (self._user_rules,)
+        """The rule sources evaluated as a union: the user set and the active-agent set (§4,7)."""
+        return (self._user_rules, self._agent_rules)
 
     def _decide_by_mode(self, kind: ToolKind) -> PermissionDecision:
         """The pure mode x kind decision (the task-017 floor, below the rule layer)."""

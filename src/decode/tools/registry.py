@@ -30,7 +30,8 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai import Agent, DeferredToolRequests, RunContext
+from pydantic_ai.tools import ToolDefinition
 
 from decode.agent.deps import AgentDeps
 from decode.permissions.types import ToolKind
@@ -112,11 +113,38 @@ TOOL_READ_ONLY: dict[str, bool] = {
 
 
 def register_tools(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:
-    """Register every :data:`TOOL_SPECS` function on ``agent`` (ADR-0002 §7).
+    """Register every :data:`TOOL_SPECS` function on ``agent`` with per-agent restriction (ADR-0003 §6).
 
     Called once by the factory. Each tool takes ``ctx: RunContext[AgentDeps]`` first, so it is
-    registered with ``agent.tool`` (context-aware), not ``agent.tool_plain``.
+    registered with ``agent.tool`` (context-aware), not ``agent.tool_plain``. Each is registered
+    with a per-tool ``prepare=`` callback (:func:`_restrict_to_active_agent`) that hides the tool —
+    returns ``None`` so it is absent from the model's schema **for that run** — when it is not in
+    ``ctx.deps.active_agent.tools``. One Agent, no rebuild: switching the active agent changes the
+    visible tool set on the next turn (spike-confirmed against pydantic-ai 1.107).
     """
     for spec in TOOL_SPECS:
-        agent.tool(spec.func)
+        agent.tool(spec.func, prepare=_restrict_to_active_agent(spec.name))
     logger.debug("registered %d tools: %s", len(TOOL_SPECS), [s.name for s in TOOL_SPECS])
+
+
+def _restrict_to_active_agent(
+    tool_name: str,
+) -> Callable[[RunContext[AgentDeps], ToolDefinition], object]:
+    """Build the per-tool ``prepare=`` callback hiding ``tool_name`` when the agent disallows it.
+
+    Pydantic AI 1.107's per-tool ``prepare`` is
+    ``Callable[[RunContext[Deps], ToolDefinition], Awaitable[ToolDefinition | None]]`` (verified
+    against the installed SDK): it runs at schema-build time per run, receives ``ctx.deps``, and a
+    ``None`` return drops the tool from the model-facing schema for that run. Returning the
+    unchanged ``tool_def`` keeps the tool visible. Reading ``ctx.deps.active_agent.tools`` here is
+    what makes the active agent's allowlist take effect per turn with no rebuild (ADR-0003 §6).
+    """
+
+    async def prepare(
+        ctx: RunContext[AgentDeps], tool_def: ToolDefinition
+    ) -> ToolDefinition | None:
+        if tool_name in ctx.deps.active_agent.tools:
+            return tool_def
+        return None
+
+    return prepare

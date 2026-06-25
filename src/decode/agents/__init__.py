@@ -7,13 +7,15 @@ loader + validator, **not** a hardcoded dict (ADR-0003 §5): :mod:`decode.agents
 files as *packaged data* (``importlib.resources``, so they ship in the wheel), validates each into an
 :class:`~decode.entities.agent_def.AgentDef`, and returns them keyed by name.
 
-This task (019) is **pure load + validate** — wiring the active agent into the running agent (its
-prompt, tool restriction, rules, and mode) is task 020. Subagent spawning is out of scope this
-milestone (the catalog is main-agent only).
+The loader (task 019) is **pure load + validate**; :func:`~decode.agents.select.select_agent`
+(task 020) wires a selected persona into the running session — setting ``deps.active_agent``,
+resetting the gate mode, and loading the agent's catalog rules (ADR-0003 §7). Subagent spawning is
+out of scope this milestone (the catalog is main-agent only).
 """
 
 from __future__ import annotations
 
 from decode.agents.loader import load_agent, load_builtin_agents
+from decode.agents.select import select_agent
 
-__all__ = ["load_agent", "load_builtin_agents"]
+__all__ = ["load_agent", "load_builtin_agents", "select_agent"]

@@ -69,9 +69,27 @@ def build_agent() -> Agent[AgentDeps, str | DeferredToolRequests]:
         instructions=_BASE_INSTRUCTIONS,
     )
     register_tools(agent)
+    _register_agent_prompt_instructions(agent)
     _register_memory_instructions(agent)
     logger.debug("built Gemini agent on model=%s (google-gla)", settings.gemini_model)
     return agent
+
+
+def _register_agent_prompt_instructions(
+    agent: Agent[AgentDeps, str | DeferredToolRequests],
+) -> None:
+    """Append the active Agent persona's system prompt via a **dynamic** hook (ADR-0003 §6,7).
+
+    Like the memory hook, this is a per-run ``@agent.instructions`` function: it reads
+    ``ctx.deps.active_agent.prompt`` at prompt-build time and appends it to the static base prompt.
+    Reading the active agent here — rather than baking one persona into ``instructions=`` — is what
+    lets an ``/agent`` switch change the system prompt on the next turn with no agent rebuild
+    (ADR-0003 §7): the same Agent runs every persona, the prompt rides ``ctx.deps``.
+    """
+
+    @agent.instructions
+    def active_agent_instructions(ctx: RunContext[AgentDeps]) -> str:
+        return ctx.deps.active_agent.prompt
 
 
 def _register_memory_instructions(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:

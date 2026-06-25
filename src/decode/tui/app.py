@@ -47,6 +47,7 @@ from rich.text import Text
 from decode.agent.deps import AgentDeps, PermissionResolver, UserQuestionResolver
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
+from decode.agents.select import select_agent
 from decode.config.settings import settings
 from decode.context.session_log import SessionLog, load, load_latest, resolve_session
 from decode.entities import events
@@ -66,6 +67,9 @@ logger = logging.getLogger(__name__)
 
 # The flag value the bare ``--resume`` (no argument) carries: resume the latest session.
 _RESUME_LATEST = "latest"
+
+# The startup Agent persona when none is given (ADR-0003 §7,9): the full-tool build agent.
+_DEFAULT_AGENT = "build"
 
 _QUIT_COMMAND = "/quit"
 _PROMPT = "> "
@@ -329,7 +333,12 @@ def _make_event_sink(console: Console) -> Callable[[events.Event], None]:
     return on_event
 
 
-async def run_app(console: Console | None = None, *, resume: str | None = None) -> None:
+async def run_app(
+    console: Console | None = None,
+    *,
+    resume: str | None = None,
+    agent: str = _DEFAULT_AGENT,
+) -> None:
     """Run the REPL until ``Ctrl-D`` or ``/quit``, routing input into the harness.
 
     ``console`` is injectable so callers/tests can capture output; defaults to a real
@@ -344,11 +353,22 @@ async def run_app(console: Console | None = None, *, resume: str | None = None) 
     Every ``run_app`` opens a **new** session log file, so a resumed run continues the
     conversation into a fresh append-only log.
 
+    ``agent`` is the startup Agent persona (ADR-0003 §7,9; default ``build``). Before the loop,
+    :func:`~decode.agents.select.select_agent` sets it as ``deps.active_agent`` (so the factory's
+    instructions hook + per-tool ``prepare=`` scope the prompt and tool set to it), resets the gate
+    to the agent's default mode, and loads the agent's catalog rules. The CLI already validated the
+    name, so selection here does not fail for a startup launch.
+
     The single input loop has two modes (see module docstring): when the
     :class:`~decode.harness.decisions.DecisionChannel` is *awaiting a decision*, the next line
     fulfils the pending mid-turn request; otherwise it routes to the runner normally.
     """
     console = console or Console()
+
+    # Capture the startup persona name now: ``agent`` is rebound below to the built Pydantic AI
+    # Agent, so the persona string must be saved before that shadows it (one Agent runs every
+    # persona — ADR-0003 §7 — and the persona rides ``deps.active_agent``, not the Agent object).
+    agent_name = agent
 
     # The harness streams events into this sink; it renders append-style above the pinned prompt
     # and owns the once-per-turn ``Decode `` answer prefix (Fix 2 — the pure renderer can't).
@@ -380,6 +400,10 @@ async def run_app(console: Console | None = None, *, resume: str | None = None) 
         ),
         resolve_user_question=_make_user_question_resolver(decisions, console),
     )
+    # Select the startup Agent persona (ADR-0003 §7,9): set ``deps.active_agent`` (the prompt + tool
+    # allowlist the factory reads per turn), reset the gate to the agent's default mode, and load the
+    # agent's catalog rules. The CLI validated the name already, so this does not fail at startup.
+    select_agent(agent_name, deps=deps, gate=gate)
     # Persistence (ADR-0002 §9): replay a prior session if asked, then open a fresh append-only
     # JSONL log this run writes its turns to. The replayed history seeds the handler so the
     # conversation continues; the new log starts after the replayed prefix (already-persisted).

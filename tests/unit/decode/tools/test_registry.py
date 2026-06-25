@@ -140,3 +140,27 @@ def test_register_tools_registers_every_spec_onto_a_bare_agent():
     register_tools(bare)
 
     assert set(bare._function_toolset.tools) == {spec.name for spec in TOOL_SPECS}
+
+
+async def test_restrict_to_active_agent_hides_disallowed_tools(monkeypatch):
+    """The per-tool ``prepare=`` callback returns ``None`` for a tool the active agent omits.
+
+    Unit-level proof of ADR-0003 §6: ``_restrict_to_active_agent("bash")`` is the prepare for the
+    ``bash`` tool. Given an active agent whose ``tools`` lacks ``bash`` it returns ``None`` (hide);
+    given one that includes ``bash`` it returns the unchanged definition (show).
+    """
+    from pydantic_ai.tools import ToolDefinition
+
+    from decode.agents.loader import load_agent
+    from decode.tools.registry import _restrict_to_active_agent
+
+    prepare = _restrict_to_active_agent("bash")
+    tool_def = ToolDefinition(name="bash", parameters_json_schema={"type": "object"})
+
+    class _Ctx:
+        def __init__(self, agent_name: str) -> None:
+            self.deps = type("D", (), {"active_agent": load_agent(agent_name)})()
+
+    # plan omits bash → hidden; build includes bash → shown (returns the same definition).
+    assert await prepare(_Ctx("plan"), tool_def) is None  # type: ignore[arg-type]
+    assert await prepare(_Ctx("build"), tool_def) is tool_def  # type: ignore[arg-type]

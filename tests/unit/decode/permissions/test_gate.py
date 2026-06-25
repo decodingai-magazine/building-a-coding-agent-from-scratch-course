@@ -189,3 +189,48 @@ def test_set_user_rules_reloads_in_place(gate):
     gate.set_user_rules(_rule_set(allow=["bash(npm run test:*)"]))
 
     assert gate.check(_bash("npm run test:unit")).outcome is PermissionOutcome.ALLOW
+
+
+# --- the active-agent rule source (ADR-0003 §4,7; task 020) ----------------------------------
+
+
+def test_agent_rules_default_empty_so_the_gate_is_mode_only(gate):
+    # With no agent rules loaded the gate behaves exactly as user-rules-only (mode-only floor).
+    assert gate.check(_bash("git diff")).outcome is PermissionOutcome.ASK
+
+
+def test_agent_allow_rule_auto_allows_a_matching_call(gate):
+    # The code-reviewer's catalog rule `bash(git *)` rides the agent source: `git diff` allows...
+    gate.set_agent_rules(_rule_set(allow=["bash(git *)"]))
+
+    assert gate.check(_bash("git diff")).outcome is PermissionOutcome.ALLOW
+    # ...while a non-`git` bash call still falls through to the mode (which ASKs).
+    assert gate.check(_bash("rm x")).outcome is PermissionOutcome.ASK
+
+
+def test_agent_deny_rule_beats_a_user_allow_rule(gate):
+    # Union semantics: a deny from EITHER source beats an allow from EITHER source.
+    gate.set_user_rules(_rule_set(allow=["bash(rm *)"]))
+    gate.set_agent_rules(_rule_set(deny=["bash(rm *)"]))
+
+    assert gate.check(_bash("rm -rf x")).outcome is PermissionOutcome.DENY
+
+
+def test_user_deny_rule_beats_an_agent_allow_rule(gate):
+    # The other direction: a user deny tightens an agent allow (a user can always say no).
+    gate.set_user_rules(_rule_set(deny=["bash(git push)"]))
+    gate.set_agent_rules(_rule_set(allow=["bash(git *)"]))
+
+    assert gate.check(_bash("git push")).outcome is PermissionOutcome.DENY
+    # A sibling git command not denied by the user still auto-allows via the agent rule.
+    assert gate.check(_bash("git diff")).outcome is PermissionOutcome.ALLOW
+
+
+def test_set_agent_rules_replaces_in_place_on_agent_switch(gate):
+    # Selecting a new agent replaces the agent rule source (the prior agent's rules don't linger).
+    gate.set_agent_rules(_rule_set(allow=["bash(git *)"]))
+    assert gate.check(_bash("git diff")).outcome is PermissionOutcome.ALLOW
+
+    gate.set_agent_rules(_rule_set())  # switch to an agent with no rules
+
+    assert gate.check(_bash("git diff")).outcome is PermissionOutcome.ASK

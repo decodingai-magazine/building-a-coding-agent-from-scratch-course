@@ -24,6 +24,13 @@ It carries:
   rewrites in place and the loop/TUI render. A plain mutable ``list[Task]`` (not frozen) because
   the model maintains it within a session; each :class:`~decode.entities.task.Task` is itself
   immutable. In-memory and per run — no cross-session persistence (that is later).
+* ``active_agent`` — the selected Agent persona (ADR-0003 §7): the :class:`~decode.entities.agent_def.AgentDef`
+  whose system prompt the factory's instructions hook injects and whose ``tools`` allowlist the
+  factory's per-tool ``prepare=`` callback reads to hide disallowed tools. **Mutable** (the field
+  is not frozen): the agent-selection helper / a ``/agent`` switch reassigns it and the loop/factory
+  read it fresh per turn, so switching agents changes the prompt + tool set on the next turn with no
+  agent rebuild. Defaults to the ``build`` persona (the full-tool set) so a deps built without one
+  behaves exactly as Milestone 1 did.
 
 Later tasks widen this dataclass further (the session log in 014) — those fields land with the
 task that uses them. Keeping ``emit`` / ``resolve_permission`` / ``resolve_user_question`` plain
@@ -36,11 +43,31 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.entities.task import Task
 from decode.permissions.gate import PermissionGate
+
+if TYPE_CHECKING:
+    # Imported only for typing: a runtime import here would form a cycle (the agents loader pulls
+    # in ``decode.tools``, whose registry imports this module). ``from __future__ import
+    # annotations`` keeps the field annotation a string, so the runtime never needs the symbol.
+    from decode.entities.agent_def import AgentDef
+
+
+def _default_active_agent() -> AgentDef:
+    """The startup default Agent persona: the ``build`` persona (the full tool set; ADR-0003 §7).
+
+    Imported lazily (not at module level) to avoid an import cycle: the agents loader pulls in
+    :mod:`decode.tools`, whose registry imports this module. A deps built without an explicit
+    ``active_agent`` thus behaves as Milestone 1 did (every tool available, ``default`` mode).
+    """
+    from decode.agents.loader import load_agent
+
+    return load_agent("build")
+
 
 EventSink = Callable[[events.Event], None]
 # The decision channel: given a gated tool call, resolve the human's allow/deny verdict.
@@ -60,8 +87,9 @@ class AgentDeps:
 
     Not frozen: the sink may be rebound (e.g. per turn) and the same object accretes mutable
     collaborators across tasks (gate; the ``task_store`` the ``todo_write`` tool rewrites; the
-    session log later). ``task_store`` uses a ``default_factory`` so each run gets its own empty
-    list (no mutable-default aliasing across instances).
+    ``active_agent`` an ``/agent`` switch reassigns; the session log later). ``task_store`` uses a
+    ``default_factory`` so each run gets its own empty list (no mutable-default aliasing across
+    instances); ``active_agent`` likewise defaults (via a factory) to the ``build`` persona.
     """
 
     cwd: Path
@@ -70,3 +98,4 @@ class AgentDeps:
     resolve_permission: PermissionResolver
     resolve_user_question: UserQuestionResolver
     task_store: list[Task] = field(default_factory=list)
+    active_agent: AgentDef = field(default_factory=_default_active_agent)
