@@ -77,7 +77,7 @@ def _html_response(html: str, *, status: int = 200) -> Callable[[httpx.Request],
     return handler
 
 
-# --- gating: web_fetch asks on every call ---------------------------------------------------
+# --- gating: web_fetch defers to the gate (raises ApprovalRequired until the run is approved) -
 
 
 async def test_web_fetch_requires_approval_when_not_approved(tmp_path: Path, mocker):
@@ -88,13 +88,6 @@ async def test_web_fetch_requires_approval_when_not_approved(tmp_path: Path, moc
         await web_module.web_fetch(_ctx(tmp_path, approved=False), url="https://example.com")
     # Gated BEFORE the request: an unapproved call never opens a connection.
     handler.assert_not_called()
-
-
-def test_web_fetch_is_tagged_read_only():
-    # No local side effect (network egress only), so tagged read_only for M3's future
-    # auto-allow — but it STILL gates/asks in v1 (see the gating test above).
-    assert web_module.WEB_FETCH_TOOL_NAME == "web_fetch"
-    assert web_module.WEB_FETCH_READ_ONLY is True
 
 
 # --- HTML -> Markdown conversion ------------------------------------------------------------
@@ -380,26 +373,30 @@ def _web_fetch_then_text() -> FunctionModel:
     return FunctionModel(stream_function=stream)
 
 
-async def test_web_fetch_runs_through_the_agent_when_approved(tmp_path: Path, mocker):
-    """A forced ``web_fetch`` call (via FunctionModel) is gated, approved, then actually fetched.
+async def test_web_fetch_auto_allows_and_runs_through_the_agent(tmp_path: Path, mocker):
+    """A forced ``web_fetch`` call is auto-allowed by the gate, then actually fetched.
 
-    Proves the whole path: the model calls ``web_fetch`` → it raises ``ApprovalRequired`` → the
-    leg resolves to ``DeferredToolRequests`` → the gate surfaces a ``PermissionRequested`` event
-    → the approving resolver allows it → ``web_fetch`` actually runs (against a MockTransport, no
-    network) on the resume leg and its Markdown result is fed back to the model as a tool return.
+    ``web_fetch`` is READ_ONLY (ADR-0003 §2): under DEFAULT mode the gate auto-allows it, so the
+    call runs with **no** ``PermissionRequested`` event and **without** calling the human
+    resolver. Proves the whole path end to end: the model calls ``web_fetch`` → it raises
+    ``ApprovalRequired`` → the leg resolves to ``DeferredToolRequests`` → the gate auto-allows by
+    mode x kind → ``web_fetch`` actually runs (against a MockTransport, no network) on the resume
+    leg and its Markdown result is fed back to the model as a tool return.
     """
     _mock_transport(_html_response("<h1>From The Agent</h1>"), mocker)
 
     emitted: list[events.Event] = []
+    resolver_calls: list[PermissionRequest] = []
 
-    async def approving_resolver(request: PermissionRequest) -> PermissionDecision:
+    async def guard_resolver(request: PermissionRequest) -> PermissionDecision:
+        resolver_calls.append(request)  # pragma: no cover - must never run on an auto-allow
         return PermissionDecision.allow()
 
     deps = AgentDeps(
         cwd=tmp_path,
         emit=emitted.append,
         gate=PermissionGate(),
-        resolve_permission=approving_resolver,
+        resolve_permission=guard_resolver,
         resolve_user_question=deny_user_question_resolver,
     )
     agent = _agent(mocker)
@@ -417,9 +414,10 @@ async def test_web_fetch_runs_through_the_agent_when_approved(tmp_path: Path, mo
     with agent.override(model=model):
         await _run()
 
-    # The gated web_fetch call was surfaced and approved.
+    # The read-only web_fetch call auto-allowed: no prompt was surfaced, the resolver never ran.
     perms = [e for e in emitted if isinstance(e, events.PermissionRequested)]
-    assert perms and perms[0].name == "web_fetch"
+    assert not perms, "a read-only tool must auto-allow with no PermissionRequested"
+    assert resolver_calls == [], "an auto-allowed call must not reach the human resolver"
 
     # web_fetch actually executed on the resume leg: its Markdown result reached the model as a
     # tool return — the deferred gate did not short-circuit execution.

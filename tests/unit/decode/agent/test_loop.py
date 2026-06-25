@@ -38,6 +38,7 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Boundary, Runner, TurnContext
 from decode.permissions.gate import PermissionGate
+from decode.permissions.types import PermissionMode, ToolKind
 from decode.tools.askuser import NoInteractiveUserError
 from decode.tui.app import InputIntent
 
@@ -57,12 +58,17 @@ def _deps(
     *,
     resolve_permission: PermissionResolver = _deny_resolver,
     resolve_user_question: UserQuestionResolver = _no_user_resolver,
+    gate: PermissionGate | None = None,
 ) -> AgentDeps:
-    """Build AgentDeps with the task-005 gate + resolvers wired (defaults to deny / no user)."""
+    """Build AgentDeps with the gate + resolvers wired (defaults to deny / no user).
+
+    ``gate`` lets a test pick the active :class:`~decode.permissions.gate.PermissionGate` mode
+    (default ``DEFAULT``) so it can drive auto-allow / auto-deny through the real loop.
+    """
     return AgentDeps(
         cwd=Path("."),
         emit=emit,
-        gate=PermissionGate(),
+        gate=gate or PermissionGate(),
         resolve_permission=resolve_permission,
         resolve_user_question=resolve_user_question,
     )
@@ -401,7 +407,7 @@ async def test_gated_tool_pauses_and_emits_permission_requested(gated_agent):
     assert perms[0].name == "noop"
     # The gate's ASK was routed to the resolver with a faithful request.
     assert asked and asked[0].tool_name == "noop"
-    assert asked[0].read_only is False
+    assert asked[0].kind is ToolKind.OTHER
     assert asked[0].tool_call_id == perms[0].tool_call_id
 
 
@@ -578,6 +584,148 @@ async def test_single_flight_lock_spans_the_whole_multi_leg_deferred_turn(gated_
     assert kinds[-1] == "turn_finished"
     answer = "".join(e.text for e in emitted if isinstance(e, events.AssistantTextDelta))
     assert "multi-leg done" in answer
+
+
+# --- task 017: the gate verdict is honored in the loop (auto-allow / auto-deny / ask) -------
+
+
+async def test_auto_allow_runs_a_read_only_tool_without_prompting(agent, tmp_path):
+    """ADR-0003 §3: under DEFAULT mode a read-only tool auto-ALLOWs — no prompt, no event.
+
+    Driven through the real ``read`` tool (READ_ONLY in the registry) against a real file. The
+    resolver is a *guard* that fails the test if it is ever called, and ``PermissionRequested``
+    must never be emitted: an auto-allow runs the tool with neither.
+    """
+    (tmp_path / "data.txt").write_text("AUTO-ALLOWED-CONTENT", encoding="utf-8")
+
+    emitted: list[events.Event] = []
+    resolver_calls: list[PermissionRequest] = []
+
+    async def guard_resolver(request: PermissionRequest) -> PermissionDecision:
+        resolver_calls.append(request)  # pragma: no cover - must never run on an auto-allow
+        return PermissionDecision.allow()
+
+    deps = AgentDeps(
+        cwd=tmp_path,
+        emit=emitted.append,
+        gate=PermissionGate(),  # DEFAULT mode
+        resolve_permission=guard_resolver,
+        resolve_user_question=_no_user_resolver,
+    )
+    handler = AgentTurnHandler(agent, deps=deps)
+
+    with agent.override(model=_read_then_text("data.txt", final_text="read done")):
+        await _drive_collecting(handler, _ctx(0, "read the file", emitted))()
+
+    # The tool ran (its content is in history) but neither the resolver nor the event fired.
+    returns = [
+        str(p.content)
+        for m in handler.message_history
+        if isinstance(m, ModelRequest)
+        for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    ]
+    assert any("AUTO-ALLOWED-CONTENT" in r for r in returns), "the read tool must have run"
+    assert resolver_calls == [], "an auto-allowed call must NOT call resolve_permission"
+    assert not [e for e in emitted if isinstance(e, events.PermissionRequested)], (
+        "an auto-allowed call must NOT emit PermissionRequested"
+    )
+
+
+async def test_auto_deny_feeds_the_reason_back_without_prompting(gated_agent):
+    """ADR-0003 §3: under PLAN mode a mutating tool auto-DENYs — reason to the model, no prompt.
+
+    ``noop`` is an OTHER-kind gated tool; under PLAN it is denied by the gate with the
+    exit_plan_mode reason. The loop must feed that reason back as the tool result (a model-visible
+    ``ToolReturnPart``) without calling the resolver or emitting ``PermissionRequested``.
+    """
+    emitted: list[events.Event] = []
+    resolver_calls: list[PermissionRequest] = []
+
+    async def guard_resolver(request: PermissionRequest) -> PermissionDecision:
+        resolver_calls.append(request)  # pragma: no cover - must never run on an auto-deny
+        return PermissionDecision.allow()
+
+    gate = PermissionGate()
+    gate.set_mode(PermissionMode.PLAN)
+    captured: list[list[ModelMessage]] = []
+    handler = AgentTurnHandler(
+        gated_agent,
+        deps=_deps(emitted.append, resolve_permission=guard_resolver, gate=gate),
+    )
+
+    with gated_agent.override(model=_noop_then_text(final_text="understood", captured=captured)):
+        await _drive_collecting(handler, _ctx(0, "please noop", emitted))()
+
+    # The denial reason reached the model as a tool result on the resume leg...
+    resume_leg = captured[-1]
+    denial_returns = [
+        str(p.content)
+        for m in resume_leg
+        if isinstance(m, ModelRequest)
+        for p in m.parts
+        if isinstance(p, ToolReturnPart)
+    ]
+    assert any("exit_plan_mode" in d for d in denial_returns), (
+        "the deny reason must reach the model"
+    )
+    # ...the tool body never ran...
+    assert not any("noop: hi" in d for d in denial_returns)
+    # ...and neither the resolver nor the PermissionRequested event fired (auto-deny, no prompt).
+    assert resolver_calls == [], "an auto-denied call must NOT call resolve_permission"
+    assert not [e for e in emitted if isinstance(e, events.PermissionRequested)], (
+        "an auto-denied call must NOT emit PermissionRequested"
+    )
+
+
+async def test_ask_still_prompts_for_a_mutating_tool_under_default(gated_agent):
+    """ADR-0003 §1: under DEFAULT mode a mutating (OTHER) tool still ASKs the human.
+
+    This is the unchanged path: ``noop`` is OTHER, DEFAULT mode → ASK → the resolver is called
+    and a ``PermissionRequested`` event is emitted, exactly as in M1.
+    """
+    emitted: list[events.Event] = []
+    asked: list[PermissionRequest] = []
+
+    async def approving_resolver(request: PermissionRequest) -> PermissionDecision:
+        asked.append(request)
+        return PermissionDecision.allow()
+
+    handler = AgentTurnHandler(
+        gated_agent, deps=_deps(emitted.append, resolve_permission=approving_resolver)
+    )
+
+    with gated_agent.override(model=_noop_then_text(final_text="done")):
+        await _drive_collecting(handler, _ctx(0, "please noop", emitted))()
+
+    assert asked and asked[0].tool_name == "noop", "a mutating tool under DEFAULT must still ask"
+    assert [e for e in emitted if isinstance(e, events.PermissionRequested)], (
+        "an ASK must emit PermissionRequested"
+    )
+
+
+def _read_then_text(
+    path: str, final_text: str = "all done", *, captured: list[list[ModelMessage]] | None = None
+):
+    """A streaming FunctionModel that calls ``read`` on the first leg, then returns text.
+
+    ``read`` is READ_ONLY in the registry, so under DEFAULT mode it auto-allows: the loop runs it
+    with no prompt. Every later request streams ``final_text`` so the turn terminates.
+    """
+    state = {"calls": 0}
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        state["calls"] += 1
+        if captured is not None:
+            captured.append(list(messages))
+        if state["calls"] == 1:
+            yield {0: DeltaToolCall(name="read", json_args=f'{{"path": "{path}"}}')}
+        else:
+            yield final_text
+
+    return FunctionModel(stream_function=stream_function)
 
 
 # --- task 011: the blocking ask_user tool (NOT gated; rides the decision channel) -----------

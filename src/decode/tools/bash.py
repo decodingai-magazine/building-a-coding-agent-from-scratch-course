@@ -39,8 +39,6 @@ from decode.tools.truncate import Truncated, truncate
 logger = logging.getLogger(__name__)
 
 BASH_TOOL_NAME = "bash"
-# bash mutates the working tree (and the world), so it is NOT read-only: gated, always asked.
-BASH_READ_ONLY = False
 
 # The default executor: a local asyncio subprocess. M8 swaps a sandboxed executor in here
 # (Docker / Modal) behind the same CommandExecutor seam without touching this tool.

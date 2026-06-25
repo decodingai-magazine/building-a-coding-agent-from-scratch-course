@@ -8,13 +8,22 @@ and tested here.
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from rich.console import Console
 
+from decode.agent.deps import AgentDeps
+from decode.agents.loader import load_agent
 from decode.entities import events
-from decode.entities.permissions import PermissionOutcome, PermissionRequest
+from decode.entities.permissions import (
+    PermissionDecision,
+    PermissionOutcome,
+    PermissionRequest,
+)
 from decode.harness.decisions import DecisionChannel
+from decode.permissions.gate import PermissionGate
+from decode.permissions.types import PermissionMode
 from decode.tui import app
 
 
@@ -77,7 +86,7 @@ def test_is_quit_command_is_false_for_other_input():
 
 
 def test_footer_hint_mentions_steer_followup_and_abort():
-    hint = app.footer_hint()
+    hint = app.footer_hint("build", "default")
 
     assert "steer" in hint.lower()
     assert "follow-up" in hint.lower()
@@ -87,9 +96,25 @@ def test_footer_hint_mentions_steer_followup_and_abort():
 
 
 def test_footer_hint_mentions_quit():
-    hint = app.footer_hint()
+    hint = app.footer_hint("build", "default")
 
     assert "/quit" in hint
+
+
+def test_footer_hint_includes_the_active_agent_and_mode():
+    # ADR-0003 §9: the footer shows the live agent + mode so the user always knows the state.
+    hint = app.footer_hint("plan", "edit")
+
+    assert "agent:plan" in hint
+    assert "mode:edit" in hint
+
+
+def test_footer_hint_mentions_the_mode_cycle_and_slash_commands():
+    hint = app.footer_hint("build", "default")
+
+    assert "Shift+Tab" in hint
+    assert "/agent" in hint
+    assert "/mode" in hint
 
 
 def test_input_intent_enum_has_steer_followup_and_abort():
@@ -115,6 +140,17 @@ def test_parse_permission_answer_denies_on_anything_else(answer):
     assert decision.reason  # a human-facing reason is fed back to the model
 
 
+@pytest.mark.parametrize("answer", ["a", "A", "always", "ALWAYS", "  always  "])
+def test_is_always_answer_true_for_always_variants(answer):
+    # `a`/`always` means allow AND persist a rule (task 018); `y`/`yes` is allow-once.
+    assert app.is_always_answer(answer) is True
+
+
+@pytest.mark.parametrize("answer", ["y", "yes", "n", "no", "", "allow"])
+def test_is_always_answer_false_for_everything_else(answer):
+    assert app.is_always_answer(answer) is False
+
+
 def test_deny_permission_resolver_is_the_safe_headless_default():
     # Headless / no-TUI callers get a resolver that always denies (safe default).
     request = PermissionRequest(tool_name="noop", args="{}")
@@ -130,11 +166,20 @@ def _quiet_console() -> Console:
     return Console(file=io.StringIO(), force_terminal=False)
 
 
-async def test_interactive_resolver_awaits_the_channel_then_parses_the_answer():
+def _make_resolver(channel, *, permissions_file):
+    """Build the interactive permission resolver wired to a fresh gate + a tmp rules file."""
+    gate = PermissionGate()
+    resolver = app._make_permission_resolver(
+        channel, _quiet_console(), gate=gate, permissions_file=permissions_file
+    )
+    return resolver, gate
+
+
+async def test_interactive_resolver_awaits_the_channel_then_parses_the_answer(tmp_path):
     # The interactive resolver collects the verdict from the single decision channel (no
     # second prompt): the next resolved line is parsed into the allow/deny decision.
     channel = DecisionChannel()
-    resolver = app._make_permission_resolver(channel, _quiet_console())
+    resolver, _ = _make_resolver(channel, permissions_file=tmp_path / "settings.json")
     request = PermissionRequest(tool_name="noop", args="{}")
 
     task = asyncio.ensure_future(resolver(request))
@@ -146,11 +191,11 @@ async def test_interactive_resolver_awaits_the_channel_then_parses_the_answer():
     assert decision.outcome is PermissionOutcome.ALLOW
 
 
-async def test_interactive_resolver_denies_when_the_decision_is_cancelled():
+async def test_interactive_resolver_denies_when_the_decision_is_cancelled(tmp_path):
     # Turn aborted / REPL shutting down cancels the pending request; the resolver denies
     # (the safe default) instead of hanging.
     channel = DecisionChannel()
-    resolver = app._make_permission_resolver(channel, _quiet_console())
+    resolver, _ = _make_resolver(channel, permissions_file=tmp_path / "settings.json")
     request = PermissionRequest(tool_name="noop", args="{}")
 
     task = asyncio.ensure_future(resolver(request))
@@ -160,6 +205,67 @@ async def test_interactive_resolver_denies_when_the_decision_is_cancelled():
     decision = await task
     assert decision.outcome is PermissionOutcome.DENY
     assert decision.reason
+
+
+async def test_always_answer_persists_an_allow_rule_and_reloads_the_gate(tmp_path):
+    # `a`/`always` allows AND persists a matching allow rule, then reloads the gate so the next
+    # identical call auto-allows (ADR-0003 §4, task 018).
+    import json
+
+    perms = tmp_path / "settings.json"
+    channel = DecisionChannel()
+    resolver, gate = _make_resolver(channel, permissions_file=perms)
+    request = PermissionRequest(
+        tool_name="bash", args='{"command": "npm run test:unit"}', subject="npm run test:unit"
+    )
+
+    task = asyncio.ensure_future(resolver(request))
+    await asyncio.sleep(0)
+    channel.resolve("a")
+    decision = await task
+
+    assert decision.outcome is PermissionOutcome.ALLOW
+    # The rule was persisted to the user settings file.
+    data = json.loads(perms.read_text(encoding="utf-8"))
+    assert "bash(npm run test:unit)" in data["permissions"]["allow"]
+    # The gate reloaded the rule: the next identical call auto-allows (no ASK).
+    assert gate.check(request).outcome is PermissionOutcome.ALLOW
+
+
+async def test_plain_yes_does_not_persist_a_rule(tmp_path):
+    # `y`/`yes` is allow-once: nothing is written and the gate stays mode-only.
+    perms = tmp_path / "settings.json"
+    channel = DecisionChannel()
+    resolver, gate = _make_resolver(channel, permissions_file=perms)
+    request = PermissionRequest(
+        tool_name="bash", args='{"command": "npm run test:unit"}', subject="npm run test:unit"
+    )
+
+    task = asyncio.ensure_future(resolver(request))
+    await asyncio.sleep(0)
+    channel.resolve("y")
+    decision = await task
+
+    assert decision.outcome is PermissionOutcome.ALLOW
+    assert not perms.exists()  # nothing persisted
+    assert gate.check(request).outcome is PermissionOutcome.ASK  # still mode-only
+
+
+async def test_always_answer_write_failure_falls_back_to_allow_once(tmp_path, mocker):
+    # A persist write failure is non-fatal: the resolver still allows once and does not raise.
+    perms = tmp_path / "settings.json"
+    channel = DecisionChannel()
+    resolver, gate = _make_resolver(channel, permissions_file=perms)
+    request = PermissionRequest(tool_name="bash", args="{}", subject="rm -rf x")
+    mocker.patch.object(app.rules, "persist_allow_rule", side_effect=OSError("read-only"))
+
+    task = asyncio.ensure_future(resolver(request))
+    await asyncio.sleep(0)
+    channel.resolve("always")
+    decision = await task
+
+    assert decision.outcome is PermissionOutcome.ALLOW  # still allowed once
+    assert gate.check(request).outcome is PermissionOutcome.ASK  # rule NOT loaded
 
 
 async def test_ask_user_resolver_returns_the_typed_line_verbatim():
@@ -189,3 +295,180 @@ async def test_ask_user_resolver_propagates_cancellation():
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# --- control-surface parsers (ADR-0003 §9, task 022) — pure, mirror is_quit_command -----------
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("/agent build", "build"),
+        ("  /agent   plan  ", "plan"),
+        ("/agent code-reviewer", "code-reviewer"),
+        ("/agent", ""),  # the command with no name (a usage error for the handler)
+        ("/agentx", None),  # not the command
+        ("hello", None),
+        ("/mode plan", None),  # a different command
+    ],
+)
+def test_parse_agent_command(line, expected):
+    assert app.parse_agent_command(line) == expected
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("/mode plan", "plan"),
+        ("  /mode   bypass  ", "bypass"),
+        ("/mode", ""),  # the command with no mode (a usage error for the handler)
+        ("/modex", None),
+        ("hello", None),
+        ("/agent build", None),  # a different command
+    ],
+)
+def test_parse_mode_command(line, expected):
+    assert app.parse_mode_command(line) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("default", PermissionMode.DEFAULT),
+        ("plan", PermissionMode.PLAN),
+        ("edit", PermissionMode.EDIT),
+        ("bypass", PermissionMode.BYPASS),
+        ("  PLAN  ", PermissionMode.PLAN),  # whitespace + case insensitive
+        ("nope", None),
+        ("", None),
+    ],
+)
+def test_parse_mode_name(name, expected):
+    assert app.parse_mode_name(name) is expected
+
+
+def test_next_mode_cycles_default_edit_plan_bypass_default():
+    # ADR-0003 §9: Shift+Tab cycles default -> edit -> plan -> bypass -> default.
+    assert app.next_mode(PermissionMode.DEFAULT) is PermissionMode.EDIT
+    assert app.next_mode(PermissionMode.EDIT) is PermissionMode.PLAN
+    assert app.next_mode(PermissionMode.PLAN) is PermissionMode.BYPASS
+    assert app.next_mode(PermissionMode.BYPASS) is PermissionMode.DEFAULT
+
+
+def test_mode_switch_confirmation_names_the_mode():
+    line = app.mode_switch_confirmation("edit")
+
+    assert "edit" in line
+    assert "Decode" in line  # rendered through the same Decode-prefixed prose path
+
+
+def test_agent_switch_confirmation_names_the_agent_and_mode():
+    line = app.agent_switch_confirmation("plan", "plan")
+
+    assert "plan" in line
+    assert "Decode" in line
+
+
+# --- the live bottom toolbar (reads agent + mode each render) ---------------------------------
+
+
+async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
+    return PermissionDecision.deny(reason="test default deny")
+
+
+async def _no_user_resolver(question: str) -> str:
+    raise RuntimeError("no interactive user in this test")
+
+
+def _deps(gate: PermissionGate) -> AgentDeps:
+    return AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=gate,
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_no_user_resolver,
+    )
+
+
+def test_bottom_toolbar_reads_the_live_agent_and_mode():
+    # The footer must reflect a mode change after Shift+Tab / /mode, so the toolbar reads the
+    # gate + deps live each render (not a snapshot taken when the session was built).
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+
+    before = app._bottom_toolbar(deps, gate).value
+    assert "agent:build" in before
+    assert "mode:default" in before
+
+    gate.set_mode(PermissionMode.EDIT)
+    after = app._bottom_toolbar(deps, gate).value
+    assert "mode:edit" in after  # the live mode change is reflected on the next render
+
+
+# --- the /mode and /agent handlers (mutate gate/deps, render one confirmation line) -----------
+
+
+def test_handle_mode_command_sets_the_gate_and_confirms():
+    gate = PermissionGate()
+    lines: list[str] = []
+
+    app._handle_mode_command("plan", gate=gate, emit=lines.append)
+
+    assert gate.mode is PermissionMode.PLAN
+    assert any("plan" in line for line in lines)
+
+
+def test_handle_mode_command_unknown_mode_is_a_friendly_inline_line():
+    gate = PermissionGate()
+    lines: list[str] = []
+
+    app._handle_mode_command("nope", gate=gate, emit=lines.append)
+
+    assert gate.mode is PermissionMode.DEFAULT  # unchanged
+    assert any("nope" in line for line in lines)  # names the bad mode, no crash
+
+
+def test_handle_mode_command_missing_name_shows_usage():
+    gate = PermissionGate()
+    lines: list[str] = []
+
+    app._handle_mode_command("", gate=gate, emit=lines.append)
+
+    assert gate.mode is PermissionMode.DEFAULT
+    assert any("/mode" in line for line in lines)
+
+
+def test_handle_agent_command_selects_the_agent_and_confirms():
+    gate = PermissionGate()
+    deps = _deps(gate)
+    lines: list[str] = []
+
+    app._handle_agent_command("plan", deps=deps, gate=gate, emit=lines.append)
+
+    assert deps.active_agent.name == "plan"
+    assert gate.mode is PermissionMode.PLAN  # selecting plan resets the mode
+    assert any("plan" in line for line in lines)
+
+
+def test_handle_agent_command_unknown_agent_is_a_friendly_inline_line():
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+    lines: list[str] = []
+
+    app._handle_agent_command("nope", deps=deps, gate=gate, emit=lines.append)
+
+    assert deps.active_agent.name == "build"  # unchanged — the session stays alive
+    assert gate.mode is PermissionMode.DEFAULT
+    assert any("nope" in line for line in lines)
+
+
+def test_handle_agent_command_missing_name_shows_usage():
+    gate = PermissionGate()
+    deps = _deps(gate)
+    lines: list[str] = []
+
+    app._handle_agent_command("", deps=deps, gate=gate, emit=lines.append)
+
+    assert any("/agent" in line for line in lines)

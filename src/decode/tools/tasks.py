@@ -13,9 +13,11 @@ then announces with a :class:`~decode.entities.events.TaskListUpdated` event so 
 checklist. The event carries already-status-marked lines (``[x]`` completed, ``[~]`` in progress,
 ``[ ]`` pending) so the renderer shows a sensible checklist without re-deriving the markers.
 
-It is **gated** like every mutating tool (ADR-0002 §3): it has session side effects, so it raises
-:class:`pydantic_ai.ApprovalRequired` until the call is approved and is registered ``read_only=False``
-(still asked on every call in v1). In-memory, per-run only — no cross-session persistence (later).
+It self-gates via :class:`pydantic_ai.ApprovalRequired` (like every tool that takes the deferred
+path), but it is classified :class:`~decode.permissions.types.ToolKind.READ_ONLY` in the registry
+(ADR-0003 §2): an in-memory checklist has no disk/exec side effect, so the gate **auto-allows** it
+under every mode — it must stay usable in plan mode (where the plan agent builds its checklist) and
+need not prompt anywhere. In-memory, per-run only — no cross-session persistence (later).
 """
 
 from __future__ import annotations
@@ -31,8 +33,6 @@ from decode.entities.task import Task
 logger = logging.getLogger(__name__)
 
 TODO_WRITE_TOOL_NAME = "todo_write"
-# The task list has session side effects (it rewrites the store), so it is gated and always asked.
-TODO_WRITE_READ_ONLY = False
 
 # Status -> checklist marker the TUI renders. A small, stable mapping so the renderer stays a pure
 # string formatter and never has to know the Task status vocabulary.

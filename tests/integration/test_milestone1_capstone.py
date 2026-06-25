@@ -21,16 +21,22 @@ multi-step conversation through the **real** wiring, swapping out only the netwo
 on its transport seam. The session log dir and the memory file are redirected under ``tmp_path``,
 so the repo's real ``.decode/`` is never touched.
 
-The conversation, in order — each turn is one ``runner.submit`` driven to idle:
+The conversation, in order — each turn is one ``runner.submit`` driven to idle. Under the
+``default`` permission mode (ADR-0003 §1) the read-only tools (``read`` / ``todo_write`` /
+``web_fetch``) **auto-allow** — the gate decides without prompting, so they consume no human
+verdict — and only the two mutating ``write`` calls prompt:
 
-1. **read** a file the test wrote into the working tree (gated → approved);
-2. **write** a new file (gated → **approved**) — the file appears;
-3. **write** a second file (gated → **denied**) — the file does *not* appear and the model is
-   told (the denial comes back as the tool result);
-4. **todo_write** a small checklist (gated → approved) — a ``TaskListUpdated`` event renders;
+1. **read** a file the test wrote into the working tree (read-only → **auto-allowed**, no prompt);
+2. **write** a new file (mutating → asked → **approved**) — the file appears;
+3. **write** a second file (mutating → asked → **denied**) — the file does *not* appear and the
+   model is told (the denial comes back as the tool result);
+4. **todo_write** a small checklist (read-only → **auto-allowed**) — a ``TaskListUpdated`` renders;
 5. **ask_user** a free-form question (NOT gated) — a fake resolver supplies the answer, which
    comes back to the model as the tool result;
-6. **web_fetch** a URL (gated → approved) — the ``MockTransport`` serves a stub page.
+6. **web_fetch** a URL (read-only → **auto-allowed**) — the ``MockTransport`` serves a stub page.
+
+So the capstone still exercises all three permission outcomes: auto-allow (read/todo_write/
+web_fetch by mode), human-allow (the first write), and human-deny (the second write).
 
 Then the session quits and the test asserts the three end-to-end guarantees: the JSONL session
 log was written and replays, ``--resume`` replays the history into a fresh handler, and the
@@ -165,11 +171,13 @@ _CALL_FOR_STEP = [
 
 
 class _ScriptedResolvers:
-    """The scripted human: an approve/deny verdict per gated call, plus a fixed ask_user answer.
+    """The scripted human: an approve/deny verdict per *asked* call, plus a fixed ask_user answer.
 
-    ``permission_verdicts`` is consumed in order — one per gated tool call (every tool here is
-    gated except ``ask_user``). Each is a real :class:`PermissionDecision`. ``ask_user_answer`` is
-    the line a human would type; the resolver returns it straight back as the tool result.
+    ``permission_verdicts`` is consumed in order — one per call the gate routes to the human
+    (under ``default`` mode that is only the two mutating ``write`` calls; the read-only tools
+    auto-allow and never reach the resolver, and ``ask_user`` is ungated). Each is a real
+    :class:`PermissionDecision`. ``ask_user_answer`` is the line a human would type; the resolver
+    returns it straight back as the tool result.
     """
 
     def __init__(self, *, permission_verdicts: list[PermissionDecision], ask_user_answer: str):
@@ -229,16 +237,13 @@ async def test_milestone1_capstone_full_stack(tmp_path, monkeypatch):
     def on_event(event: events.Event) -> None:
         console.print(render.render_event(event))
 
-    # Approve step 1 (read), step 2 (write-ok), DENY step 3 (write-denied), approve step 4
-    # (todo_write) and step 6 (web_fetch). Step 5 (ask_user) is NOT gated, so it consumes no
-    # verdict — five gated calls, five verdicts.
+    # Under ``default`` mode only the two mutating ``write`` calls reach the human: approve
+    # step 2 (write-ok), DENY step 3 (write-denied). The read-only tools (read / todo_write /
+    # web_fetch) auto-allow and consume no verdict; ask_user is ungated — so two verdicts only.
     resolvers = _ScriptedResolvers(
         permission_verdicts=[
-            PermissionDecision.allow(),  # read
             PermissionDecision.allow(),  # write (created.txt)
             PermissionDecision.deny(reason="the user denied this write"),  # write (denied)
-            PermissionDecision.allow(),  # todo_write
-            PermissionDecision.allow(),  # web_fetch
         ],
         ask_user_answer=_ASK_ANSWER,
     )
@@ -296,9 +301,11 @@ async def test_milestone1_capstone_full_stack(tmp_path, monkeypatch):
     # 6. web_fetch served the stub page (HTML converted to Markdown) through the MockTransport.
     assert any(_WEB_PAGE_HEADING in r for r in returns), "web_fetch must return the stub page"
 
-    # Exactly the five gated calls were asked (ask_user is ungated → no permission request).
+    # Under ``default`` mode only the two mutating ``write`` calls reached the human; the
+    # read-only tools (read / todo_write / web_fetch) auto-allowed and ask_user is ungated, so
+    # neither produced a permission request (ADR-0003 §1).
     asked_tools = [r.tool_name for r in resolvers.permission_requests]
-    assert asked_tools == ["read", "write", "write", "todo_write", "web_fetch"]
+    assert asked_tools == ["write", "write"]
 
     # The real renderer ran on every emitted event without raising, and the rendered transcript
     # carries what the user would have seen: the surfaced question and the checklist task line.

@@ -11,6 +11,7 @@ Later tasks widen it further (session_log/task_store).
 from pathlib import Path
 
 from decode.agent.deps import AgentDeps
+from decode.agents.loader import load_agent
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.entities.task import Task
@@ -94,6 +95,50 @@ def test_agent_deps_carries_a_supplied_task_store():
     )
 
     assert deps.task_store is store
+
+
+def test_agent_deps_active_agent_defaults_to_build(mocker):
+    # The active agent (ADR-0003 §7) defaults to `build` (the full-tool persona) so a deps built
+    # without one behaves as M1 did. `run_app` / the selection helper override it.
+    deps = AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
+    )
+
+    assert deps.active_agent.name == "build"
+
+
+def test_agent_deps_active_agent_is_mutable(mocker):
+    # `/agent` (task 022) mutates `deps.active_agent` in place — no agent rebuild (ADR-0003 §7).
+    deps = AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
+    )
+    plan = load_agent("plan")
+
+    deps.active_agent = plan
+
+    assert deps.active_agent is plan
+
+
+def test_agent_deps_carries_a_supplied_active_agent():
+    plan = load_agent("plan")
+    deps = AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
+        active_agent=plan,
+    )
+
+    assert deps.active_agent is plan
 
 
 def test_agent_deps_emit_is_a_callable_field():

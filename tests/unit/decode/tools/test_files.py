@@ -3,8 +3,9 @@
 ADR-0002 §7: ``read`` (line-paginated, 1-indexed, numbered, truncated), ``glob`` (paths only),
 and ``grep`` (regex search) are the read-only file tools. All three:
 
-* **gate** — raise :class:`pydantic_ai.ApprovalRequired` until the call is approved (v1 asks on
-  *every* tool, read-only included; the ``read_only=True`` tag is for M3's future auto-allow);
+* **gate** — raise :class:`pydantic_ai.ApprovalRequired` until the call is approved (they take the
+  deferred path); being ``READ_ONLY`` (ADR-0003 §2) the gate then auto-allows them under every
+  mode, so they never prompt;
 * **resolve paths under ``ctx.deps.cwd``** — never the process cwd;
 * return a model-readable :class:`pydantic_ai.ModelRetry` (not a crash) for a missing /
   unreadable path.
@@ -337,16 +338,6 @@ def test_grep_invalid_regex_returns_model_retry(tmp_path: Path):
 def test_grep_missing_explicit_path_returns_model_retry(tmp_path: Path):
     with pytest.raises(ModelRetry):
         files.grep(_ctx(tmp_path), pattern="x", path="nope.txt")
-
-
-# --- read-only registration tags ------------------------------------------------------------
-
-
-def test_file_tools_are_tagged_read_only():
-    assert files.READ_TOOL_NAME == "read"
-    assert files.GLOB_TOOL_NAME == "glob"
-    assert files.GREP_TOOL_NAME == "grep"
-    assert files.FILE_TOOLS_READ_ONLY == {"read": True, "glob": True, "grep": True}
 
 
 # --- write: create / overwrite, gated, contained (task 007) ---------------------------------

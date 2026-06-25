@@ -9,9 +9,7 @@ human decision it cannot make on its own — a missing requirement, a yes/no the
 and is routed through the permission gate ("may I run this side effect?"). ``ask_user`` is the
 human-interaction tool *itself* — gating it would ask the human "may I ask you something?"
 before asking, double-prompting for no benefit. So it never raises ``ApprovalRequired`` and is
-registered to **skip** the permission gate (see :mod:`decode.tools.registry`). It is *tagged*
-``read_only=False`` because it blocks the turn on the human (a real interaction side effect),
-but the tag only records intent — there is no gate prompt for it in v1 or later.
+registered to **skip** the permission gate (see :mod:`decode.tools.registry`).
 
 **One single input channel.** ``ask_user`` does **not** open its own prompt. It awaits the
 human's answer through ``ctx.deps.resolve_user_question`` — the very same single mid-turn
@@ -43,10 +41,6 @@ from decode.entities import events
 logger = logging.getLogger(__name__)
 
 ASK_USER_TOOL_NAME = "ask_user"
-# ask_user blocks the turn on the human (a real interaction side effect), so it is tagged NOT
-# read-only. The tag is informational only: ask_user is registered to SKIP the permission gate
-# (it IS the human-interaction tool — gating it would double-prompt), so it is never asked.
-ASK_USER_READ_ONLY = False
 
 # The message fed back to the model when no human can answer (headless run / cancelled prompt).
 _NO_INTERACTIVE_USER_MESSAGE = (

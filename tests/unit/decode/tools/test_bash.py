@@ -68,11 +68,6 @@ async def test_bash_requires_approval_when_not_approved(tmp_path: Path):
     assert not sentinel.exists()
 
 
-def test_bash_is_tagged_not_read_only():
-    assert bash_module.BASH_TOOL_NAME == "bash"
-    assert bash_module.BASH_READ_ONLY is False
-
-
 # --- output capture: stdout, stderr, exit code ----------------------------------------------
 
 

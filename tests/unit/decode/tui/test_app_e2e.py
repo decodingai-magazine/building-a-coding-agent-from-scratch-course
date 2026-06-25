@@ -31,7 +31,7 @@ import pytest
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
-from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai import Agent, ApprovalRequired, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from rich.console import Console
@@ -447,3 +447,248 @@ async def test_run_app_resume_seeds_history_from_the_prior_session(monkeypatch, 
         for part in message.parts
     )
     assert "EARLIER-RESUMED-TURN" in flat
+
+
+# --- control surfaces: /agent, /mode, Shift+Tab cycle (ADR-0003 §9, task 022) -----------------
+
+# Marker the gated ``write`` test tool echoes once it actually runs (proves the body executed —
+# i.e. the call was auto-allowed, not just un-prompted).
+_WROTE_TEXT = "WROTE-THE-FILE-OK"
+
+
+def _build_write_agent(
+    *, final_text: str, captured: list[list[ModelMessage]]
+) -> Agent[AgentDeps, str | DeferredToolRequests]:
+    """A real agent on a streaming ``FunctionModel`` that calls a gated ``write`` then returns text.
+
+    The tool is named ``write`` so the loop classifies it as ``FILE_EDIT`` (the registry's kind
+    map keys off the tool name): edit mode auto-allows it, plan mode denies it, default asks. It
+    raises :class:`pydantic_ai.ApprovalRequired` until approved (mirroring the production gated
+    tools), so the first leg defers to the gate; on the approved resume it echoes ``_WROTE_TEXT``.
+    Every later request streams ``final_text``.
+    """
+    state = {"calls": 0}
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        state["calls"] += 1
+        captured.append(list(messages))
+        if state["calls"] == 1:
+            yield {
+                0: DeltaToolCall(name="write", json_args='{"path": "hello.txt", "content": "hi"}')
+            }
+        else:
+            yield final_text
+
+    agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
+        FunctionModel(stream_function=stream_function),
+        deps_type=AgentDeps,
+        output_type=[str, DeferredToolRequests],
+    )
+
+    def write(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
+        if not ctx.tool_call_approved:
+            raise ApprovalRequired
+        return f"{_WROTE_TEXT}: {path}"
+
+    agent.tool(write)
+    return agent
+
+
+async def _drive_run_app_with_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    agent: Agent[AgentDeps, str | DeferredToolRequests],
+    *,
+    script: Callable[[io.StringIO, Callable[[str], None], Callable[[str], None]], Awaitable[None]],
+) -> str:
+    """Like :func:`_drive_run_app` but the script also gets a ``send_keys(seq)``.
+
+    ``send_keys`` writes a raw key sequence with **no** trailing carriage return, so a test can
+    deliver the Shift+Tab key (``\\x1b[Z`` → ``s-tab`` / ``Keys.BackTab``) the mode-cycle keybind
+    listens for, exactly as a real terminal would.
+    """
+    monkeypatch.setattr(app_mod, "build_agent", lambda: agent)
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=100)
+
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+
+        def send(line: str) -> None:
+            pipe.send_text(f"{line}\r")
+
+        def send_keys(seq: str) -> None:
+            pipe.send_text(seq)
+
+        app_task = asyncio.ensure_future(app_mod.run_app(console=console))
+        try:
+            await asyncio.wait_for(script(buf, send, send_keys), timeout=5.0)
+            await asyncio.wait_for(app_task, timeout=5.0)
+        finally:
+            if not app_task.done():
+                app_task.cancel()
+    return buf.getvalue()
+
+
+async def test_run_app_agent_slash_switches_and_an_unknown_name_stays_alive(monkeypatch):
+    """``/agent <name>`` switches + confirms; ``/agent nope`` is a friendly inline error.
+
+    Driven through the real ``run_app`` (single input surface — no second ``prompt_async``): the
+    slash command is parsed in the main loop before submit, switches the persona, and renders one
+    confirmation; an unknown name renders an inline error and the REPL keeps going (a later chat
+    still works).
+    """
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/agent explore")
+        await _wait_for(buf, "agent: explore")
+        send("/agent nope")
+        await _wait_for(buf, "no such agent")
+        send("still here?")  # the session survived the bad command
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "agent: explore" in output  # the switch rendered a confirmation
+    assert "no such agent" in output  # the bad name rendered a friendly inline error
+    assert _CHAT_REPLY in output  # the REPL kept running after the error
+
+
+async def test_run_app_mode_slash_switches_and_an_unknown_mode_stays_alive(monkeypatch):
+    """``/mode bypass`` switches + confirms; ``/mode nope`` is a friendly inline error."""
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/mode bypass")
+        await _wait_for(buf, "mode: bypass")
+        send("/mode nope")
+        await _wait_for(buf, "unknown mode")
+        send("still here?")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "mode: bypass" in output
+    assert "unknown mode" in output
+    assert _CHAT_REPLY in output
+
+
+async def test_run_app_mode_bypass_lets_a_mutating_tool_run_without_a_prompt(monkeypatch):
+    """ADR-0003 §9: after ``/mode bypass`` the next mutating tool runs with no permission prompt.
+
+    Bypass allows everything: the gated ``write`` is auto-allowed, so its body runs (echoing
+    ``_WROTE_TEXT``) and the turn completes without any allow/deny affordance.
+    """
+    captured: list[list[ModelMessage]] = []
+    agent = _build_write_agent(final_text=_FINAL_TEXT, captured=captured)
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/mode bypass")
+        await _wait_for(buf, "mode: bypass")
+        send("write the file please")
+        await _wait_for(buf, _FINAL_TEXT)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert _WROTE_TEXT in output  # the write body ran (auto-allowed under bypass)
+    assert _FINAL_TEXT in output
+    assert "allow this tool call?" not in output  # no prompt
+    assert "permission? write" not in output
+
+
+async def test_run_app_shift_tab_cycles_through_all_four_modes(monkeypatch):
+    """Shift+Tab cycles ``default → edit → plan → bypass → default``, rendering each new mode.
+
+    Each ``\\x1b[Z`` (BackTab) press fires the mode-cycle keybind on the single input surface and
+    renders a confirmation; four presses from the build agent's ``default`` walk the full ring and
+    wrap back to ``default``.
+    """
+    agent = _build_chat_agent()
+
+    async def script(
+        buf: io.StringIO, send: Callable[[str], None], send_keys: Callable[[str], None]
+    ) -> None:
+        send_keys("\x1b[Z")
+        await _wait_for(buf, "mode: edit")
+        send_keys("\x1b[Z")
+        await _wait_for(buf, "mode: plan")
+        send_keys("\x1b[Z")
+        await _wait_for(buf, "mode: bypass")
+        send_keys("\x1b[Z")
+        await _wait_for(buf, "mode: default")  # wrapped back round
+        send("/quit")
+
+    output = await _drive_run_app_with_keys(monkeypatch, agent, script=script)
+
+    assert "mode: edit" in output
+    assert "mode: plan" in output
+    assert "mode: bypass" in output
+    assert "mode: default" in output
+
+
+async def test_run_app_shift_tab_to_edit_lets_a_write_run_without_a_prompt(monkeypatch):
+    """Working-looks-like (ADR-0003 §9): Shift+Tab → edit, then a ``write`` runs with no prompt.
+
+    The build agent starts in ``default`` (a write would ASK). One Shift+Tab flips the gate to
+    ``edit``, where a ``FILE_EDIT`` tool auto-allows: the write body runs (echoing ``_WROTE_TEXT``)
+    with no permission affordance and the turn completes.
+    """
+    captured: list[list[ModelMessage]] = []
+    agent = _build_write_agent(final_text=_FINAL_TEXT, captured=captured)
+
+    async def script(
+        buf: io.StringIO, send: Callable[[str], None], send_keys: Callable[[str], None]
+    ) -> None:
+        send_keys("\x1b[Z")  # default -> edit
+        await _wait_for(buf, "mode: edit")
+        send("write the file please")
+        await _wait_for(buf, _FINAL_TEXT)
+        send("/quit")
+
+    output = await _drive_run_app_with_keys(monkeypatch, agent, script=script)
+
+    assert "mode: edit" in output  # Shift+Tab rendered the new mode
+    assert _WROTE_TEXT in output  # the write body actually ran (auto-allowed)
+    assert _FINAL_TEXT in output  # the turn completed
+    assert "allow this tool call?" not in output  # no human prompt was shown
+    assert "permission? write" not in output
+
+
+async def test_run_app_mode_plan_denies_a_write_without_asking(monkeypatch):
+    """Working-looks-like (ADR-0003 §9): ``/mode plan`` → a ``write`` is denied, never asked.
+
+    ``/mode plan`` flips the gate to plan; a ``FILE_EDIT`` write is then DENIED outright (the model
+    is told to present a plan and call ``exit_plan_mode``) — the tool body never runs and no human
+    prompt appears.
+    """
+    captured: list[list[ModelMessage]] = []
+    agent = _build_write_agent(final_text=_AFTER_DENY_TEXT, captured=captured)
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/mode plan")
+        await _wait_for(buf, "mode: plan")
+        send("write the file please")
+        await _wait_for(buf, _AFTER_DENY_TEXT)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert _AFTER_DENY_TEXT in output  # the turn resumed after the denial
+    assert _WROTE_TEXT not in output  # the write body never ran (denied, not asked)
+    assert "allow this tool call?" not in output  # plan denies without prompting
+
+    # The denial reached the model as a tool result on the resume leg (plan-mode reason).
+    resume_leg = captured[-1]
+    returns = [
+        str(part.content)
+        for message in resume_leg
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+    assert returns, "the denial must reach the model as a tool result"
+    assert any("plan mode" in r.lower() for r in returns)
