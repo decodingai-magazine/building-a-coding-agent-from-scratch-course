@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     max_output_bytes: int = 50_000
     web_fetch_timeout_s: float = 30.0
 
+    # --- Orchestration: the ungated ``sleep`` tool cap (task 021 / ADR-0003 §8) ---
+    # ``sleep(seconds)`` is bounded to this many seconds so a model cannot stall a turn
+    # indefinitely; a larger request is capped to this value (never rejected for being large).
+    sleep_max_s: float = 60.0
+
     # --- Memory caps (task 012/013) ---
     memory_max_lines: int = 200
     memory_max_bytes: int = 25_000

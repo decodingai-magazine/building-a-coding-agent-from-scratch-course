@@ -28,10 +28,11 @@ from decode.tools.orchestration import ORCHESTRATION_TOOL_NAMES
 from decode.tools.registry import TOOL_KIND, TOOL_READ_ONLY
 
 # Every tool name an agent's catalog allowlist may reference (ADR-0003 §5): the registered tools
-# (``TOOL_KIND`` keys) plus the ungated orchestration tools (``enter_plan_mode`` /
-# ``exit_plan_mode`` / ``sleep``), which task 021 registers but the build/plan personas already
-# list. The agents-catalog loader validates each ``tools`` entry against this set, so an unknown
-# tool fails loudly regardless of task ordering.
+# (``TOOL_KIND`` keys, which since task 021 include the ungated ``enter_plan_mode`` /
+# ``exit_plan_mode`` / ``sleep``) unioned with ``ORCHESTRATION_TOOL_NAMES``. The union is now
+# belt-and-suspenders — the orchestration names are registered specs — but it keeps validation
+# honest even if a name is ever declared before its spec lands. The agents-catalog loader validates
+# each ``tools`` entry against this set, so an unknown tool fails loudly regardless of task ordering.
 KNOWN_TOOL_NAMES: frozenset[str] = frozenset(TOOL_KIND) | ORCHESTRATION_TOOL_NAMES
 
 __all__ = ["KNOWN_TOOL_NAMES", "TOOL_KIND", "TOOL_READ_ONLY", "is_read_only", "tool_kind"]

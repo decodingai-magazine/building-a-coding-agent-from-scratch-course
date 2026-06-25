@@ -17,11 +17,13 @@ Tools land here as they are built (006-011). Every *gated* tool raises
 ``DeferredToolRequests`` and the loop can route the call through the gate; the gate then decides
 allow/ask/deny by mode x the tool's ``kind`` (ADR-0003 §1) — read-only tools auto-allow.
 
-``ask_user`` (task 011) is the lone exception: it IS the human-interaction tool, so gating it
-("may I ask you a question?") would double-prompt. It never raises ``ApprovalRequired`` and so
-never reaches the permission gate; instead it blocks the turn on the human via the same single
-decision channel the permission resolver uses (its ``kind`` is ``OTHER`` but is never consulted —
-the gate path is only reached by a tool that actually raised ``ApprovalRequired``).
+The **ungated** tools never raise ``ApprovalRequired`` and so never reach the permission gate (the
+gate path is only reached by a tool that actually raised it; their ``kind`` is ``OTHER`` but is
+never consulted): ``ask_user`` (task 011), which IS the human-interaction tool — gating it ("may I
+ask you a question?") would double-prompt — and the orchestration controls ``enter_plan_mode`` /
+``exit_plan_mode`` / ``sleep`` (task 021 / ADR-0003 §8), which touch no filesystem and only steer
+the session (mode flips, a bounded ``sleep``). ``exit_plan_mode`` rides the same single decision
+channel ``ask_user`` uses for its plan-approval HITL.
 """
 
 from __future__ import annotations
@@ -38,6 +40,8 @@ from decode.permissions.types import ToolKind
 from decode.tools import askuser as askuser_module
 from decode.tools import bash as bash_module
 from decode.tools import files
+from decode.tools import orchestration as orchestration_module
+from decode.tools import sleep as sleep_module
 from decode.tools import tasks as tasks_module
 from decode.tools import web as web_module
 
@@ -97,6 +101,26 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         name=askuser_module.ASK_USER_TOOL_NAME,
         func=askuser_module.ask_user,
+        kind=ToolKind.OTHER,
+    ),
+    # Orchestration + sleep (task 021 / ADR-0003 §8): control signals that touch no filesystem.
+    # UNGATED like ask_user — they never raise ApprovalRequired and so never reach the gate (gating
+    # a control signal would block it in plan mode or double-prompt the exit_plan_mode HITL). Their
+    # kind is OTHER but, like ask_user's, is never consulted. enter/exit_plan_mode flip the gate
+    # mode; exit_plan_mode rides the same Decision Channel as ask_user for its approval.
+    ToolSpec(
+        name=orchestration_module.ENTER_PLAN_MODE_TOOL_NAME,
+        func=orchestration_module.enter_plan_mode,
+        kind=ToolKind.OTHER,
+    ),
+    ToolSpec(
+        name=orchestration_module.EXIT_PLAN_MODE_TOOL_NAME,
+        func=orchestration_module.exit_plan_mode,
+        kind=ToolKind.OTHER,
+    ),
+    ToolSpec(
+        name=sleep_module.SLEEP_TOOL_NAME,
+        func=sleep_module.sleep,
         kind=ToolKind.OTHER,
     ),
 ]

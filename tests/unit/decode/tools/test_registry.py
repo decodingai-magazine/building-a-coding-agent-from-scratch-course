@@ -41,6 +41,10 @@ def test_registry_lists_the_expected_tools():
         "todo_write",
         "web_fetch",
         "ask_user",
+        # The ungated orchestration + sleep controls (task 021 / ADR-0003 §8).
+        "enter_plan_mode",
+        "exit_plan_mode",
+        "sleep",
     }
 
 
@@ -74,6 +78,10 @@ def test_tool_kinds_match_each_spec():
     assert by_name["bash"].kind is ToolKind.OTHER
     # ask_user is the human-interaction tool (ungated — never reaches the gate): OTHER.
     assert by_name["ask_user"].kind is ToolKind.OTHER
+    # The orchestration + sleep controls are ungated too (kind OTHER, never consulted).
+    assert by_name["enter_plan_mode"].kind is ToolKind.OTHER
+    assert by_name["exit_plan_mode"].kind is ToolKind.OTHER
+    assert by_name["sleep"].kind is ToolKind.OTHER
 
 
 def test_tool_kind_reflects_the_registered_kinds():
@@ -87,6 +95,10 @@ def test_tool_kind_reflects_the_registered_kinds():
     assert tool_kind("edit") is ToolKind.FILE_EDIT
     assert tool_kind("bash") is ToolKind.OTHER
     assert tool_kind("ask_user") is ToolKind.OTHER
+    # The ungated orchestration + sleep controls are OTHER (never consulted; ADR-0003 §8).
+    assert tool_kind("enter_plan_mode") is ToolKind.OTHER
+    assert tool_kind("exit_plan_mode") is ToolKind.OTHER
+    assert tool_kind("sleep") is ToolKind.OTHER
     # Unknown tools default to OTHER (mutating/gated).
     assert tool_kind("does-not-exist") is ToolKind.OTHER
 
@@ -123,6 +135,9 @@ def test_register_tools_registers_every_spec_on_the_agent(mocker):
         "todo_write",
         "web_fetch",
         "ask_user",
+        "enter_plan_mode",
+        "exit_plan_mode",
+        "sleep",
     } <= registered
     # ...and the scaffolding ``noop`` must NOT be (it is never registered in production).
     assert "noop" not in registered
