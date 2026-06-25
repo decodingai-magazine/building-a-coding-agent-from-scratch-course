@@ -19,12 +19,13 @@ more *legs*; the handler:
   and ``FunctionToolResultEvent`` → :class:`~decode.entities.events.ToolResult`, so the live
   REPL renders a tool panel on completion (ADR-0002 §6). A deferred (gated) call streams only
   the *call* event on the pause leg; its *result* event lands on the approved/denied resume leg;
-* **routes gated tool calls through the permission gate (§3).** When a leg resolves to
+* **routes gated tool calls through the permission gate (ADR-0003 §3).** When a leg resolves to
   :class:`~pydantic_ai.DeferredToolRequests` (a tool raised ``ApprovalRequired``), it asks the
-  gate for a policy decision (v1 → always *ask*), emits a
-  :class:`~decode.entities.events.PermissionRequested` event, resolves the *ask* into the
-  human's allow/deny verdict via ``deps.resolve_permission`` (the deferred-pause seam task 011
-  AskUser reuses), then builds :class:`~pydantic_ai.DeferredToolResults` — ``True`` to approve,
+  gate for the mode x kind verdict and **honors it**: an ``ALLOW`` runs the tool with no prompt;
+  a ``DENY`` returns the gate's reason; an ``ASK`` emits a
+  :class:`~decode.entities.events.PermissionRequested` event and resolves into the human's
+  allow/deny verdict via ``deps.resolve_permission`` (the deferred-pause seam task 011 AskUser
+  reuses). It then builds :class:`~pydantic_ai.DeferredToolResults` — ``True`` to approve,
   :class:`~pydantic_ai.ToolDenied` to feed a denial message back to the model — and **resumes**
   the run with ``deferred_tool_results=`` + ``message_history=``. It loops until the output is
   a plain ``str``;
@@ -67,7 +68,7 @@ from decode.agent.deps import AgentDeps
 from decode.entities import events
 from decode.entities.permissions import PermissionOutcome, PermissionRequest
 from decode.harness.runner import Boundary, TurnContext
-from decode.tools import is_read_only
+from decode.tools import tool_kind
 
 if TYPE_CHECKING:
     from decode.context.session_log import SessionLog
@@ -244,9 +245,8 @@ class AgentTurnHandler:
     ) -> DeferredToolResults:
         """Turn a deferred pause into ``DeferredToolResults`` via the gate + the resolver (§3).
 
-        For each approval-required call: ask the gate for a policy decision (v1 → always
-        *ask*), emit a :class:`~decode.entities.events.PermissionRequested` event, then resolve
-        the human's verdict via ``deps.resolve_permission``. An allow maps to ``True``; a deny
+        For each approval-required call: ask the gate for the mode x kind verdict and **honor
+        it** (ADR-0003 §3). An allow (auto or human) maps to ``True``; a deny (auto or human)
         maps to :class:`~pydantic_ai.ToolDenied` so the denial message is returned to the model
         on the resume leg. External-execution calls are not used in v1 (no such tools yet).
         """
@@ -260,21 +260,40 @@ class AgentTurnHandler:
         return requests.build_results(approvals=approvals)
 
     async def _decide(self, ctx: TurnContext, call: ToolCallPart) -> str:
-        """Decide one gated call; return ``"allow"`` or a denial message string.
+        """Decide one gated call; return ``"allow"`` or a denial message string (ADR-0003 §3).
 
-        Asks the gate for the policy verdict (v1 → ``ASK``), surfaces the request to the user
-        via a ``PermissionRequested`` event, and routes the *ask* to ``deps.resolve_permission``
-        for the human's terminal allow/deny.
+        Builds the request with the tool's :class:`~decode.permissions.types.ToolKind`, asks the
+        gate, and **honors the verdict**: an ``ALLOW`` runs the tool with no prompt and no event;
+        a ``DENY`` returns the gate's reason (the model sees it on the resume leg) with no prompt;
+        an ``ASK`` surfaces a ``PermissionRequested`` event and routes to
+        ``deps.resolve_permission`` for the human's terminal allow/deny (M1's path).
         """
         args_summary = call.args_as_json_str()
         request = PermissionRequest(
             tool_name=call.tool_name,
             args=args_summary,
-            read_only=is_read_only(call.tool_name),
+            kind=tool_kind(call.tool_name),
             tool_call_id=call.tool_call_id,
         )
-        # The gate is the policy object (v1 always asks); the human resolves the ask.
-        self._deps.gate.check(request)
+        decision = self._deps.gate.check(request)
+        if decision.outcome is PermissionOutcome.ALLOW:
+            logger.debug("permission auto-allowed for tool=%s", call.tool_name)
+            return "allow"
+        if decision.outcome is PermissionOutcome.DENY:
+            reason = decision.reason or "The tool call was denied."
+            logger.debug("permission auto-denied for tool=%s reason=%r", call.tool_name, reason)
+            return reason
+        # ASK: surface the request and route it to the human resolver (M1's path).
+        return await self._ask_human(ctx, call, request, args_summary)
+
+    async def _ask_human(
+        self,
+        ctx: TurnContext,
+        call: ToolCallPart,
+        request: PermissionRequest,
+        args_summary: str,
+    ) -> str:
+        """Surface an ``ASK`` to the human and return ``"allow"`` or the denial reason."""
         ctx.emit(
             events.PermissionRequested(
                 tool_call_id=call.tool_call_id, name=call.tool_name, args=args_summary
@@ -282,10 +301,10 @@ class AgentTurnHandler:
         )
         decision = await self._deps.resolve_permission(request)
         if decision.outcome is PermissionOutcome.ALLOW:
-            logger.debug("permission allowed for tool=%s", call.tool_name)
+            logger.debug("permission allowed by human for tool=%s", call.tool_name)
             return "allow"
         reason = decision.reason or "The tool call was denied."
-        logger.debug("permission denied for tool=%s reason=%r", call.tool_name, reason)
+        logger.debug("permission denied by human for tool=%s reason=%r", call.tool_name, reason)
         return reason
 
     async def _stream_model_node(self, ctx: TurnContext, node: object, run: object) -> None:

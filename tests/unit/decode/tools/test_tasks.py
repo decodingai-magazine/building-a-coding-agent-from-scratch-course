@@ -119,10 +119,11 @@ def test_todo_write_can_clear_the_store():
     assert updates and updates[-1].tasks == ()
 
 
-def test_todo_write_is_registered_as_not_read_only():
-    # The task list has session side effects, so it is gated and asked (not read-only).
+def test_todo_write_is_registered_as_read_only():
+    # An in-memory checklist with no disk/exec side effect → READ_ONLY (ADR-0003 §2): the gate
+    # auto-allows it under every mode, so it never prompts (and stays usable in plan mode).
     assert tasks_module.TODO_WRITE_TOOL_NAME == "todo_write"
-    assert tasks_module.TODO_WRITE_READ_ONLY is False
+    assert tasks_module.TODO_WRITE_READ_ONLY is True
 
 
 # --- end-to-end: a real agent forced to call the tool, then approved ------------------------
@@ -150,19 +151,25 @@ async def _drive_collecting(handler: AgentTurnHandler, ctx: TurnContext) -> list
     return boundaries
 
 
-async def test_todo_write_runs_through_a_real_agent_when_approved(mocker):
-    """TestModel forces the ``todo_write`` call; approving it runs the tool end to end."""
+async def test_todo_write_auto_allows_and_runs_through_a_real_agent(mocker):
+    """TestModel forces the ``todo_write`` call; the gate auto-allows it and it runs end to end.
+
+    ``todo_write`` is READ_ONLY (ADR-0003 §2): under DEFAULT mode the gate auto-allows it, so it
+    runs with **no** ``PermissionRequested`` event and **without** the human resolver.
+    """
     agent = _agent(mocker)
     emitted: list[events.Event] = []
+    resolver_calls: list[PermissionRequest] = []
 
-    async def approving_resolver(request: PermissionRequest) -> PermissionDecision:
+    async def guard_resolver(request: PermissionRequest) -> PermissionDecision:
+        resolver_calls.append(request)  # pragma: no cover - must never run on an auto-allow
         return PermissionDecision.allow()
 
     deps = AgentDeps(
         cwd=Path("."),
         emit=emitted.append,
         gate=PermissionGate(),
-        resolve_permission=approving_resolver,
+        resolve_permission=guard_resolver,
         resolve_user_question=deny_user_question_resolver,
         task_store=[],
     )
@@ -172,9 +179,10 @@ async def test_todo_write_runs_through_a_real_agent_when_approved(mocker):
     with agent.override(model=TestModel(call_tools=["todo_write"])):
         await _drive_collecting(handler, ctx)
 
-    # The gated tool surfaced a permission prompt for todo_write...
+    # The read-only tool auto-allowed: no prompt was surfaced and the resolver never ran...
     perms = [e for e in emitted if isinstance(e, events.PermissionRequested)]
-    assert any(p.name == "todo_write" for p in perms)
-    # ...and once approved it ran: the store was populated and a TaskListUpdated emitted.
-    assert deps.task_store, "approved todo_write must populate the task store"
+    assert not perms, "a read-only tool must auto-allow with no PermissionRequested"
+    assert resolver_calls == [], "an auto-allowed call must not reach the human resolver"
+    # ...and it still ran: the store was populated and a TaskListUpdated emitted.
+    assert deps.task_store, "auto-allowed todo_write must populate the task store"
     assert any(isinstance(e, events.TaskListUpdated) for e in emitted)

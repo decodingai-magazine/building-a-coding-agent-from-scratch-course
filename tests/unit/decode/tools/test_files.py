@@ -3,8 +3,9 @@
 ADR-0002 §7: ``read`` (line-paginated, 1-indexed, numbered, truncated), ``glob`` (paths only),
 and ``grep`` (regex search) are the read-only file tools. All three:
 
-* **gate** — raise :class:`pydantic_ai.ApprovalRequired` until the call is approved (v1 asks on
-  *every* tool, read-only included; the ``read_only=True`` tag is for M3's future auto-allow);
+* **gate** — raise :class:`pydantic_ai.ApprovalRequired` until the call is approved (they take the
+  deferred path); being ``READ_ONLY`` (ADR-0003 §2) the gate then auto-allows them under every
+  mode, so they never prompt;
 * **resolve paths under ``ctx.deps.cwd``** — never the process cwd;
 * return a model-readable :class:`pydantic_ai.ModelRetry` (not a crash) for a missing /
   unreadable path.

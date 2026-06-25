@@ -1,12 +1,14 @@
 """Unit tests for the flat tool registry (``decode.tools.registry``).
 
-ADR-0002 §7: tools live in a **flat registry** — no plugin machinery. The registry is the one
-place that (a) registers every tool on the :class:`~pydantic_ai.Agent` and (b) records each
-tool's ``read_only`` flag, which the loop reads via :func:`decode.tools.is_read_only` when it
-builds a :class:`~decode.entities.permissions.PermissionRequest`.
+ADR-0002 §7 / ADR-0003 §2: tools live in a **flat registry** — no plugin machinery. The registry
+is the one place that (a) registers every tool on the :class:`~pydantic_ai.Agent` and (b) records
+each tool's :class:`~decode.permissions.types.ToolKind`, which the loop reads via
+:func:`decode.tools.tool_kind` when it builds a
+:class:`~decode.entities.permissions.PermissionRequest`. ``is_read_only`` is now derived from the
+kind (``kind is READ_ONLY``) so existing callers keep working.
 
 These tests assert the registry's two jobs without a network call: the agent ends up with all
-the expected tools, and the read-only map matches each tool's declared flag.
+the expected tools, and the tool-kind map matches each tool's declared classification.
 """
 
 from pydantic import SecretStr
@@ -15,8 +17,9 @@ from pydantic_ai.models.test import TestModel
 
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
-from decode.tools import is_read_only
-from decode.tools.registry import TOOL_READ_ONLY, TOOL_SPECS, register_tools
+from decode.permissions.types import ToolKind
+from decode.tools import is_read_only, tool_kind
+from decode.tools.registry import TOOL_KIND, TOOL_READ_ONLY, TOOL_SPECS, register_tools
 
 
 def _agent(mocker):
@@ -46,41 +49,60 @@ def test_registry_does_not_expose_the_scaffolding_noop_tool():
     # tools (006-011) and must NOT ride on the production agent. It survives only as a
     # TEST-ONLY helper (support.noop_helper.register_noop), never in the registry.
     assert "noop" not in {spec.name for spec in TOOL_SPECS}
+    assert "noop" not in TOOL_KIND
     assert "noop" not in TOOL_READ_ONLY
-    # Unknown tools (including ``noop``) default to mutating via the loop's lookup.
+    # Unknown tools (including ``noop``) default to OTHER (mutating) via the loop's lookup.
+    assert tool_kind("noop") is ToolKind.OTHER
     assert is_read_only("noop") is False
 
 
-def test_read_only_flags_match_each_spec():
+def test_tool_kinds_match_each_spec():
     by_name = {spec.name: spec for spec in TOOL_SPECS}
-    assert by_name["read"].read_only is True
-    assert by_name["glob"].read_only is True
-    assert by_name["grep"].read_only is True
-    # The mutating file tools are NOT read-only (gated/asked on every call).
-    assert by_name["write"].read_only is False
-    assert by_name["edit"].read_only is False
-    # bash mutates the world: NOT read-only, gated/asked on every call.
-    assert by_name["bash"].read_only is False
-    # todo_write has session side effects (it rewrites the task store): NOT read-only.
-    assert by_name["todo_write"].read_only is False
-    # web_fetch has no local side effect (network egress only): tagged read-only, still asked.
-    assert by_name["web_fetch"].read_only is True
-    # ask_user is the human-interaction tool: NOT read-only (it blocks the turn on the user).
-    assert by_name["ask_user"].read_only is False
+    # Read-only tools (no disk/exec side effect): the three file readers, web_fetch, todo_write.
+    assert by_name["read"].kind is ToolKind.READ_ONLY
+    assert by_name["glob"].kind is ToolKind.READ_ONLY
+    assert by_name["grep"].kind is ToolKind.READ_ONLY
+    # web_fetch has no local side effect (network egress only): READ_ONLY.
+    assert by_name["web_fetch"].kind is ToolKind.READ_ONLY
+    # todo_write is an in-memory checklist with no disk/exec side effect: READ_ONLY (ADR-0003 §2),
+    # so it works in plan mode and never prompts.
+    assert by_name["todo_write"].kind is ToolKind.READ_ONLY
+    # The mutating file tools are FILE_EDIT (edit mode auto-allows these).
+    assert by_name["write"].kind is ToolKind.FILE_EDIT
+    assert by_name["edit"].kind is ToolKind.FILE_EDIT
+    # bash mutates the world via shell exec: OTHER (edit mode still asks for it).
+    assert by_name["bash"].kind is ToolKind.OTHER
+    # ask_user is the human-interaction tool (ungated — never reaches the gate): OTHER.
+    assert by_name["ask_user"].kind is ToolKind.OTHER
 
 
-def test_is_read_only_reflects_the_registered_flags():
+def test_tool_kind_reflects_the_registered_kinds():
     # The loop consults this exact function when building a PermissionRequest.
+    assert tool_kind("read") is ToolKind.READ_ONLY
+    assert tool_kind("glob") is ToolKind.READ_ONLY
+    assert tool_kind("grep") is ToolKind.READ_ONLY
+    assert tool_kind("web_fetch") is ToolKind.READ_ONLY
+    assert tool_kind("todo_write") is ToolKind.READ_ONLY
+    assert tool_kind("write") is ToolKind.FILE_EDIT
+    assert tool_kind("edit") is ToolKind.FILE_EDIT
+    assert tool_kind("bash") is ToolKind.OTHER
+    assert tool_kind("ask_user") is ToolKind.OTHER
+    # Unknown tools default to OTHER (mutating/gated).
+    assert tool_kind("does-not-exist") is ToolKind.OTHER
+
+
+def test_is_read_only_is_derived_from_the_kind():
+    # ADR-0003 §2: read_only is kept (derived as ``kind is READ_ONLY``) so existing callers work.
     assert is_read_only("read") is True
     assert is_read_only("glob") is True
     assert is_read_only("grep") is True
+    assert is_read_only("web_fetch") is True
+    # todo_write is now READ_ONLY (in-memory checklist, no side effect).
+    assert is_read_only("todo_write") is True
     assert is_read_only("write") is False
     assert is_read_only("edit") is False
     assert is_read_only("bash") is False
-    assert is_read_only("todo_write") is False
-    # web_fetch is tagged read-only (no local side effect); still asked in v1.
-    assert is_read_only("web_fetch") is True
-    # ask_user is NOT read-only (it blocks the turn on the user).
+    # ask_user is OTHER (it blocks the turn on the user, ungated).
     assert is_read_only("ask_user") is False
     # Unknown tools default to mutating (gated).
     assert is_read_only("does-not-exist") is False
