@@ -50,5 +50,10 @@ class Settings(BaseSettings):
     # is non-fatal (the gate falls back to mode-only). Read only via this singleton.
     permissions_file: Path = Path(".decode/settings.json")
 
+    # --- Skills: project-local skills directory (task 025 / ADR-0004 §3) ---
+    # Project-authored skill ``*.md`` files live here (relative to cwd); they override a built-in
+    # skill of the same frontmatter name. Missing dir → built-ins only. Read only via this singleton.
+    skills_dir: Path = Path(".decode/skills")
+
 
 settings = Settings()
