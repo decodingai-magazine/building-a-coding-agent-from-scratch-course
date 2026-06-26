@@ -206,11 +206,11 @@ modal endpoint create --model Qwen/Qwen3.6-35B-A3B-FP8 --env main --unauthentica
 The endpoint speaks the **OpenAI Chat Completions API at `/v1`**:
 
 ```bash
-export MODAL_PROXY_TOKEN_KEY=wk-...
+export MODAL_PROXY_TOKEN_ID=wk-...
 export MODAL_PROXY_TOKEN_SECRET=ws-...
 
 curl "<your-endpoint-url>/v1/models" \
-  -H "Modal-Key: $MODAL_PROXY_TOKEN_KEY" \
+  -H "Modal-Key: $MODAL_PROXY_TOKEN_ID" \
   -H "Modal-Secret: $MODAL_PROXY_TOKEN_SECRET"
 ```
 
@@ -219,7 +219,7 @@ A quick chat/tool smoke test:
 ```bash
 curl "<your-endpoint-url>/v1/chat/completions" \
   -H "Content-Type: application/json" \
-  -H "Modal-Key: $MODAL_PROXY_TOKEN_KEY" \
+  -H "Modal-Key: $MODAL_PROXY_TOKEN_ID" \
   -H "Modal-Secret: $MODAL_PROXY_TOKEN_SECRET" \
   -d '{
         "model": "openai/gpt-oss-120b",
@@ -262,7 +262,7 @@ The endpoint is **OpenAI-compatible**, so it plugs into the same gateway path as
    ```bash
    MODAL_ENDPOINT_URL=https://...           # the endpoint URL, used as base_url + "/v1"
    MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b # served model id
-   MODAL_PROXY_TOKEN_KEY=wk-...              # Modal-Key  (omit if --unauthenticated)
+   MODAL_PROXY_TOKEN_ID=wk-...              # Modal-Key  (omit if --unauthenticated)
    MODAL_PROXY_TOKEN_SECRET=ws-...          # Modal-Secret
    ```
 2. **Point the LLM gateway** at `base_url = f"{MODAL_ENDPOINT_URL}/v1"` using Pydantic-AI's
