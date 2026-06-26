@@ -29,11 +29,12 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr = SecretStr("")
     gemini_model: str = "gemini-2.5-flash"  # config-driven; confirm the exact id at task 004
 
-    # openrouter: OpenAI-compatible gateway with :free models. The default is a current tool-calling +
-    # streaming capable free id (re-verified live at implementation time; alternate
-    # ``meta-llama/llama-3.3-70b-instruct:free``).
+    # openrouter: OpenAI-compatible gateway with :free models. The default is the Free Models Router
+    # (``openrouter/free``) — it spreads across all available free models and auto-filters for the
+    # tool-calling the loop needs, so a single congested upstream no longer hard-blocks you with 429s.
+    # Pin a specific free id (e.g. ``meta-llama/llama-3.3-70b-instruct:free``) for a stricter guarantee.
     openrouter_api_key: SecretStr = SecretStr("")
-    openrouter_model: str = "qwen/qwen3-coder:free"
+    openrouter_model: str = "openrouter/free"
 
     # modal Auto Endpoint: OpenAI-compatible ``/v1`` served on Modal. These endpoint vars are DISTINCT
     # from the MODAL_TOKEN_ID/MODAL_TOKEN_SECRET account tokens (``modal token set``, CLI/sandbox).

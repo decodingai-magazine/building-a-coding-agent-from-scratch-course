@@ -74,7 +74,7 @@ def test_provider_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     s = Settings(_env_file=None)
     assert s.llm_provider == "gemini"
-    assert s.openrouter_model == "qwen/qwen3-coder:free"
+    assert s.openrouter_model == "openrouter/free"
     assert s.modal_endpoint_model == "openai/gpt-oss-120b"
     assert s.modal_endpoint_url == ""
     assert s.openrouter_api_key.get_secret_value() == ""

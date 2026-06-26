@@ -71,8 +71,12 @@ The default is `gemini`, so an existing `.env` that only sets `GEMINI_API_KEY` k
 ```bash
 LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=your-key-here
-# OPENROUTER_MODEL=qwen/qwen3-coder:free   # the default; a tool-calling-capable free model
+# OPENROUTER_MODEL=openrouter/free   # the default: the Free Models Router (see below)
 ```
+
+**The default `openrouter/free` is the [Free Models Router](https://openrouter.ai/docs/guides/routing/routers/free-router):** it auto-routes each request to whatever free model is currently available and filters for the tool-calling the agent loop needs, so one congested provider can't hard-block you with a `429`. Pinning a single `:free` id instead (e.g. `qwen/qwen3-coder:free`) makes you eat that provider's rate limit alone.
+
+**About OpenRouter's free rate limits.** `:free` models share a pool with daily caps. Per OpenRouter's current policy, adding **$10 of credits** raises the free-tier daily cap (roughly **50 → 1000 requests/day**) and unlocks BYOK — and free models still cost **$0** to run, so the $10 just sits in your balance. For an agent loop (many requests per turn) this is the difference between hitting the wall in minutes and a usable day; confirm the live figures at [openrouter.ai/settings/credits](https://openrouter.ai/settings/credits). If you'd rather not add credits, **Gemini's** per-key free tier is the more reliable free path (it's the default provider).
 
 ### Choosing the model
 
@@ -81,7 +85,7 @@ Each provider has its **own** model variable — set the one for your active `LL
 | Provider (`LLM_PROVIDER`) | Model variable | Default | Pick another |
 |---|---|---|---|
 | `gemini` | `GEMINI_MODEL` | `gemini-2.5-flash` | any Gemini model id (e.g. `gemini-2.5-pro`) |
-| `openrouter` | `OPENROUTER_MODEL` | `qwen/qwen3-coder:free` | any id from [openrouter.ai/models](https://openrouter.ai/models) — the `:free` ones cost nothing |
+| `openrouter` | `OPENROUTER_MODEL` | `openrouter/free` (Free Models Router) | any id from [openrouter.ai/models](https://openrouter.ai/models) — the `:free` ones cost nothing |
 | `modal` | `MODAL_ENDPOINT_MODEL` | `openai/gpt-oss-120b` | must match the model your endpoint serves — see [`MODAL_MODELS.md`](MODAL_MODELS.md) |
 
 For example, to run Gemini's larger model:
@@ -91,7 +95,7 @@ LLM_PROVIDER=gemini          # the default, so optional
 GEMINI_MODEL=gemini-2.5-pro
 ```
 
-**Pick a tool-capable model.** The agent loop needs a model that supports **tool-calling + streaming**. The shipped defaults are known-good — `OPENROUTER_MODEL=qwen/qwen3-coder:free` and `MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b` — so for **both** OpenRouter and Modal, if you swap models, pick a tool-capable one or the loop breaks (the model narrates instead of emitting valid tool calls).
+**Pick a tool-capable model.** The agent loop needs a model that supports **tool-calling + streaming**. The shipped defaults are known-good — `OPENROUTER_MODEL=openrouter/free` (which itself filters for tool-calling) and `MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b` — so for **both** OpenRouter and Modal, if you swap to a pinned model, pick a tool-capable one or the loop breaks (the model narrates instead of emitting valid tool calls).
 
 **Run on Modal.** Set `LLM_PROVIDER=modal` + `MODAL_ENDPOINT_URL` + `MODAL_ENDPOINT_MODEL` (plus the `MODAL_PROXY_TOKEN_ID` / `MODAL_PROXY_TOKEN_SECRET` request headers, unless the endpoint was created `--unauthenticated`). See [`MODAL_MODELS.md`](MODAL_MODELS.md) for picking a model and creating the endpoint (`modal endpoint create`, `modal workspace proxy-tokens create`, and the wiring).
 

@@ -398,10 +398,10 @@ def _patch_provider(mocker, provider, *, modal_authenticated=True):
         )
         mocker.patch(
             "decode.agent.factory.settings.openrouter_model",
-            "qwen/qwen3-coder:free",
+            "openrouter/free",
             create=False,
         )
-        return OpenAIChatModel, "openrouter", "qwen/qwen3-coder:free"
+        return OpenAIChatModel, "openrouter", "openrouter/free"
     if provider == "modal":
         mocker.patch("decode.agent.factory.settings.modal_endpoint_url", _MODAL_URL, create=False)
         mocker.patch(
