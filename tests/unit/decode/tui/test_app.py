@@ -126,6 +126,21 @@ def test_is_quit_command_is_false_for_other_input():
     assert app.is_quit_command("") is False
 
 
+def test_is_compact_command_matches_slash_compact():
+    assert app.is_compact_command("/compact") is True
+
+
+def test_is_compact_command_ignores_surrounding_whitespace():
+    assert app.is_compact_command("  /compact  ") is True
+
+
+def test_is_compact_command_is_false_for_other_input():
+    assert app.is_compact_command("/compactx") is False
+    assert app.is_compact_command("compact") is False
+    assert app.is_compact_command("/quit") is False
+    assert app.is_compact_command("") is False
+
+
 def test_footer_hint_mentions_steer_followup_and_abort():
     hint = app.footer_hint("build", "default")
 
@@ -140,6 +155,12 @@ def test_footer_hint_mentions_quit():
     hint = app.footer_hint("build", "default")
 
     assert "/quit" in hint
+
+
+def test_footer_hint_mentions_compact():
+    hint = app.footer_hint("build", "default")
+
+    assert "/compact" in hint
 
 
 def test_footer_hint_includes_the_active_agent_and_mode():
@@ -591,6 +612,65 @@ def test_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
 
     assert "mode" in load_skills(tmp_path)  # still reachable via the skill dispatcher
     assert app.parse_mode_command("/mode plan") == "plan"  # the loop's /mode branch matches first
+
+
+# --- the manual /compact command (ADR-0006 §7, task 045) --------------------------------------
+
+
+async def test_handle_compact_command_idle_true_compacts_and_emits_no_extra_line(mocker):
+    # Idle + something to compact: run handler.compact() (which already emitted ContextCompacted
+    # on True) and add NO extra line — the rendered compaction event is the only feedback.
+    handler = mocker.Mock()
+    handler.compact = mocker.AsyncMock(return_value=True)
+    runner = mocker.Mock()
+    runner.phase = app.Phase.IDLE
+    lines: list[str] = []
+
+    await app._handle_compact_command(handler, runner, emit=lines.append)
+
+    handler.compact.assert_awaited_once_with()
+    assert lines == []  # True → the handler's ContextCompacted event is the feedback
+
+
+async def test_handle_compact_command_idle_false_renders_nothing_to_compact(mocker):
+    # Idle but nothing to compact: handler.compact() returns False → the friendly line.
+    handler = mocker.Mock()
+    handler.compact = mocker.AsyncMock(return_value=False)
+    runner = mocker.Mock()
+    runner.phase = app.Phase.IDLE
+    lines: list[str] = []
+
+    await app._handle_compact_command(handler, runner, emit=lines.append)
+
+    handler.compact.assert_awaited_once_with()
+    assert lines == ["Decode - nothing to compact yet."]
+
+
+@pytest.mark.parametrize("phase", [app.Phase.DISPATCHING, app.Phase.RUNNING])
+async def test_handle_compact_command_busy_renders_busy_and_never_compacts(mocker, phase):
+    # Busy (DISPATCHING or RUNNING): never compact mid-turn — emit the busy line, leave the turn be.
+    handler = mocker.Mock()
+    handler.compact = mocker.AsyncMock()
+    runner = mocker.Mock()
+    runner.phase = phase
+    lines: list[str] = []
+
+    await app._handle_compact_command(handler, runner, emit=lines.append)
+
+    handler.compact.assert_not_awaited()  # no mid-turn compaction
+    assert lines == ["Decode - busy; try /compact again once the turn finishes."]
+
+
+def test_compact_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
+    # ADR-0006 §7: a project skill named `compact` is reachable via the dispatcher (load_skills),
+    # but `/compact` never reaches the skill branch — the loop matches `is_compact_command` first
+    # and `continue`s, so the reserved command wins (precedence is the loop's job, like `/quit`).
+    from decode.skills.loader import load_skills
+
+    _write_skill(tmp_path / ".decode" / "skills", "compact")
+
+    assert "compact" in load_skills(tmp_path)  # still reachable via the skill dispatcher
+    assert app.is_compact_command("/compact") is True  # the loop's /compact branch matches first
 
 
 # --- the /<skill-name> resource trailer (ADR-0004 §1,§5; task 033) ----------------------------

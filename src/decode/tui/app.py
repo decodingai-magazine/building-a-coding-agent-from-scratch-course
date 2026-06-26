@@ -24,7 +24,7 @@ stays responsive while a turn streams. ``Ctrl-D`` or typing ``/quit`` exits clea
 
 The interactive loop reads real stdin, so its plumbing is exercised by the
 ``run_app`` regression test (a piped prompt_toolkit input); the decidable pieces
-(:func:`is_quit_command`, :func:`footer_hint`, :class:`InputIntent`,
+(:func:`is_quit_command`, :func:`is_compact_command`, :func:`footer_hint`, :class:`InputIntent`,
 :func:`parse_permission_answer`, the control-surface parsers
 :func:`parse_agent_command` / :func:`parse_mode_command` / :func:`parse_mode_name` /
 :func:`parse_skill_command`, and the Shift+Tab :func:`next_mode` cycle) are pure and unit-tested.
@@ -59,7 +59,7 @@ from decode.entities.permissions import (
     PermissionRequest,
 )
 from decode.harness.decisions import DecisionChannel
-from decode.harness.runner import Runner
+from decode.harness.runner import Phase, Runner
 from decode.memory.extract import extract_on_exit
 from decode.permissions import rules
 from decode.permissions.gate import PermissionGate
@@ -81,6 +81,10 @@ _QUIT_COMMAND = "/quit"
 # the single input surface alongside ``/quit`` (never a second ``prompt_async``).
 _AGENT_COMMAND = "/agent"
 _MODE_COMMAND = "/mode"
+# The manual full-compaction command (ADR-0006 §7): forces a full compaction now, wired like
+# ``/quit`` and idle-only. Reserved among the slash commands (matched before ``parse_skill_command``)
+# so a project skill named ``compact`` can never shadow it.
+_COMPACT_COMMAND = "/compact"
 # The order Shift+Tab cycles the gate mode through (ADR-0003 §9): default -> edit -> plan ->
 # bypass -> back to default. A tuple so :func:`next_mode` is a pure index step.
 _MODE_CYCLE: tuple[PermissionMode, ...] = (
@@ -127,6 +131,15 @@ def is_quit_command(line: str) -> bool:
     return line.strip() == _QUIT_COMMAND
 
 
+def is_compact_command(line: str) -> bool:
+    """True when ``line`` is the ``/compact`` command (ignoring surrounding whitespace).
+
+    Pure (mirrors :func:`is_quit_command`): exact match after a strip — ``"/compact"`` and
+    ``"  /compact  "`` are the command; ``"/compactx"`` / ``"compact"`` / ``"/quit"`` are not.
+    """
+    return line.strip() == _COMPACT_COMMAND
+
+
 def footer_hint(agent: str, mode: str) -> str:
     """The bottom-toolbar hint: the live agent + mode, then the interaction keys (plain text).
 
@@ -137,7 +150,7 @@ def footer_hint(agent: str, mode: str) -> str:
     """
     return (
         f"agent:{agent} mode:{mode} | Enter steer | Alt+Enter follow-up | "
-        "Esc abort | Shift+Tab mode | /agent /mode /quit"
+        "Esc abort | Shift+Tab mode | /agent /mode /compact /quit"
     )
 
 
@@ -291,6 +304,35 @@ def _handle_mode_command(
     gate.set_mode(mode)
     logger.debug("/mode switched to %s", mode.value)
     emit(mode_switch_confirmation(mode.value))
+
+
+# The two inline lines the ``/compact`` command renders itself (the success path renders nothing —
+# the handler's ``ContextCompacted`` event is the feedback). ``_COMPACT_NOTHING`` is the idle no-op;
+# ``_COMPACT_BUSY`` is shown when a turn is in flight (we never compact mid-turn).
+_COMPACT_NOTHING = "Decode - nothing to compact yet."
+_COMPACT_BUSY = "Decode - busy; try /compact again once the turn finishes."
+
+
+async def _handle_compact_command(
+    handler: AgentTurnHandler,
+    runner: Runner,
+    *,
+    emit: Callable[[str], None],
+) -> None:
+    """Force a full compaction now — the manual ``/compact`` command (ADR-0006 §7).
+
+    Idle-only, wired like ``/quit``: if a turn is in flight we never compact mid-turn (the handler
+    owns the live ``message_history``), so we emit the busy line and leave the turn untouched. When
+    idle, run the handler's full-compaction tier — an explicit user request compacts regardless of
+    the window-relative thresholds or ``compaction_enabled``. ``True`` means it already emitted
+    :class:`~decode.entities.events.ContextCompacted` (history replaced with ``[summary, *tail]``),
+    so we add no extra line; ``False`` means there was nothing to compact and we say so.
+    """
+    if runner.phase is not Phase.IDLE:
+        emit(_COMPACT_BUSY)
+        return
+    if not await handler.compact():
+        emit(_COMPACT_NOTHING)
 
 
 # The friendly inline line for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirrors the
@@ -761,6 +803,13 @@ async def run_app(
             mode_arg = parse_mode_command(text)
             if mode_arg is not None:
                 _handle_mode_command(mode_arg, gate=gate, emit=emit_line)
+                continue
+
+            # The manual full-compaction command (ADR-0006 §7), reserved among the slash commands
+            # (before the skill branch) so a ``compact`` skill can never shadow it: forces a full
+            # compaction now when idle, or reports busy mid-turn — never opening a second prompt.
+            if is_compact_command(text):
+                await _handle_compact_command(handler, runner, emit=emit_line)
                 continue
 
             # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved

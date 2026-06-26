@@ -758,6 +758,130 @@ async def test_run_app_unknown_slash_is_intercepted_and_runs_no_turn(monkeypatch
     assert any("still here?" in p for p in prompts)  # the REPL kept running
 
 
+# --- the manual /compact command (ADR-0006 §7, task 045) --------------------------------------
+
+# A huge, distinctive old turn that full compaction folds into the summary (so its marker must
+# be ABSENT from the post-compaction history), plus a small recent turn kept verbatim.
+_OLD_TURN_MARKER = "OLD-TURN-COMPACTED-AWAY " * 100
+_RECENT_TURN_MARKER = "RECENT-TURN-KEPT-VERBATIM"
+# The skeleton the patched summarizer returns; build_summary_message frames it as the head.
+_COMPACT_SKELETON = "# Conversation summary\n\n## Goal\nE2E-COMPACTED-SUMMARY-MARKER\n"
+
+
+def _seed_over_budget_session(sessions_dir: Path) -> None:
+    """Write a prior session whose history is over the recent-tail budget (ADR-0006 §5).
+
+    A huge old user turn (folded into the summary) followed by a small recent user turn (kept
+    verbatim), so ``run_app(resume="latest")`` seeds the handler with a history that ``/compact``
+    can actually compact to ``[summary, recent_turn]``.
+    """
+    from datetime import UTC, datetime
+    from uuid import UUID
+
+    from decode.context.session_log import SessionLog
+
+    prior = SessionLog.create(
+        sessions_dir,
+        cwd=sessions_dir,
+        now=datetime(2026, 6, 18, 8, 0, tzinfo=UTC),
+        session_id=UUID("00000000-0000-0000-0000-0000000000dd"),
+    )
+    prior.append_turn(
+        [
+            ModelRequest(parts=[UserPromptPart(content=_OLD_TURN_MARKER)]),
+            ModelRequest(parts=[UserPromptPart(content=_RECENT_TURN_MARKER)]),
+        ]
+    )
+
+
+async def test_run_app_compact_while_idle_compacts_the_over_budget_history(
+    monkeypatch, sessions_dir
+):
+    """Headline of task 045: typing ``/compact`` while idle forces a full compaction (ADR-0006 §7).
+
+    Driven through the real ``run_app`` (single input surface): the seeded over-budget history is
+    replaced with ``[summary, *tail]`` and a ``ContextCompacted`` line renders. No network — the
+    summarizer is patched to a fixed skeleton, so ``handler.compact()`` makes no Gemini call. We
+    then run a follow-up turn and assert what the model sees proves the new shape: the framed
+    summary + the recent tail, with the huge old turn gone.
+    """
+    from decode.agent import loop as agent_loop
+
+    async def fake_summarize(messages, *, model_or_settings):
+        return _COMPACT_SKELETON
+
+    monkeypatch.setattr(agent_loop, "summarize_for_compaction", fake_summarize)
+    # A tiny recent-tail budget so the seeded huge old turn is "old" and the small recent turn is
+    # the kept tail (split_tail != 0 → compact() actually fires).
+    monkeypatch.setattr(agent_loop.settings, "compaction_keep_recent_tokens", 20)
+    _seed_over_budget_session(sessions_dir)
+
+    captured: list[list[ModelMessage]] = []
+    agent = _build_capturing_chat_agent(captured)
+    monkeypatch.setattr(app_mod, "build_agent", lambda: agent)
+
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=100)
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+
+        def send(line: str) -> None:
+            pipe.send_text(f"{line}\r")
+
+        app_task = asyncio.ensure_future(app_mod.run_app(console=console, resume="latest"))
+
+        async def script() -> None:
+            send("/compact")
+            await _wait_for(buf, "compacted context")
+            send("trigger-a-follow-up-turn")
+            await _wait_for(buf, _CHAT_REPLY)
+            send("/quit")
+
+        try:
+            await asyncio.wait_for(script(), timeout=5.0)
+            await asyncio.wait_for(app_task, timeout=5.0)
+        finally:
+            if not app_task.done():
+                app_task.cancel()
+
+    output = buf.getvalue()
+    assert "compacted context" in output  # the ContextCompacted line rendered
+
+    # The follow-up turn's leg proves the history became [summary, *tail]: the framed summary +
+    # the recent tail are present; the huge old turn was folded away.
+    prompts = _user_prompts(captured)
+    flat = " ".join(prompts)
+    assert "E2E-COMPACTED-SUMMARY-MARKER" in flat  # the summary head replaced the old turns
+    assert "Summary of the earlier conversation" in flat  # framed as a summary, not an instruction
+    assert _RECENT_TURN_MARKER in flat  # the recent tail was kept verbatim
+    assert "OLD-TURN-COMPACTED-AWAY" not in flat  # the huge old turn is gone from the history
+    assert any("trigger-a-follow-up-turn" in p for p in prompts)  # the follow-up turn ran
+
+
+async def test_run_app_compact_with_nothing_to_compact_is_a_friendly_line(monkeypatch):
+    """``/compact`` on a fresh (empty) session renders the friendly no-op line, REPL stays alive.
+
+    A fresh ``run_app`` has an empty history, so ``handler.compact()`` returns ``False`` (no
+    transcript → no summarizer call, no network) and the loop renders the friendly line instead of
+    a compaction event. A later normal line still runs a turn — the REPL kept going.
+    """
+    captured: list[list[ModelMessage]] = []
+    agent = _build_capturing_chat_agent(captured)
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/compact")
+        await _wait_for(buf, "nothing to compact yet")
+        send("still here?")  # the session survived the no-op command
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "Decode - nothing to compact yet." in output  # the friendly no-op line rendered
+    assert "compacted context" not in output  # no compaction event fired
+    prompts = _user_prompts(captured)
+    assert any("still here?" in p for p in prompts)  # the REPL kept running
+
+
 async def test_run_app_mode_plan_denies_a_write_without_asking(monkeypatch):
     """Working-looks-like (ADR-0003 §9): ``/mode plan`` → a ``write`` is denied, never asked.
 
