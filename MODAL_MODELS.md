@@ -254,23 +254,33 @@ modal endpoint stop gpt-oss-120b --env main
 
 ## 6. Wiring an endpoint into `decode`
 
-The endpoint is **OpenAI-compatible**, so it plugs into the same gateway path as OpenRouter
-(`OPENROUTER_API_KEY`, OpenAI-compatible) already sketched in `.env.example`.
+The endpoint is **OpenAI-compatible**, so it rides the same `OpenAIChatModel` path as OpenRouter.
+Selecting it is **shipped** (ADR-0005, tasks 037-039): set the **LLM Provider** to `modal` and the
+**Provider Seam** (`agent/factory._build_model()`) constructs the model from the settings below.
 
-1. **Add env vars** (`.env.example` + `config/settings.py` — never read `os.environ` deep in call
-   sites, per AGENTS.md):
+1. **Set the env vars** — already wired in `config/settings.py` and mirrored in `.env.example`
+   (nothing reads `os.environ` in call sites, per AGENTS.md):
    ```bash
-   MODAL_ENDPOINT_URL=https://...           # the endpoint URL, used as base_url + "/v1"
-   MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b # served model id
-   MODAL_PROXY_TOKEN_ID=wk-...              # Modal-Key  (omit if --unauthenticated)
-   MODAL_PROXY_TOKEN_SECRET=ws-...          # Modal-Secret
+   LLM_PROVIDER=modal                       # select the modal backend
+   MODAL_ENDPOINT_URL=https://...           # the endpoint URL; used as base_url = {url}/v1
+   MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b # served model id (default: the §4 best-fit pick)
+   MODAL_PROXY_TOKEN_ID=wk-...              # Modal-Key   (optional — omit if --unauthenticated)
+   MODAL_PROXY_TOKEN_SECRET=ws-...          # Modal-Secret (optional — omit if --unauthenticated)
    ```
-2. **Point the LLM gateway** at `base_url = f"{MODAL_ENDPOINT_URL}/v1"` using Pydantic-AI's
-   OpenAI-compatible model.
-3. **Auth nuance:** Modal's proxy uses custom **`Modal-Key` / `Modal-Secret`** headers, not the
-   OpenAI `Authorization: Bearer` scheme. Pass them as **default/extra headers** on the OpenAI client
-   (or use `--unauthenticated` for local dev to skip header plumbing). Verify exact header wiring
-   against the SDK you use.
+   These endpoint vars are **distinct** from the `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` account
+   tokens of §5.1 (the CLI/sandbox auth) — overloading the two scopes is exactly what ADR-0005 §2
+   avoids.
+2. **The Provider Seam builds the model.** For `modal`, `_build_model()` constructs an
+   `OpenAIChatModel` over a custom `AsyncOpenAI` client whose `base_url = f"{MODAL_ENDPOINT_URL}/v1"`
+   — the bespoke client is needed for the per-user URL and the optional proxy-token headers.
+3. **Auth nuance — implemented (ADR-0005 §5).** Modal's proxy uses custom **`Modal-Key` /
+   `Modal-Secret`** request headers, not the OpenAI `Authorization: Bearer` scheme:
+   - **Both proxy tokens set** → the client sends `Modal-Key` / `Modal-Secret` as **default headers**
+     (the secret also rides as the SDK-required non-empty `api_key`).
+   - **Neither set** (an `--unauthenticated` endpoint) → no Modal headers and a placeholder
+     `api_key="EMPTY"` (the OpenAI SDK requires a non-empty value).
+   The cli startup guard (task 039) enforces a **both-or-neither** invariant, so exactly one proxy
+   token set is caught as a friendly misconfiguration rather than a silent 401 at the first request.
 
 ---
 
