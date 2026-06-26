@@ -17,17 +17,37 @@ from decode.tui import app as app_mod
 
 
 @pytest.fixture(autouse=True)
-def _dummy_gemini_key(mocker):
-    """Give the agent factory a non-empty key so startup construction succeeds (offline).
+def _dummy_provider_config(mocker):
+    """Seed every LLM Provider's required config so startup construction succeeds (offline).
 
-    Both the CLI's no-key startup guard (``decode.cli.settings``) and the agent factory
-    (``decode.agent.factory.settings``) read the same singleton, so a non-empty key here lets
-    the default test runs reach ``run_app`` without tripping the guard.
+    Both the CLI's per-provider startup guard (``decode.cli.settings``) and the agent factory
+    (``decode.agent.factory.settings``) read the same ``settings`` singleton. Seeding each
+    provider's required config here lets the default test runs (provider ``gemini``) — and any test
+    that flips ``llm_provider`` to a configured provider — reach ``run_app`` without tripping the
+    guard (task 039). Individual tests use ``_select_provider`` to choose a provider and clear
+    specific vars to exercise the failure cases. Modal defaults to the *unauthenticated* shape
+    (neither proxy token), which is valid.
     """
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
     mocker.patch.object(cli_mod.settings, "gemini_api_key", SecretStr("test-key"))
+    mocker.patch.object(cli_mod.settings, "openrouter_api_key", SecretStr("test-key"))
+    mocker.patch.object(cli_mod.settings, "modal_endpoint_url", "https://decode--test.modal.run")
+    mocker.patch.object(cli_mod.settings, "modal_endpoint_model", "openai/gpt-oss-120b")
+    mocker.patch.object(cli_mod.settings, "modal_proxy_token_id", SecretStr(""))
+    mocker.patch.object(cli_mod.settings, "modal_proxy_token_secret", SecretStr(""))
+
+
+def _select_provider(mocker, provider, **overrides):
+    """Select ``provider`` on the shared settings singleton and apply field overrides.
+
+    The guard and the factory share one ``settings`` object, so patching it here is seen by both.
+    ``overrides`` are attribute=value pairs (e.g. ``openrouter_api_key=SecretStr("")``).
+    """
+    mocker.patch.object(cli_mod.settings, "llm_provider", provider)
+    for name, value in overrides.items():
+        mocker.patch.object(cli_mod.settings, name, value)
 
 
 @pytest.fixture(autouse=True)
@@ -264,3 +284,314 @@ def test_cli_mode_overrides_the_selected_agents_default_mode(mocker):
     assert result.exit_code == 0
     gate = gate_spy.spy_return
     assert gate.mode is PermissionMode.DEFAULT
+
+
+# --- task 039: the generalized per-provider startup guard (ADR-0005 §6) ----------------------
+#
+# ``_provider_config_error()`` returns ONE friendly line (or ``None``) for the selected provider's
+# required config. These first tests pin the helper's contract directly (decidable message text /
+# which vars it names); the CLI-level tests below prove the exit code + no-traceback behaviour.
+
+
+def test_provider_config_error_gemini_missing_key_returns_the_unchanged_message(mocker):
+    # gemini keeps the verbatim task-004 message for backward-compat.
+    _select_provider(mocker, "gemini", gemini_api_key=SecretStr(""))
+
+    assert cli_mod._provider_config_error() == cli_mod._NO_KEY_MESSAGE
+
+
+def test_provider_config_error_gemini_present_returns_none(mocker):
+    _select_provider(mocker, "gemini", gemini_api_key=SecretStr("k"))
+
+    assert cli_mod._provider_config_error() is None
+
+
+def test_provider_config_error_openrouter_missing_key_names_var_and_provider(mocker):
+    _select_provider(mocker, "openrouter", openrouter_api_key=SecretStr(""))
+
+    msg = cli_mod._provider_config_error()
+
+    assert msg is not None
+    assert "OPENROUTER_API_KEY" in msg
+    assert "openrouter" in msg
+
+
+def test_provider_config_error_openrouter_present_returns_none(mocker):
+    _select_provider(mocker, "openrouter", openrouter_api_key=SecretStr("k"))
+
+    assert cli_mod._provider_config_error() is None
+
+
+def test_provider_config_error_modal_missing_url_names_only_url(mocker):
+    # model present, url absent → name only the absent var.
+    _select_provider(mocker, "modal", modal_endpoint_url="", modal_endpoint_model="m")
+
+    msg = cli_mod._provider_config_error()
+
+    assert msg is not None
+    assert "MODAL_ENDPOINT_URL" in msg
+    assert "MODAL_ENDPOINT_MODEL" not in msg
+
+
+def test_provider_config_error_modal_missing_model_names_only_model(mocker):
+    _select_provider(
+        mocker, "modal", modal_endpoint_url="https://x.modal.run", modal_endpoint_model=""
+    )
+
+    msg = cli_mod._provider_config_error()
+
+    assert msg is not None
+    assert "MODAL_ENDPOINT_MODEL" in msg
+    assert "MODAL_ENDPOINT_URL" not in msg
+
+
+def test_provider_config_error_modal_missing_both_names_both(mocker):
+    _select_provider(mocker, "modal", modal_endpoint_url="", modal_endpoint_model="")
+
+    msg = cli_mod._provider_config_error()
+
+    assert msg is not None
+    assert "MODAL_ENDPOINT_URL" in msg
+    assert "MODAL_ENDPOINT_MODEL" in msg
+
+
+def test_provider_config_error_modal_both_proxy_tokens_returns_none(mocker):
+    # url + model present, both proxy tokens set → authenticated endpoint, valid.
+    _select_provider(
+        mocker,
+        "modal",
+        modal_endpoint_url="https://x.modal.run",
+        modal_endpoint_model="m",
+        modal_proxy_token_id=SecretStr("wk-1"),
+        modal_proxy_token_secret=SecretStr("ws-1"),
+    )
+
+    assert cli_mod._provider_config_error() is None
+
+
+def test_provider_config_error_modal_neither_proxy_token_returns_none(mocker):
+    # url + model present, neither token set → --unauthenticated endpoint, valid.
+    _select_provider(
+        mocker,
+        "modal",
+        modal_endpoint_url="https://x.modal.run",
+        modal_endpoint_model="m",
+        modal_proxy_token_id=SecretStr(""),
+        modal_proxy_token_secret=SecretStr(""),
+    )
+
+    assert cli_mod._provider_config_error() is None
+
+
+def test_provider_config_error_modal_only_token_id_is_both_or_neither(mocker):
+    _select_provider(
+        mocker,
+        "modal",
+        modal_endpoint_url="https://x.modal.run",
+        modal_endpoint_model="m",
+        modal_proxy_token_id=SecretStr("wk-1"),
+        modal_proxy_token_secret=SecretStr(""),
+    )
+
+    msg = cli_mod._provider_config_error()
+
+    assert msg is not None
+    assert "both-or-neither" in msg
+    assert "MODAL_PROXY_TOKEN_ID" in msg
+    assert "MODAL_PROXY_TOKEN_SECRET" in msg
+
+
+def test_provider_config_error_modal_only_token_secret_is_both_or_neither(mocker):
+    _select_provider(
+        mocker,
+        "modal",
+        modal_endpoint_url="https://x.modal.run",
+        modal_endpoint_model="m",
+        modal_proxy_token_id=SecretStr(""),
+        modal_proxy_token_secret=SecretStr("ws-1"),
+    )
+
+    msg = cli_mod._provider_config_error()
+
+    assert msg is not None
+    assert "both-or-neither" in msg
+    assert "MODAL_PROXY_TOKEN_ID" in msg
+    assert "MODAL_PROXY_TOKEN_SECRET" in msg
+
+
+# --- task 039: CLI behaviour — friendly line + non-zero exit, no traceback -------------------
+
+
+def test_cli_openrouter_with_no_key_exits_nonzero_with_a_friendly_line(mocker):
+    """``LLM_PROVIDER=openrouter`` + no key → one friendly stderr line, non-zero exit, NO traceback."""
+    _select_provider(mocker, "openrouter", openrouter_api_key=SecretStr(""))
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code != 0
+    assert "OPENROUTER_API_KEY" in result.output  # names the missing var
+    assert "openrouter" in result.output  # names the provider
+    assert ".env.example" in result.output
+    assert "Traceback" not in result.output
+    assert "Decode:" in result.output
+    run_app.assert_not_awaited()
+
+
+def test_cli_modal_missing_url_exits_nonzero_naming_the_missing_var(mocker):
+    """``LLM_PROVIDER=modal`` missing url → friendly line naming MODAL_ENDPOINT_URL, no traceback."""
+    _select_provider(mocker, "modal", modal_endpoint_url="", modal_endpoint_model="m")
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code != 0
+    assert "MODAL_ENDPOINT_URL" in result.output
+    assert "Traceback" not in result.output
+    assert "Decode:" in result.output
+    run_app.assert_not_awaited()
+
+
+def test_cli_modal_both_proxy_tokens_passes_the_guard(mocker):
+    """url + model + BOTH proxy tokens → guard passes, REPL starts (run_app awaited)."""
+    _select_provider(
+        mocker,
+        "modal",
+        modal_endpoint_url="https://x.modal.run",
+        modal_endpoint_model="m",
+        modal_proxy_token_id=SecretStr("wk-1"),
+        modal_proxy_token_secret=SecretStr("ws-1"),
+    )
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code == 0
+    run_app.assert_awaited_once()
+
+
+def test_cli_modal_unauthenticated_passes_the_guard(mocker):
+    """url + model + NEITHER proxy token (--unauthenticated) → guard passes, REPL starts."""
+    _select_provider(
+        mocker,
+        "modal",
+        modal_endpoint_url="https://x.modal.run",
+        modal_endpoint_model="m",
+        modal_proxy_token_id=SecretStr(""),
+        modal_proxy_token_secret=SecretStr(""),
+    )
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code == 0
+    run_app.assert_awaited_once()
+
+
+def test_cli_modal_only_token_id_exits_nonzero_both_or_neither(mocker):
+    """url + model + ONLY token id → both-or-neither friendly line, non-zero exit, no traceback."""
+    _select_provider(
+        mocker,
+        "modal",
+        modal_endpoint_url="https://x.modal.run",
+        modal_endpoint_model="m",
+        modal_proxy_token_id=SecretStr("wk-1"),
+        modal_proxy_token_secret=SecretStr(""),
+    )
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code != 0
+    assert "both-or-neither" in result.output
+    assert "Traceback" not in result.output
+    run_app.assert_not_awaited()
+
+
+def test_cli_modal_only_token_secret_exits_nonzero_both_or_neither(mocker):
+    """url + model + ONLY token secret → both-or-neither friendly line, non-zero exit, no traceback."""
+    _select_provider(
+        mocker,
+        "modal",
+        modal_endpoint_url="https://x.modal.run",
+        modal_endpoint_model="m",
+        modal_proxy_token_id=SecretStr(""),
+        modal_proxy_token_secret=SecretStr("ws-1"),
+    )
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code != 0
+    assert "both-or-neither" in result.output
+    assert "Traceback" not in result.output
+    run_app.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("provider", "overrides"),
+    [
+        ("gemini", {"gemini_api_key": SecretStr("k")}),
+        ("openrouter", {"openrouter_api_key": SecretStr("k")}),
+        (
+            "modal",
+            {
+                "modal_endpoint_url": "https://x.modal.run",
+                "modal_endpoint_model": "m",
+                "modal_proxy_token_id": SecretStr(""),
+                "modal_proxy_token_secret": SecretStr(""),
+            },
+        ),
+        (
+            "modal",
+            {
+                "modal_endpoint_url": "https://x.modal.run",
+                "modal_endpoint_model": "m",
+                "modal_proxy_token_id": SecretStr("wk-1"),
+                "modal_proxy_token_secret": SecretStr("ws-1"),
+            },
+        ),
+    ],
+)
+def test_cli_with_each_provider_configured_starts_the_real_repl(mocker, provider, overrides):
+    """With the selected provider's config present the guard passes and the real REPL starts.
+
+    Reaches the real ``build_agent`` + ``run_app`` (empty stdin → EOF, exits 0), proving model
+    construction for every provider is offline and the guard does not trip. No network: an empty
+    conversation short-circuits the on-exit memory write-back.
+    """
+    _select_provider(mocker, provider, **overrides)
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code == 0
+    assert "Decode" in result.output
+
+
+@pytest.mark.parametrize(
+    ("provider", "overrides"),
+    [
+        ("gemini", {"gemini_api_key": SecretStr("")}),
+        ("openrouter", {"openrouter_api_key": SecretStr("")}),
+        ("modal", {"modal_endpoint_url": "", "modal_endpoint_model": ""}),
+    ],
+)
+def test_cli_provider_guard_precedes_agent_and_mode_validation(mocker, provider, overrides):
+    """For every provider, a missing-config exit fires before ``--agent`` / ``--mode`` validation.
+
+    Invoking with an invalid ``--agent`` and ``--mode`` while the provider is misconfigured must
+    still report the provider guard's message (not the unknown-agent / unknown-mode message) — and
+    never leak a raw ``pydantic_ai.UserError`` traceback, since no agent is built.
+    """
+    _select_provider(mocker, provider, **overrides)
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["--agent", "nope", "--mode", "bogus"])
+
+    assert result.exit_code != 0
+    # The provider guard short-circuited: neither downstream guard's bad value appears.
+    assert "nope" not in result.output
+    assert "bogus" not in result.output
+    assert "Traceback" not in result.output
+    assert "UserError" not in result.output
+    run_app.assert_not_awaited()
