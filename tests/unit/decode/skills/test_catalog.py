@@ -16,10 +16,11 @@ from decode.entities.skill_def import SkillDef
 from decode.skills.catalog import assemble_skills_catalog
 
 
-def _write_skill(skills_dir: Path, filename: str, *, name: str, description: str) -> Path:
-    """Write a minimal valid project skill file and return its path."""
-    skills_dir.mkdir(parents=True, exist_ok=True)
-    path = skills_dir / filename
+def _write_skill(skills_dir: Path, dir_name: str, *, name: str, description: str) -> Path:
+    """Write a minimal valid project skill ``<skills_dir>/<dir_name>/SKILL.md`` and return its path."""
+    skill_dir = skills_dir / dir_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    path = skill_dir / "SKILL.md"
     text = f"---\nname: {name}\ndescription: {description}\n---\nDo the thing.\n"
     path.write_text(text, encoding="utf-8")
     return path
@@ -59,7 +60,7 @@ def test_reflects_a_project_override_of_a_builtin_description(tmp_path):
     # A project `commit.md` with a changed description changes the `commit` line shown.
     _write_skill(
         _skills_dir(tmp_path),
-        "commit.md",
+        "commit",
         name="commit",
         description="Our team's bespoke commit ritual.",
     )
@@ -75,7 +76,7 @@ def test_reflects_a_project_override_of_a_builtin_description(tmp_path):
 
 def test_lists_a_project_only_skill_alongside_the_builtins(tmp_path):
     _write_skill(
-        _skills_dir(tmp_path), "deploy.md", name="deploy", description="Ship the app to prod."
+        _skills_dir(tmp_path), "deploy", name="deploy", description="Ship the app to prod."
     )
 
     catalog = assemble_skills_catalog(tmp_path)

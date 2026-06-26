@@ -27,7 +27,7 @@ The five guarantees, one test each (ADR-0004):
    body as the tool result and emits **no** ``PermissionRequested`` (the dispatcher is ungated).
 3. **User TUI slash path (second entry point):** ``/commit`` resolves to the commit **body** (not the
    literal ``/commit``) and that body is what reaches ``runner.submit`` as the turn input.
-4. **Project override (both entry points):** a ``<cwd>/.decode/skills/commit.md`` overrides the
+4. **Project override (both entry points):** a ``<cwd>/.decode/skills/commit/SKILL.md`` overrides the
    built-in by name, so ``skill("commit")``, ``/commit``, **and** the catalog line all reflect the
    project skill.
 5. **Unknown skill:** ``skill("does-not-exist")`` surfaces a :class:`pydantic_ai.ModelRetry` listing
@@ -193,10 +193,10 @@ def _permission_requests(events_seen: list[events.Event]) -> list[events.Permiss
 
 
 def _write_project_skill(cwd: Path, *, name: str, description: str, body: str) -> Path:
-    """Write a project skill under ``<cwd>/<settings.skills_dir>`` and return its path."""
-    skills_dir = cwd / settings.skills_dir
-    skills_dir.mkdir(parents=True, exist_ok=True)
-    path = skills_dir / f"{name}.md"
+    """Write a project skill ``<cwd>/<settings.skills_dir>/<name>/SKILL.md`` and return its path."""
+    skill_dir = cwd / settings.skills_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    path = skill_dir / "SKILL.md"
     path.write_text(
         f"---\nname: {name}\ndescription: {description}\n---\n{body}\n", encoding="utf-8"
     )
@@ -307,7 +307,7 @@ async def test_tui_slash_command_submits_the_skill_body_not_the_literal_slash(tm
 
 
 async def test_project_override_wins_for_both_entry_points_and_the_catalog(tmp_path):
-    """A ``<cwd>/.decode/skills/commit.md`` overrides the built-in for dispatcher, TUI, and catalog.
+    """A ``<cwd>/.decode/skills/commit/SKILL.md`` overrides the built-in for dispatcher, TUI, and catalog.
 
     With an intentional same-name project override present (ADR-0004 §3), all three surfaces resolve
     to the **project** commit skill: the model's ``skill("commit")`` returns the project body, the

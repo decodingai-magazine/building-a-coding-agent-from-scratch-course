@@ -1,19 +1,23 @@
-"""Unit tests for the Skills Catalog loader (``decode.skills.loader``; ADR-0004 §3).
+"""Unit tests for the Skills Catalog loader (``decode.skills.loader``; ADR-0004 §3,§5).
 
-The loader reads skills from two sources and merges them (ADR-0004 §3):
+A skill follows the **Agent Skills directory convention**: a directory ``<name>/SKILL.md``. The loader
+reads skills from two sources and merges them (ADR-0004 §3):
 
-* **built-in** — the bundled ``builtin/*.md`` files loaded as *packaged data* (``importlib.resources``,
-  so they ship in the wheel), validated into :class:`~decode.entities.skill_def.SkillDef`, keyed by
-  frontmatter ``name``, ``source == "builtin"``. A built-in parse failure raises loudly.
-* **project-local** — ``<cwd>/<settings.skills_dir>/*.md`` (cwd-relative, like memory), ``source`` set
-  to the absolute file path. A malformed/unreadable project skill is logged at WARNING and skipped; a
-  missing dir yields ``{}``.
+* **built-in** — the bundled ``builtin/<name>/SKILL.md`` directories loaded as *packaged data*
+  (``importlib.resources`` nested traversal, so they ship in the wheel), validated into
+  :class:`~decode.entities.skill_def.SkillDef`, keyed by frontmatter ``name``, ``source == "builtin"``,
+  ``resource_dir is None`` always. A built-in parse failure raises loudly.
+* **project-local** — ``<cwd>/<settings.skills_dir>/<name>/SKILL.md`` (cwd-relative, like memory),
+  ``source`` set to the absolute ``SKILL.md`` path; ``resource_dir`` set to the skill's directory iff it
+  ships sibling resources. A malformed/unreadable ``SKILL.md`` (or a subdir without one) is logged at
+  WARNING and skipped; a missing dir yields ``{}``.
 
 :func:`load_skills` merges built-ins first then project skills, so a project skill whose frontmatter
 ``name`` equals a built-in's intentionally overrides it. These tests pin the two built-ins (the active
-``commit`` body, the advisory ``review-diff`` body), the packaged-data path, frontmatter/body parsing +
-error messages, project discovery + keying by frontmatter name, skip-with-warning vs raise asymmetry,
-and the project-override-by-name merge.
+``commit`` body, the advisory ``review-diff`` body), the packaged-data nested traversal, frontmatter/body
+parsing + error messages, project discovery + keying by frontmatter name, ``resource_dir`` set/unset, the
+directory-name-mismatch warning, skip-with-warning vs raise asymmetry, the dropped flat format, and the
+project-override-by-name merge.
 """
 
 import importlib.resources
@@ -31,13 +35,27 @@ _BUILTIN_NAMES = {"commit", "review-diff"}
 
 
 def _write_skill(
-    skills_dir: Path, filename: str, *, name: str, body: str = "Do the thing."
+    skills_dir: Path, dir_name: str, *, name: str | None = None, body: str = "Do the thing."
 ) -> Path:
-    """Write a minimal valid project skill file and return its path."""
-    skills_dir.mkdir(parents=True, exist_ok=True)
-    path = skills_dir / filename
+    """Write a minimal valid project skill ``<skills_dir>/<dir_name>/SKILL.md`` and return its path.
+
+    The frontmatter ``name`` defaults to ``dir_name`` (the common, mismatch-free case); pass ``name``
+    explicitly to exercise the cosmetic-directory-name path.
+    """
+    name = dir_name if name is None else name
+    skill_dir = skills_dir / dir_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    path = skill_dir / "SKILL.md"
     text = f"---\nname: {name}\ndescription: a {name} skill\n---\n{body}\n"
     path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _write_resource(skill_dir: Path, relpath: str, content: str = "resource") -> Path:
+    """Write a sibling resource file under a skill's directory (makes it a tier-3 skill)."""
+    path = skill_dir / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
     return path
 
 
@@ -57,7 +75,7 @@ def test_discover_reads_the_dir_via_the_settings_singleton(tmp_path, monkeypatch
     # The loader must read the location only through ``settings.skills_dir`` (no literal path): point
     # the singleton at a different relative dir and discovery must follow it.
     monkeypatch.setattr(settings, "skills_dir", Path("custom/skills"))
-    custom = _write_skill(tmp_path / "custom" / "skills", "c.md", name="custom-skill")
+    custom = _write_skill(tmp_path / "custom" / "skills", "custom-skill")
 
     found = loader.discover_project_skills(tmp_path)
 
@@ -83,6 +101,14 @@ def test_each_builtin_has_description_body_and_builtin_source():
         assert skill.description.strip()
         assert skill.body.strip()
         assert skill.source == "builtin"
+
+
+def test_each_builtin_has_no_resource_dir():
+    # ADR-0004 §3: built-ins are SKILL.md-only — their resources would live unreadable in
+    # site-packages, so ``resource_dir`` is always ``None`` for a built-in.
+    skills = loader.load_builtin_skills()
+
+    assert all(skill.resource_dir is None for skill in skills.values())
 
 
 def test_builtin_descriptions_match_the_frontmatter():
@@ -123,14 +149,48 @@ def test_load_builtin_skills_is_independent_per_call():
 # --- packaged-data loading ------------------------------------------------------------------
 
 
-def test_builtin_files_are_packaged_data_not_a_repo_path():
-    # Load through the installed package's resources, not a hard-coded filesystem path.
-    files = importlib.resources.files("decode.skills.builtin")
-    names = {entry.name for entry in files.iterdir() if entry.name.endswith(".md")}
+def test_builtin_skills_are_packaged_directories_each_with_a_skill_md():
+    # The directory convention as packaged data: ``builtin/<name>/SKILL.md`` walked via
+    # importlib.resources (not a hard-coded filesystem path), no flat ``*.md`` left.
+    package = importlib.resources.files("decode.skills.builtin")
+    skill_dirs = {entry.name for entry in package.iterdir() if entry.is_dir()}
 
-    assert names == {"commit.md", "review-diff.md"}
-    for md in names:
-        assert (files / md).read_text(encoding="utf-8").strip()
+    assert skill_dirs >= _BUILTIN_NAMES  # commit/ and review-diff/ are subdirectories
+    for name in _BUILTIN_NAMES:
+        skill_file = package / name / "SKILL.md"
+        assert skill_file.is_file()
+        assert skill_file.read_text(encoding="utf-8").strip()
+    # The flat format is gone — no top-level ``*.md`` ships in the built-in package.
+    assert not [entry for entry in package.iterdir() if entry.name.endswith(".md")]
+
+
+def test_load_builtin_skills_skips_a_dir_without_a_skill_md(mocker, tmp_path, caplog):
+    # A built-in subdir lacking a SKILL.md is skipped (logged), not a crash — point the loader at a
+    # fake built-in package: a valid skill dir + an empty dir + a stray top-level file.
+    fake_pkg = tmp_path / "fake_builtin"
+    _write_skill(fake_pkg, "good")
+    (fake_pkg / "empty").mkdir()  # a directory with no SKILL.md
+    (fake_pkg / "README.txt").write_text("not a skill", encoding="utf-8")  # a non-dir entry
+    mocker.patch.object(loader.importlib.resources, "files", return_value=fake_pkg)
+
+    with caplog.at_level(logging.DEBUG):
+        skills = loader.load_builtin_skills()
+
+    assert set(skills) == {"good"}
+    assert any("empty" in record.getMessage() for record in caplog.records)
+
+
+def test_load_builtin_skills_raises_loudly_on_a_malformed_skill_md(mocker, tmp_path):
+    # The built-in/project asymmetry (ADR-0004 §3): a malformed *built-in* SKILL.md is a packaging
+    # bug, so it raises loudly (unlike a project skill, which is skipped with a warning).
+    fake_pkg = tmp_path / "fake_builtin"
+    bad_dir = fake_pkg / "broken"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "SKILL.md").write_text("no frontmatter, just a body\n", encoding="utf-8")
+    mocker.patch.object(loader.importlib.resources, "files", return_value=fake_pkg)
+
+    with pytest.raises(ValueError, match="broken"):
+        loader.load_builtin_skills()
 
 
 # --- parse_skill_file -----------------------------------------------------------------------
@@ -162,6 +222,25 @@ def test_parse_skill_file_passes_source_through():
     skill = loader.parse_skill_file(text, source="/abs/path/demo.md")
 
     assert skill.source == "/abs/path/demo.md"
+
+
+def test_parse_skill_file_defaults_resource_dir_to_none():
+    text = "---\nname: demo\ndescription: x\n---\nBody.\n"
+
+    skill = loader.parse_skill_file(text, source="builtin")
+
+    assert skill.resource_dir is None
+
+
+def test_parse_skill_file_threads_resource_dir_through():
+    # The loader supplies ``resource_dir`` for a project skill that ships resources; parse threads it
+    # into the constructed SkillDef unchanged.
+    text = "---\nname: demo\ndescription: x\n---\nBody.\n"
+    resource_dir = Path(".decode/skills/demo")
+
+    skill = loader.parse_skill_file(text, source="/abs/demo/SKILL.md", resource_dir=resource_dir)
+
+    assert skill.resource_dir == resource_dir
 
 
 def test_parse_skill_file_strips_whitespace_from_name_and_description():
@@ -230,8 +309,9 @@ def test_parse_skill_file_ignores_unknown_frontmatter_keys():
 
 
 def test_discover_finds_project_skills_keyed_by_frontmatter_name(tmp_path):
-    # A file `renamed.md` whose frontmatter is `name: actual` keys as `actual` (filename cosmetic).
-    path = _write_skill(_skills_dir(tmp_path), "renamed.md", name="actual")
+    # A directory `renamed/` whose SKILL.md frontmatter is `name: actual` keys as `actual` (dir name
+    # cosmetic); ``source`` is the absolute SKILL.md path.
+    path = _write_skill(_skills_dir(tmp_path), "renamed", name="actual")
 
     found = loader.discover_project_skills(tmp_path)
 
@@ -241,8 +321,8 @@ def test_discover_finds_project_skills_keyed_by_frontmatter_name(tmp_path):
 
 def test_discover_finds_multiple_project_skills(tmp_path):
     skills_dir = _skills_dir(tmp_path)
-    _write_skill(skills_dir, "a.md", name="alpha")
-    _write_skill(skills_dir, "b.md", name="beta")
+    _write_skill(skills_dir, "alpha")
+    _write_skill(skills_dir, "beta")
 
     found = loader.discover_project_skills(tmp_path)
 
@@ -259,31 +339,163 @@ def test_discover_empty_dir_returns_empty_dict(tmp_path):
     assert loader.discover_project_skills(tmp_path) == {}
 
 
+def test_discover_skips_a_subdirectory_without_a_skill_md_with_a_warning(tmp_path, caplog):
+    # A subdirectory lacking a SKILL.md is skipped (logged), never a crash; siblings still load.
+    skills_dir = _skills_dir(tmp_path)
+    _write_skill(skills_dir, "good")
+    (skills_dir / "incomplete").mkdir()  # a skill dir with no SKILL.md
+
+    with caplog.at_level(logging.WARNING):
+        found = loader.discover_project_skills(tmp_path)
+
+    assert set(found) == {"good"}
+    assert any(
+        record.levelno == logging.WARNING and "incomplete" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_discover_does_not_discover_a_loose_flat_md(tmp_path, caplog):
+    # The flat format is gone (hard switch): a loose ``<skills_dir>/commit.md`` (no enclosing
+    # ``<name>/`` directory) is NOT discovered — only ``<name>/SKILL.md`` directories are skills.
+    skills_dir = _skills_dir(tmp_path)
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / "commit.md").write_text(
+        "---\nname: commit\ndescription: flat\n---\nFlat body.\n", encoding="utf-8"
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        found = loader.discover_project_skills(tmp_path)
+
+    assert found == {}
+    # A DEBUG migration hint names the ignored loose file.
+    assert any("commit.md" in record.getMessage() for record in caplog.records)
+
+
 def test_discover_skips_a_malformed_project_skill_with_a_warning(tmp_path, caplog):
     skills_dir = _skills_dir(tmp_path)
-    _write_skill(skills_dir, "good.md", name="good")
-    # A malformed file (no frontmatter) must be skipped, not crash the agent.
-    (skills_dir / "bad.md").write_text("not a skill, no frontmatter\n", encoding="utf-8")
+    _write_skill(skills_dir, "good")
+    # A malformed SKILL.md (no frontmatter) must be skipped, not crash the agent.
+    bad_dir = skills_dir / "bad"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "SKILL.md").write_text("not a skill, no frontmatter\n", encoding="utf-8")
 
     with caplog.at_level(logging.WARNING):
         found = loader.discover_project_skills(tmp_path)
 
     assert set(found) == {"good"}  # the good one still loads
     assert any(record.levelno == logging.WARNING for record in caplog.records)
-    assert any("bad.md" in record.getMessage() for record in caplog.records)
+    assert any("bad" in record.getMessage() for record in caplog.records)
 
 
-def test_discover_skips_an_unreadable_project_skill_with_a_warning(tmp_path, caplog):
+def test_discover_skips_an_unreadable_project_skill_with_a_warning(tmp_path, caplog, mocker):
+    # A SKILL.md present but unreadable (OSError on read) is skipped, not fatal — the OSError branch
+    # of the (ValueError, OSError, yaml.YAMLError) catch. Simulated deterministically (no chmod, which
+    # root bypasses in CI) by forcing read_text to raise only for the broken skill's SKILL.md.
     skills_dir = _skills_dir(tmp_path)
-    _write_skill(skills_dir, "good.md", name="good")
-    # A `*.md` that cannot be read as a file (here: a directory) is skipped, not fatal.
-    (skills_dir / "broken.md").mkdir()
+    _write_skill(skills_dir, "good")
+    broken = _write_skill(skills_dir, "broken")
+
+    real_read_text = Path.read_text
+
+    def _read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self == broken:
+            raise OSError("simulated unreadable SKILL.md")
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    mocker.patch.object(Path, "read_text", _read_text)
 
     with caplog.at_level(logging.WARNING):
         found = loader.discover_project_skills(tmp_path)
 
     assert set(found) == {"good"}
     assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+# --- resource_dir (tier-3 bundled resources; ADR-0004 §5) -----------------------------------
+
+
+def test_discover_sets_resource_dir_when_the_skill_ships_a_sibling(tmp_path):
+    # A project skill whose directory holds anything besides SKILL.md (here a ``references/x.md``)
+    # gets ``resource_dir`` set to its directory.
+    skills_dir = _skills_dir(tmp_path)
+    _write_skill(skills_dir, "deploy")
+    _write_resource(skills_dir / "deploy", "references/x.md")
+
+    found = loader.discover_project_skills(tmp_path)
+
+    assert found["deploy"].resource_dir == skills_dir / "deploy"
+
+
+def test_discover_resource_dir_is_none_when_only_skill_md(tmp_path):
+    # A project skill whose directory contains only SKILL.md ships no resources → ``None``.
+    skills_dir = _skills_dir(tmp_path)
+    _write_skill(skills_dir, "deploy")
+
+    found = loader.discover_project_skills(tmp_path)
+
+    assert found["deploy"].resource_dir is None
+
+
+def test_discover_resource_dir_is_cwd_joined_not_resolved(tmp_path):
+    # 033 renders ``resource_dir`` cwd-relative, so it must stay cwd-joined and un-``.resolve()``d
+    # (``source`` keeps the resolved absolute path; ``resource_dir`` does not).
+    skills_dir = _skills_dir(tmp_path)
+    _write_skill(skills_dir, "deploy")
+    _write_resource(skills_dir / "deploy", "scripts/run.sh")
+
+    found = loader.discover_project_skills(tmp_path)
+
+    expected = tmp_path / settings.skills_dir / "deploy"
+    assert found["deploy"].resource_dir == expected
+    # ``source`` keeps the resolved absolute SKILL.md path; ``resource_dir`` stays the cwd-joined dir.
+    assert str(found["deploy"].source).endswith("deploy/SKILL.md")
+
+
+def test_discover_resource_dir_set_for_a_sibling_directory_too(tmp_path):
+    # "anything besides SKILL.md" includes a sibling *folder*, not just a file.
+    skills_dir = _skills_dir(tmp_path)
+    _write_skill(skills_dir, "deploy")
+    (skills_dir / "deploy" / "examples").mkdir()
+
+    found = loader.discover_project_skills(tmp_path)
+
+    assert found["deploy"].resource_dir == skills_dir / "deploy"
+
+
+# --- directory-name vs frontmatter-name mismatch (ADR-0004 §3) ------------------------------
+
+
+def test_discover_dir_name_mismatch_loads_and_warns(tmp_path, caplog):
+    # A directory ``foo/`` whose SKILL.md is ``name: bar`` still loads (keyed by ``bar``), but the
+    # mismatch is logged at WARNING to catch copy-paste slips.
+    _write_skill(_skills_dir(tmp_path), "foo", name="bar")
+
+    with caplog.at_level(logging.WARNING):
+        found = loader.discover_project_skills(tmp_path)
+
+    assert set(found) == {"bar"}  # keyed by frontmatter name; dir name cosmetic
+    assert any(
+        record.levelno == logging.WARNING
+        and "foo" in record.getMessage()
+        and "bar" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_discover_matching_dir_name_does_not_warn(tmp_path, caplog):
+    # The common case (dir name == frontmatter name) loads without a mismatch warning.
+    _write_skill(_skills_dir(tmp_path), "deploy")
+
+    with caplog.at_level(logging.WARNING):
+        found = loader.discover_project_skills(tmp_path)
+
+    assert set(found) == {"deploy"}
+    assert not [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "cosmetic" in record.getMessage()
+    ]
 
 
 # Frontmatter whose YAML is *syntactically* malformed — each raises ``yaml.YAMLError``
@@ -307,8 +519,10 @@ def test_discover_skips_a_malformed_yaml_project_skill_with_a_warning(
     # A project skill whose frontmatter is broken YAML (``yaml.YAMLError``, not ``ValueError``) must be
     # skipped with a WARNING, not crash the session — load_skills runs every turn (ADR-0004 §3).
     skills_dir = _skills_dir(tmp_path)
-    _write_skill(skills_dir, "good.md", name="good")
-    (skills_dir / "bad.md").write_text(f"---\n{frontmatter}\n---\nBody.\n", encoding="utf-8")
+    _write_skill(skills_dir, "good")
+    bad_dir = skills_dir / "bad"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "SKILL.md").write_text(f"---\n{frontmatter}\n---\nBody.\n", encoding="utf-8")
 
     with caplog.at_level(logging.WARNING):
         found = loader.discover_project_skills(tmp_path)
@@ -319,11 +533,11 @@ def test_discover_skips_a_malformed_yaml_project_skill_with_a_warning(
 
 
 def test_discover_malformed_yaml_warning_names_the_offending_file(tmp_path, caplog):
-    # The WARNING must name the offending file (its ``source`` path) so the typo is debuggable.
+    # The WARNING must name the offending file (its ``source`` SKILL.md path) so the typo is debuggable.
     skills_dir = _skills_dir(tmp_path)
-    bad = skills_dir
-    bad.mkdir(parents=True, exist_ok=True)
-    bad_path = bad / "typo.md"
+    bad_dir = skills_dir / "typo"
+    bad_dir.mkdir(parents=True, exist_ok=True)
+    bad_path = bad_dir / "SKILL.md"
     bad_path.write_text('---\nname: ok\ndescription: "unterminated\n---\nBody.\n', encoding="utf-8")
 
     with caplog.at_level(logging.WARNING):
@@ -347,21 +561,19 @@ def test_load_skills_returns_builtins_when_no_project_skills(tmp_path):
 
 
 def test_load_skills_includes_project_only_skills_alongside_builtins(tmp_path):
-    _write_skill(_skills_dir(tmp_path), "extra.md", name="deploy")
+    _write_skill(_skills_dir(tmp_path), "deploy")
 
     skills = loader.load_skills(tmp_path)
 
     assert set(skills) == _BUILTIN_NAMES | {"deploy"}
-    assert skills["deploy"].source.endswith("extra.md")
+    assert skills["deploy"].source.endswith("SKILL.md")
     # The built-ins are untouched.
     assert skills["commit"].source == "builtin"
 
 
 def test_load_skills_project_skill_overrides_a_builtin_by_name(tmp_path):
     # A project skill named `commit` replaces the built-in `commit` (body + source become the file's).
-    path = _write_skill(
-        _skills_dir(tmp_path), "mycommit.md", name="commit", body="My team's commit ritual."
-    )
+    path = _write_skill(_skills_dir(tmp_path), "commit", body="My team's commit ritual.")
 
     skills = loader.load_skills(tmp_path)
 
@@ -372,10 +584,8 @@ def test_load_skills_project_skill_overrides_a_builtin_by_name(tmp_path):
 
 
 def test_load_skills_working_looks_like_project_commit_wins(tmp_path):
-    # AC "working looks like": a project commit.md with a different body wins by name.
-    path = _write_skill(
-        _skills_dir(tmp_path), "commit.md", name="commit", body="Project commit body."
-    )
+    # AC "working looks like": a project ``commit/SKILL.md`` with a different body wins by name.
+    path = _write_skill(_skills_dir(tmp_path), "commit", body="Project commit body.")
 
     skills = loader.load_skills(tmp_path)
 
@@ -383,13 +593,27 @@ def test_load_skills_working_looks_like_project_commit_wins(tmp_path):
     assert skills["commit"].source == str(path.resolve())
 
 
+def test_load_skills_project_override_carries_its_resource_dir(tmp_path):
+    # An overriding project skill that ships resources wins with its ``resource_dir`` (built-in had
+    # ``None``); the project body/source/resource_dir all win.
+    skills_dir = _skills_dir(tmp_path)
+    _write_skill(skills_dir, "commit", body="Project commit body.")
+    _write_resource(skills_dir / "commit", "references/style.md")
+
+    skills = loader.load_skills(tmp_path)
+
+    assert skills["commit"].resource_dir == skills_dir / "commit"
+
+
 def test_load_skills_does_not_raise_on_a_malformed_yaml_project_skill(tmp_path, caplog):
     # The live-session crash path: load_skills runs every turn via the catalog hook, so a single
-    # typo'd `.decode/skills/*.md` with broken YAML must NOT propagate — built-ins + valid project
-    # skills come back, the bad one is skipped (ADR-0004 §3).
+    # typo'd `.decode/skills/<name>/SKILL.md` with broken YAML must NOT propagate — built-ins + valid
+    # project skills come back, the bad one is skipped (ADR-0004 §3).
     skills_dir = _skills_dir(tmp_path)
-    _write_skill(skills_dir, "deploy.md", name="deploy")
-    (skills_dir / "broken.md").write_text(
+    _write_skill(skills_dir, "deploy")
+    bad_dir = skills_dir / "broken"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "SKILL.md").write_text(
         '---\nname: ok\ndescription: "unterminated\n---\nBody.\n', encoding="utf-8"
     )
 

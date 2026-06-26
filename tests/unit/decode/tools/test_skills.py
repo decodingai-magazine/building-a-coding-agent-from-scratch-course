@@ -11,7 +11,7 @@ Two layers of test, mirroring ``test_orchestration.py``:
 
 * **direct** — call ``skill`` with a hand-built ``RunContext`` to pin: the built-in ``commit`` body
   comes back, an unknown name raises ``ModelRetry`` listing the names, and a project override
-  (``<cwd>/.decode/skills/commit.md``) wins;
+  (``<cwd>/.decode/skills/commit/SKILL.md``) wins;
 * **loop-driven** — drive ``skill`` through the *real* ``build_agent`` + ``AgentTurnHandler`` + gate
   (model swapped for a scripted ``FunctionModel``, no network) so the **ungated** contract holds end
   to end: a scripted ``skill("commit")`` returns the body and emits NO ``PermissionRequested`` (even
@@ -66,10 +66,10 @@ def _ctx(cwd: Path) -> RunContext[AgentDeps]:
 
 
 def _write_project_skill(cwd: Path, *, name: str, body: str) -> Path:
-    """Write a minimal valid project skill under ``<cwd>/<settings.skills_dir>`` and return its path."""
-    skills_dir = cwd / settings.skills_dir
-    skills_dir.mkdir(parents=True, exist_ok=True)
-    path = skills_dir / f"{name}.md"
+    """Write a project skill ``<cwd>/<settings.skills_dir>/<name>/SKILL.md`` and return its path."""
+    skill_dir = cwd / settings.skills_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    path = skill_dir / "SKILL.md"
     path.write_text(
         f"---\nname: {name}\ndescription: a {name} skill\n---\n{body}\n", encoding="utf-8"
     )
@@ -116,8 +116,8 @@ async def test_skill_unknown_name_raises_model_retry_listing_available_names(tmp
 
 
 async def test_skill_respects_a_project_override(tmp_path):
-    # A project ``<cwd>/.decode/skills/commit.md`` overrides the built-in by name (ADR-0004 §3): the
-    # dispatcher returns the PROJECT body.
+    # A project ``<cwd>/.decode/skills/commit/SKILL.md`` overrides the built-in by name (ADR-0004 §3):
+    # the dispatcher returns the PROJECT body.
     _write_project_skill(tmp_path, name="commit", body="Our team's commit ritual.")
 
     result = await skills.skill(_ctx(tmp_path), "commit")

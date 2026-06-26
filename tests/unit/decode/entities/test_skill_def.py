@@ -9,6 +9,7 @@ its *validation* (the loader just feeds it parsed frontmatter): every field must
 """
 
 import dataclasses
+from pathlib import Path
 
 import pytest
 
@@ -46,6 +47,52 @@ def test_skill_def_uses_slots():
     skill = SkillDef(name="commit", description="x", body="y", source="builtin")
 
     assert not hasattr(skill, "__dict__")  # slots=True -> no per-instance __dict__
+
+
+# --- resource_dir (optional tier-3 bundled-resource pointer; ADR-0004 §5) -------------------
+
+
+def test_skill_def_resource_dir_defaults_to_none():
+    # Constructing without resource_dir still works (defaulted) — built-ins and resource-less
+    # project skills carry None.
+    skill = SkillDef(name="commit", description="x", body="y", source="builtin")
+
+    assert skill.resource_dir is None
+
+
+def test_skill_def_accepts_a_path_resource_dir():
+    # A project skill that ships resources carries the Path of its directory.
+    resource_dir = Path(".decode/skills/deploy")
+    skill = SkillDef(
+        name="deploy",
+        description="x",
+        body="y",
+        source="/abs/.decode/skills/deploy/SKILL.md",
+        resource_dir=resource_dir,
+    )
+
+    assert skill.resource_dir == resource_dir
+
+
+def test_skill_def_does_not_validate_resource_dir_against_the_filesystem():
+    # The entity is frozen + slotted and must not touch disk: a non-existent path never raises
+    # (the loader sets it correctly; the entity only stores it).
+    skill = SkillDef(
+        name="deploy",
+        description="x",
+        body="y",
+        source="builtin",
+        resource_dir=Path("/does/not/exist/anywhere"),
+    )
+
+    assert skill.resource_dir == Path("/does/not/exist/anywhere")
+
+
+def test_skill_def_resource_dir_is_part_of_the_dataclass_fields():
+    skill = SkillDef(name="commit", description="x", body="y", source="builtin")
+
+    field_names = {f.name for f in dataclasses.fields(skill)}
+    assert "resource_dir" in field_names
 
 
 # --- validation -----------------------------------------------------------------------------

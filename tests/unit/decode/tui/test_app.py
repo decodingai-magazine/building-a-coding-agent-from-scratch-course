@@ -496,9 +496,10 @@ def test_parse_skill_command(line, expected):
 
 
 def _write_skill(skills_dir: Path, name: str, body: str = "do the thing") -> None:
-    """Drop a minimal valid project skill file under ``skills_dir`` (frontmatter + body)."""
-    skills_dir.mkdir(parents=True, exist_ok=True)
-    (skills_dir / f"{name}.md").write_text(
+    """Drop a minimal valid project skill ``<skills_dir>/<name>/SKILL.md`` (frontmatter + body)."""
+    skill_dir = skills_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: a test skill\n---\n{body}\n", encoding="utf-8"
     )
 
