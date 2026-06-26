@@ -205,3 +205,30 @@ tests/integration/test_milestone3_skills_capstone.py .....               [100%]
   unrelated files, no `print()` in library code (test-only change).
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-26 — Acceptance Review (Milestone-3 Skills feature, PR #10, tasks 024–030)
+
+**VERDICT: ACCEPT**
+
+Reviewed the whole Skills feature from the user's POV against each task's ACs and ADR-0004's locked
+decisions. All seven locked product decisions hold in the shipped code:
+
+- Progressive disclosure: cheap catalog always injected (`agent/factory.py:75` →
+  `assemble_skills_catalog`, `skills/catalog.py:45-68`), body on demand only via the dispatcher /
+  `/<skill>` — confirmed by `test_milestone3_skills_capstone.py` reading assembled
+  `ModelRequest.instructions`.
+- Two entry points, one resolver: model `skill(name)` (`tools/skills.py:42-65`) and user
+  `/<skill-name>` (`tui/app.py:308-334`) both resolve through `load_skills(cwd)`
+  (`skills/loader.py:123-137`); project-over-built-in override pinned on all three surfaces.
+- Ungated dispatcher, gated induced action: `skill` is `ToolKind.OTHER`, never raises
+  `ApprovalRequired` (`tools/registry.py:128-137`); the `commit` skill's `git add`/`git commit` ride
+  gated `bash` (default asks, plan denies).
+- Two built-ins match their descriptions and are a sensible active/advisory teaching pair
+  (`skills/builtin/commit.md`, `skills/builtin/review-diff.md`).
+- Malformed-YAML project skill skipped-with-WARNING, never crashes a session
+  (`skills/loader.py:109-115`, task 030).
+- Docs accurate: ADR-0004 (single feature ADR, Accepted) + four glossary terms describe what shipped.
+
+No user-facing defects found. The footer not advertising `/<skill>` is an intentional, ADR-documented
+v1 scope decision (task 028 Out of scope; discovery served by the unknown-slash available-skills line).
+Hand off to the PR Reviewer.
