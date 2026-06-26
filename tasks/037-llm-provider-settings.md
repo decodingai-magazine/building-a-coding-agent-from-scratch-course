@@ -1,7 +1,7 @@
 ---
 id: 037-llm-provider-settings
 feature: multi-provider-gateway
-status: pending
+status: done
 ---
 
 # Settings: LLM_PROVIDER selector + per-provider inference fields
@@ -55,21 +55,21 @@ prose, the MODAL_MODELS.md link) is task 040 — do not do the prose here.
 
 ## Acceptance criteria
 
-- [ ] `Settings(_env_file=None).llm_provider == "gemini"` (default); `openrouter_model` defaults to the
+- [x] `Settings(_env_file=None).llm_provider == "gemini"` (default); `openrouter_model` defaults to the
       verified `:free` id, `modal_endpoint_model` defaults to `"openai/gpt-oss-120b"`,
       `modal_endpoint_url` to `""`, and `openrouter_api_key`/`modal_proxy_token_id`/
       `modal_proxy_token_secret` to empty `SecretStr`. Existing `gemini_*` fields and all other settings
       are unchanged. Unit-tested in `tests/unit/decode/config/test_settings.py`.
-- [ ] `LLM_PROVIDER=gemini|openrouter|modal` each load as the matching literal; an invalid value
+- [x] `LLM_PROVIDER=gemini|openrouter|modal` each load as the matching literal; an invalid value
       (e.g. `LLM_PROVIDER=anthropic`) raises a pydantic `ValidationError` at construction (the `Literal`
       is enforced, not silently accepted). Unit-tested.
-- [ ] `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `MODAL_ENDPOINT_URL`, `MODAL_ENDPOINT_MODEL`,
+- [x] `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `MODAL_ENDPOINT_URL`, `MODAL_ENDPOINT_MODEL`,
       `MODAL_PROXY_TOKEN_ID`, `MODAL_PROXY_TOKEN_SECRET` each read from the process env and from a `.env`
       file into the matching field; `openrouter_api_key`/`modal_proxy_token_id`/
       `modal_proxy_token_secret` are `SecretStr` and do **not** appear in `repr(settings)`. Unit-tested.
-- [ ] `.env.example` carries the six new var lines (placeholders) so the new vars are mirrored at this
+- [x] `.env.example` carries the six new var lines (placeholders) so the new vars are mirrored at this
       commit; the existing `OPENROUTER_API_KEY`, `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` lines remain.
-- [ ] `make ci` green, 0 warnings (`filterwarnings=["error"]`); `tests/unit/decode/config/` mirrors the
+- [x] `make ci` green, 0 warnings (`filterwarnings=["error"]`); `tests/unit/decode/config/` mirrors the
       change 1:1.
 
 ## Out of scope
@@ -81,3 +81,134 @@ prose, the MODAL_MODELS.md link) is task 040 — do not do the prose here.
   link/light-pass — task 040 (this task does only the minimal var-line mirror).
 
 ## Log
+
+### [SWE] 2026-06-26 15:37 — Implementation
+
+**Live-verify (OpenRouter default model)**
+Re-confirmed `qwen/qwen3-coder:free` against the live model list
+(`GET https://openrouter.ai/api/v1/models`, filtered `id` endswith `:free` AND `supported_parameters`
+contains `tools`): **still present and tool-capable** — no swap needed, default kept as
+`qwen/qwen3-coder:free`. The documented alternate `meta-llama/llama-3.3-70b-instruct:free` is also
+still live (17 free+tool ids total in the snapshot).
+
+**Files modified**
+- `src/decode/config/settings.py` — added `llm_provider` `Literal` selector (default `gemini`) plus the
+  OpenRouter (`openrouter_api_key` SecretStr, `openrouter_model`) and Modal endpoint
+  (`modal_endpoint_url`, `modal_endpoint_model`, `modal_proxy_token_id`/`modal_proxy_token_secret`
+  SecretStr) fields; rewrote the `# --- Inference ---` comment to name the three providers + reference
+  ADR-0005; `gemini_api_key`/`gemini_model` unchanged.
+- `.env.example` — mirrored the 6 new vars (`LLM_PROVIDER`, `OPENROUTER_MODEL`, `MODAL_ENDPOINT_URL`,
+  `MODAL_ENDPOINT_MODEL`, `MODAL_PROXY_TOKEN_ID`, `MODAL_PROXY_TOKEN_SECRET`); existing
+  `OPENROUTER_API_KEY`/`MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` retained. Renamed the stale orphan
+  `MODAL_PROXY_TOKEN_KEY` line (mapped to no field) to `MODAL_PROXY_TOKEN_ID` so the file is
+  self-consistent with the new field.
+- `tests/unit/decode/config/test_settings.py` — 7 new cases (one parametrized x3) covering the default
+  selector + new defaults, each valid `Literal` value, invalid-value `ValidationError`, process-env +
+  `.env`-file loading of all 6 vars, and SecretStr redaction in `repr`.
+
+**Tests**
+- Unit: 698 passing, 0 failing (`make pre-commit`); config module: 14 passing.
+- CI gate: 706 passing (incl. integration), 0 warnings — `make ci` green.
+- Integration: N/A for this change (no infra touched); the M1/M3 capstones still pass under `make ci`.
+
+**Acceptance criteria**
+- [x] default selector + new defaults + unchanged gemini fields — `test_provider_defaults`,
+      `test_defaults`
+- [x] each `Literal` value loads / invalid raises `ValidationError` —
+      `test_llm_provider_accepts_each_valid_literal[gemini|openrouter|modal]`,
+      `test_llm_provider_rejects_unknown_value`
+- [x] env + `.env` loading of all 6 vars; SecretStr out of `repr` —
+      `test_reads_provider_vars_from_process_env`, `test_loads_provider_vars_from_a_dotenv_file`,
+      `test_provider_secrets_not_in_repr`
+- [x] `.env.example` mirrors the 6 new vars; existing lines remain
+- [x] `make ci` green, 0 warnings; `tests/unit/decode/config/` mirrors 1:1
+
+**Evidence**
+```
+$ make ci
+... uv lock --check · ruff format --check · ruff check ...
+============================= 706 passed in 7.97s ==============================
+
+$ uv run pytest tests/unit/decode/config/test_settings.py -q
+..............                                                           [100%]
+14 passed in 0.13s
+
+$ LLM_PROVIDER=anthropic uv run python -c "from decode.config.settings import Settings; Settings(_env_file=None)"
+pydantic_core._pydantic_core.ValidationError: 1 validation error for Settings
+llm_provider
+  Input should be 'gemini', 'openrouter' or 'modal' [type=literal_error, input_value='anthropic', ...]
+
+$ LLM_PROVIDER=openrouter OPENROUTER_API_KEY=sk-or-supersecret uv run python -c "...repr..."
+repr leaks secret? False        # SecretStr('**********') in repr
+```
+
+**Notes**
+- Scope held to settings + minimal `.env.example` mirror per the task: NO factory `_build_model()`
+  (task 038), NO cli startup guard / both-or-neither check (task 039), NO `.env.example` prose reorg or
+  README docs (task 040).
+- Did NOT commit — handing to Tester first.
+
+### [Tester] 2026-06-26 16:10 — QA
+
+**Test summary**
+- Format / lint / pre-commit: PASS (`ruff format --check` 112 files clean; `ruff check` clean; pre-commit 698 unit passed)
+- Unit tests: 698 passed / 0 failed (config module: 14 passed)
+- Integration tests: 8 passed / 0 failed (M1 + M3 capstones)
+- `make ci`: PASS — 706 passed, 0 warnings (`filterwarnings=["error"]`, `uv lock --check` clean)
+- Warnings: 0
+
+**E2E adversarial pass** (surface = `Settings`)
+- Happy path: `GEMINI_API_KEY=only-gemini` (all provider vars unset) → `llm_provider=gemini`, gemini key
+  loaded, `openrouter_model=qwen/qwen3-coder:free`, `modal_endpoint_model=openai/gpt-oss-120b`,
+  `modal_endpoint_url=''`; module-level singleton imports cleanly with the repo `.env` present (PASS)
+- Break 1 (boundary/malformed `LLM_PROVIDER`): `anthropic`, `''`, `GEMINI` (case), `' gemini'`/`'gemini '`
+  (whitespace), `openai` → every value raises `ValidationError` at construction (PASS)
+- Break 2 (secret redaction): provider=modal with real-looking secrets in `openrouter_api_key`,
+  `modal_proxy_token_id/secret`, `gemini_api_key` → none of the 4 secrets appear in `repr` / `str` /
+  `model_dump`; `get_secret_value()` still returns the real value (functionally usable) (PASS)
+- Break 3 (env + .env loading + precedence): all 6 new vars load from a `.env` file in cwd; process env
+  overrides `.env` for `LLM_PROVIDER` and `MODAL_PROXY_TOKEN_ID` (PASS)
+- Break 4 (no premature enforcement — state edge): provider=modal with only `MODAL_PROXY_TOKEN_ID` set,
+  no `MODAL_ENDPOINT_URL`, partial proxy pair → loads without error; both-or-neither + modal-requires-url
+  enforcement correctly deferred to task 039 (PASS)
+- `.env.example` self-consistency: renamed orphan `MODAL_PROXY_TOKEN_KEY` → `MODAL_PROXY_TOKEN_ID`;
+  loading `.env.example` through `Settings` confirms `MODAL_PROXY_TOKEN_ID=changeme` maps to
+  `modal_proxy_token_id` (orphan no longer mapped to nothing); all 6 new lines present; existing
+  `OPENROUTER_API_KEY`/`MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` retained (PASS)
+
+**Acceptance criteria**
+- [x] PASS — default selector + new defaults + unchanged gemini/other fields — `test_provider_defaults`,
+      `test_defaults`; manual: `Settings(_env_file=None)` → provider `gemini`, defaults as specified
+- [x] PASS — each `Literal` value loads; invalid raises `ValidationError` —
+      `test_llm_provider_accepts_each_valid_literal[gemini|openrouter|modal]`,
+      `test_llm_provider_rejects_unknown_value`; manual: 6 invalid/boundary values all → `ValidationError`
+- [x] PASS — all 6 vars load from process env and `.env`; SecretStr fields out of `repr` —
+      `test_reads_provider_vars_from_process_env`, `test_loads_provider_vars_from_a_dotenv_file`,
+      `test_provider_secrets_not_in_repr`; manual: redaction holds across repr/str/model_dump
+- [x] PASS — `.env.example` carries the 6 new var lines; existing `OPENROUTER_API_KEY`/`MODAL_TOKEN_ID`/
+      `MODAL_TOKEN_SECRET` remain (`.env.example:7,21,22,27,28,31,32,33,34`); stale `MODAL_PROXY_TOKEN_KEY`
+      orphan removed and rename maps to the real field
+- [x] PASS — `make ci` green, 0 warnings; `tests/unit/decode/config/test_settings.py` mirrors the change 1:1
+
+**Evidence**
+```
+$ make ci
+uv lock --check → Resolved 176 packages
+ruff format --check → 112 files already formatted
+ruff check → All checks passed!
+============================= 706 passed in 7.68s ==============================
+
+$ uv run pytest tests/unit/decode/config/test_settings.py -q
+14 passed in 0.13s
+
+$ LLM_PROVIDER=anthropic Settings(_env_file=None) → ValidationError (literal_error)
+$ provider=modal + real secrets → leaked in repr/str/model_dump: NONE
+```
+
+**Other issues found**
+- None blocking. Note (PASS with note, not in this task's scope): `MODAL_MODELS.md` still uses the shell
+  var name `MODAL_PROXY_TOKEN_KEY` in its curl examples (lines 209/213/222/265) while the field is
+  `modal_proxy_token_id` / env `MODAL_PROXY_TOKEN_ID`. Reconciling that reference doc is the task-040
+  light-pass, not 037 — flagging for the orchestrator/040, not a FAIL here.
+
+**VERDICT: PASS**
