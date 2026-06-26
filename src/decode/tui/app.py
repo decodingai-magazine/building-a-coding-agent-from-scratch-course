@@ -707,9 +707,15 @@ async def run_app(
     session_log = SessionLog.create(settings.sessions_dir, cwd=deps.cwd)
 
     # Hold the handler directly: it owns the cross-turn ``message_history`` the on-exit memory
-    # write-back summarizes (the runner keeps it private). One handler per session (§1).
+    # write-back summarizes (the runner keeps it private). One handler per session (§1). Wiring
+    # ``compaction_model_or_settings=settings`` arms the window-relative two-tier compaction
+    # cascade (ADR-0006 §3-7): the summarizer is built from the same Settings as the main model.
     handler = AgentTurnHandler(
-        agent, deps=deps, session_log=session_log, message_history=resumed_history
+        agent,
+        deps=deps,
+        session_log=session_log,
+        message_history=resumed_history,
+        compaction_model_or_settings=settings,
     )
     runner = Runner(handler, on_event=_on_event)
 

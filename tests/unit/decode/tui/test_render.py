@@ -144,6 +144,30 @@ def test_render_turn_finished_marks_abort():
     assert "abort" in text.lower()
 
 
+def test_render_context_compacted_is_a_dim_one_liner():
+    event = events.ContextCompacted(before_tokens=900_123, kept_messages=4)
+    renderable = render.render_event(event)
+
+    assert isinstance(renderable, Text)
+    assert "dim" in str(renderable.style)
+    text = _render_to_text(renderable)
+    assert "compacted context" in text
+    assert "900123" in text  # the before-tokens count
+    assert "4 recent messages" in text  # the kept-message count
+
+
+def test_render_context_microcompacted_is_a_dim_one_liner():
+    event = events.ContextMicrocompacted(elided_count=3, before_tokens=700_456)
+    renderable = render.render_event(event)
+
+    assert isinstance(renderable, Text)
+    assert "dim" in str(renderable.style)
+    text = _render_to_text(renderable)
+    assert "microcompacted context" in text
+    assert "elided 3" in text  # how many old tool outputs were blanked
+    assert "700456" in text  # the before-tokens count
+
+
 def test_render_agent_error_shows_the_message():
     text = _render_to_text(render.render_event(events.AgentError(message="kaboom")))
 

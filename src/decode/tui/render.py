@@ -52,6 +52,10 @@ def render_event(event: events.Event) -> RenderableType:
         return _render_turn_started(event)
     if isinstance(event, events.TurnFinished):
         return _render_turn_finished(event)
+    if isinstance(event, events.ContextCompacted):
+        return _render_context_compacted(event)
+    if isinstance(event, events.ContextMicrocompacted):
+        return _render_context_microcompacted(event)
     if isinstance(event, events.AgentError):
         return _render_agent_error(event)
     raise TypeError(f"render_event got an unsupported event type: {type(event).__name__!r}")
@@ -129,6 +133,24 @@ def _render_turn_finished(event: events.TurnFinished) -> Text:
     if event.aborted:
         return Text("[aborted]", style="dim yellow")
     return Text("[done]", style="dim green")
+
+
+def _render_context_compacted(event: events.ContextCompacted) -> Text:
+    """A dim system line noting full compaction ran (ADR-0006 §4-6)."""
+    return Text(
+        f"Decode - compacted context (~{event.before_tokens} tokens → "
+        f"summary + {event.kept_messages} recent messages).",
+        style="dim",
+    )
+
+
+def _render_context_microcompacted(event: events.ContextMicrocompacted) -> Text:
+    """A dim system line noting microcompaction blanked old tool outputs (ADR-0006 §3a)."""
+    return Text(
+        f"Decode - microcompacted context (elided {event.elided_count} old tool output(s), "
+        f"~{event.before_tokens} tokens).",
+        style="dim",
+    )
 
 
 def _render_agent_error(event: events.AgentError) -> Text:
