@@ -483,14 +483,27 @@ def _make_user_question_resolver(
     return resolver
 
 
-def _bottom_toolbar(deps: AgentDeps, gate: PermissionGate) -> HTML:
-    """The footer hint as prompt_toolkit formatted text, reading the **live** agent + mode (§9).
+def _bottom_toolbar(deps: AgentDeps, gate: PermissionGate, handler: AgentTurnHandler) -> HTML:
+    """The footer as prompt_toolkit formatted text: the context fill gauge + the live hint (§9).
 
-    Called by prompt_toolkit on every render with the session's ``deps`` + ``gate``, so the footer
-    reflects the current ``deps.active_agent`` and ``gate.mode`` — it updates immediately after a
-    ``/agent`` / ``/mode`` switch or a Shift+Tab cycle (it reads them live, never a snapshot).
+    Called by prompt_toolkit on every render with the session's ``deps`` + ``gate`` + ``handler``,
+    so the footer reflects the current ``deps.active_agent`` / ``gate.mode`` (updating immediately
+    after a ``/agent`` / ``/mode`` switch or Shift+Tab cycle) and the live context-window fill.
+
+    The gauge (ADR-0006 §9, task 047) reads the handler's **public** ``last_input_tokens`` property
+    (never the private attr) over the single source of truth ``compaction_context_window_tokens``,
+    and colors itself by the same reserve fractions the compaction cascade fires on — ``warn_at`` /
+    ``danger_at`` are the *fill* lines ``1 - microcompaction_reserve_fraction`` (0.60 default) and
+    ``1 - compaction_reserve_fraction`` (0.80 default). Before the first turn ``last_input_tokens``
+    is ``0`` → the gauge renders ``○ 0%`` in green.
     """
-    return HTML(f"<b>{footer_hint(deps.active_agent.name, gate.mode.value)}</b>")
+    window = settings.compaction_context_window_tokens
+    fraction = handler.last_input_tokens / window if window > 0 else 0.0
+    warn_at = 1 - settings.microcompaction_reserve_fraction
+    danger_at = 1 - settings.compaction_reserve_fraction
+    label, color = render.context_gauge(fraction, warn_at=warn_at, danger_at=danger_at)
+    hint = footer_hint(deps.active_agent.name, gate.mode.value)
+    return HTML(f'<style fg="{color}">{label}</style> <b>{hint}</b>')
 
 
 def _build_key_bindings(*, on_cycle_mode: Callable[[], None]) -> KeyBindings:
@@ -740,7 +753,10 @@ async def run_app(
 
     session: PromptSession[object] = PromptSession(
         key_bindings=_build_key_bindings(on_cycle_mode=cycle_mode),
-        bottom_toolbar=lambda: _bottom_toolbar(deps, gate),
+        # ``handler`` is bound a few lines below; the toolbar lambda is invoked only during the
+        # prompt loop (after the handler exists), so the late-bound reference is safe and lets the
+        # footer's fill gauge read the live ``handler.last_input_tokens`` each render (task 047).
+        bottom_toolbar=lambda: _bottom_toolbar(deps, gate, handler),
     )
     # Persistence (ADR-0002 §9): replay a prior session if asked, then open a fresh append-only
     # JSONL log this run writes its turns to. The replayed history seeds the handler so the

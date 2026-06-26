@@ -14,7 +14,9 @@ import pytest
 from rich.console import Console
 
 from decode.agent.deps import AgentDeps
+from decode.agent.loop import AgentTurnHandler
 from decode.agents.loader import load_agent
+from decode.config.settings import settings
 from decode.entities import events
 from decode.entities.permissions import (
     PermissionDecision,
@@ -452,20 +454,63 @@ def _deps(gate: PermissionGate) -> AgentDeps:
     )
 
 
-def test_bottom_toolbar_reads_the_live_agent_and_mode():
+def _handler(deps: AgentDeps, mocker) -> AgentTurnHandler:
+    """A real turn handler (no network) so the footer reads its actual ``last_input_tokens``.
+
+    ``__init__`` only stores the agent (the footer never invokes it), so a ``Mock`` agent is
+    enough; the compaction seam stays ``None`` (the cascade is off).
+    """
+    return AgentTurnHandler(mocker.Mock(), deps=deps)
+
+
+def test_bottom_toolbar_reads_the_live_agent_and_mode(mocker):
     # The footer must reflect a mode change after Shift+Tab / /mode, so the toolbar reads the
     # gate + deps live each render (not a snapshot taken when the session was built).
     gate = PermissionGate()
     deps = _deps(gate)
     deps.active_agent = load_agent("build")
+    handler = _handler(deps, mocker)
 
-    before = app._bottom_toolbar(deps, gate).value
+    before = app._bottom_toolbar(deps, gate, handler).value
     assert "agent:build" in before
     assert "mode:default" in before
 
     gate.set_mode(PermissionMode.EDIT)
-    after = app._bottom_toolbar(deps, gate).value
+    after = app._bottom_toolbar(deps, gate, handler).value
     assert "mode:edit" in after  # the live mode change is reflected on the next render
+
+
+def test_bottom_toolbar_shows_an_empty_green_gauge_before_the_first_turn(mocker):
+    # ADR-0006 §9 / task 047: before any leg runs the real ``last_input_tokens`` property is 0, so
+    # the footer fill gauge renders an empty circle at 0% in green (well below the warn line).
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+    handler = _handler(deps, mocker)
+    assert handler.last_input_tokens == 0  # the public property's default before any turn
+
+    value = app._bottom_toolbar(deps, gate, handler).value
+
+    assert "○ 0%" in value
+    assert 'fg="green"' in value
+
+
+def test_bottom_toolbar_gauge_reads_the_public_property_and_colors_by_fill(mocker):
+    # The footer reads ``handler.last_input_tokens`` (the PUBLIC property) over the single source of
+    # truth window setting; a near-full window crosses the danger line and turns the gauge red. A
+    # Mock returning a plain int proves we read ``.last_input_tokens`` (a private-attr read would
+    # hand back a Mock and blow up on the division).
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+    window = settings.compaction_context_window_tokens
+    handler = mocker.Mock()
+    handler.last_input_tokens = int(window * 0.9)  # 90% full -> full glyph, red (>= 0.80)
+
+    value = app._bottom_toolbar(deps, gate, handler).value
+
+    assert "● 90%" in value
+    assert 'fg="red"' in value
 
 
 # --- the /mode and /agent handlers (mutate gate/deps, render one confirmation line) -----------

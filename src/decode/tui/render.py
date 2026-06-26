@@ -27,6 +27,37 @@ from decode.entities import events
 # deltas, so the background simply rides the text plus its leading label).
 CONVERSATION_BG = Style(bgcolor="grey15")
 
+# The five fill glyphs the context-window gauge steps through, empty (0%) → full (100%); the index
+# is ``round(fraction * 4)`` so each quarter snaps to the nearest circle (ADR-0006 §9, task 047).
+_GAUGE_GLYPHS = "○◔◑◕●"
+
+
+def context_gauge(fraction: float, *, warn_at: float, danger_at: float) -> tuple[str, str]:
+    """Map a context-window fill ``fraction`` to a ``(label, color)`` pair (ADR-0006 §9).
+
+    The footer fill gauge: ``fraction`` is ``last_input_tokens / window`` (task 044/047). Returns
+    plain data — a ``label`` string and a ``color`` name common to Rich and prompt_toolkit
+    (``"green"`` / ``"yellow"`` / ``"red"``) — so it is fully unit-testable and decoupled from any
+    toolkit; the caller wraps the color in its own markup.
+
+    ``fraction`` is clamped to ``[0.0, 1.0]`` (an over-budget leg shows a full ``●``, never a 5th
+    glyph or >100%). The glyph is ``_GAUGE_GLYPHS[round(clamped * 4)]`` (0% → ``○``, 25% → ``◔``,
+    50% → ``◑``, 75% → ``◕``, 100% → ``●``) and ``label`` is ``f"{glyph} {round(clamped * 100)}%"``.
+    ``color`` tracks the two compaction tiers — ``"red"`` at/above ``danger_at``, ``"yellow"`` at/above
+    ``warn_at``, else ``"green"`` — where ``warn_at`` / ``danger_at`` are the *fill* fractions the call
+    site derives from the reserve settings, so the colors follow the actual cascade thresholds.
+    """
+    clamped = min(1.0, max(0.0, fraction))
+    glyph = _GAUGE_GLYPHS[round(clamped * 4)]
+    label = f"{glyph} {round(clamped * 100)}%"
+    if clamped >= danger_at:
+        color = "red"
+    elif clamped >= warn_at:
+        color = "yellow"
+    else:
+        color = "green"
+    return label, color
+
 
 def render_event(event: events.Event) -> RenderableType:
     """Map a single canonical event to its Rich renderable.

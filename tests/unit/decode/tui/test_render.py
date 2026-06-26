@@ -4,9 +4,11 @@ These map the canonical :mod:`decode.entities.events` union to Rich renderables.
 pure (no I/O, no global state) so they are exhaustively unit-testable.
 """
 
+import pytest
 from rich.panel import Panel
 from rich.text import Text
 
+from decode.config.settings import settings
 from decode.entities import events
 from decode.tui import render
 
@@ -184,3 +186,95 @@ def test_render_event_rejects_unknown_event_type():
     except TypeError:
         return
     raise AssertionError("expected TypeError for an unknown event type")
+
+
+# --- context_gauge: the pure footer fill gauge (task 047 / ADR-0006 §9) ------------------------
+
+# Default tier fill lines (warn / danger), used by the color tests below. Kept as plain numbers
+# here; the single-source-of-truth test derives them from the Settings defaults instead.
+_WARN_AT = 0.60
+_DANGER_AT = 0.80
+
+
+@pytest.mark.parametrize(
+    ("fraction", "glyph"),
+    [
+        (0.0, "○"),  # empty
+        (0.25, "◔"),  # round(1.0) -> 1
+        (0.5, "◑"),  # round(2.0) -> 2
+        (0.75, "◕"),  # round(3.0) -> 3
+        (1.0, "●"),  # full
+        (0.78, "◕"),  # round(3.12) -> 3, NOT the full glyph
+    ],
+)
+def test_context_gauge_glyph_buckets(fraction, glyph):
+    label, _ = render.context_gauge(fraction, warn_at=_WARN_AT, danger_at=_DANGER_AT)
+
+    assert label.startswith(glyph)
+
+
+@pytest.mark.parametrize(
+    ("fraction", "expected"),
+    [
+        (0.0, "○ 0%"),
+        (0.25, "◔ 25%"),
+        (0.5, "◑ 50%"),
+        (0.75, "◕ 75%"),
+        (0.78, "◕ 78%"),
+        (1.0, "● 100%"),
+    ],
+)
+def test_context_gauge_label_is_glyph_space_percent(fraction, expected):
+    # `label` formats as "{glyph} {pct}%" with pct the rounded clamped percentage.
+    label, _ = render.context_gauge(fraction, warn_at=_WARN_AT, danger_at=_DANGER_AT)
+
+    assert label == expected
+
+
+@pytest.mark.parametrize(
+    ("fraction", "color"),
+    [
+        (0.0, "green"),
+        (0.59, "green"),  # just below warn_at
+        (0.60, "yellow"),  # exact warn boundary -> yellow (>= warn_at)
+        (0.70, "yellow"),  # inside [warn_at, danger_at)
+        (0.79, "yellow"),  # just below danger_at
+        (0.80, "red"),  # exact danger boundary -> red (>= danger_at)
+        (0.95, "red"),
+    ],
+)
+def test_context_gauge_colors_track_the_tier_lines(fraction, color):
+    # green below warn_at, yellow in [warn_at, danger_at), red at/above danger_at -- boundaries
+    # are inclusive on the upper tier (>=), asserted at the default 0.60 / 0.80 fill lines.
+    _, got = render.context_gauge(fraction, warn_at=_WARN_AT, danger_at=_DANGER_AT)
+
+    assert got == color
+
+
+def test_context_gauge_clamps_overflow_to_full_red():
+    # A fraction above 1.0 clamps to 1.0 -> "● 100%", red (>= danger_at).
+    label, color = render.context_gauge(1.4, warn_at=_WARN_AT, danger_at=_DANGER_AT)
+
+    assert label == "● 100%"
+    assert color == "red"
+
+
+def test_context_gauge_clamps_underflow_to_empty_green():
+    # A negative fraction clamps to 0.0 -> "○ 0%", green (below warn_at).
+    label, color = render.context_gauge(-0.1, warn_at=_WARN_AT, danger_at=_DANGER_AT)
+
+    assert label == "○ 0%"
+    assert color == "green"
+
+
+def test_context_gauge_tiers_derive_from_the_reserve_settings():
+    # Single source of truth (ADR-0006 §9): the call site computes the fill lines from the same
+    # reserve fractions the compaction cascade uses, so the gauge colors track the actual tiers.
+    warn_at = 1 - settings.microcompaction_reserve_fraction  # 0.60 on the defaults
+    danger_at = 1 - settings.compaction_reserve_fraction  # 0.80 on the defaults
+    assert (warn_at, danger_at) == pytest.approx((0.60, 0.80))
+
+    # green just under the (derived) warn line, yellow exactly on it, red exactly on the danger line.
+    assert render.context_gauge(warn_at - 0.01, warn_at=warn_at, danger_at=danger_at)[1] == "green"
+    assert render.context_gauge(warn_at, warn_at=warn_at, danger_at=danger_at)[1] == "yellow"
+    assert render.context_gauge(danger_at, warn_at=warn_at, danger_at=danger_at)[1] == "red"
