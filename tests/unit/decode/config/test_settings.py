@@ -18,6 +18,17 @@ _PROVIDER_ENV_VARS = (
     "MODAL_PROXY_TOKEN_SECRET",
 )
 
+# Context compaction vars introduced by ADR-0006 (task 041). Cleared in default/invariant tests so a
+# developer's real environment cannot leak into the assertions.
+_COMPACTION_ENV_VARS = (
+    "COMPACTION_ENABLED",
+    "COMPACTION_CONTEXT_WINDOW_TOKENS",
+    "COMPACTION_RESERVE_FRACTION",
+    "MICROCOMPACTION_RESERVE_FRACTION",
+    "COMPACTION_KEEP_RECENT_TOKENS",
+    "MEMORY_COMPRESSION_ENABLED",
+)
+
 
 def test_defaults(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -147,3 +158,60 @@ def test_provider_secrets_not_in_repr():
     assert "or-topsecret" not in text
     assert "wk-topsecret" not in text
     assert "ws-topsecret" not in text
+
+
+def test_compaction_defaults(monkeypatch):
+    for var in _COMPACTION_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    assert s.compaction_enabled is True
+    assert s.compaction_context_window_tokens == 1_048_576
+    assert s.compaction_reserve_fraction == 0.20
+    assert s.microcompaction_reserve_fraction == 0.40
+    assert s.compaction_keep_recent_tokens == 20_000
+    assert s.memory_compression_enabled is True
+
+
+def test_microcompaction_reserves_more_than_full_on_defaults(monkeypatch):
+    """Invariant (ADR-0006 §3): micro reserves more → fires first."""
+    for var in _COMPACTION_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    assert s.microcompaction_reserve_fraction > s.compaction_reserve_fraction
+
+
+def test_reads_compaction_vars_from_process_env(monkeypatch):
+    monkeypatch.setenv("COMPACTION_ENABLED", "false")
+    monkeypatch.setenv("COMPACTION_CONTEXT_WINDOW_TOKENS", "200000")
+    monkeypatch.setenv("COMPACTION_RESERVE_FRACTION", "0.15")
+    monkeypatch.setenv("MICROCOMPACTION_RESERVE_FRACTION", "0.35")
+    monkeypatch.setenv("COMPACTION_KEEP_RECENT_TOKENS", "12345")
+    monkeypatch.setenv("MEMORY_COMPRESSION_ENABLED", "false")
+    s = Settings(_env_file=None)
+    assert s.compaction_enabled is False
+    assert s.compaction_context_window_tokens == 200_000
+    assert s.compaction_reserve_fraction == 0.15
+    assert s.microcompaction_reserve_fraction == 0.35
+    assert s.compaction_keep_recent_tokens == 12_345
+    assert s.memory_compression_enabled is False
+
+
+def test_loads_compaction_vars_from_a_dotenv_file(tmp_path, monkeypatch):
+    for var in _COMPACTION_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    env = tmp_path / ".env"
+    env.write_text(
+        "COMPACTION_ENABLED=false\n"
+        "COMPACTION_CONTEXT_WINDOW_TOKENS=200000\n"
+        "COMPACTION_RESERVE_FRACTION=0.10\n"
+        "MICROCOMPACTION_RESERVE_FRACTION=0.30\n"
+        "COMPACTION_KEEP_RECENT_TOKENS=9999\n"
+        "MEMORY_COMPRESSION_ENABLED=false\n"
+    )
+    s = Settings(_env_file=str(env))
+    assert s.compaction_enabled is False
+    assert s.compaction_context_window_tokens == 200_000
+    assert s.compaction_reserve_fraction == 0.10
+    assert s.microcompaction_reserve_fraction == 0.30
+    assert s.compaction_keep_recent_tokens == 9999
+    assert s.memory_compression_enabled is False
