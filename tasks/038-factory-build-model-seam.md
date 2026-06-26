@@ -223,3 +223,16 @@ $ uv run pytest tests/unit/decode/agent/test_factory.py   # 25 passed (18 pre-ex
 - `git diff --name-only` = `factory.py` + `test_factory.py` + this task file only; no 039/040 leakage.
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-26 17:05 — Acceptance Review
+
+**VERDICT: ACCEPT**
+
+User-POV check of the Provider Seam (factory.py:94-143). The gemini branch is behaviourally identical to M1
+(GoogleModel + GoogleProvider, never `vertexai=`), so existing users see no change. OpenRouter is one clean
+branch (`OpenAIChatModel` + `OpenRouterProvider`), so `LLM_PROVIDER=openrouter` + `OPENROUTER_API_KEY` is all a
+free-tier user needs. The Modal branch correctly serves both the authenticated (`Modal-Key`/`Modal-Secret`
+headers) and `--unauthenticated` (`api_key="EMPTY"`, no headers) shapes — the "run for free" Modal path is
+coherent. `build_agent()`'s loop-facing surface is unchanged, so the swap is invisible to the rest of the
+agent. Canonical term **Provider Seam** used. Part of feature `multi-provider-gateway` acceptance (PR #11).
+Hand off to the PR Reviewer.

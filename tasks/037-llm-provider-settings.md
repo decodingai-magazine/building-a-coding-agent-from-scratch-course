@@ -212,3 +212,15 @@ $ provider=modal + real secrets → leaked in repr/str/model_dump: NONE
   light-pass, not 037 — flagging for the orchestrator/040, not a FAIL here.
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-26 17:05 — Acceptance Review
+
+**VERDICT: ACCEPT**
+
+User-POV check of the config surface (settings.py:21-46, .env.example:5-45). Default `llm_provider="gemini"`
+keeps every existing single-`GEMINI_API_KEY` `.env` working untouched (backward-compatible); the opt-in is a
+single explicit `LLM_PROVIDER=` line, not auto-detect. The two Modal credential scopes (account
+`MODAL_TOKEN_*` vs endpoint proxy `MODAL_PROXY_TOKEN_*`) are unmistakably labelled in `.env.example` so a user
+can't conflate them. Secrets redact in `repr`. Canonical glossary term **LLM Provider** used. Verified from the
+user's seat, not just the suite. Part of feature `multi-provider-gateway` acceptance (PR #11). Hand off to the
+PR Reviewer.

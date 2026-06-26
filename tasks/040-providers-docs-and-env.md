@@ -241,3 +241,19 @@ ALL ASSERTIONS PASSED
   inference-section reorg neither adds nor removes from that gap. Worth a future tidy task, not a FAIL.
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-26 17:05 — Acceptance Review
+
+**VERDICT: ACCEPT**
+
+User-POV check of discoverability — the deciding criterion for "run decode for free." README:61-81 gives a lean
+`## LLM providers` section with the three-line free-tier story, the `LLM_PROVIDER=<name>` + secret opt-in, a
+copy-pasteable OpenRouter block (the fastest free path), the tool-calling+streaming caveat naming both shipped
+defaults, and a one-line Modal opt-in that links to MODAL_MODELS.md without duplicating the catalog. The M1
+status note and Requirements no longer call OpenRouter/Modal "later." `.env.example:5-45` distinguishes account
+vs endpoint proxy tokens and ships proxy tokens commented out so a fresh copy is `--unauthenticated`-ready.
+MODAL_MODELS.md §6 reflects the shipped wiring. I followed the documented OpenRouter and Modal journeys end to
+end against the actual code (settings/factory/cli) — every doc claim is backed by shipped behaviour and none
+overstates it. The "run for free" goal is achievable exactly as written. Canonical terms **LLM Provider** /
+**Provider Seam** used; no contradiction with ADR-0005. Feature `multi-provider-gateway` ACCEPTED (PR #11).
+Hand off to the PR Reviewer.

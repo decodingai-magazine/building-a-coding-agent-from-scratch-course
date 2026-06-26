@@ -199,3 +199,16 @@ $ pty driver: [gemini|openrouter|modal-unauth|modal-auth] exit=0 banner=True gua
 - Minor doc nit (pre-existing, not 039): `AGENTS.md` "Launch" text quotes a lowercase `decode:` for the gemini line, but the implemented (and task-004) constant is `Decode:`. Task 039 correctly preserves the committed `Decode:` wording verbatim; the AGENTS.md casing drift predates this task.
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-26 17:05 — Acceptance Review
+
+**VERDICT: ACCEPT**
+
+User-POV check of the startup guard (cli.py:49-94, 124-133). Every failure mode tells the user exactly what to
+do next: openrouter names `OPENROUTER_API_KEY`; modal names only the absent of `MODAL_ENDPOINT_URL` /
+`MODAL_ENDPOINT_MODEL`; the both-or-neither line spells out "set both ... or neither for an --unauthenticated
+endpoint". One friendly stderr line, exit non-zero, no traceback — and the gemini line is byte-identical to
+M1's `_NO_KEY_MESSAGE`, so existing users get the same familiar nudge. The guard runs before agent/mode
+validation, so a misconfigured provider never leaks a raw `UserError`. Modal proxy tokens are correctly optional
+(neither set passes as `--unauthenticated`). Excellent error UX. Part of feature `multi-provider-gateway`
+acceptance (PR #11). Hand off to the PR Reviewer.
