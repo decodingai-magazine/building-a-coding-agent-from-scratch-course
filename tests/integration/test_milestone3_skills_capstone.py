@@ -1,8 +1,8 @@
 """The Milestone 3 capstone: the whole Skills flow through the FULL real stack.
 
-This is M3's living proof (task 029) — and, like ``test_milestone1_capstone.py``, it doubles as
-documentation. It drives the two tiers of progressive disclosure (ADR-0004 §1) and **both** entry
-points into a skill body through the **real** wiring, swapping out only the network boundary:
+This is M3's living proof (tasks 029 + 034) — and, like ``test_milestone1_capstone.py``, it doubles
+as documentation. It drives the **three** tiers of progressive disclosure (ADR-0004 §1) and **both**
+entry points into a skill body through the **real** wiring, swapping out only the network boundary:
 
 * the real :func:`decode.agent.factory.build_agent` (so the real ``@agent.instructions`` skills-catalog
   hook, the real flat tool registry, and the real ungated ``skill`` dispatcher are all exercised);
@@ -16,10 +16,12 @@ points into a skill body through the **real** wiring, swapping out only the netw
 
 **No network.** The model is a scripted :class:`~pydantic_ai.models.function.FunctionModel`
 (``GEMINI_API_KEY`` is faked only so ``build_agent`` constructs), and every working tree is a fresh
-``tmp_path`` so the repo's real ``.decode/`` is never read or written. The test needs no API key and
-makes no network call, so it runs in CI under ``make integration-tests`` / ``make ci``.
+``tmp_path`` so the repo's real ``.decode/`` is never read or written. Every project skill is written
+as ``<cwd>/.decode/skills/<dir>/SKILL.md`` (the Agent Skills directory convention, task 032). The
+test needs no API key and makes no network call, so it runs in CI under
+``make integration-tests`` / ``make ci``.
 
-The five guarantees, one test each (ADR-0004):
+The seven guarantees, one test each (ADR-0004):
 
 1. **Catalog (always injected, cheap):** both built-in skills' ``name`` + ``description`` and the
    ``skill("<name>")`` cue ride a real run's assembled instructions — the menu is on every prompt.
@@ -32,6 +34,18 @@ The five guarantees, one test each (ADR-0004):
    project skill.
 5. **Unknown skill:** ``skill("does-not-exist")`` surfaces a :class:`pydantic_ai.ModelRetry` listing
    the available names — the model receives it as a tool retry, never a crash.
+6. **Built-ins are tier-2 only (task 034):** ``skill("commit")`` and ``/commit`` return the built-in
+   body with **no** resource trailer — a built-in ships only a ``SKILL.md`` (ADR-0004 §3), so
+   progressive disclosure stops at tier 2 for it; the trailer is the project-skill-only tier-3 bridge.
+7. **Tier-3 bundled-resource project skill (task 034 — the full chain):** a project skill at
+   ``<cwd>/.decode/skills/<name>/SKILL.md`` with a sibling ``references/<file>.md`` proves all three
+   tiers end to end. **Tier 1:** its ``name`` + ``description`` ride the catalog (no path).
+   **Tier 2 + surfacing:** ``skill("<name>")`` returns the body **plus a trailer** naming the skill's
+   cwd-relative ``<dir>/`` (ungated — no ``PermissionRequested``). **Tier 3:** prompted by the
+   trailer, the scripted model calls ``read("<dir>/references/<file>.md")`` through the **real** gated
+   ``read`` tool — which auto-allows under ``default`` mode (read-only; ADR-0003 §1), the approving
+   resolver standing as the would-be human verdict — and gets the **bundled file's contents** back as
+   the tool result. The ``/<name>`` TUI path injects the **same** body + trailer (one shared helper).
 """
 
 from __future__ import annotations
@@ -59,7 +73,8 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Runner
 from decode.permissions.gate import PermissionGate
-from decode.skills.loader import load_builtin_skills
+from decode.skills.loader import load_builtin_skills, load_skills
+from decode.skills.payload import format_skill_payload
 from decode.tui.app import InputIntent, _handle_skill_command, parse_skill_command
 
 # --- markers, so the assertions read as a transcript ----------------------------------------
@@ -68,6 +83,20 @@ _DONE_TEXT = "done"
 # A project commit skill that is unmistakably different from the bundled built-in (task override).
 _PROJECT_COMMIT_DESC = "Our team's bespoke commit ritual — squash, sign off, then push."
 _PROJECT_COMMIT_BODY = "PROJECT COMMIT RITUAL: squash to one commit, sign off, push to release."
+
+# The trailer the shared payload helper appends only when a skill ships bundled resources (ADR-0004
+# §5). Built-ins are SKILL.md-only, so this marker must be ABSENT from a built-in's payload.
+_TRAILER_MARKER = "Bundled files for this skill"
+
+# The tier-3 project skill (task 034) — a resource-bearing skill that lives ONLY in this test
+# (a ``tmp_path`` fixture; nothing checked in under ``src/``). Its body references a bundled file by
+# relative path, and a sibling ``references/<file>.md`` holds known contents the model reads on demand.
+_TIER3_NAME = "pdf-export"
+_TIER3_DESC = "Export the working tree to a polished, branded PDF report."
+_TIER3_BODY = "Render the report, then verify it against references/checklist.md before sending."
+_TIER3_REF_RELPATH = "references/checklist.md"
+_TIER3_REF_CONTENTS = "1. Embed the cover page.\n2. Check the fonts.\n3. Verify the page numbers."
+_TIER3_REF_MARKER = "Embed the cover page"  # a known line of the bundled file, post line-numbering
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +112,16 @@ def _fake_gemini_key(mocker):
 
 async def _deny_permission(request: PermissionRequest) -> PermissionDecision:
     return PermissionDecision.deny()
+
+
+async def _approve_permission(request: PermissionRequest) -> PermissionDecision:
+    """The scripted human who approves — the standing verdict for the tier-3 ``read`` (task 034).
+
+    Read-only tools auto-allow under ``default`` mode (ADR-0003 §1), so the gate grants the tier-3
+    ``read`` without ever reaching this resolver; it stands as the would-be human verdict so the read
+    is unambiguously *approved*, not denied, end to end.
+    """
+    return PermissionDecision.allow()
 
 
 async def _no_user_question(question: str) -> str:
@@ -117,19 +156,30 @@ def _skill_call(name: str) -> DeltaToolCall:
     return DeltaToolCall(name="skill", json_args=json.dumps({"name": name}))
 
 
+def _read_call(path: str) -> DeltaToolCall:
+    """The scripted ``read(path)`` the model issues after the trailer points it at a bundled file."""
+    return DeltaToolCall(name="read", json_args=json.dumps({"path": path}))
+
+
 def _make_runner(
-    agent, *, cwd: Path, events_seen: list[events.Event]
+    agent,
+    *,
+    cwd: Path,
+    events_seen: list[events.Event],
+    resolve_permission=_deny_permission,
 ) -> tuple[Runner, AgentTurnHandler]:
     """A real ``Runner`` + ``AgentTurnHandler`` whose every event flows into ``events_seen``.
 
     Both the tool-emit sink (``deps.emit``) and the runner's turn-lifecycle sink point at the same
     list, so a single collection captures everything the turn produces (mirrors the M1 capstone).
+    ``resolve_permission`` defaults to deny (the ungated-skill tests never prompt anyway); the tier-3
+    test passes the approving resolver so the gated ``read`` is approved end to end.
     """
     deps = AgentDeps(
         cwd=cwd,
         emit=events_seen.append,
         gate=PermissionGate(),  # DEFAULT
-        resolve_permission=_deny_permission,
+        resolve_permission=resolve_permission,
         resolve_user_question=_no_user_question,
     )
     handler = AgentTurnHandler(agent, deps=deps)
@@ -201,6 +251,45 @@ def _write_project_skill(cwd: Path, *, name: str, description: str, body: str) -
         f"---\nname: {name}\ndescription: {description}\n---\n{body}\n", encoding="utf-8"
     )
     return path
+
+
+def _write_tier3_skill(cwd: Path) -> tuple[Path, Path]:
+    """Write the resource-bearing tier-3 project skill and its sibling bundled file (task 034).
+
+    Lays out ``<cwd>/.decode/skills/pdf-export/SKILL.md`` (whose body references ``references/…`` by
+    relative path) **plus** a sibling ``references/checklist.md`` with known contents. The sibling is
+    what makes the directory resource-bearing, so the loader sets ``resource_dir`` and the dispatcher
+    appends the trailer. Returns ``(skill_md_path, bundled_file_path)``.
+    """
+    skill_path = _write_project_skill(
+        cwd, name=_TIER3_NAME, description=_TIER3_DESC, body=_TIER3_BODY
+    )
+    bundled = cwd / settings.skills_dir / _TIER3_NAME / _TIER3_REF_RELPATH
+    bundled.parent.mkdir(parents=True, exist_ok=True)
+    bundled.write_text(_TIER3_REF_CONTENTS, encoding="utf-8")
+    return skill_path, bundled
+
+
+def _tier3_rel_dir() -> str:
+    """The cwd-relative skill directory the trailer surfaces (e.g. ``.decode/skills/pdf-export``)."""
+    return f"{settings.skills_dir.as_posix()}/{_TIER3_NAME}"
+
+
+def _seen_tool_returns(captured: list[list[ModelMessage]]) -> list[str]:
+    """Every tool-return content the model SAW across all captured legs (its incoming history).
+
+    Distinct from :func:`_tool_returns` (which reads the handler's accumulated history): this proves
+    a tool result was actually fed back *to the model* on a later leg — e.g. that the skill's trailer
+    reached the model before it issued the tier-3 ``read``.
+    """
+    return [
+        str(part.content)
+        for leg in captured
+        for message in leg
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
 
 
 # --- 1. catalog (always injected, cheap) ----------------------------------------------------
@@ -377,4 +466,106 @@ async def test_unknown_skill_surfaces_a_model_retry_listing_available_names(tmp_
     # A model mistake, not a crash: the turn finished cleanly with no agent error.
     assert not any(isinstance(e, events.AgentError) for e in events_seen), (
         "ModelRetry must not crash"
+    )
+
+
+# --- 6. built-ins are tier-2 only (no resource trailer, both entry points) ------------------
+
+
+async def test_builtin_skills_are_tier_2_only_with_no_resource_trailer(tmp_path):
+    """``skill("commit")`` and ``/commit`` return the built-in body with **no** resource trailer.
+
+    A built-in ships only a ``SKILL.md`` (``resource_dir is None`` — ADR-0004 §3), so the shared
+    payload helper appends nothing: progressive disclosure stops at tier 2 for it. Both entry points
+    must return the body **byte-for-byte**, with the tier-3 trailer marker absent — the trailer is the
+    project-skill-only bridge to bundled resources (task 034).
+    """
+    commit_body = load_builtin_skills()["commit"].body
+
+    # (a) the model dispatcher returns the bare body — no trailer appended.
+    agent = build_agent()
+    captured: list[list[ModelMessage]] = []
+    events_seen: list[events.Event] = []
+    runner, handler = _make_runner(agent, cwd=tmp_path, events_seen=events_seen)
+    with agent.override(model=_model(captured, steps=[_skill_call("commit")])):
+        await _run_turn(runner, "load the commit skill")
+
+    returns = _tool_returns(handler)
+    assert commit_body in returns, "the dispatcher must return the built-in body byte-for-byte"
+    assert not any(_TRAILER_MARKER in r for r in returns), (
+        "a built-in is SKILL.md-only — it must carry no resource trailer"
+    )
+
+    # (b) the TUI /commit path returns the same bare body — no trailer either.
+    turn_input = _handle_skill_command("commit", "", cwd=tmp_path, emit=lambda _line: None)
+    assert turn_input == commit_body, "/commit must resolve to the built-in body, no trailer"
+    assert _TRAILER_MARKER not in turn_input
+
+
+# --- 7. tier-3 bundled-resource project skill (the full three-tier chain) --------------------
+
+
+async def test_tier3_project_skill_drives_the_full_three_tier_flow(tmp_path):
+    """A resource-bearing project skill proves catalog → body+trailer → on-demand bundled read.
+
+    A ``<cwd>/.decode/skills/pdf-export/SKILL.md`` with a sibling ``references/checklist.md`` is driven
+    through the **real** ``build_agent()`` + loop with a scripted ``FunctionModel`` (faked key, no
+    network). One turn walks all three tiers (ADR-0004 §1,§5): the model calls ``skill("pdf-export")``
+    (tier 2) and, prompted by the returned trailer, then calls ``read("<dir>/references/checklist.md")``
+    (tier 3). The catalog (tier 1) rides the run's instructions. The ``/pdf-export`` TUI path injects
+    the identical payload.
+    """
+    skill_path, bundled = _write_tier3_skill(tmp_path)
+    rel_dir = _tier3_rel_dir()  # .decode/skills/pdf-export — the dir the trailer surfaces
+    read_path = f"{rel_dir}/{_TIER3_REF_RELPATH}"  # the bundled file the model reads on demand
+
+    agent = build_agent()
+    captured: list[list[ModelMessage]] = []
+    events_seen: list[events.Event] = []
+    runner, handler = _make_runner(
+        agent, cwd=tmp_path, events_seen=events_seen, resolve_permission=_approve_permission
+    )
+
+    with agent.override(
+        model=_model(captured, steps=[_skill_call(_TIER3_NAME), _read_call(read_path)])
+    ):
+        await _run_turn(runner, "use the pdf export skill")
+
+    # --- Tier 1: the catalog menu advertises name + description, and carries NO path -----------
+    instructions = _first_instructions(captured)
+    assert _TIER3_NAME in instructions, "the catalog must advertise the tier-3 skill name"
+    assert _TIER3_DESC in instructions, "the catalog must carry the tier-3 skill description"
+    assert rel_dir not in instructions, "the catalog is name+description only — no resource path"
+    assert str(skill_path) not in instructions, "the catalog must not leak the SKILL.md path"
+
+    # --- Tier 2 + surfacing: skill('pdf-export') returns body + trailer, ungated ---------------
+    found = load_skills(tmp_path)[_TIER3_NAME]
+    expected_payload = format_skill_payload(found, cwd=tmp_path)
+    returns = _tool_returns(handler)
+    assert expected_payload in returns, "the dispatcher must return the shared body+trailer payload"
+    assert any(_TIER3_BODY in r and f"{rel_dir}/" in r for r in returns), (
+        "the dispatcher payload must carry the body PLUS the trailer naming the cwd-relative dir"
+    )
+    # Ungated: the skill dispatcher never reached the permission gate, so it asked for nothing.
+    assert not any(r.name == "skill" for r in _permission_requests(events_seen)), (
+        "the skill dispatcher must not prompt for permission"
+    )
+
+    # --- Tier 3: prompted by the trailer, the gated read returns the bundled file's contents ---
+    assert any(f"{rel_dir}/" in r for r in _seen_tool_returns(captured)), (
+        "the model must have SEEN the trailer (skill return fed back) before issuing the read"
+    )
+    assert any(_TIER3_REF_MARKER in r for r in returns), (
+        "the read must return the bundled references/checklist.md contents on demand"
+    )
+    # The read auto-allows under default mode (read-only; ADR-0003 §1) with the approving resolver
+    # standing as the would-be verdict: no permission prompt is surfaced and nothing crashed.
+    assert not _permission_requests(events_seen), "the read auto-allows — no prompt is surfaced"
+    assert not any(isinstance(e, events.AgentError) for e in events_seen), "the turn must not crash"
+    assert bundled.read_text(encoding="utf-8") == _TIER3_REF_CONTENTS, "the bundled file is intact"
+
+    # --- the /<name> TUI path injects the SAME payload (second entry point, one helper) --------
+    tui_input = _handle_skill_command(_TIER3_NAME, "", cwd=tmp_path, emit=lambda _line: None)
+    assert tui_input == expected_payload, (
+        "the /pdf-export TUI path must inject the same body+trailer"
     )
