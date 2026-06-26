@@ -300,3 +300,32 @@ on the refactor). Everything else verified ACCEPT-able: built-ins byte-identical
 on both entry points + names a `read`-resolvable cwd-relative path, the capstone genuinely proves
 tier-3 (read returns real on-disk bundled contents; Tester confirmed non-tautological via mutation),
 and no ADR-0005/supersession leftovers.
+
+### [PA] 2026-06-26 — Acceptance Review (refactor 032–034, cycle 2)
+
+**VERDICT: ACCEPT**
+
+The cycle-1 blocker is resolved. Rollup task 035 (SWE + Tester PASS, commit `abc841a`) brought all
+three drifted config/doc surfaces in line with the shipped `<name>/SKILL.md` directory convention:
+- `.env.example:48-49` now reads "Project-local skills are directories `<name>/SKILL.md` … not flat
+  `*.md` files" (the `# SKILLS_DIR=.decode/skills` default line is untouched).
+- `src/decode/config/settings.py:54-56` — comment-only: the `skills_dir` comment now reads "…as
+  `<name>/SKILL.md` directories, not flat `*.md` files"; the `abc841a` diff touches only the comment,
+  the field `skills_dir: Path = Path(".decode/skills")` is unchanged.
+- `src/decode/skills/__init__.py` package docstring (the third surface) now describes each skill as a
+  directory `<name>/SKILL.md`.
+
+A repo grep `grep -rniE "skill" src/ docs/ .env.example AGENTS.md | grep -iE "\*\.md|\.md file|flat"`
+returns only intentional survivors: the two new corrective comments (`settings.py:54`, `.env.example:49`),
+the loader's historical hard-switch note (`loader.py:6`) and loose-`*.md` DEBUG migration hint
+(`loader.py:125`), ADR-0004's corrective line (`:61`), the unrelated tool-registry phrase (`:129`), and
+the wheel-packaging note (`:245,247`). None describes flat `*.md` as the current authoring format.
+
+Rest of the refactor re-confirmed still holding (spot-check): directory convention end-to-end;
+three tiers (catalog paths-free, body on invoke, bundled file on demand) proven non-tautologically by
+the tier-3 capstone (`test_tier3_project_skill_drives_the_full_three_tier_flow` — real on-disk
+`references/checklist.md`, trailer-seen-before-read, gated `read` returns the known marker); built-ins
+SKILL.md-only + byte-identical (commit active, review-diff advisory); the conditional shared
+`format_skill_payload` trailer (no trailer when `resource_dir is None`); ADR-0004 + glossary accurate;
+M3 invariants intact (override-by-name, ungated dispatcher / gated induced actions, malformed-YAML
+skip). User satisfaction guaranteed. Hand off to the PR Reviewer.

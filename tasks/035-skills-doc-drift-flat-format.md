@@ -47,7 +47,7 @@ PA-owned docs are correct and are the source of truth to mirror.
       ADR-0004 §3. No new term is introduced; the glossary needs no change (it is already correct).
 - [x] `make ci` is green with 0 warnings (doc-only edits; no test or production logic touched).
 - [x] Tester re-runs full QA suite and PASSES.
-- [ ] PA re-runs acceptance review on the 032–034 refactor and ACCEPTS.
+- [x] PA re-runs acceptance review on the 032–034 refactor and ACCEPTS.
 
 ## Issues (detail)
 
