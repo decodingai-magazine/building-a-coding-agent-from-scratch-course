@@ -148,7 +148,9 @@ activemq-data/
 *.sage.py
 
 # decode runtime state: JSONL session logs (--resume) and local persistence (ADR-0002 §9).
-.decode/
+# Authored project skills (.decode/skills/) ARE source — track them; everything else stays ignored.
+.decode/*
+!.decode/skills/
 
 # Environments
 .env

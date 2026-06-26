@@ -77,6 +77,12 @@ You get an interactive REPL. Type a message and the agent streams a reply; when 
 
 **Tools the agent can call** (all gated): `read` · `glob` · `grep` · `write` · `edit` · `bash` · `todo_write` (a task checklist) · `web_fetch` (HTML→Markdown) · `ask_user`.
 
+**Skills** are reusable playbooks you trigger with `/<name>` (or that the agent invokes itself). They live in `.decode/skills/<name>/SKILL.md` and ship with the repo. For example, `repo-architecture` clones a GitHub repo, explores it in read-only passes, and writes an `ARCHITECTURE.md` — problem · usage · components · interfaces · end-to-end dataflow, all backed by Mermaid diagrams:
+
+```bash
+/repo-architecture https://github.com/iusztinpaul/designing-real-world-ai-agents-workshop
+```
+
 **Resume a previous session:**
 
 ```bash
