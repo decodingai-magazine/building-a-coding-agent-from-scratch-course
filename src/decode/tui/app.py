@@ -65,6 +65,7 @@ from decode.permissions import rules
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
 from decode.skills.loader import load_skills
+from decode.skills.payload import format_skill_payload
 from decode.tui import render
 
 logger = logging.getLogger(__name__)
@@ -305,9 +306,12 @@ def _handle_skill_command(
 
     The user-facing entry point into a skill body (ADR-0004 §5): resolves ``name`` against the
     merged catalog (:func:`decode.skills.loader.load_skills` for ``cwd`` — the **same** loader the
-    model's ``skill`` dispatcher uses). On a match, returns the skill ``body`` as the turn input
-    (the caller submits it through the existing ``runner.submit`` pipeline); a non-empty ``trailing``
-    is appended after a blank line (``f"{body}\\n\\n{trailing}"``). On no match, ``emit`` a friendly
+    model's ``skill`` dispatcher uses) and formats the result through the **same**
+    :func:`decode.skills.payload.format_skill_payload` helper the dispatcher uses, so both entry
+    points inject an identical payload — the skill ``body`` plus a resource trailer when (and only
+    when) the skill ships bundled resources. On a match, returns that payload as the turn input (the
+    caller submits it through the existing ``runner.submit`` pipeline); a non-empty ``trailing`` is
+    appended after a blank line (``f"{payload}\\n\\n{trailing}"``). On no match, ``emit`` a friendly
     one-line message listing the available (sorted) skill names — discovery — and return ``None`` so
     no turn runs. ``name`` is used **only** as a dict key (never interpolated into a filesystem path
     or shell command — ADR-0004 §3,7), so a bad name just yields the available-skills line.
@@ -318,10 +322,11 @@ def _handle_skill_command(
         emit(_SKILL_NO_MATCH.format(name=name, skills=", ".join(sorted(catalog))))
         logger.debug("/%s is not a known skill (available: %s)", name, sorted(catalog))
         return None
-    logger.debug("/%s resolved to skill body (source=%s)", name, found.source)
+    logger.debug("/%s resolved to skill payload (source=%s)", name, found.source)
+    payload = format_skill_payload(found, cwd=cwd)
     if trailing:
-        return f"{found.body}\n\n{trailing}"
-    return found.body
+        return f"{payload}\n\n{trailing}"
+    return payload
 
 
 def parse_permission_answer(answer: str) -> PermissionDecision:

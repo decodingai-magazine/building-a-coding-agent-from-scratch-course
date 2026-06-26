@@ -39,7 +39,8 @@ from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Boundary, TurnContext
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode, ToolKind
-from decode.skills.loader import load_builtin_skills
+from decode.skills.loader import load_builtin_skills, load_skills
+from decode.skills.payload import format_skill_payload
 from decode.tools import KNOWN_TOOL_NAMES, skills
 from decode.tools.registry import TOOL_SPECS
 
@@ -132,6 +133,49 @@ async def test_skill_returns_a_project_only_skill(tmp_path):
     result = await skills.skill(_ctx(tmp_path), "deploy")
 
     assert result == "Ship it to staging first."
+
+
+# --- direct: the resource trailer (ADR-0004 §1,§5; task 033) ---------------------------------
+
+
+def _add_resource(cwd: Path, *, name: str, relpath: str = "references/x.md") -> Path:
+    """Add a sibling resource file under a project skill's dir (makes it resource-bearing)."""
+    target = cwd / settings.skills_dir / name / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("bundled", encoding="utf-8")
+    return target
+
+
+async def test_skill_with_a_bundled_resource_returns_body_plus_trailer(tmp_path):
+    # A project skill whose directory ships a sibling resource gets body + the shared payload's
+    # resource trailer (the cwd-relative dir the model can ``read`` from) — formatted by the one
+    # ``format_skill_payload`` helper the TUI path also uses.
+    _write_project_skill(tmp_path, name="deploy", body="Ship it to staging first.")
+    _add_resource(tmp_path, name="deploy")
+
+    result = await skills.skill(_ctx(tmp_path), "deploy")
+
+    found = load_skills(tmp_path)["deploy"]
+    assert result == format_skill_payload(found, cwd=tmp_path)
+    assert result.startswith("Ship it to staging first.")
+    assert ".decode/skills/deploy" in result  # the trailer names the cwd-relative dir
+    assert result != found.body  # a trailer was appended
+
+
+async def test_skill_builtin_returns_body_only_no_trailer(tmp_path):
+    # A built-in is SKILL.md-only (``resource_dir`` is None) → body only, no trailer.
+    result = await skills.skill(_ctx(tmp_path), "commit")
+
+    assert result == load_builtin_skills()["commit"].body  # no trailer appended
+
+
+async def test_skill_resourceless_project_skill_returns_body_only(tmp_path):
+    # A project skill with only a SKILL.md (no siblings) ships no resources → body only, no trailer.
+    _write_project_skill(tmp_path, name="deploy", body="Ship it to staging first.")
+
+    result = await skills.skill(_ctx(tmp_path), "deploy")
+
+    assert result == "Ship it to staging first."  # body verbatim, no trailer
 
 
 # --- registry + agents wiring ----------------------------------------------------------------

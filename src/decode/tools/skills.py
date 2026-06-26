@@ -1,9 +1,15 @@
-"""The ungated ``skill`` dispatcher — returns a skill's full body on demand (ADR-0004 §2,§7).
+"""The ungated ``skill`` dispatcher — returns a skill's payload on demand (ADR-0004 §2,§5,§7).
 
 ``skill`` is the model-facing, on-demand half of progressive disclosure: the Skills Catalog
 advertises each skill's ``name`` + ``description`` cheaply on every turn, and this dispatcher returns
 the named skill's full Markdown ``body`` as the tool result so the model can follow it. It is the
 catalog's read side — it loads instructions, it does not act.
+
+The returned payload is formatted by the shared :func:`decode.skills.payload.format_skill_payload`
+helper (the same one the user-facing ``/<skill-name>`` TUI command uses, so the two paths never
+diverge): for a skill that ships bundled resources it is the body **plus a resource trailer** naming
+the skill's cwd-relative directory so the model knows where to ``read`` tier-3 files from; for a
+built-in or a resource-less project skill it is the body **unchanged** (ADR-0004 §5).
 
 It mirrors the ungated control tools (:mod:`decode.tools.sleep`, :mod:`decode.tools.orchestration`)
 to the letter:
@@ -31,6 +37,7 @@ from pydantic_ai import ModelRetry, RunContext
 
 from decode.agent.deps import AgentDeps
 from decode.skills.loader import load_skills
+from decode.skills.payload import format_skill_payload
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +47,17 @@ __all__ = ["SKILL_TOOL_NAME", "skill"]
 
 
 async def skill(ctx: RunContext[AgentDeps], name: str) -> str:
-    """Return the ``body`` of the skill called ``name`` from the merged catalog (ADR-0004 §2,§7).
+    """Return the payload of the skill called ``name`` from the merged catalog (ADR-0004 §2,§5,§7).
 
     Loads the merged Skills Catalog for the run's ``cwd`` (built-ins overlaid by any project skills
     under ``<cwd>/<settings.skills_dir>``) via :func:`decode.skills.loader.load_skills`, looks ``name``
     up as a **dict key only** (it is never interpolated into a filesystem path or a shell command),
-    and returns the matched skill's full Markdown ``body``. An **unknown** ``name`` raises a
-    model-readable :class:`pydantic_ai.ModelRetry` listing the available skill names so the model
-    retries with a real one instead of crashing the turn.
+    and returns the matched skill's payload from the shared
+    :func:`decode.skills.payload.format_skill_payload` helper — the Markdown ``body``, plus a resource
+    trailer naming the skill's cwd-relative directory **iff** the skill ships bundled resources
+    (``resource_dir`` set); a built-in or a resource-less project skill returns the body unchanged. An
+    **unknown** ``name`` raises a model-readable :class:`pydantic_ai.ModelRetry` listing the available
+    skill names so the model retries with a real one instead of crashing the turn.
 
     Ungated: ``skill`` never raises :class:`pydantic_ai.ApprovalRequired`, so it never reaches the
     permission gate and stays callable in any mode (loading instructions is harmless). The actions
@@ -61,5 +71,5 @@ async def skill(ctx: RunContext[AgentDeps], name: str) -> str:
         available = ", ".join(sorted(catalog))
         logger.debug("skill dispatcher: unknown skill %r (available: %s)", name, available)
         raise ModelRetry(f"No skill named {name!r}. Available skills: {available}.")
-    logger.debug("skill dispatcher returning %r body (source=%s)", name, found.source)
-    return found.body
+    logger.debug("skill dispatcher returning %r payload (source=%s)", name, found.source)
+    return format_skill_payload(found, cwd=ctx.deps.cwd)

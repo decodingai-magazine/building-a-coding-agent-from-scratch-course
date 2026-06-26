@@ -86,6 +86,23 @@ def test_lists_a_project_only_skill_alongside_the_builtins(tmp_path):
     assert "- review-diff —" in catalog
 
 
+def test_tier1_catalog_carries_no_resource_path_for_a_resource_bearing_skill(tmp_path):
+    # ADR-0004 §1, task 033: resource paths stay OUT of the always-on tier-1 catalog (the trailer
+    # surfaces them on demand, tier-3). A resource-bearing project skill lists its name + description
+    # only — never its bundled-resource directory.
+    skills_dir = _skills_dir(tmp_path)
+    _write_skill(skills_dir, "deploy", name="deploy", description="Ship the app to prod.")
+    resource = skills_dir / "deploy" / "references" / "x.md"
+    resource.parent.mkdir(parents=True, exist_ok=True)
+    resource.write_text("bundled", encoding="utf-8")
+
+    catalog = assemble_skills_catalog(tmp_path)
+
+    assert "- deploy — Ship the app to prod." in catalog
+    assert ".decode/skills/deploy" not in catalog  # no resource path in the always-on prompt
+    assert "references" not in catalog
+
+
 def test_returns_empty_string_when_no_skills(tmp_path, mocker):
     # Defensive/edge path: with no skills the hook must contribute nothing (no empty header).
     mocker.patch("decode.skills.catalog.load_skills", return_value={})
