@@ -121,9 +121,9 @@ def discover_project_skills(cwd: Path) -> dict[str, SkillDef]:
     at WARNING and skipped; a malformed or unreadable ``SKILL.md`` is logged at WARNING and **skipped**
     so a user's typo never crashes the agent (mirrors memory's skip-unreadable and the user
     ``settings.json`` tolerance); a directory-name ≠ frontmatter-name mismatch still loads (keyed by
-    frontmatter ``name``) but is logged at WARNING to catch copy-paste slips. A loose ``*.md`` directly
-    under the skills dir (the dropped flat format) is logged at DEBUG to aid migration. A missing skills
-    directory returns an empty dict.
+    frontmatter ``name``) but is logged at WARNING to catch copy-paste slips. A non-directory entry
+    directly under the skills dir (e.g. a loose ``*.md`` from the dropped flat format) is ignored. A
+    missing skills directory returns an empty dict.
     """
     skills_dir = cwd / settings.skills_dir
     if not skills_dir.is_dir():
@@ -131,13 +131,6 @@ def discover_project_skills(cwd: Path) -> dict[str, SkillDef]:
     skills: dict[str, SkillDef] = {}
     for sub in sorted(skills_dir.iterdir(), key=lambda p: p.name):
         if not sub.is_dir():
-            if sub.suffix == ".md":
-                logger.debug(
-                    "ignoring loose '%s' under %s — skills are now <name>/%s directories",
-                    sub.name,
-                    skills_dir,
-                    _SKILL_FILE,
-                )
             continue
         skill_file = sub / _SKILL_FILE
         if not skill_file.is_file():
@@ -146,7 +139,7 @@ def discover_project_skills(cwd: Path) -> dict[str, SkillDef]:
         source = str(skill_file.resolve())
         try:
             text = skill_file.read_text(encoding="utf-8")
-            resource_dir = sub if _has_bundled_resources(sub) else None
+            resource_dir = sub if any(e.name != _SKILL_FILE for e in sub.iterdir()) else None
             skill = parse_skill_file(text, source=source, resource_dir=resource_dir)
         except (ValueError, OSError, yaml.YAMLError) as exc:
             # ``yaml.YAMLError`` (e.g. ``ScannerError`` on a typo'd frontmatter) is NOT a ``ValueError``,
@@ -185,16 +178,6 @@ def load_skills(cwd: Path) -> dict[str, SkillDef]:
         logger.info("project skills override built-ins by name: %s", overridden)
     skills.update(project)
     return skills
-
-
-def _has_bundled_resources(skill_dir: Path) -> bool:
-    """True iff ``skill_dir`` holds any entry besides its ``SKILL.md`` (tier-3 resources; ADR-0004 §5).
-
-    Any sibling file or folder (``references/``, ``examples/``, ``scripts/``, a stray note) means the
-    skill ships resources the model may ``read``, so its directory becomes the :class:`SkillDef`'s
-    ``resource_dir``. A directory containing only ``SKILL.md`` has no resources → ``None``.
-    """
-    return any(entry.name != _SKILL_FILE for entry in skill_dir.iterdir())
 
 
 def _require_str(meta: dict[str, object], key: str) -> str:

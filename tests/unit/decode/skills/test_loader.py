@@ -355,21 +355,18 @@ def test_discover_skips_a_subdirectory_without_a_skill_md_with_a_warning(tmp_pat
     )
 
 
-def test_discover_does_not_discover_a_loose_flat_md(tmp_path, caplog):
-    # The flat format is gone (hard switch): a loose ``<skills_dir>/commit.md`` (no enclosing
+def test_discover_does_not_discover_a_loose_flat_md(tmp_path):
+    # The flat format is gone (hard switch): a loose ``<skills_dir>/legacy.md`` (no enclosing
     # ``<name>/`` directory) is NOT discovered — only ``<name>/SKILL.md`` directories are skills.
     skills_dir = _skills_dir(tmp_path)
     skills_dir.mkdir(parents=True, exist_ok=True)
-    (skills_dir / "commit.md").write_text(
-        "---\nname: commit\ndescription: flat\n---\nFlat body.\n", encoding="utf-8"
+    (skills_dir / "legacy.md").write_text(
+        "---\nname: legacy\ndescription: flat\n---\nFlat body.\n", encoding="utf-8"
     )
 
-    with caplog.at_level(logging.DEBUG):
-        found = loader.discover_project_skills(tmp_path)
+    found = loader.discover_project_skills(tmp_path)
 
     assert found == {}
-    # A DEBUG migration hint names the ignored loose file.
-    assert any("commit.md" in record.getMessage() for record in caplog.records)
 
 
 def test_discover_skips_a_malformed_project_skill_with_a_warning(tmp_path, caplog):
