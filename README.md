@@ -74,6 +74,23 @@ OPENROUTER_API_KEY=your-key-here
 # OPENROUTER_MODEL=qwen/qwen3-coder:free   # the default; a tool-calling-capable free model
 ```
 
+### Choosing the model
+
+Each provider has its **own** model variable — set the one for your active `LLM_PROVIDER` (in `.env` or as a shell env var); the others are ignored. All three ship a sensible default, so this is optional:
+
+| Provider (`LLM_PROVIDER`) | Model variable | Default | Pick another |
+|---|---|---|---|
+| `gemini` | `GEMINI_MODEL` | `gemini-2.5-flash` | any Gemini model id (e.g. `gemini-2.5-pro`) |
+| `openrouter` | `OPENROUTER_MODEL` | `qwen/qwen3-coder:free` | any id from [openrouter.ai/models](https://openrouter.ai/models) — the `:free` ones cost nothing |
+| `modal` | `MODAL_ENDPOINT_MODEL` | `openai/gpt-oss-120b` | must match the model your endpoint serves — see [`MODAL_MODELS.md`](MODAL_MODELS.md) |
+
+For example, to run Gemini's larger model:
+
+```bash
+LLM_PROVIDER=gemini          # the default, so optional
+GEMINI_MODEL=gemini-2.5-pro
+```
+
 **Pick a tool-capable model.** The agent loop needs a model that supports **tool-calling + streaming**. The shipped defaults are known-good — `OPENROUTER_MODEL=qwen/qwen3-coder:free` and `MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b` — so for **both** OpenRouter and Modal, if you swap models, pick a tool-capable one or the loop breaks (the model narrates instead of emitting valid tool calls).
 
 **Run on Modal.** Set `LLM_PROVIDER=modal` + `MODAL_ENDPOINT_URL` + `MODAL_ENDPOINT_MODEL` (plus the `MODAL_PROXY_TOKEN_ID` / `MODAL_PROXY_TOKEN_SECRET` request headers, unless the endpoint was created `--unauthenticated`). See [`MODAL_MODELS.md`](MODAL_MODELS.md) for picking a model and creating the endpoint (`modal endpoint create`, `modal workspace proxy-tokens create`, and the wiring).
