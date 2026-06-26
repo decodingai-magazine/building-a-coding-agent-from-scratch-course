@@ -77,7 +77,9 @@ def _tool_names_called(messages: list[object]) -> set[str]:
 
 
 def test_build_agent_uses_google_model_with_configured_id(mocker):
-    # Avoid touching real Gemini credentials/env: feed the key from settings explicitly.
+    # Avoid touching real Gemini credentials/env: feed the key from settings explicitly. Pin the
+    # provider so a developer's local `.env` (e.g. `LLM_PROVIDER=modal`) can't flip this off gemini.
+    mocker.patch("decode.agent.factory.settings.llm_provider", "gemini", create=False)
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
@@ -93,6 +95,7 @@ def test_build_agent_uses_google_model_with_configured_id(mocker):
 
 
 def test_build_agent_respects_a_custom_model_id(mocker):
+    mocker.patch("decode.agent.factory.settings.llm_provider", "gemini", create=False)
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
@@ -130,31 +133,27 @@ def test_build_agent_includes_deferred_tool_requests_in_output(mocker):
     assert DeferredToolRequests in output_types
 
 
-def test_build_agent_sets_a_static_base_instruction(mocker):
+def test_build_agent_registers_a_single_instructions_hook(mocker):
+    """ONE instructions source → ONE ``system`` message (regression guard).
+
+    decode's base + active persona + memory + Skills Catalog are assembled inside a single
+    ``@agent.instructions`` hook, NOT registered as separate sources, because
+    ``OpenAIChatModel`` emits one ``system`` message per instruction source and strict
+    OpenAI-compatible servers reject more than one — the vLLM chat template behind a Modal Auto
+    Endpoint (and some OpenRouter models) raise "System message must be at the beginning." on the
+    second one. So there is no static ``instructions=`` string and exactly one callable entry; the
+    content of each part is asserted by the per-part injection tests below.
+    """
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
 
     agent = build_agent()
 
-    # `_instructions` is a normalized list of static strings / functions; a static base
-    # prompt identifying decode as a terminal coding agent must be present.
-    static_text = " ".join(p for p in agent._instructions if isinstance(p, str))
-    assert "decode" in static_text.lower()
-    assert "coding agent" in static_text.lower()
-
-
-def test_build_agent_registers_a_dynamic_memory_instructions_function(mocker):
-    """A dynamic (callable) instructions entry must be present so memory is built per run."""
-    mocker.patch(
-        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
-    )
-
-    agent = build_agent()
-
-    # Beyond the static base string, at least one callable instructions entry (the per-run
-    # memory hook) must be registered — that is what reads AGENTS.md/MEMORY.md at prompt-build.
-    assert any(callable(p) for p in agent._instructions)
+    static_strings = [p for p in agent._instructions if isinstance(p, str)]
+    callables = [p for p in agent._instructions if callable(p)]
+    assert static_strings == []  # no separate static base → no extra system message
+    assert len(callables) == 1  # the single assembled-instructions hook
 
 
 async def test_memory_is_injected_into_the_first_request_instructions(tmp_path, mocker):
@@ -280,20 +279,6 @@ async def test_tool_visibility_follows_the_active_agent_per_run_without_rebuild(
 # --- per-agent system prompt via the dynamic instructions hook (ADR-0003 §6,7) --------------
 
 
-def test_build_agent_registers_a_dynamic_agent_prompt_instructions_function(mocker):
-    """A dynamic callable instructions entry for the per-agent prompt must be registered."""
-    mocker.patch(
-        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
-    )
-
-    agent = build_agent()
-
-    # Beyond the static base + the memory hook, the agent-prompt hook is also callable; at least
-    # two callable instruction entries (memory + agent prompt) ride per run.
-    callables = [p for p in agent._instructions if callable(p)]
-    assert len(callables) >= 2
-
-
 async def test_active_agent_prompt_is_injected_into_the_run_instructions(tmp_path, mocker):
     """The code-reviewer prompt rides the assembled instructions when it is the active agent."""
     mocker.patch(
@@ -337,20 +322,6 @@ async def test_switching_active_agent_changes_the_prompt_on_the_next_turn(tmp_pa
 
 
 # --- the Skills Catalog injected via the dynamic instructions hook (ADR-0004 §1,§9) ---------
-
-
-def test_build_agent_registers_a_dynamic_skills_catalog_instructions_function(mocker):
-    """A third dynamic callable instructions entry (the Skills Catalog hook) must be registered."""
-    mocker.patch(
-        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
-    )
-
-    agent = build_agent()
-
-    # Static base + memory hook + agent-prompt hook + skills-catalog hook → at least three
-    # callable instruction entries ride per run.
-    callables = [p for p in agent._instructions if callable(p)]
-    assert len(callables) >= 3
 
 
 async def test_skills_catalog_is_injected_into_the_run_instructions(tmp_path, mocker):

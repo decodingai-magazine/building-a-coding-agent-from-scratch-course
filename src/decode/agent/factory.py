@@ -3,11 +3,11 @@
 The factory owns the **Provider Seam** ADR-0002 §1 promised and ADR-0005 fills: model
 construction is delegated to :func:`_build_model`, which branches on ``settings.llm_provider``
 (``gemini`` / ``openrouter`` / ``modal``). The rest of :func:`build_agent` —
-``deps_type=AgentDeps``, ``output_type=[str, DeferredToolRequests]``, ``instructions``,
-``register_tools``, and the three ``@agent.instructions`` hooks — is provider-agnostic, so a
-provider swap touches one branch and nothing in the loop (:mod:`decode.agent.loop` owns all
-the runtime behaviour). The factory stays thin — construct the :class:`~pydantic_ai.Agent`,
-nothing else.
+``deps_type=AgentDeps``, ``output_type=[str, DeferredToolRequests]``, ``register_tools``, and the
+single ``@agent.instructions`` hook (one assembled system message — see :func:`_register_instructions`)
+— is provider-agnostic, so a provider swap touches one branch and nothing in the loop
+(:mod:`decode.agent.loop` owns all the runtime behaviour). The factory stays thin — construct the
+:class:`~pydantic_ai.Agent`, nothing else.
 
 Three construction facts confirmed against the installed SDK (pydantic-ai 1.107, openai 2.43,
 google-genai 2.9), recorded so the choice is not re-litigated:
@@ -81,12 +81,9 @@ def build_agent() -> Agent[AgentDeps, str | DeferredToolRequests]:
         model,
         deps_type=AgentDeps,
         output_type=[str, DeferredToolRequests],
-        instructions=_BASE_INSTRUCTIONS,
     )
     register_tools(agent)
-    _register_agent_prompt_instructions(agent)
-    _register_memory_instructions(agent)
-    _register_skills_catalog_instructions(agent)
+    _register_instructions(agent)
     logger.debug("built agent on llm_provider=%s", settings.llm_provider)
     return agent
 
@@ -143,57 +140,31 @@ def _build_model() -> Model:
     raise ValueError(f"unsupported llm_provider: {provider!r}")
 
 
-def _register_agent_prompt_instructions(
-    agent: Agent[AgentDeps, str | DeferredToolRequests],
-) -> None:
-    """Append the active Agent persona's system prompt via a **dynamic** hook (ADR-0003 §6,7).
+def _register_instructions(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:
+    """Assemble the whole system prompt as ONE instructions block (ADR-0002 §8, ADR-0003 §6-7, ADR-0004 §1,§9).
 
-    Like the memory hook, this is a per-run ``@agent.instructions`` function: it reads
-    ``ctx.deps.active_agent.prompt`` at prompt-build time and appends it to the static base prompt.
-    Reading the active agent here — rather than baking one persona into ``instructions=`` — is what
-    lets an ``/agent`` switch change the system prompt on the next turn with no agent rebuild
-    (ADR-0003 §7): the same Agent runs every persona, the prompt rides ``ctx.deps``.
+    decode's system prompt has four parts: the static base, the active Agent persona's prompt, project
+    memory (``AGENTS.md`` / ``MEMORY.md``), and the Skills Catalog. They are joined into a **single**
+    ``@agent.instructions`` string rather than registered as four separate instruction sources, because
+    pydantic-ai's :class:`~pydantic_ai.models.openai.OpenAIChatModel` emits **one ``system`` message per
+    instruction source**, and strict OpenAI-compatible servers reject more than one — the vLLM chat
+    template behind a Modal Auto Endpoint (and some OpenRouter models) raise *"System message must be at
+    the beginning."* on the second one. One source → one system message → portable across every
+    provider. (``GoogleModel`` already concatenated them, so gemini's behaviour is unchanged.)
+
+    It stays a **dynamic** per-run hook so the persona, memory, and skills are read fresh each turn — an
+    ``/agent`` switch, an edited ``AGENTS.md`` / ``MEMORY.md``, or a freshly dropped-in skill all take
+    effect on the next turn with no agent rebuild. Each part contributes nothing when empty
+    (``assemble_memory`` / ``assemble_skills_catalog`` return ``""`` and are dropped), so no empty
+    headers ride and a no-memory / no-skills run is just the base + persona.
     """
 
     @agent.instructions
-    def active_agent_instructions(ctx: RunContext[AgentDeps]) -> str:
-        return ctx.deps.active_agent.prompt
-
-
-def _register_memory_instructions(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:
-    """Append project memory to the prompt via a **dynamic** instructions hook (ADR-0002 §8).
-
-    ``@agent.instructions`` registers a function Pydantic AI calls **per run, at prompt-build
-    time** (confirmed against pydantic-ai 1.107: the decorator takes a sync/async function
-    optionally receiving ``RunContext[AgentDeps]`` and returning a ``str`` that is appended to
-    the static ``instructions=`` base prompt). Reading the files here — rather than baking a
-    snapshot into ``instructions=`` at build time — is what makes editing ``AGENTS.md`` /
-    ``MEMORY.md`` take effect on the next turn with no agent rebuild. ``assemble_memory`` returns
-    ``""`` when no memory file is found, in which case Pydantic AI contributes nothing extra (no
-    empty header) and only the static base prompt rides.
-    """
-
-    @agent.instructions
-    def memory_instructions(ctx: RunContext[AgentDeps]) -> str:
-        return assemble_memory(ctx.deps.cwd)
-
-
-def _register_skills_catalog_instructions(
-    agent: Agent[AgentDeps, str | DeferredToolRequests],
-) -> None:
-    """Inject the Skills Catalog into the prompt via a **dynamic** instructions hook (ADR-0004 §1,§9).
-
-    Like the memory and agent-prompt hooks, this is a per-run ``@agent.instructions`` function: it
-    reads ``ctx.deps.cwd`` at prompt-build time and returns
-    :func:`decode.skills.catalog.assemble_skills_catalog` — the cheap "menu" half of progressive
-    disclosure (each skill's ``name`` + ``description``, plus the ``skill("<name>")`` cue). The
-    dispatcher (task 026) returns a body on demand. The catalog is injected for **every** agent, not
-    gated on ``ctx.deps.active_agent`` (ADR-0004 §4: all agents see all skills); reading ``cwd`` per
-    run is what makes a freshly dropped-in project skill appear on the next turn with no agent
-    rebuild. ``assemble_skills_catalog`` returns ``""`` when there are no skills, in which case
-    Pydantic AI contributes nothing extra (no empty header).
-    """
-
-    @agent.instructions
-    def skills_catalog_instructions(ctx: RunContext[AgentDeps]) -> str:
-        return assemble_skills_catalog(ctx.deps.cwd)
+    def assemble_instructions(ctx: RunContext[AgentDeps]) -> str:
+        parts = (
+            _BASE_INSTRUCTIONS,
+            ctx.deps.active_agent.prompt,
+            assemble_memory(ctx.deps.cwd),
+            assemble_skills_catalog(ctx.deps.cwd),
+        )
+        return "\n\n".join(part for part in parts if part)

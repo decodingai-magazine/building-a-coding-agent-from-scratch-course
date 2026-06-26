@@ -28,6 +28,10 @@ def _dummy_provider_config(mocker):
     specific vars to exercise the failure cases. Modal defaults to the *unauthenticated* shape
     (neither proxy token), which is valid.
     """
+    # Pin the provider to the gemini default so the suite is hermetic from a developer's local
+    # `.env` (e.g. `LLM_PROVIDER=modal`); tests that exercise another provider override this via
+    # `_select_provider`.
+    mocker.patch.object(cli_mod.settings, "llm_provider", "gemini")
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
