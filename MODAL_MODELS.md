@@ -227,9 +227,11 @@ curl "<your-endpoint-url>/v1/chat/completions" \
       }'
 ```
 
-### 5.5 Advanced config (region & placement)
+### 5.5 Advanced config — what's CLI vs dashboard
 
-Verified in the dashboard's *Advanced Configurations*:
+**Region & placement are the only knobs `modal endpoint create` exposes** (confirmed via
+`modal endpoint create --help`; the subcommand set is just `create | list | stop` — there is no
+`update`):
 
 ```bash
 modal endpoint create \
@@ -240,7 +242,22 @@ modal endpoint create \
 ```
 
 `--colocate-compute` (UI "Same as routing region") can incur a region-selection price; the default
-"Any region" lets Modal place containers by availability/capacity.
+"Any region" lets Modal place containers by availability/capacity. Note the dashboard splits region
+into two fields: **Details → Routing Region** (set by `--routing-region`) vs **Deployment →
+SCHEDULING → Region** (the actual container placement, `Default`/Any unless `--colocate-compute`).
+
+**Autoscaling (min / max / buffer containers) is dashboard-only — no CLI flag.** The endpoints doc
+states it directly: *"You can adjust the autoscaling configuration overrides in the UI."* In the
+endpoint's **Overview → Deployment → AUTOSCALING** panel, click **Edit**, toggle **Override** on
+**Min containers** / **Max containers**, set values, save:
+- **Min ≥ 1** = keep-warm — no cold starts, but you pay for the idle GPU the whole time.
+- **Min 0** = scale-to-zero — cheaper, but the first request after idle pays a cold start.
+
+| Knob | CLI at create | Dashboard after create |
+|---|---|---|
+| Routing region | `--routing-region` | Details → Routing Region |
+| Compute placement | `--colocate-compute` | Details → Compute Placement |
+| Min / Max / Buffer containers | — (not supported) | AUTOSCALING → Edit → Override |
 
 ### 5.6 Manage endpoints
 
@@ -290,8 +307,8 @@ Selecting it is **shipped** (ADR-0005, tasks 037-039): set the **LLM Provider** 
   `modal endpoint create` + `modal endpoint benchmark` (see endpoint-benchmarks doc) before relying
   on them for budgeting.
 - **Cold starts & keep-warm.** A serverless endpoint scales to zero; first request after idle pays a
-  cold start. For an interactive TUI, configure min-replicas/keep-warm if latency matters (check
-  `modal endpoint create --help`).
+  cold start. For an interactive TUI, set **Min containers ≥ 1** to keep warm — but this is
+  **dashboard-only** (AUTOSCALING → Edit → Override; see §5.5), *not* a `modal endpoint create` flag.
 - **Tool-call parser is the gate.** Re-confirm the recipe enables OpenAI/hermes-style tool parsing
   for whichever model you pick — it's the single thing that makes or breaks the harness loop.
 - **Catalog drift.** Model ids and GPU recipes change. This file is a 2026-06-26 snapshot; re-read the
