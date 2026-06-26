@@ -472,3 +472,169 @@ def test_handle_agent_command_missing_name_shows_usage():
     app._handle_agent_command("", deps=deps, gate=gate, emit=lines.append)
 
     assert any("/agent" in line for line in lines)
+
+
+# --- the user-facing /<skill-name> command (ADR-0004 §5, task 028) ----------------------------
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("/commit", ("commit", "")),  # bare name -> empty trailing
+        ("/commit fix the bug", ("commit", "fix the bug")),  # name + trailing
+        ("  /commit   ship it  ", ("commit", "ship it")),  # name + trailing, both stripped
+        ("hello", None),  # not a slash line -> fall through to runner.submit
+        ("/", None),  # a bare slash is no name at all
+        # NOTE: reserved commands (``/quit`` / ``/agent`` / ``/mode``) now *parse* as a name here
+        # (e.g. ``/mode plan`` -> ``("mode", "plan")``). The parser no longer special-cases them —
+        # the ``run_app`` loop matches and ``continue``s on those before the skill branch runs, so a
+        # reserved command never reaches this function (see the loop-precedence test below).
+    ],
+)
+def test_parse_skill_command(line, expected):
+    assert app.parse_skill_command(line) == expected
+
+
+def _write_skill(skills_dir: Path, name: str, body: str = "do the thing") -> None:
+    """Drop a minimal valid project skill ``<skills_dir>/<name>/SKILL.md`` (frontmatter + body)."""
+    skill_dir = skills_dir / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: a test skill\n---\n{body}\n", encoding="utf-8"
+    )
+
+
+def test_handle_skill_command_returns_the_known_skill_body(tmp_path):
+    # A known skill resolves to its full body (the built-in `commit` ships with the package).
+    from decode.skills.loader import load_skills
+
+    lines: list[str] = []
+    result = app._handle_skill_command("commit", "", cwd=tmp_path, emit=lines.append)
+
+    assert result == load_skills(tmp_path)["commit"].body
+    assert "Conventional Commits" in result  # the body, not the literal `/commit`
+    assert not lines  # a match emits nothing — it returns the turn input
+
+
+def test_handle_skill_command_appends_trailing_text(tmp_path):
+    # Trailing text after the name is appended to the body separated by a blank line.
+    from decode.skills.loader import load_skills
+
+    body = load_skills(tmp_path)["commit"].body
+    result = app._handle_skill_command("commit", "ship it", cwd=tmp_path, emit=lambda _l: None)
+
+    assert result == f"{body}\n\nship it"
+
+
+def test_handle_skill_command_unknown_emits_available_skills_and_returns_none(tmp_path):
+    # An unknown name returns no turn input and emits a friendly line listing the sorted skills.
+    lines: list[str] = []
+    result = app._handle_skill_command("nope", "", cwd=tmp_path, emit=lines.append)
+
+    assert result is None  # no turn submitted
+    assert len(lines) == 1
+    message = lines[0]
+    assert "nope" in message  # names the bad command
+    assert "commit" in message and "review-diff" in message  # discovery: lists available skills
+    assert message.index("commit") < message.index("review-diff")  # sorted
+
+
+def test_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
+    # ADR-0004 §3,5: a project skill named `mode` is reachable via the dispatcher (load_skills), but
+    # `/mode plan` never reaches the skill branch — the loop matches `parse_mode_command` first and
+    # `continue`s, so the `/mode` handler wins. Precedence is the loop's job, not the parser's (the
+    # full loop-precedence path is also covered e2e by ``test_run_app_mode_slash_*``).
+    from decode.skills.loader import load_skills
+
+    _write_skill(tmp_path / ".decode" / "skills", "mode")
+
+    assert "mode" in load_skills(tmp_path)  # still reachable via the skill dispatcher
+    assert app.parse_mode_command("/mode plan") == "plan"  # the loop's /mode branch matches first
+
+
+# --- the /<skill-name> resource trailer (ADR-0004 §1,§5; task 033) ----------------------------
+
+
+def _add_resource_to_skill(skills_dir: Path, name: str, relpath: str = "references/x.md") -> None:
+    """Drop a sibling resource under a project skill's dir, making it resource-bearing."""
+    target = skills_dir / name / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("bundled", encoding="utf-8")
+
+
+def test_handle_skill_command_resource_bearing_skill_injects_body_plus_trailer(tmp_path):
+    # A resource-bearing project skill injects body + the shared payload's resource trailer (the
+    # cwd-relative dir the model can ``read`` from) — the same helper the dispatcher uses.
+    from decode.skills.loader import load_skills
+    from decode.skills.payload import format_skill_payload
+
+    skills_dir = tmp_path / ".decode" / "skills"
+    _write_skill(skills_dir, "deploy", body="Ship it to staging first.")
+    _add_resource_to_skill(skills_dir, "deploy")
+
+    result = app._handle_skill_command("deploy", "", cwd=tmp_path, emit=lambda _l: None)
+
+    found = load_skills(tmp_path)["deploy"]
+    assert result == format_skill_payload(found, cwd=tmp_path)
+    assert result.startswith("Ship it to staging first.")
+    assert ".decode/skills/deploy" in result  # the trailer names the cwd-relative dir
+
+
+def test_handle_skill_command_resource_bearing_skill_appends_trailing_after_trailer(tmp_path):
+    # Trailing user text rides after a blank line, AFTER the body+trailer payload.
+    from decode.skills.loader import load_skills
+    from decode.skills.payload import format_skill_payload
+
+    skills_dir = tmp_path / ".decode" / "skills"
+    _write_skill(skills_dir, "deploy", body="Ship it to staging first.")
+    _add_resource_to_skill(skills_dir, "deploy")
+
+    result = app._handle_skill_command("deploy", "to prod", cwd=tmp_path, emit=lambda _l: None)
+
+    payload = format_skill_payload(load_skills(tmp_path)["deploy"], cwd=tmp_path)
+    assert result == f"{payload}\n\nto prod"
+
+
+def test_handle_skill_command_builtin_injects_body_without_a_trailer(tmp_path):
+    # A built-in (`commit`) is SKILL.md-only → body only, no trailer.
+    from decode.skills.loader import load_skills
+
+    result = app._handle_skill_command("commit", "", cwd=tmp_path, emit=lambda _l: None)
+
+    assert result == load_skills(tmp_path)["commit"].body  # body verbatim, no trailer
+
+
+async def test_dispatcher_and_tui_produce_identical_payloads_for_the_same_skill(tmp_path):
+    # ADR-0004 §5: one helper, two entry points, no divergence. The model's ``skill(name)``
+    # dispatcher and the user's ``/<name>`` TUI command return the IDENTICAL payload for a
+    # resource-bearing project skill (and for a resourceless built-in).
+    from pydantic_ai import RunContext
+
+    from decode.permissions.gate import PermissionGate
+    from decode.tools import skills as skills_tool
+
+    async def _deny(_request):  # pragma: no cover - never invoked (skill is ungated)
+        from decode.entities.permissions import PermissionDecision as _PD
+
+        return _PD.deny()
+
+    async def _no_ask(_question):  # pragma: no cover - never invoked
+        raise AssertionError("the skill payload path must not ask the user a question")
+
+    skills_dir = tmp_path / ".decode" / "skills"
+    _write_skill(skills_dir, "deploy", body="Ship it to staging first.")
+    _add_resource_to_skill(skills_dir, "deploy")
+
+    deps = AgentDeps(
+        cwd=tmp_path,
+        emit=lambda _e: None,  # type: ignore[arg-type]
+        gate=PermissionGate(),
+        resolve_permission=_deny,
+        resolve_user_question=_no_ask,
+    )
+    ctx = RunContext(deps=deps, model=None, usage=None, tool_call_approved=False)  # type: ignore[arg-type]
+
+    for name in ("deploy", "commit"):
+        dispatcher_payload = await skills_tool.skill(ctx, name)
+        tui_payload = app._handle_skill_command(name, "", cwd=tmp_path, emit=lambda _l: None)
+        assert dispatcher_payload == tui_payload

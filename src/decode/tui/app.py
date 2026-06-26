@@ -26,8 +26,8 @@ The interactive loop reads real stdin, so its plumbing is exercised by the
 ``run_app`` regression test (a piped prompt_toolkit input); the decidable pieces
 (:func:`is_quit_command`, :func:`footer_hint`, :class:`InputIntent`,
 :func:`parse_permission_answer`, the control-surface parsers
-:func:`parse_agent_command` / :func:`parse_mode_command` / :func:`parse_mode_name`, and the
-Shift+Tab :func:`next_mode` cycle) are pure and unit-tested.
+:func:`parse_agent_command` / :func:`parse_mode_command` / :func:`parse_mode_name` /
+:func:`parse_skill_command`, and the Shift+Tab :func:`next_mode` cycle) are pure and unit-tested.
 """
 
 from __future__ import annotations
@@ -64,6 +64,8 @@ from decode.memory.extract import extract_on_exit
 from decode.permissions import rules
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
+from decode.skills.loader import load_skills
+from decode.skills.payload import format_skill_payload
 from decode.tui import render
 
 logger = logging.getLogger(__name__)
@@ -175,6 +177,29 @@ def _parse_slash_arg(line: str, command: str) -> str | None:
     return None
 
 
+def parse_skill_command(line: str) -> tuple[str, str] | None:
+    """Split a ``/<skill-name> [trailing]`` line into ``(name, trailing)``, or ``None`` (§5).
+
+    The user-facing second entry point into a skill body (ADR-0004 §5), alongside the model's
+    ``skill`` dispatcher (task 026) — both resolve through the same ``load_skills(cwd)``. Pure
+    (mirrors :func:`parse_agent_command`): ``"/commit"`` → ``("commit", "")``; ``"/commit fix the
+    bug"`` → ``("commit", "fix the bug")`` (name + trailing text, both stripped). A non-slash line
+    (``"hello"``) → ``None`` so the main loop falls through to its normal ``runner.submit`` routing.
+    A bare ``"/"`` (no name) → ``None``. A reserved slash command (``/quit`` / ``/agent …`` /
+    ``/mode …``) parses here too, but never reaches this branch: the ``run_app`` loop matches and
+    ``continue``s on those *before* the skill branch, so precedence is the loop's job, not this
+    parser's (a same-named skill stays reachable via the dispatcher).
+    """
+    stripped = line.strip()
+    if not stripped.startswith("/"):
+        return None
+    name, _, trailing = stripped[1:].partition(" ")
+    name = name.strip()
+    if not name:
+        return None
+    return name, trailing.strip()
+
+
 def parse_mode_name(name: str) -> PermissionMode | None:
     """Map a typed mode name to a :class:`PermissionMode`, or ``None`` if it is not one (§1,9).
 
@@ -266,6 +291,42 @@ def _handle_mode_command(
     gate.set_mode(mode)
     logger.debug("/mode switched to %s", mode.value)
     emit(mode_switch_confirmation(mode.value))
+
+
+# The friendly inline line for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirrors the
+# ``/agent`` / ``/mode`` unknown-argument style (a single ``Decode - …`` line); the available-skills
+# list doubles as discovery. The catalog is never empty — the built-ins always ship.
+_SKILL_NO_MATCH = "Decode - unknown command '/{name}'; available skills: {skills}."
+
+
+def _handle_skill_command(
+    name: str, trailing: str, *, cwd: Path, emit: Callable[[str], None]
+) -> str | None:
+    """Resolve a ``/<name>`` skill into the turn input, or ``emit`` a discovery line (§5).
+
+    The user-facing entry point into a skill body (ADR-0004 §5): resolves ``name`` against the
+    merged catalog (:func:`decode.skills.loader.load_skills` for ``cwd`` — the **same** loader the
+    model's ``skill`` dispatcher uses) and formats the result through the **same**
+    :func:`decode.skills.payload.format_skill_payload` helper the dispatcher uses, so both entry
+    points inject an identical payload — the skill ``body`` plus a resource trailer when (and only
+    when) the skill ships bundled resources. On a match, returns that payload as the turn input (the
+    caller submits it through the existing ``runner.submit`` pipeline); a non-empty ``trailing`` is
+    appended after a blank line (``f"{payload}\\n\\n{trailing}"``). On no match, ``emit`` a friendly
+    one-line message listing the available (sorted) skill names — discovery — and return ``None`` so
+    no turn runs. ``name`` is used **only** as a dict key (never interpolated into a filesystem path
+    or shell command — ADR-0004 §3,7), so a bad name just yields the available-skills line.
+    """
+    catalog = load_skills(cwd)
+    found = catalog.get(name)
+    if found is None:
+        emit(_SKILL_NO_MATCH.format(name=name, skills=", ".join(sorted(catalog))))
+        logger.debug("/%s is not a known skill (available: %s)", name, sorted(catalog))
+        return None
+    logger.debug("/%s resolved to skill payload (source=%s)", name, found.source)
+    payload = format_skill_payload(found, cwd=cwd)
+    if trailing:
+        return f"{payload}\n\n{trailing}"
+    return payload
 
 
 def parse_permission_answer(answer: str) -> PermissionDecision:
@@ -660,6 +721,19 @@ async def run_app(
             mode_arg = parse_mode_command(text)
             if mode_arg is not None:
                 _handle_mode_command(mode_arg, gate=gate, emit=emit_line)
+                continue
+
+            # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved
+            # ``/agent`` / ``/mode`` checks so a same-named built-in command always wins. A
+            # resolved skill injects its body as the turn input through the existing submit
+            # pipeline; an unrecognised ``/<x>`` (neither reserved nor a known skill) is
+            # intercepted with the available-skills discovery line and runs no turn.
+            skill_cmd = parse_skill_command(text)
+            if skill_cmd is not None:
+                name, trailing = skill_cmd
+                turn_input = _handle_skill_command(name, trailing, cwd=deps.cwd, emit=emit_line)
+                if turn_input is not None:
+                    await runner.submit(turn_input, intent)
                 continue
 
             if not text.strip():

@@ -331,3 +331,61 @@ async def test_switching_active_agent_changes_the_prompt_on_the_next_turn(tmp_pa
     assert "code-reviewer agent" in (first.instructions or "")
     assert "build agent" in (second.instructions or "")
     assert "code-reviewer agent" not in (second.instructions or "")
+
+
+# --- the Skills Catalog injected via the dynamic instructions hook (ADR-0004 §1,§9) ---------
+
+
+def test_build_agent_registers_a_dynamic_skills_catalog_instructions_function(mocker):
+    """A third dynamic callable instructions entry (the Skills Catalog hook) must be registered."""
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+
+    agent = build_agent()
+
+    # Static base + memory hook + agent-prompt hook + skills-catalog hook → at least three
+    # callable instruction entries ride per run.
+    callables = [p for p in agent._instructions if callable(p)]
+    assert len(callables) >= 3
+
+
+async def test_skills_catalog_is_injected_into_the_run_instructions(tmp_path, mocker):
+    """The catalog (skill names + the skill(\"…\") cue) rides the assembled run instructions."""
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    agent = build_agent()
+
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="ok")):
+        result = await agent.run("hi", deps=_deps(tmp_path, active_agent=load_agent("build")))
+
+    first = result.all_messages()[0]
+    assert isinstance(first, ModelRequest)
+    assert first.instructions is not None
+    # The built-in skill names and the dispatcher cue both ride the instructions block.
+    assert "commit" in first.instructions
+    assert "review-diff" in first.instructions
+    assert 'skill("<name>")' in first.instructions
+
+
+async def test_skills_catalog_is_injected_regardless_of_active_agent(tmp_path, mocker):
+    """All agents see all skills (ADR-0004 §4): the catalog rides every persona's prompt."""
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    agent = build_agent()  # built ONCE
+    plan = load_agent("plan")
+    reviewer = load_agent("code-reviewer")
+
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="ok")):
+        plan_run = await agent.run("hi", deps=_deps(tmp_path, active_agent=plan))
+        reviewer_run = await agent.run("hi", deps=_deps(tmp_path, active_agent=reviewer))
+
+    for run in (plan_run, reviewer_run):
+        first = run.all_messages()[0]
+        assert isinstance(first, ModelRequest)
+        instructions = first.instructions or ""
+        assert "commit" in instructions
+        assert "review-diff" in instructions
+        assert 'skill("<name>")' in instructions

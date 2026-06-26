@@ -35,6 +35,7 @@ from pydantic_ai.providers.google import GoogleProvider
 from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
 from decode.memory.service import assemble_memory
+from decode.skills.catalog import assemble_skills_catalog
 from decode.tools.registry import register_tools
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ def build_agent() -> Agent[AgentDeps, str | DeferredToolRequests]:
     register_tools(agent)
     _register_agent_prompt_instructions(agent)
     _register_memory_instructions(agent)
+    _register_skills_catalog_instructions(agent)
     logger.debug("built Gemini agent on model=%s (google-gla)", settings.gemini_model)
     return agent
 
@@ -108,3 +110,24 @@ def _register_memory_instructions(agent: Agent[AgentDeps, str | DeferredToolRequ
     @agent.instructions
     def memory_instructions(ctx: RunContext[AgentDeps]) -> str:
         return assemble_memory(ctx.deps.cwd)
+
+
+def _register_skills_catalog_instructions(
+    agent: Agent[AgentDeps, str | DeferredToolRequests],
+) -> None:
+    """Inject the Skills Catalog into the prompt via a **dynamic** instructions hook (ADR-0004 §1,§9).
+
+    Like the memory and agent-prompt hooks, this is a per-run ``@agent.instructions`` function: it
+    reads ``ctx.deps.cwd`` at prompt-build time and returns
+    :func:`decode.skills.catalog.assemble_skills_catalog` — the cheap "menu" half of progressive
+    disclosure (each skill's ``name`` + ``description``, plus the ``skill("<name>")`` cue). The
+    dispatcher (task 026) returns a body on demand. The catalog is injected for **every** agent, not
+    gated on ``ctx.deps.active_agent`` (ADR-0004 §4: all agents see all skills); reading ``cwd`` per
+    run is what makes a freshly dropped-in project skill appear on the next turn with no agent
+    rebuild. ``assemble_skills_catalog`` returns ``""`` when there are no skills, in which case
+    Pydantic AI contributes nothing extra (no empty header).
+    """
+
+    @agent.instructions
+    def skills_catalog_instructions(ctx: RunContext[AgentDeps]) -> str:
+        return assemble_skills_catalog(ctx.deps.cwd)

@@ -9,6 +9,7 @@ tools:
   - todo_write
   - bash
   - ask_user
+  - skill
 mode: default
 allow:
   - bash(git *)

@@ -8,6 +8,7 @@ tools:
   - web_fetch
   - todo_write
   - ask_user
+  - skill
 mode: default
 ---
 You are the explore agent. You read the codebase and answer questions about it; you never change it.
