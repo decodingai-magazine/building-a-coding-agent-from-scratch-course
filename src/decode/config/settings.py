@@ -7,6 +7,7 @@ Import the module-level ``settings`` singleton where you need configuration; nev
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,9 +18,33 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # --- Inference: Gemini (see AGENTS.md). M2 adds OpenRouter / Modal behind a gateway. ---
+    # --- Inference: one of three providers behind LLM_PROVIDER (ADR-0005). ---
+    # ``llm_provider`` is the explicit selector (no auto-detect); the default ``gemini`` keeps every
+    # existing ``.env`` (GEMINI_API_KEY only) working untouched. The per-provider fields below carry
+    # each backend's config; the cli startup guard (task 039) enforces the selected provider's
+    # required values.
+    llm_provider: Literal["gemini", "openrouter", "modal"] = "gemini"
+
+    # gemini (default): google-genai API-key path.
     gemini_api_key: SecretStr = SecretStr("")
     gemini_model: str = "gemini-2.5-flash"  # config-driven; confirm the exact id at task 004
+
+    # openrouter: OpenAI-compatible gateway with :free models. The default is the Free Models Router
+    # (``openrouter/free``) — it spreads across all available free models and auto-filters for the
+    # tool-calling the loop needs, so a single congested upstream no longer hard-blocks you with 429s.
+    # Pin a specific free id (e.g. ``meta-llama/llama-3.3-70b-instruct:free``) for a stricter guarantee.
+    openrouter_api_key: SecretStr = SecretStr("")
+    openrouter_model: str = "openrouter/free"
+
+    # modal Auto Endpoint: OpenAI-compatible ``/v1`` served on Modal. These endpoint vars are DISTINCT
+    # from the MODAL_TOKEN_ID/MODAL_TOKEN_SECRET account tokens (``modal token set``, CLI/sandbox).
+    # ``modal_endpoint_url`` has no default (per-user deploy output; used as ``{url}/v1``). The proxy
+    # tokens are optional (empty for an ``--unauthenticated`` endpoint), both-or-neither.
+    modal_endpoint_url: str = ""
+    # MODAL_MODELS.md §6 best-fit pick (native OpenAI tool-calling, single B200).
+    modal_endpoint_model: str = "openai/gpt-oss-120b"
+    modal_proxy_token_id: SecretStr = SecretStr("")  # Modal-Key: wk-... request header
+    modal_proxy_token_secret: SecretStr = SecretStr("")  # Modal-Secret: ws-... request header
 
     # --- Logging ---
     log_level: str = "INFO"

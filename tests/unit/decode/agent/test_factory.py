@@ -1,22 +1,25 @@
 """Unit tests for :func:`decode.agent.factory.build_agent`.
 
-ADR-0002 §1-2: the agent is a Pydantic AI :class:`~pydantic_ai.Agent` on Gemini, built via
-the ``google-gla`` API-key path with the model id from ``settings.gemini_model`` and
-``output_type=[str, DeferredToolRequests]`` so the deferred-tool seam is ready for task 005
-even though chat-only has no tools. These tests assert the *construction contract* without
-making any network call (no model request is issued just by building the agent).
+ADR-0002 §1-2 / ADR-0005 §3-5: the agent is a Pydantic AI :class:`~pydantic_ai.Agent` built on
+the configured **LLM Provider** — model construction is delegated to the ``_build_model()``
+Provider Seam (gemini via the ``google-gla`` API-key path, openrouter and modal via
+``OpenAIChatModel``). ``output_type=[str, DeferredToolRequests]`` keeps the deferred-tool seam
+ready. These tests assert the *construction contract* without making any network call (no model
+request is issued just by building the agent — every provider constructs offline).
 """
 
 from pathlib import Path
 
+import pytest
 from pydantic import SecretStr
 from pydantic_ai.messages import ModelRequest, ToolCallPart
 from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.google import GoogleProvider
 
 from decode.agent.deps import AgentDeps
-from decode.agent.factory import build_agent
+from decode.agent.factory import _build_model, build_agent
 from decode.agents.loader import load_agent
 from decode.entities.agent_def import AgentDef
 from decode.entities.permissions import PermissionDecision, PermissionRequest
@@ -74,7 +77,9 @@ def _tool_names_called(messages: list[object]) -> set[str]:
 
 
 def test_build_agent_uses_google_model_with_configured_id(mocker):
-    # Avoid touching real Gemini credentials/env: feed the key from settings explicitly.
+    # Avoid touching real Gemini credentials/env: feed the key from settings explicitly. Pin the
+    # provider so a developer's local `.env` (e.g. `LLM_PROVIDER=modal`) can't flip this off gemini.
+    mocker.patch("decode.agent.factory.settings.llm_provider", "gemini", create=False)
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
@@ -90,6 +95,7 @@ def test_build_agent_uses_google_model_with_configured_id(mocker):
 
 
 def test_build_agent_respects_a_custom_model_id(mocker):
+    mocker.patch("decode.agent.factory.settings.llm_provider", "gemini", create=False)
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
@@ -127,31 +133,27 @@ def test_build_agent_includes_deferred_tool_requests_in_output(mocker):
     assert DeferredToolRequests in output_types
 
 
-def test_build_agent_sets_a_static_base_instruction(mocker):
+def test_build_agent_registers_a_single_instructions_hook(mocker):
+    """ONE instructions source → ONE ``system`` message (regression guard).
+
+    decode's base + active persona + memory + Skills Catalog are assembled inside a single
+    ``@agent.instructions`` hook, NOT registered as separate sources, because
+    ``OpenAIChatModel`` emits one ``system`` message per instruction source and strict
+    OpenAI-compatible servers reject more than one — the vLLM chat template behind a Modal Auto
+    Endpoint (and some OpenRouter models) raise "System message must be at the beginning." on the
+    second one. So there is no static ``instructions=`` string and exactly one callable entry; the
+    content of each part is asserted by the per-part injection tests below.
+    """
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
 
     agent = build_agent()
 
-    # `_instructions` is a normalized list of static strings / functions; a static base
-    # prompt identifying decode as a terminal coding agent must be present.
-    static_text = " ".join(p for p in agent._instructions if isinstance(p, str))
-    assert "decode" in static_text.lower()
-    assert "coding agent" in static_text.lower()
-
-
-def test_build_agent_registers_a_dynamic_memory_instructions_function(mocker):
-    """A dynamic (callable) instructions entry must be present so memory is built per run."""
-    mocker.patch(
-        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
-    )
-
-    agent = build_agent()
-
-    # Beyond the static base string, at least one callable instructions entry (the per-run
-    # memory hook) must be registered — that is what reads AGENTS.md/MEMORY.md at prompt-build.
-    assert any(callable(p) for p in agent._instructions)
+    static_strings = [p for p in agent._instructions if isinstance(p, str)]
+    callables = [p for p in agent._instructions if callable(p)]
+    assert static_strings == []  # no separate static base → no extra system message
+    assert len(callables) == 1  # the single assembled-instructions hook
 
 
 async def test_memory_is_injected_into_the_first_request_instructions(tmp_path, mocker):
@@ -277,20 +279,6 @@ async def test_tool_visibility_follows_the_active_agent_per_run_without_rebuild(
 # --- per-agent system prompt via the dynamic instructions hook (ADR-0003 §6,7) --------------
 
 
-def test_build_agent_registers_a_dynamic_agent_prompt_instructions_function(mocker):
-    """A dynamic callable instructions entry for the per-agent prompt must be registered."""
-    mocker.patch(
-        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
-    )
-
-    agent = build_agent()
-
-    # Beyond the static base + the memory hook, the agent-prompt hook is also callable; at least
-    # two callable instruction entries (memory + agent prompt) ride per run.
-    callables = [p for p in agent._instructions if callable(p)]
-    assert len(callables) >= 2
-
-
 async def test_active_agent_prompt_is_injected_into_the_run_instructions(tmp_path, mocker):
     """The code-reviewer prompt rides the assembled instructions when it is the active agent."""
     mocker.patch(
@@ -336,20 +324,6 @@ async def test_switching_active_agent_changes_the_prompt_on_the_next_turn(tmp_pa
 # --- the Skills Catalog injected via the dynamic instructions hook (ADR-0004 §1,§9) ---------
 
 
-def test_build_agent_registers_a_dynamic_skills_catalog_instructions_function(mocker):
-    """A third dynamic callable instructions entry (the Skills Catalog hook) must be registered."""
-    mocker.patch(
-        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
-    )
-
-    agent = build_agent()
-
-    # Static base + memory hook + agent-prompt hook + skills-catalog hook → at least three
-    # callable instruction entries ride per run.
-    callables = [p for p in agent._instructions if callable(p)]
-    assert len(callables) >= 3
-
-
 async def test_skills_catalog_is_injected_into_the_run_instructions(tmp_path, mocker):
     """The catalog (skill names + the skill(\"…\") cue) rides the assembled run instructions."""
     mocker.patch(
@@ -389,3 +363,125 @@ async def test_skills_catalog_is_injected_regardless_of_active_agent(tmp_path, m
         assert "commit" in instructions
         assert "review-diff" in instructions
         assert 'skill("<name>")' in instructions
+
+
+# --- the _build_model() Provider Seam: one model per llm_provider (ADR-0005 §3-5) -----------
+#
+# Construction is offline for every provider — building the agent issues no model request — so
+# these tests assert the model *type* + the client *shape* (base_url / headers / placeholder
+# api_key) with ``mocker.patch``ed settings, never a live call (ADR-0005 Consequences).
+#
+# The attribute paths below were verified against the installed openai 2.43 / pydantic-ai 1.107:
+# the custom modal client is reachable at ``agent.model._provider.client``; httpx normalizes the
+# ``base_url`` with a trailing slash (``.../v1`` round-trips as ``.../v1/``); ``default_headers``
+# carries the Modal proxy headers; ``api_key`` reads back the secret / ``"EMPTY"`` placeholder.
+
+_MODAL_URL = "https://modal-endpoint.example.com"
+
+
+def _patch_provider(mocker, provider, *, modal_authenticated=True):
+    """Patch the settings ``_build_model()`` reads for ``provider``; return its expected facts.
+
+    Mirrors the existing ``gemini_api_key`` patch pattern (``decode.agent.factory.settings.*``).
+    Returns ``(expected_model_cls, expected_system, expected_model_name)``.
+    """
+    mocker.patch("decode.agent.factory.settings.llm_provider", provider, create=False)
+    if provider == "gemini":
+        mocker.patch(
+            "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+        )
+        mocker.patch("decode.agent.factory.settings.gemini_model", "gemini-2.5-flash", create=False)
+        return GoogleModel, "google", "gemini-2.5-flash"
+    if provider == "openrouter":
+        mocker.patch(
+            "decode.agent.factory.settings.openrouter_api_key", SecretStr("or-key"), create=False
+        )
+        mocker.patch(
+            "decode.agent.factory.settings.openrouter_model",
+            "openrouter/free",
+            create=False,
+        )
+        return OpenAIChatModel, "openrouter", "openrouter/free"
+    if provider == "modal":
+        mocker.patch("decode.agent.factory.settings.modal_endpoint_url", _MODAL_URL, create=False)
+        mocker.patch(
+            "decode.agent.factory.settings.modal_endpoint_model",
+            "openai/gpt-oss-120b",
+            create=False,
+        )
+        token_id = "wk-id" if modal_authenticated else ""
+        token_secret = "ws-secret" if modal_authenticated else ""
+        mocker.patch(
+            "decode.agent.factory.settings.modal_proxy_token_id",
+            SecretStr(token_id),
+            create=False,
+        )
+        mocker.patch(
+            "decode.agent.factory.settings.modal_proxy_token_secret",
+            SecretStr(token_secret),
+            create=False,
+        )
+        return OpenAIChatModel, "openai", "openai/gpt-oss-120b"
+    raise AssertionError(f"unhandled provider in test helper: {provider}")
+
+
+@pytest.mark.parametrize(
+    ("provider", "modal_authenticated"),
+    [
+        ("gemini", False),
+        ("openrouter", False),
+        ("modal", True),
+        ("modal", False),
+    ],
+    ids=["gemini", "openrouter", "modal-authenticated", "modal-unauthenticated"],
+)
+def test_build_agent_constructs_the_model_for_the_configured_provider(
+    mocker, provider, modal_authenticated
+):
+    """``build_agent()`` delegates to ``_build_model()``, which builds the selected provider."""
+    expected_cls, expected_system, expected_model_name = _patch_provider(
+        mocker, provider, modal_authenticated=modal_authenticated
+    )
+
+    agent = build_agent()
+
+    assert isinstance(agent.model, expected_cls)
+    assert agent.model.system == expected_system
+    assert agent.model.model_name == expected_model_name
+
+
+def test_modal_authenticated_client_carries_both_proxy_headers(mocker):
+    """Both proxy tokens set → custom ``base_url`` + dual Modal-Key / Modal-Secret headers."""
+    _patch_provider(mocker, "modal", modal_authenticated=True)
+
+    agent = build_agent()
+
+    client = agent.model._provider.client
+    assert str(client.base_url) == f"{_MODAL_URL}/v1/"
+    headers = dict(client.default_headers)
+    assert headers["Modal-Key"] == "wk-id"
+    assert headers["Modal-Secret"] == "ws-secret"
+    # Non-bearer proxy scheme: the secret also rides as api_key (the SDK requires it non-empty).
+    assert client.api_key == "ws-secret"
+
+
+def test_modal_unauthenticated_client_has_no_modal_headers_and_placeholder_api_key(mocker):
+    """Neither proxy token set (``--unauthenticated``) → no Modal headers, ``api_key == "EMPTY"``."""
+    _patch_provider(mocker, "modal", modal_authenticated=False)
+
+    agent = build_agent()
+
+    client = agent.model._provider.client
+    assert str(client.base_url) == f"{_MODAL_URL}/v1/"
+    headers = dict(client.default_headers)
+    assert "Modal-Key" not in headers
+    assert "Modal-Secret" not in headers
+    assert client.api_key == "EMPTY"
+
+
+def test_build_model_rejects_an_unsupported_provider(mocker):
+    """Defensive: a value past the three branches (the settings ``Literal`` blocks it) raises."""
+    mocker.patch("decode.agent.factory.settings.llm_provider", "anthropic", create=False)
+
+    with pytest.raises(ValueError, match="unsupported llm_provider"):
+        _build_model()

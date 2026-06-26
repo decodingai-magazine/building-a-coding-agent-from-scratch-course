@@ -24,12 +24,74 @@ logger = logging.getLogger(__name__)
 
 # The one friendly line shown when no Gemini key is configured, instead of the raw
 # ``pydantic_ai.UserError`` traceback ``build_agent()`` would otherwise raise (ADR-0002 §1).
+# Kept verbatim from task 004 for backward-compat (the default provider is still ``gemini``).
 _NO_KEY_MESSAGE = (
     "Decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example)."
 )
 
+# The friendly line shown when ``LLM_PROVIDER=openrouter`` is selected without its API key.
+_OPENROUTER_NO_KEY_MESSAGE = (
+    "Decode: LLM_PROVIDER=openrouter needs OPENROUTER_API_KEY set in your environment or .env "
+    "(see .env.example)."
+)
+
+# The friendly line shown when ``LLM_PROVIDER=modal`` has exactly one proxy token set — a
+# misconfiguration (ADR-0005 §5): tokens are both-or-neither (neither = an --unauthenticated endpoint).
+_MODAL_PROXY_TOKENS_MESSAGE = (
+    "Decode: LLM_PROVIDER=modal proxy tokens are both-or-neither — set both MODAL_PROXY_TOKEN_ID "
+    "and MODAL_PROXY_TOKEN_SECRET, or neither for an --unauthenticated endpoint (see .env.example)."
+)
+
 # The startup Agent persona when ``--agent`` is omitted (ADR-0003 §9): the full-tool build agent.
 _DEFAULT_AGENT = "build"
+
+
+def _provider_config_error() -> str | None:
+    """Return one friendly line if the selected LLM Provider's required config is missing, else None.
+
+    Generalizes the task-004 ``GEMINI_API_KEY``-only guard to every provider (ADR-0005 §6). Reads
+    ``settings.llm_provider`` and checks only **presence** / both-or-neither shape — never
+    correctness (a wrong key fails at the first model request, matching the task-004 guard). The
+    cli echoes the return value to stderr and exits non-zero when it is not ``None``.
+
+    Per provider:
+
+    * ``gemini`` — needs ``GEMINI_API_KEY`` (unchanged ``_NO_KEY_MESSAGE``).
+    * ``openrouter`` — needs ``OPENROUTER_API_KEY``.
+    * ``modal`` — needs **only** ``MODAL_ENDPOINT_URL`` + ``MODAL_ENDPOINT_MODEL`` (proxy tokens are
+      optional: neither set is a valid ``--unauthenticated`` endpoint). The message names only the
+      absent var(s). If url + model are present, a both-or-neither check flags **exactly one** proxy
+      token set as a misconfiguration.
+    """
+    provider = settings.llm_provider
+    if provider == "gemini":
+        if not settings.gemini_api_key.get_secret_value():
+            return _NO_KEY_MESSAGE
+        return None
+    if provider == "openrouter":
+        if not settings.openrouter_api_key.get_secret_value():
+            return _OPENROUTER_NO_KEY_MESSAGE
+        return None
+    if provider == "modal":
+        missing = [
+            name
+            for name, value in (
+                ("MODAL_ENDPOINT_URL", settings.modal_endpoint_url),
+                ("MODAL_ENDPOINT_MODEL", settings.modal_endpoint_model),
+            )
+            if not value
+        ]
+        if missing:
+            return (
+                f"Decode: LLM_PROVIDER=modal needs {' and '.join(missing)} set in your "
+                "environment or .env (see .env.example)."
+            )
+        token_id = settings.modal_proxy_token_id.get_secret_value()
+        token_secret = settings.modal_proxy_token_secret.get_secret_value()
+        if bool(token_id) != bool(token_secret):
+            return _MODAL_PROXY_TOKENS_MESSAGE
+        return None
+    return None  # defensive: the settings ``Literal`` blocks any other value upstream.
 
 
 @click.command()
@@ -59,13 +121,15 @@ _DEFAULT_AGENT = "build"
 def cli(resume: str | None, agent: str, mode: str | None) -> None:
     """Decode — a terminal coding agent you run in your terminal."""
     logger.debug("decode starting (resume=%s, agent=%s, mode=%s)", resume, agent, mode)
-    # No-key startup guard (task 004 carryover): build_agent() constructs the Gemini provider,
-    # which raises a raw pydantic_ai.UserError (mentioning GOOGLE_API_KEY — the wrong var for
-    # this project) when no key is set. Catch it *here*, before any agent is built, and exit
-    # with one friendly line on stderr rather than dumping a traceback at the user.
-    if not settings.gemini_api_key.get_secret_value():
-        logger.debug("no GEMINI_API_KEY configured; refusing to start")
-        click.echo(_NO_KEY_MESSAGE, err=True)
+    # Per-provider config startup guard (ADR-0005 §6, generalizes the task-004 GEMINI_API_KEY guard):
+    # build_agent() constructs the selected provider's model, which raises a raw pydantic_ai.UserError
+    # when its required config is missing. Validate the selected provider's required config *here*,
+    # before any agent is built (and before --agent / --mode validation), and exit with one friendly
+    # line on stderr rather than dumping a traceback at the user.
+    config_error = _provider_config_error()
+    if config_error is not None:
+        logger.debug("provider %s misconfigured; refusing to start", settings.llm_provider)
+        click.echo(config_error, err=True)
         raise click.exceptions.Exit(1)
 
     # Unknown-agent startup guard (ADR-0003 §9): validate ``--agent`` against the catalog *before*

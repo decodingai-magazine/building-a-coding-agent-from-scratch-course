@@ -206,11 +206,11 @@ modal endpoint create --model Qwen/Qwen3.6-35B-A3B-FP8 --env main --unauthentica
 The endpoint speaks the **OpenAI Chat Completions API at `/v1`**:
 
 ```bash
-export MODAL_PROXY_TOKEN_KEY=wk-...
+export MODAL_PROXY_TOKEN_ID=wk-...
 export MODAL_PROXY_TOKEN_SECRET=ws-...
 
 curl "<your-endpoint-url>/v1/models" \
-  -H "Modal-Key: $MODAL_PROXY_TOKEN_KEY" \
+  -H "Modal-Key: $MODAL_PROXY_TOKEN_ID" \
   -H "Modal-Secret: $MODAL_PROXY_TOKEN_SECRET"
 ```
 
@@ -219,7 +219,7 @@ A quick chat/tool smoke test:
 ```bash
 curl "<your-endpoint-url>/v1/chat/completions" \
   -H "Content-Type: application/json" \
-  -H "Modal-Key: $MODAL_PROXY_TOKEN_KEY" \
+  -H "Modal-Key: $MODAL_PROXY_TOKEN_ID" \
   -H "Modal-Secret: $MODAL_PROXY_TOKEN_SECRET" \
   -d '{
         "model": "openai/gpt-oss-120b",
@@ -227,9 +227,11 @@ curl "<your-endpoint-url>/v1/chat/completions" \
       }'
 ```
 
-### 5.5 Advanced config (region & placement)
+### 5.5 Advanced config — what's CLI vs dashboard
 
-Verified in the dashboard's *Advanced Configurations*:
+**Region & placement are the only knobs `modal endpoint create` exposes** (confirmed via
+`modal endpoint create --help`; the subcommand set is just `create | list | stop` — there is no
+`update`):
 
 ```bash
 modal endpoint create \
@@ -240,7 +242,22 @@ modal endpoint create \
 ```
 
 `--colocate-compute` (UI "Same as routing region") can incur a region-selection price; the default
-"Any region" lets Modal place containers by availability/capacity.
+"Any region" lets Modal place containers by availability/capacity. Note the dashboard splits region
+into two fields: **Details → Routing Region** (set by `--routing-region`) vs **Deployment →
+SCHEDULING → Region** (the actual container placement, `Default`/Any unless `--colocate-compute`).
+
+**Autoscaling (min / max / buffer containers) is dashboard-only — no CLI flag.** The endpoints doc
+states it directly: *"You can adjust the autoscaling configuration overrides in the UI."* In the
+endpoint's **Overview → Deployment → AUTOSCALING** panel, click **Edit**, toggle **Override** on
+**Min containers** / **Max containers**, set values, save:
+- **Min ≥ 1** = keep-warm — no cold starts, but you pay for the idle GPU the whole time.
+- **Min 0** = scale-to-zero — cheaper, but the first request after idle pays a cold start.
+
+| Knob | CLI at create | Dashboard after create |
+|---|---|---|
+| Routing region | `--routing-region` | Details → Routing Region |
+| Compute placement | `--colocate-compute` | Details → Compute Placement |
+| Min / Max / Buffer containers | — (not supported) | AUTOSCALING → Edit → Override |
 
 ### 5.6 Manage endpoints
 
@@ -254,23 +271,33 @@ modal endpoint stop gpt-oss-120b --env main
 
 ## 6. Wiring an endpoint into `decode`
 
-The endpoint is **OpenAI-compatible**, so it plugs into the same gateway path as OpenRouter
-(`OPENROUTER_API_KEY`, OpenAI-compatible) already sketched in `.env.example`.
+The endpoint is **OpenAI-compatible**, so it rides the same `OpenAIChatModel` path as OpenRouter.
+Selecting it is **shipped** (ADR-0005, tasks 037-039): set the **LLM Provider** to `modal` and the
+**Provider Seam** (`agent/factory._build_model()`) constructs the model from the settings below.
 
-1. **Add env vars** (`.env.example` + `config/settings.py` — never read `os.environ` deep in call
-   sites, per AGENTS.md):
+1. **Set the env vars** — already wired in `config/settings.py` and mirrored in `.env.example`
+   (nothing reads `os.environ` in call sites, per AGENTS.md):
    ```bash
-   MODAL_ENDPOINT_URL=https://...           # the endpoint URL, used as base_url + "/v1"
-   MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b # served model id
-   MODAL_PROXY_TOKEN_KEY=wk-...              # Modal-Key  (omit if --unauthenticated)
-   MODAL_PROXY_TOKEN_SECRET=ws-...          # Modal-Secret
+   LLM_PROVIDER=modal                       # select the modal backend
+   MODAL_ENDPOINT_URL=https://...           # the endpoint URL; used as base_url = {url}/v1
+   MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b # served model id (default: the §4 best-fit pick)
+   MODAL_PROXY_TOKEN_ID=wk-...              # Modal-Key   (optional — omit if --unauthenticated)
+   MODAL_PROXY_TOKEN_SECRET=ws-...          # Modal-Secret (optional — omit if --unauthenticated)
    ```
-2. **Point the LLM gateway** at `base_url = f"{MODAL_ENDPOINT_URL}/v1"` using Pydantic-AI's
-   OpenAI-compatible model.
-3. **Auth nuance:** Modal's proxy uses custom **`Modal-Key` / `Modal-Secret`** headers, not the
-   OpenAI `Authorization: Bearer` scheme. Pass them as **default/extra headers** on the OpenAI client
-   (or use `--unauthenticated` for local dev to skip header plumbing). Verify exact header wiring
-   against the SDK you use.
+   These endpoint vars are **distinct** from the `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` account
+   tokens of §5.1 (the CLI/sandbox auth) — overloading the two scopes is exactly what ADR-0005 §2
+   avoids.
+2. **The Provider Seam builds the model.** For `modal`, `_build_model()` constructs an
+   `OpenAIChatModel` over a custom `AsyncOpenAI` client whose `base_url = f"{MODAL_ENDPOINT_URL}/v1"`
+   — the bespoke client is needed for the per-user URL and the optional proxy-token headers.
+3. **Auth nuance — implemented (ADR-0005 §5).** Modal's proxy uses custom **`Modal-Key` /
+   `Modal-Secret`** request headers, not the OpenAI `Authorization: Bearer` scheme:
+   - **Both proxy tokens set** → the client sends `Modal-Key` / `Modal-Secret` as **default headers**
+     (the secret also rides as the SDK-required non-empty `api_key`).
+   - **Neither set** (an `--unauthenticated` endpoint) → no Modal headers and a placeholder
+     `api_key="EMPTY"` (the OpenAI SDK requires a non-empty value).
+   The cli startup guard (task 039) enforces a **both-or-neither** invariant, so exactly one proxy
+   token set is caught as a friendly misconfiguration rather than a silent 401 at the first request.
 
 ---
 
@@ -280,8 +307,8 @@ The endpoint is **OpenAI-compatible**, so it plugs into the same gateway path as
   `modal endpoint create` + `modal endpoint benchmark` (see endpoint-benchmarks doc) before relying
   on them for budgeting.
 - **Cold starts & keep-warm.** A serverless endpoint scales to zero; first request after idle pays a
-  cold start. For an interactive TUI, configure min-replicas/keep-warm if latency matters (check
-  `modal endpoint create --help`).
+  cold start. For an interactive TUI, set **Min containers ≥ 1** to keep warm — but this is
+  **dashboard-only** (AUTOSCALING → Edit → Override; see §5.5), *not* a `modal endpoint create` flag.
 - **Tool-call parser is the gate.** Re-confirm the recipe enables OpenAI/hermes-style tool parsing
   for whichever model you pick — it's the single thing that makes or breaks the harness loop.
 - **Catalog drift.** Model ids and GPU recipes change. This file is a 2026-06-26 snapshot; re-read the

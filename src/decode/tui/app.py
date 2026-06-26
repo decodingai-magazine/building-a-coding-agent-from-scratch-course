@@ -541,16 +541,50 @@ def _make_event_sink(console: Console) -> Callable[[events.Event], None]:
     this flag here (not in the renderer) is what lets the render functions stay pure and
     stateless.
     """
-    state = {"need_prefix": False}
+    # Streamed answer/thinking deltas are LINE-BUFFERED. prompt_toolkit's ``patch_stdout()`` redraws
+    # output above the live prompt and corrupts *partial*-line writes (each redraw overwrites the
+    # start of the line, leaving only tail fragments), so we accumulate deltas and print only
+    # COMPLETE lines — split on the model's own ``\n`` — flushing the partial tail when the turn ends
+    # or any non-streamed event interrupts. A complete line wider than the terminal is wrapped by
+    # Rich, so a new visual line happens only at the width or a model newline, never once per chunk.
+    state = {"need_prefix": False, "buffer": "", "style": render.CONVERSATION_BG}
+
+    def _emit_line(text: str) -> None:
+        style = state["style"]
+        if state["need_prefix"] and style == render.CONVERSATION_BG:
+            # The `Decode ` label (Fix 2) leads the first answer line of the turn.
+            console.print(Text(_ASSISTANT_PREFIX + text, style=style))
+            state["need_prefix"] = False
+        else:
+            console.print(Text(text, style=style))
+
+    def _flush() -> None:
+        if state["buffer"]:
+            _emit_line(state["buffer"])
+            state["buffer"] = ""
+
+    def _stream(text: str, style: str) -> None:
+        if state["buffer"] and state["style"] != style:
+            _flush()  # a different stream kind (thinking vs answer) ended — close its line
+        state["style"] = style
+        state["buffer"] += text
+        while "\n" in state["buffer"]:
+            line, state["buffer"] = state["buffer"].split("\n", 1)
+            _emit_line(line)
 
     def on_event(event: events.Event) -> None:
+        if isinstance(event, events.AssistantTextDelta):
+            _stream(event.text, render.CONVERSATION_BG)
+            return
+        if isinstance(event, events.ThinkingDelta):
+            _stream(event.text, "dim italic")
+            return
+        # Non-streamed event (the echoed user line, tool panels, errors, ``[done]``): flush the
+        # buffered partial line first (carrying its prefix), arm a new turn's prefix on TurnStarted,
+        # then render the event on its own line.
+        _flush()
         if isinstance(event, events.TurnStarted):
             state["need_prefix"] = True
-        elif isinstance(event, events.AssistantTextDelta) and state["need_prefix"]:
-            # Print the `Decode ` label once (on the conversation background, no newline) so it
-            # reads as the lead-in to the streamed answer that immediately follows.
-            console.print(Text(_ASSISTANT_PREFIX, style=render.CONVERSATION_BG), end="")
-            state["need_prefix"] = False
         console.print(render.render_event(event))
 
     return on_event

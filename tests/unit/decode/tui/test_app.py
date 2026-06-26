@@ -54,8 +54,11 @@ def test_event_sink_resets_the_decode_prefix_each_turn():
 
     sink(events.TurnStarted(turn_id=0, prompt="first"))
     sink(events.AssistantTextDelta(text="one"))
+    # The next TurnStarted flushes turn 0's buffered line (with its prefix); TurnFinished flushes
+    # turn 1's — buffered lines surface when the turn ends, not per chunk.
     sink(events.TurnStarted(turn_id=1, prompt="second"))
     sink(events.AssistantTextDelta(text="two"))
+    sink(events.TurnFinished(turn_id=1))
 
     assert console.export_text().count("Decode ") == 2
 
@@ -69,6 +72,44 @@ def test_event_sink_does_not_prefix_non_assistant_events():
     sink(events.ToolResult(tool_call_id="t1", name="bash", output="ok"))
 
     assert "Decode " not in console.export_text()
+
+
+def test_event_sink_streams_deltas_onto_one_line_not_one_per_chunk():
+    """Streamed answer deltas flow onto a single line, not one line per chunk.
+
+    Regression guard: deltas were printed with the default ``end="\\n"``, so every streamed token
+    landed on its own line. They must now concatenate; a visual break happens only at the terminal
+    width or a model-emitted ``\\n``.
+    """
+    console = _record_console()
+    sink = app._make_event_sink(console)
+
+    sink(events.TurnStarted(turn_id=0, prompt="hi"))
+    for chunk in ["I", "'m", " ready to draft", " the ADR."]:
+        sink(events.AssistantTextDelta(text=chunk))
+    sink(events.TurnFinished(turn_id=0))
+
+    out = console.export_text()
+    # The chunks concatenate on one line (the `Decode ` prefix leads that same line).
+    assert "Decode I'm ready to draft the ADR." in out
+    # Not shredded: no individual chunk sits alone on its own line (the old bug).
+    lines = out.splitlines()
+    assert "'m" not in lines
+    assert " ready to draft" not in lines
+
+
+def test_event_sink_respects_a_model_emitted_newline():
+    """A real ``\\n`` inside the streamed text DOES break the line (the model's intended newline)."""
+    console = _record_console()
+    sink = app._make_event_sink(console)
+
+    sink(events.TurnStarted(turn_id=0, prompt="hi"))
+    sink(events.AssistantTextDelta(text="first paragraph.\n\nsecond paragraph."))
+    sink(events.TurnFinished(turn_id=0))
+
+    lines = [ln for ln in console.export_text().splitlines() if ln.strip()]
+    assert any(ln.endswith("first paragraph.") for ln in lines)
+    assert any(ln.strip() == "second paragraph." for ln in lines)
 
 
 def test_is_quit_command_matches_slash_quit():
