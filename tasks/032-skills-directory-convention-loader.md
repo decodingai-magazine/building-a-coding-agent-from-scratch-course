@@ -280,3 +280,23 @@ $ uv run python adv032.py   # 44 adversarial checks, 43 PASS + 1 mis-specified a
 - None blocking. Note (not a defect): the prompt-injection adversarial check tripped on a substring (`- ghost` inline) but the actual defense (no second bullet line from an embedded newline) holds — verified by inspecting catalog bullet lines. Dispatcher/TUI still return the plain body (no resource trailer) as expected — that is task 033, correctly out of scope here.
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-26 — Acceptance Review (refactor 032–034)
+
+**VERDICT: REJECT**
+
+Found 1 product issue (2 spots, same root cause). The directory-convention switch works end to end and
+the canonical docs (ADR-0004 + `docs/glossary.md`) accurately describe `<name>/SKILL.md`, but two
+**config-doc surfaces still describe the dropped flat `*.md` format** — not brought in line with the
+hard switch:
+- `.env.example:48-49` — "Project-local skill `*.md` files … a same-name file overrides a built-in".
+- `src/decode/config/settings.py:54-55` — "Project-authored skill ``*.md`` files live here …".
+
+A user following `.env.example` (the documented config surface) would author a flat
+`.decode/skills/<name>.md` that the loader **silently skips**. Filed rollup task:
+`tasks/035-skills-doc-drift-flat-format.md` (doc-only fix; route to SWE → Tester → re-run PA acceptance
+on the refactor). Everything else verified ACCEPT-able: built-ins byte-identical + correctly migrated
+(commit active, review-diff advisory; R100 rename, 0 changed lines), trailer is conditional + identical
+on both entry points + names a `read`-resolvable cwd-relative path, the capstone genuinely proves
+tier-3 (read returns real on-disk bundled contents; Tester confirmed non-tautological via mutation),
+and no ADR-0005/supersession leftovers.
