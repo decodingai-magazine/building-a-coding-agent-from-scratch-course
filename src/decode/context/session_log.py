@@ -46,9 +46,11 @@ logger = logging.getLogger(__name__)
 # The current header schema version: bump if the on-disk line format changes (replay can then
 # branch on it). M1 only ever writes version 1.
 _HEADER_VERSION = 1
-# Typed-line discriminators: line 0 is the session header, every later line a turn's messages.
+# Typed-line discriminators: line 0 is the session header, every later line a turn's messages
+# or a full-compaction checkpoint (ADR-0006 §1).
 _HEADER_TYPE = "session"
 _MESSAGES_TYPE = "messages"
+_COMPACTION_TYPE = "compaction"
 # Session files are JSONL.
 _SUFFIX = ".jsonl"
 # The timestamp format embedded in the filename: compact, UTC, and lexically sortable so the
@@ -129,17 +131,52 @@ class SessionLog:
             handle.write(json.dumps(entry) + "\n")
         logger.debug("appended %d message(s) to %s", len(new_messages), self.path)
 
+    def append_compaction(self, summary_message: ModelMessage, tail: list[ModelMessage]) -> None:
+        """Append one typed ``compaction`` checkpoint line (append-only) (ADR-0006 §1, §6).
+
+        A **full** compaction (the LLM tier — ADR-0006 §2) persists here: ``summary_message`` is
+        the synthetic summary head and ``tail`` the recent verbatim turns kept past the
+        Compaction Boundary (ADR-0006 §5). Both are serialized via
+        :data:`~pydantic_ai.messages.ModelMessagesTypeAdapter` (the same adapter
+        :meth:`append_turn` uses) and wrapped in a typed
+        ``{"type": "compaction", "summary": <dump([summary_message])>, "tail": <dump(tail)>}``
+        envelope. On replay :func:`load` **discards** everything accumulated before this line and
+        restarts the history from ``[summary_message, *tail]``, then continues — so earlier
+        verbatim copies of the tail are superseded, never double-counted, and successive full
+        compactions merge for free (the prior summary rides as the head). The file is opened in
+        append mode; the header and prior lines are never touched.
+
+        Microcompaction (ADR-0006 §3a) is in-memory only and is deliberately **not** persisted
+        here — the log keeps full fidelity for recovery.
+        """
+        summary_payload = json.loads(ModelMessagesTypeAdapter.dump_json([summary_message]))
+        tail_payload = json.loads(ModelMessagesTypeAdapter.dump_json(tail))
+        entry = {
+            "type": _COMPACTION_TYPE,
+            "summary": summary_payload,
+            "tail": tail_payload,
+        }
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+        logger.debug("appended compaction checkpoint (tail=%d) to %s", len(tail), self.path)
+
 
 def load(path: Path) -> list[ModelMessage]:
-    """Replay a session file into a flat ``message_history`` list (ADR-0002 §9).
+    """Replay a session file into a flat ``message_history`` list (ADR-0002 §9, ADR-0006 §1).
 
-    Reads every line, skips the header and any line that is not a well-formed ``messages``
-    entry, deserializes each surviving batch via
-    :data:`~pydantic_ai.messages.ModelMessagesTypeAdapter`, and concatenates them in file order
-    into one ``list[ModelMessage]`` (what ``decode --resume`` seeds the turn handler with).
+    Reads every line **in file order**. The header and any malformed line are skipped; a
+    ``messages`` entry is deserialized via
+    :data:`~pydantic_ai.messages.ModelMessagesTypeAdapter` and **appended**; a ``compaction``
+    checkpoint **discards everything accumulated so far** and restarts the history from its
+    serialized ``[summary, *tail]``, after which later lines continue to extend it. So a
+    compacted file replays to the *compacted* history (summary + kept tail + any later turns),
+    and successive compactions land on the **last** checkpoint — the earlier verbatim turns it
+    superseded are never double-counted. The result is what ``decode --resume`` seeds the turn
+    handler with.
 
     **Tolerant by design**: a truncated or garbage line — most likely the tail, from a crash
-    mid-write — is logged at debug and skipped, never raised, so a resume recovers every whole
+    mid-write — is logged at debug and skipped, never raised; a malformed ``compaction`` line is
+    likewise skipped, degrading to the un-compacted history. So a resume recovers every whole
     turn that reached disk. A missing file replays to ``[]``.
     """
     if not path.is_file():
@@ -147,6 +184,10 @@ def load(path: Path) -> list[ModelMessage]:
 
     history: list[ModelMessage] = []
     for line in path.read_text(encoding="utf-8").splitlines():
+        compacted = _parse_compaction_line(line)
+        if compacted is not None:
+            history = compacted  # checkpoint: discard prior, restart from [summary, *tail]
+            continue
         batch = _parse_messages_line(line)
         if batch is not None:
             history.extend(batch)
@@ -225,3 +266,36 @@ def _parse_messages_line(line: str) -> list[ModelMessage] | None:
     except Exception:
         logger.debug("skipping malformed messages entry in session log", exc_info=True)
         return None
+
+
+def _parse_compaction_line(line: str) -> list[ModelMessage] | None:
+    """Deserialize one ``compaction`` checkpoint into ``[*summary, *tail]``, or ``None`` (§1).
+
+    A well-formed ``compaction`` line carries a serialized ``summary`` (the synthetic one-message
+    summary head) and a verbatim ``tail`` (the recent turns kept past the Compaction Boundary),
+    both via :data:`~pydantic_ai.messages.ModelMessagesTypeAdapter`; this reconstructs the
+    **compacted** history ``[*summary, *tail]`` that :func:`load` restarts from at this line.
+
+    Any other line yields ``None`` so :func:`load` falls through to the ``messages`` parse / skip:
+    the header, a ``messages`` batch, blank lines, and unparseable JSON return ``None`` silently
+    (the unparseable case is logged by :func:`_parse_messages_line`, the second parse attempt),
+    while a ``compaction``-typed line the type adapter rejects — a crash mid-write — is logged at
+    debug and skipped, degrading to the un-compacted history. Mirrors
+    :func:`_parse_messages_line`'s tolerance; never raises.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None
+    try:
+        obj: Any = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict) or obj.get("type") != _COMPACTION_TYPE:
+        return None
+    try:
+        summary = ModelMessagesTypeAdapter.validate_python(obj["summary"])
+        tail = ModelMessagesTypeAdapter.validate_python(obj["tail"])
+    except Exception:
+        logger.debug("skipping malformed compaction entry in session log", exc_info=True)
+        return None
+    return [*summary, *tail]
