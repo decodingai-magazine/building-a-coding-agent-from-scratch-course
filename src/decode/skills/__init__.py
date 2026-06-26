@@ -14,19 +14,3 @@ intentionally overriding a built-in of the same name (``source`` keeps the prove
 module is **pure load + merge** (task 025): the dispatcher tool (026), catalog injection (027), and the
 ``/<skill-name>`` TUI command (028) come later.
 """
-
-from __future__ import annotations
-
-from decode.skills.loader import (
-    discover_project_skills,
-    load_builtin_skills,
-    load_skills,
-    parse_skill_file,
-)
-
-__all__ = [
-    "discover_project_skills",
-    "load_builtin_skills",
-    "load_skills",
-    "parse_skill_file",
-]

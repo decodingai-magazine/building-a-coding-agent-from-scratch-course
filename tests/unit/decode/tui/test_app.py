@@ -485,11 +485,10 @@ def test_handle_agent_command_missing_name_shows_usage():
         ("  /commit   ship it  ", ("commit", "ship it")),  # name + trailing, both stripped
         ("hello", None),  # not a slash line -> fall through to runner.submit
         ("/", None),  # a bare slash is no name at all
-        ("/quit", None),  # reserved -> the /quit handler wins
-        ("/agent build", None),  # reserved -> the /agent handler wins
-        ("/agent", None),  # reserved (bare) -> the /agent handler wins
-        ("/mode plan", None),  # reserved -> the /mode handler wins
-        ("/mode", None),  # reserved (bare) -> the /mode handler wins
+        # NOTE: reserved commands (``/quit`` / ``/agent`` / ``/mode``) now *parse* as a name here
+        # (e.g. ``/mode plan`` -> ``("mode", "plan")``). The parser no longer special-cases them —
+        # the ``run_app`` loop matches and ``continue``s on those before the skill branch runs, so a
+        # reserved command never reaches this function (see the loop-precedence test below).
     ],
 )
 def test_parse_skill_command(line, expected):
@@ -539,24 +538,14 @@ def test_handle_skill_command_unknown_emits_available_skills_and_returns_none(tm
     assert message.index("commit") < message.index("review-diff")  # sorted
 
 
-def test_handle_skill_command_with_no_skills_available_emits_a_friendly_line(tmp_path, mocker):
-    # When the catalog is empty, the unknown-skill line says so instead of listing nothing.
-    mocker.patch.object(app, "load_skills", return_value={})
-    lines: list[str] = []
-
-    result = app._handle_skill_command("anything", "", cwd=tmp_path, emit=lines.append)
-
-    assert result is None
-    assert len(lines) == 1
-    assert "no skills available" in lines[0]
-
-
 def test_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
-    # ADR-0004 §3,5: a project skill named `mode` is reachable via the dispatcher (load_skills),
-    # but `/mode plan` is NOT parsed as a skill command — the reserved `/mode` handler wins.
+    # ADR-0004 §3,5: a project skill named `mode` is reachable via the dispatcher (load_skills), but
+    # `/mode plan` never reaches the skill branch — the loop matches `parse_mode_command` first and
+    # `continue`s, so the `/mode` handler wins. Precedence is the loop's job, not the parser's (the
+    # full loop-precedence path is also covered e2e by ``test_run_app_mode_slash_*``).
     from decode.skills.loader import load_skills
 
     _write_skill(tmp_path / ".decode" / "skills", "mode")
 
     assert "mode" in load_skills(tmp_path)  # still reachable via the skill dispatcher
-    assert app.parse_skill_command("/mode plan") is None  # the /mode handler intercepts it first
+    assert app.parse_mode_command("/mode plan") == "plan"  # the loop's /mode branch matches first

@@ -80,10 +80,6 @@ _QUIT_COMMAND = "/quit"
 # the single input surface alongside ``/quit`` (never a second ``prompt_async``).
 _AGENT_COMMAND = "/agent"
 _MODE_COMMAND = "/mode"
-# The reserved TUI slash commands that take precedence over a same-named skill (ADR-0004 §5): the
-# built-in handlers run earlier in the loop, so :func:`parse_skill_command` returns ``None`` for
-# these to never shadow them. ``/resume`` is a CLI flag, not a TUI command — not reserved here.
-_RESERVED_COMMANDS = frozenset({_QUIT_COMMAND, _AGENT_COMMAND, _MODE_COMMAND})
 # The order Shift+Tab cycles the gate mode through (ADR-0003 §9): default -> edit -> plan ->
 # bypass -> back to default. A tuple so :func:`next_mode` is a pure index step.
 _MODE_CYCLE: tuple[PermissionMode, ...] = (
@@ -188,9 +184,10 @@ def parse_skill_command(line: str) -> tuple[str, str] | None:
     (mirrors :func:`parse_agent_command`): ``"/commit"`` → ``("commit", "")``; ``"/commit fix the
     bug"`` → ``("commit", "fix the bug")`` (name + trailing text, both stripped). A non-slash line
     (``"hello"``) → ``None`` so the main loop falls through to its normal ``runner.submit`` routing.
-    A **reserved** slash command (``/quit`` / ``/agent …`` / ``/mode …``) → ``None`` so the existing
-    handlers win — belt-and-suspenders, since they are already matched earlier in the loop; a
-    same-named skill stays reachable via the dispatcher. A bare ``"/"`` (no name) → ``None``.
+    A bare ``"/"`` (no name) → ``None``. A reserved slash command (``/quit`` / ``/agent …`` /
+    ``/mode …``) parses here too, but never reaches this branch: the ``run_app`` loop matches and
+    ``continue``s on those *before* the skill branch, so precedence is the loop's job, not this
+    parser's (a same-named skill stays reachable via the dispatcher).
     """
     stripped = line.strip()
     if not stripped.startswith("/"):
@@ -198,8 +195,6 @@ def parse_skill_command(line: str) -> tuple[str, str] | None:
     name, _, trailing = stripped[1:].partition(" ")
     name = name.strip()
     if not name:
-        return None
-    if f"/{name}" in _RESERVED_COMMANDS:
         return None
     return name, trailing.strip()
 
@@ -297,12 +292,10 @@ def _handle_mode_command(
     emit(mode_switch_confirmation(mode.value))
 
 
-# The friendly inline lines for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirror the
+# The friendly inline line for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirrors the
 # ``/agent`` / ``/mode`` unknown-argument style (a single ``Decode - …`` line); the available-skills
-# list doubles as discovery. ``_SKILL_NO_MATCH`` lists the sorted skills; ``_SKILL_NONE`` is shown
-# when the catalog is empty.
+# list doubles as discovery. The catalog is never empty — the built-ins always ship.
 _SKILL_NO_MATCH = "Decode - unknown command '/{name}'; available skills: {skills}."
-_SKILL_NONE = "Decode - unknown command '/{name}'; no skills available."
 
 
 def _handle_skill_command(
@@ -322,10 +315,7 @@ def _handle_skill_command(
     catalog = load_skills(cwd)
     found = catalog.get(name)
     if found is None:
-        if catalog:
-            emit(_SKILL_NO_MATCH.format(name=name, skills=", ".join(sorted(catalog))))
-        else:
-            emit(_SKILL_NONE.format(name=name))
+        emit(_SKILL_NO_MATCH.format(name=name, skills=", ".join(sorted(catalog))))
         logger.debug("/%s is not a known skill (available: %s)", name, sorted(catalog))
         return None
     logger.debug("/%s resolved to skill body (source=%s)", name, found.source)

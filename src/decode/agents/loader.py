@@ -24,15 +24,13 @@ from importlib.resources.abc import Traversable
 import yaml
 
 from decode.entities.agent_def import AgentDef
+from decode.frontmatter import split_frontmatter
 from decode.permissions.types import PermissionMode
 
 logger = logging.getLogger(__name__)
 
 # The package the bundled catalog files live in (packaged data, loaded via importlib.resources).
 _BUILTIN_PACKAGE = "decode.agents.builtin"
-
-# The YAML frontmatter fence — a line that is exactly ``---``.
-_FENCE = "---"
 
 
 def load_builtin_agents() -> dict[str, AgentDef]:
@@ -77,7 +75,7 @@ def parse_agent_file(text: str) -> AgentDef:
     :class:`AgentDef` enforce the rest (unknown tool name, empty name/prompt, malformed rule). Raises
     :class:`ValueError` on any structural problem.
     """
-    frontmatter, body = _split_frontmatter(text)
+    frontmatter, body = split_frontmatter(text)
     meta = yaml.safe_load(frontmatter)
     if not isinstance(meta, dict):
         raise ValueError("frontmatter must be a YAML mapping of agent fields")
@@ -99,19 +97,6 @@ def _builtin_files() -> list[Traversable]:
         (entry for entry in package.iterdir() if entry.name.endswith(".md")),
         key=lambda entry: entry.name,
     )
-
-
-def _split_frontmatter(text: str) -> tuple[str, str]:
-    """Split a ``---``-fenced YAML frontmatter block from the body, returning ``(yaml, body)``."""
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != _FENCE:
-        raise ValueError("file must start with a '---' YAML frontmatter block")
-    for index in range(1, len(lines)):
-        if lines[index].strip() == _FENCE:
-            frontmatter = "\n".join(lines[1:index])
-            body = "\n".join(lines[index + 1 :])
-            return frontmatter, body
-    raise ValueError("frontmatter block is not closed with a second '---'")
 
 
 def _parse_mode(raw: object) -> PermissionMode:
