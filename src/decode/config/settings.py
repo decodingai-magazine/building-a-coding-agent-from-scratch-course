@@ -51,8 +51,10 @@ class Settings(BaseSettings):
     permissions_file: Path = Path(".decode/settings.json")
 
     # --- Skills: project-local skills directory (task 025 / ADR-0004 §3) ---
-    # Project-authored skill ``*.md`` files live here (relative to cwd); they override a built-in
-    # skill of the same frontmatter name. Missing dir → built-ins only. Read only via this singleton.
+    # Project-authored skills live here (relative to cwd) as ``<name>/SKILL.md`` directories, not flat
+    # ``*.md`` files; each is keyed by its frontmatter ``name`` (directory name cosmetic) and a
+    # same-``name`` directory overrides a built-in skill. Missing dir → built-ins only. Read only via
+    # this singleton.
     skills_dir: Path = Path(".decode/skills")
 
 
