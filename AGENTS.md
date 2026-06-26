@@ -41,7 +41,7 @@ The intended target tree. Most `src/` subpackages are created **when you reach t
     ├── sandbox/                   # Bash execution — local (Docker/Firecracker) + remote (Modal)
     ├── services/                  # services interface: LLM gateway, memory, LSP servers, MCP servers
     ├── runtime/                   # Kitaru: credentials proxy, durability, scheduling, HITL
-    ├── context/                   # context engineering: compaction + conversation log (SQLite)
+    ├── context/                   # context engineering: compaction + conversation log (JSONL)
     ├── memory/                    # AGENTS.md / MEMORY.md loading
     └── observability/             # Opik tracing
 ```
@@ -64,7 +64,7 @@ Single Python toolchain — `uv`, `ruff`, `pytest`. **Python 3.12+.**
 | Observability | `opik` | Tracing + eval harness. *added at its step* |
 | Sandbox / serving | `modal` (remote) · Docker/Firecracker (local) | *added at its step* |
 | Durability | Kitaru | Credentials proxy, durability, scheduling, HITL. *confirm package source* |
-| Datastore | SQLite | Conversation log for recovery. *added at its step* |
+| Datastore | SQLite | Conversation log is JSONL today; compaction landed on it (ADR-0006). SQLite remains a deferred durable-store option. |
 
 Per-step libraries are `uv add`-ed when you reach them (see the commented block in `pyproject.toml`) — the initial install stays light.
 

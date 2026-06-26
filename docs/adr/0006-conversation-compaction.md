@@ -1,6 +1,6 @@
 # 0006. Conversation compaction — window-relative two-tier in-context + on-exit memory compression, on JSONL
 
-**Status:** proposed
+**Status:** Accepted
 **Date:** 2026-06-26
 
 ## Context
