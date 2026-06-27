@@ -152,3 +152,40 @@ $ # determinism: 20× isolated runs → 20/20 passed (1.21–1.32s each)
 - The token arithmetic depends on pydantic-ai's `FunctionModel` reporting a fixed 50 input tokens/leg (same external assumption as the M1 capstone). The test asserts the exact 50/100/150 values, so a library change fails loudly rather than silently mis-testing — acceptable for a `uv.lock`-pinned project.
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-27 — Acceptance Review (feature `context-compaction`, tasks 041-049, PR #15)
+
+**VERDICT: ACCEPT**
+
+Reviewed the whole feature from the user's perspective against the Tasks Plan ACs and the
+user-stated behaviours; spot-checked the shipped code (not just the SWE/Tester logs). All user
+journeys hold and the docs accurately present the feature.
+
+- **Two levels present.** Conversation cascade (`agent/loop.py::_maybe_auto_compact` →
+  `compact()` / `_microcompact()`) AND on-exit `MEMORY.md` compression at the 200-line cap
+  (`memory/extract.py::compress_memory_file`, drop-oldest as the guaranteed fallback).
+- **Window-relative, configurable.** Full fires at `window*(1-0.20)` (80% full), micro at
+  `window*(1-0.40)` (60%); window `1_048_576` default; invariant `micro_reserve > full_reserve`
+  asserted on defaults. All overridable via `.env` (block present + documented).
+- **Both tiers + manual `/compact`.** Micro (no-LLM, in-memory, NOT persisted) and full (LLM
+  skeleton + recent tail, persisted as a typed `compaction` JSONL line); `/compact` is reserved
+  before the skill branch, idle-only, ignores thresholds/`compaction_enabled`. Friendly busy /
+  nothing-to-compact lines.
+- **Resume continues the compacted conversation.** `session_log.load()` honors the `compaction`
+  checkpoint (discard-and-restart `[summary, *tail]`); capstone proves `len(replayed) < full
+  transcript`, no orphaned `ToolReturnPart`.
+- **Footer gauge.** `○◔◑◕●` + percent, green/yellow/red derived from the SAME reserve settings
+  (single source of truth); reads the public `last_input_tokens`; `○ 0%` before the first turn.
+- **JSONL, no SQLite — recorded.** ADR-0006 is `Accepted`, matches shipped code, records the
+  divergence; AGENTS.md `context/` tree reads `(JSONL)` and the Datastore row reframes SQLite as
+  deferred. No live flat-threshold references remain in code/env/README. Glossary carries
+  Compaction, Compaction Boundary, Microcompaction, Memory Compression, Context Gauge — all used
+  verbatim in code/user-facing strings.
+
+User-facing copy is clear and consistent with the established `Decode - …` voice. All AC verified
+from user POV. User satisfaction guaranteed. Hand off to the PR Reviewer.
+
+**Adjacent (out of scope — do NOT block this feature):** AGENTS.md "Testing E2E" still references
+`./MEMORY.md` / `cat MEMORY.md` (pre-existing, task-013 era), but the real path is
+`<cwd>/.decode/MEMORY.md` and the README (this feature) says it correctly. Worth a separate
+docs-cleanup task; not part of `context-compaction`.

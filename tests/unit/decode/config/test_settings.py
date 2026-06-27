@@ -96,7 +96,7 @@ def test_provider_defaults(monkeypatch):
     s = Settings(_env_file=None)
     assert s.llm_provider == "gemini"
     assert s.openrouter_model == "openrouter/free"
-    assert s.modal_endpoint_model == "openai/gpt-oss-120b"
+    assert s.modal_endpoint_model == "Qwen/Qwen3.6-35B-A3B-FP8"
     assert s.modal_endpoint_url == ""
     assert s.openrouter_api_key.get_secret_value() == ""
     assert s.modal_proxy_token_id.get_secret_value() == ""

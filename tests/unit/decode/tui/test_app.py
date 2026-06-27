@@ -9,6 +9,7 @@ and tested here.
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -24,9 +25,10 @@ from decode.entities.permissions import (
     PermissionRequest,
 )
 from decode.harness.decisions import DecisionChannel
+from decode.harness.runner import Phase
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
-from decode.tui import app
+from decode.tui import app, render
 
 
 def _record_console() -> Console:
@@ -463,6 +465,16 @@ def _handler(deps: AgentDeps, mocker) -> AgentTurnHandler:
     return AgentTurnHandler(mocker.Mock(), deps=deps)
 
 
+def _runner(phase: Phase = Phase.IDLE) -> SimpleNamespace:
+    """A minimal footer stand-in for the Runner — ``_bottom_toolbar`` only reads ``runner.phase``."""
+    return SimpleNamespace(phase=phase)
+
+
+def _decisions(*, pending: bool = False) -> SimpleNamespace:
+    """A footer stand-in for the DecisionChannel — ``_bottom_toolbar`` only reads ``.pending``."""
+    return SimpleNamespace(pending=pending)
+
+
 def test_bottom_toolbar_reads_the_live_agent_and_mode(mocker):
     # The footer must reflect a mode change after Shift+Tab / /mode, so the toolbar reads the
     # gate + deps live each render (not a snapshot taken when the session was built).
@@ -471,12 +483,12 @@ def test_bottom_toolbar_reads_the_live_agent_and_mode(mocker):
     deps.active_agent = load_agent("build")
     handler = _handler(deps, mocker)
 
-    before = app._bottom_toolbar(deps, gate, handler).value
+    before = app._bottom_toolbar(deps, gate, handler, _runner(), _decisions()).value
     assert "agent:build" in before
     assert "mode:default" in before
 
     gate.set_mode(PermissionMode.EDIT)
-    after = app._bottom_toolbar(deps, gate, handler).value
+    after = app._bottom_toolbar(deps, gate, handler, _runner(), _decisions()).value
     assert "mode:edit" in after  # the live mode change is reflected on the next render
 
 
@@ -489,7 +501,7 @@ def test_bottom_toolbar_shows_an_empty_green_gauge_before_the_first_turn(mocker)
     handler = _handler(deps, mocker)
     assert handler.last_input_tokens == 0  # the public property's default before any turn
 
-    value = app._bottom_toolbar(deps, gate, handler).value
+    value = app._bottom_toolbar(deps, gate, handler, _runner(), _decisions()).value
 
     assert "○ 0%" in value
     assert 'fg="green"' in value
@@ -507,10 +519,52 @@ def test_bottom_toolbar_gauge_reads_the_public_property_and_colors_by_fill(mocke
     handler = mocker.Mock()
     handler.last_input_tokens = int(window * 0.9)  # 90% full -> full glyph, red (>= 0.80)
 
-    value = app._bottom_toolbar(deps, gate, handler).value
+    value = app._bottom_toolbar(deps, gate, handler, _runner(), _decisions()).value
 
     assert "● 90%" in value
     assert 'fg="red"' in value
+
+
+def test_bottom_toolbar_shows_the_working_spinner_only_while_a_turn_runs(mocker):
+    # While a turn is in flight (runner.phase != IDLE) the footer leads with a spinner + "working…"
+    # so the user knows to wait; when idle there is no spinner. The gauge/hint stay either way.
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+    handler = _handler(deps, mocker)
+
+    idle = app._bottom_toolbar(deps, gate, handler, _runner(Phase.IDLE), _decisions()).value
+    assert "working…" not in idle
+    assert "agent:build" in idle  # the rest of the footer is unchanged when idle
+
+    for phase in (Phase.DISPATCHING, Phase.RUNNING):
+        busy = app._bottom_toolbar(deps, gate, handler, _runner(phase), _decisions()).value
+        assert "working…" in busy, f"the spinner shows while {phase}"
+        # the leading glyph is one of the spinner frames (animation advances via refresh_interval)
+        assert any(frame in busy for frame in render._SPINNER_FRAMES)
+        assert "agent:build" in busy  # gauge + hint still present alongside the spinner
+
+
+def test_bottom_toolbar_hides_the_spinner_while_awaiting_a_human_decision(mocker):
+    # Regression: during an ask_user / permission pause the turn task is suspended (phase RUNNING)
+    # but the agent is waiting on the USER, not working — so the spinner must NOT show, else the
+    # footer reads "working…" while the user is the one being asked to type.
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+    handler = _handler(deps, mocker)
+
+    paused = app._bottom_toolbar(
+        deps, gate, handler, _runner(Phase.RUNNING), _decisions(pending=True)
+    ).value
+    assert "working…" not in paused, "no spinner while a human decision is pending"
+    assert "agent:build" in paused  # the gauge + hint still render
+
+    # control: same RUNNING phase, no pending decision -> the spinner is back
+    working = app._bottom_toolbar(
+        deps, gate, handler, _runner(Phase.RUNNING), _decisions(pending=False)
+    ).value
+    assert "working…" in working
 
 
 # --- the /mode and /agent handlers (mutate gate/deps, render one confirmation line) -----------

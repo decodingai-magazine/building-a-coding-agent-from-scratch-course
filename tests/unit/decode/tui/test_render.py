@@ -278,3 +278,15 @@ def test_context_gauge_tiers_derive_from_the_reserve_settings():
     assert render.context_gauge(warn_at - 0.01, warn_at=warn_at, danger_at=danger_at)[1] == "green"
     assert render.context_gauge(warn_at, warn_at=warn_at, danger_at=danger_at)[1] == "yellow"
     assert render.context_gauge(danger_at, warn_at=warn_at, danger_at=danger_at)[1] == "red"
+
+
+def test_spinner_frame_cycles_through_every_frame_in_order_and_wraps():
+    """The busy-spinner helper steps through all braille frames and wraps (drives the footer)."""
+    n = len(render._SPINNER_FRAMES)
+    # one full cycle of ticks yields every frame, in order
+    assert [render.spinner_frame(t) for t in range(n)] == list(render._SPINNER_FRAMES)
+    # it wraps: tick n returns to frame 0; a large/negative tick stays in range
+    assert render.spinner_frame(n) == render._SPINNER_FRAMES[0]
+    assert render.spinner_frame(-1) == render._SPINNER_FRAMES[-1]
+    # every frame is a single visible glyph (no width surprises in the footer)
+    assert all(len(render.spinner_frame(t)) == 1 for t in range(n))

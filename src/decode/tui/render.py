@@ -59,6 +59,21 @@ def context_gauge(fraction: float, *, warn_at: float, danger_at: float) -> tuple
     return label, color
 
 
+# The braille frames the "agent is working" footer spinner cycles through — an indeterminate busy
+# indicator (no 0→1 progress, just motion that says "wait"). One frame per footer refresh tick.
+_SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def spinner_frame(tick: int) -> str:
+    """The braille spinner glyph for animation step ``tick`` — cycles and wraps (pure/testable).
+
+    ``tick`` is a monotonically increasing counter (one per footer refresh); the frame is
+    ``_SPINNER_FRAMES[tick % len(_SPINNER_FRAMES)]`` so the glyph advances each render and wraps
+    around. Python's modulo keeps the index valid for negative ticks too.
+    """
+    return _SPINNER_FRAMES[tick % len(_SPINNER_FRAMES)]
+
+
 def render_event(event: events.Event) -> RenderableType:
     """Map a single canonical event to its Rich renderable.
 
