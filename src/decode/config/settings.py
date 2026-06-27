@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     # ``modal_endpoint_url`` has no default (per-user deploy output; used as ``{url}/v1``). The proxy
     # tokens are optional (empty for an ``--unauthenticated`` endpoint), both-or-neither.
     modal_endpoint_url: str = ""
-    # MODAL_MODELS.md §6 best-fit pick (native OpenAI tool-calling, single B200).
-    modal_endpoint_model: str = "openai/gpt-oss-120b"
+    # More on supported models: MODAL_MODELS.md
+    modal_endpoint_model: str = "Qwen/Qwen3.6-35B-A3B-FP8"
     modal_proxy_token_id: SecretStr = SecretStr("")  # Modal-Key: wk-... request header
     modal_proxy_token_secret: SecretStr = SecretStr("")  # Modal-Secret: ws-... request header
 
