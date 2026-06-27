@@ -5,6 +5,7 @@ tools:
   - read
   - glob
   - grep
+  - lsp
   - web_fetch
   - todo_write
   - enter_plan_mode
