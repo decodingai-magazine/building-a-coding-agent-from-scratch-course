@@ -24,7 +24,7 @@ stays responsive while a turn streams. ``Ctrl-D`` or typing ``/quit`` exits clea
 
 The interactive loop reads real stdin, so its plumbing is exercised by the
 ``run_app`` regression test (a piped prompt_toolkit input); the decidable pieces
-(:func:`is_quit_command`, :func:`footer_hint`, :class:`InputIntent`,
+(:func:`is_quit_command`, :func:`is_compact_command`, :func:`footer_hint`, :class:`InputIntent`,
 :func:`parse_permission_answer`, the control-surface parsers
 :func:`parse_agent_command` / :func:`parse_mode_command` / :func:`parse_mode_name` /
 :func:`parse_skill_command`, and the Shift+Tab :func:`next_mode` cycle) are pure and unit-tested.
@@ -39,6 +39,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -59,7 +60,7 @@ from decode.entities.permissions import (
     PermissionRequest,
 )
 from decode.harness.decisions import DecisionChannel
-from decode.harness.runner import Runner
+from decode.harness.runner import Phase, Runner
 from decode.memory.extract import extract_on_exit
 from decode.permissions import rules
 from decode.permissions.gate import PermissionGate
@@ -81,6 +82,10 @@ _QUIT_COMMAND = "/quit"
 # the single input surface alongside ``/quit`` (never a second ``prompt_async``).
 _AGENT_COMMAND = "/agent"
 _MODE_COMMAND = "/mode"
+# The manual full-compaction command (ADR-0006 §7): forces a full compaction now, wired like
+# ``/quit`` and idle-only. Reserved among the slash commands (matched before ``parse_skill_command``)
+# so a project skill named ``compact`` can never shadow it.
+_COMPACT_COMMAND = "/compact"
 # The order Shift+Tab cycles the gate mode through (ADR-0003 §9): default -> edit -> plan ->
 # bypass -> back to default. A tuple so :func:`next_mode` is a pure index step.
 _MODE_CYCLE: tuple[PermissionMode, ...] = (
@@ -127,6 +132,15 @@ def is_quit_command(line: str) -> bool:
     return line.strip() == _QUIT_COMMAND
 
 
+def is_compact_command(line: str) -> bool:
+    """True when ``line`` is the ``/compact`` command (ignoring surrounding whitespace).
+
+    Pure (mirrors :func:`is_quit_command`): exact match after a strip — ``"/compact"`` and
+    ``"  /compact  "`` are the command; ``"/compactx"`` / ``"compact"`` / ``"/quit"`` are not.
+    """
+    return line.strip() == _COMPACT_COMMAND
+
+
 def footer_hint(agent: str, mode: str) -> str:
     """The bottom-toolbar hint: the live agent + mode, then the interaction keys (plain text).
 
@@ -137,7 +151,7 @@ def footer_hint(agent: str, mode: str) -> str:
     """
     return (
         f"agent:{agent} mode:{mode} | Enter steer | Alt+Enter follow-up | "
-        "Esc abort | Shift+Tab mode | /agent /mode /quit"
+        "Esc abort | Shift+Tab mode | /agent /mode /compact /quit"
     )
 
 
@@ -198,6 +212,38 @@ def parse_skill_command(line: str) -> tuple[str, str] | None:
     if not name:
         return None
     return name, trailing.strip()
+
+
+class SlashCompleter(Completer):
+    """Autocomplete the slash commands + project skills as the user types ``/`` (like Claude Code).
+
+    Built once per session from ``load_skills(cwd)`` so the menu lists every reachable ``/<skill>``
+    (its ``description`` as the meta) alongside the four built-in commands the ``run_app`` loop
+    matches before the skill branch. Fires **only** while the line-before-cursor is a single ``/``
+    token (no space yet) — so normal prose, and the ``<arg>`` after ``/agent``/``/mode``, never
+    trigger it. ``prompt_toolkit`` renders the menu; this just supplies the candidates.
+    """
+
+    def __init__(self, cwd: Path) -> None:
+        self._meta = {
+            _AGENT_COMMAND: "switch the active agent (/agent <name>)",
+            _MODE_COMMAND: "switch the permission mode (/mode <name>)",
+            _COMPACT_COMMAND: "compact the conversation now",
+            _QUIT_COMMAND: "exit decode",
+        }
+        self._meta.update(
+            {f"/{name}": skill.description for name, skill in load_skills(cwd).items()}
+        )
+
+    def get_completions(self, document, complete_event):  # type: ignore[no-untyped-def]
+        text = document.text_before_cursor
+        if not text.startswith("/") or " " in text:
+            return
+        for command in sorted(self._meta):
+            if command.startswith(text):
+                yield Completion(
+                    command, start_position=-len(text), display_meta=self._meta[command]
+                )
 
 
 def parse_mode_name(name: str) -> PermissionMode | None:
@@ -291,6 +337,35 @@ def _handle_mode_command(
     gate.set_mode(mode)
     logger.debug("/mode switched to %s", mode.value)
     emit(mode_switch_confirmation(mode.value))
+
+
+# The two inline lines the ``/compact`` command renders itself (the success path renders nothing —
+# the handler's ``ContextCompacted`` event is the feedback). ``_COMPACT_NOTHING`` is the idle no-op;
+# ``_COMPACT_BUSY`` is shown when a turn is in flight (we never compact mid-turn).
+_COMPACT_NOTHING = "Decode - nothing to compact yet."
+_COMPACT_BUSY = "Decode - busy; try /compact again once the turn finishes."
+
+
+async def _handle_compact_command(
+    handler: AgentTurnHandler,
+    runner: Runner,
+    *,
+    emit: Callable[[str], None],
+) -> None:
+    """Force a full compaction now — the manual ``/compact`` command (ADR-0006 §7).
+
+    Idle-only, wired like ``/quit``: if a turn is in flight we never compact mid-turn (the handler
+    owns the live ``message_history``), so we emit the busy line and leave the turn untouched. When
+    idle, run the handler's full-compaction tier — an explicit user request compacts regardless of
+    the window-relative thresholds or ``compaction_enabled``. ``True`` means it already emitted
+    :class:`~decode.entities.events.ContextCompacted` (history replaced with ``[summary, *tail]``),
+    so we add no extra line; ``False`` means there was nothing to compact and we say so.
+    """
+    if runner.phase is not Phase.IDLE:
+        emit(_COMPACT_BUSY)
+        return
+    if not await handler.compact():
+        emit(_COMPACT_NOTHING)
 
 
 # The friendly inline line for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirrors the
@@ -441,14 +516,27 @@ def _make_user_question_resolver(
     return resolver
 
 
-def _bottom_toolbar(deps: AgentDeps, gate: PermissionGate) -> HTML:
-    """The footer hint as prompt_toolkit formatted text, reading the **live** agent + mode (§9).
+def _bottom_toolbar(deps: AgentDeps, gate: PermissionGate, handler: AgentTurnHandler) -> HTML:
+    """The footer as prompt_toolkit formatted text: the context fill gauge + the live hint (§9).
 
-    Called by prompt_toolkit on every render with the session's ``deps`` + ``gate``, so the footer
-    reflects the current ``deps.active_agent`` and ``gate.mode`` — it updates immediately after a
-    ``/agent`` / ``/mode`` switch or a Shift+Tab cycle (it reads them live, never a snapshot).
+    Called by prompt_toolkit on every render with the session's ``deps`` + ``gate`` + ``handler``,
+    so the footer reflects the current ``deps.active_agent`` / ``gate.mode`` (updating immediately
+    after a ``/agent`` / ``/mode`` switch or Shift+Tab cycle) and the live context-window fill.
+
+    The gauge (ADR-0006 §9, task 047) reads the handler's **public** ``last_input_tokens`` property
+    (never the private attr) over the single source of truth ``compaction_context_window_tokens``,
+    and colors itself by the same reserve fractions the compaction cascade fires on — ``warn_at`` /
+    ``danger_at`` are the *fill* lines ``1 - microcompaction_reserve_fraction`` (0.60 default) and
+    ``1 - compaction_reserve_fraction`` (0.80 default). Before the first turn ``last_input_tokens``
+    is ``0`` → the gauge renders ``○ 0%`` in green.
     """
-    return HTML(f"<b>{footer_hint(deps.active_agent.name, gate.mode.value)}</b>")
+    window = settings.compaction_context_window_tokens
+    fraction = handler.last_input_tokens / window if window > 0 else 0.0
+    warn_at = 1 - settings.microcompaction_reserve_fraction
+    danger_at = 1 - settings.compaction_reserve_fraction
+    label, color = render.context_gauge(fraction, warn_at=warn_at, danger_at=danger_at)
+    hint = footer_hint(deps.active_agent.name, gate.mode.value)
+    return HTML(f'<style fg="{color}">{label}</style> <b>{hint}</b>')
 
 
 def _build_key_bindings(*, on_cycle_mode: Callable[[], None]) -> KeyBindings:
@@ -698,7 +786,12 @@ async def run_app(
 
     session: PromptSession[object] = PromptSession(
         key_bindings=_build_key_bindings(on_cycle_mode=cycle_mode),
-        bottom_toolbar=lambda: _bottom_toolbar(deps, gate),
+        completer=SlashCompleter(deps.cwd),
+        complete_while_typing=True,
+        # ``handler`` is bound a few lines below; the toolbar lambda is invoked only during the
+        # prompt loop (after the handler exists), so the late-bound reference is safe and lets the
+        # footer's fill gauge read the live ``handler.last_input_tokens`` each render (task 047).
+        bottom_toolbar=lambda: _bottom_toolbar(deps, gate, handler),
     )
     # Persistence (ADR-0002 §9): replay a prior session if asked, then open a fresh append-only
     # JSONL log this run writes its turns to. The replayed history seeds the handler so the
@@ -707,14 +800,31 @@ async def run_app(
     session_log = SessionLog.create(settings.sessions_dir, cwd=deps.cwd)
 
     # Hold the handler directly: it owns the cross-turn ``message_history`` the on-exit memory
-    # write-back summarizes (the runner keeps it private). One handler per session (§1).
+    # write-back summarizes (the runner keeps it private). One handler per session (§1). Wiring
+    # ``compaction_model_or_settings=settings`` arms the window-relative two-tier compaction
+    # cascade (ADR-0006 §3-7): the summarizer is built from the same Settings as the main model.
     handler = AgentTurnHandler(
-        agent, deps=deps, session_log=session_log, message_history=resumed_history
+        agent,
+        deps=deps,
+        session_log=session_log,
+        message_history=resumed_history,
+        compaction_model_or_settings=settings,
     )
     runner = Runner(handler, on_event=_on_event)
 
+    # Which provider/model this session is talking to (the active model id lives in a per-provider
+    # settings field — same mapping as factory._build_model's branches).
+    active_model = {
+        "gemini": settings.gemini_model,
+        "openrouter": settings.openrouter_model,
+        "modal": settings.modal_endpoint_model,
+    }[settings.llm_provider]
     console.print(
-        render.render_event(events.AssistantTextDelta(text="Decode - type a line; /quit exits."))
+        render.render_event(
+            events.AssistantTextDelta(
+                text=f"Decode - {settings.llm_provider}:{active_model} - type a line; /quit exits."
+            )
+        )
     )
 
     with patch_stdout(raw=True):
@@ -755,6 +865,13 @@ async def run_app(
             mode_arg = parse_mode_command(text)
             if mode_arg is not None:
                 _handle_mode_command(mode_arg, gate=gate, emit=emit_line)
+                continue
+
+            # The manual full-compaction command (ADR-0006 §7), reserved among the slash commands
+            # (before the skill branch) so a ``compact`` skill can never shadow it: forces a full
+            # compaction now when idle, or reports busy mid-turn — never opening a second prompt.
+            if is_compact_command(text):
+                await _handle_compact_command(handler, runner, emit=emit_line)
                 continue
 
             # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved

@@ -14,7 +14,9 @@ import pytest
 from rich.console import Console
 
 from decode.agent.deps import AgentDeps
+from decode.agent.loop import AgentTurnHandler
 from decode.agents.loader import load_agent
+from decode.config.settings import settings
 from decode.entities import events
 from decode.entities.permissions import (
     PermissionDecision,
@@ -126,6 +128,21 @@ def test_is_quit_command_is_false_for_other_input():
     assert app.is_quit_command("") is False
 
 
+def test_is_compact_command_matches_slash_compact():
+    assert app.is_compact_command("/compact") is True
+
+
+def test_is_compact_command_ignores_surrounding_whitespace():
+    assert app.is_compact_command("  /compact  ") is True
+
+
+def test_is_compact_command_is_false_for_other_input():
+    assert app.is_compact_command("/compactx") is False
+    assert app.is_compact_command("compact") is False
+    assert app.is_compact_command("/quit") is False
+    assert app.is_compact_command("") is False
+
+
 def test_footer_hint_mentions_steer_followup_and_abort():
     hint = app.footer_hint("build", "default")
 
@@ -140,6 +157,12 @@ def test_footer_hint_mentions_quit():
     hint = app.footer_hint("build", "default")
 
     assert "/quit" in hint
+
+
+def test_footer_hint_mentions_compact():
+    hint = app.footer_hint("build", "default")
+
+    assert "/compact" in hint
 
 
 def test_footer_hint_includes_the_active_agent_and_mode():
@@ -431,20 +454,63 @@ def _deps(gate: PermissionGate) -> AgentDeps:
     )
 
 
-def test_bottom_toolbar_reads_the_live_agent_and_mode():
+def _handler(deps: AgentDeps, mocker) -> AgentTurnHandler:
+    """A real turn handler (no network) so the footer reads its actual ``last_input_tokens``.
+
+    ``__init__`` only stores the agent (the footer never invokes it), so a ``Mock`` agent is
+    enough; the compaction seam stays ``None`` (the cascade is off).
+    """
+    return AgentTurnHandler(mocker.Mock(), deps=deps)
+
+
+def test_bottom_toolbar_reads_the_live_agent_and_mode(mocker):
     # The footer must reflect a mode change after Shift+Tab / /mode, so the toolbar reads the
     # gate + deps live each render (not a snapshot taken when the session was built).
     gate = PermissionGate()
     deps = _deps(gate)
     deps.active_agent = load_agent("build")
+    handler = _handler(deps, mocker)
 
-    before = app._bottom_toolbar(deps, gate).value
+    before = app._bottom_toolbar(deps, gate, handler).value
     assert "agent:build" in before
     assert "mode:default" in before
 
     gate.set_mode(PermissionMode.EDIT)
-    after = app._bottom_toolbar(deps, gate).value
+    after = app._bottom_toolbar(deps, gate, handler).value
     assert "mode:edit" in after  # the live mode change is reflected on the next render
+
+
+def test_bottom_toolbar_shows_an_empty_green_gauge_before_the_first_turn(mocker):
+    # ADR-0006 §9 / task 047: before any leg runs the real ``last_input_tokens`` property is 0, so
+    # the footer fill gauge renders an empty circle at 0% in green (well below the warn line).
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+    handler = _handler(deps, mocker)
+    assert handler.last_input_tokens == 0  # the public property's default before any turn
+
+    value = app._bottom_toolbar(deps, gate, handler).value
+
+    assert "○ 0%" in value
+    assert 'fg="green"' in value
+
+
+def test_bottom_toolbar_gauge_reads_the_public_property_and_colors_by_fill(mocker):
+    # The footer reads ``handler.last_input_tokens`` (the PUBLIC property) over the single source of
+    # truth window setting; a near-full window crosses the danger line and turns the gauge red. A
+    # Mock returning a plain int proves we read ``.last_input_tokens`` (a private-attr read would
+    # hand back a Mock and blow up on the division).
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+    window = settings.compaction_context_window_tokens
+    handler = mocker.Mock()
+    handler.last_input_tokens = int(window * 0.9)  # 90% full -> full glyph, red (>= 0.80)
+
+    value = app._bottom_toolbar(deps, gate, handler).value
+
+    assert "● 90%" in value
+    assert 'fg="red"' in value
 
 
 # --- the /mode and /agent handlers (mutate gate/deps, render one confirmation line) -----------
@@ -593,6 +659,65 @@ def test_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
     assert app.parse_mode_command("/mode plan") == "plan"  # the loop's /mode branch matches first
 
 
+# --- the manual /compact command (ADR-0006 §7, task 045) --------------------------------------
+
+
+async def test_handle_compact_command_idle_true_compacts_and_emits_no_extra_line(mocker):
+    # Idle + something to compact: run handler.compact() (which already emitted ContextCompacted
+    # on True) and add NO extra line — the rendered compaction event is the only feedback.
+    handler = mocker.Mock()
+    handler.compact = mocker.AsyncMock(return_value=True)
+    runner = mocker.Mock()
+    runner.phase = app.Phase.IDLE
+    lines: list[str] = []
+
+    await app._handle_compact_command(handler, runner, emit=lines.append)
+
+    handler.compact.assert_awaited_once_with()
+    assert lines == []  # True → the handler's ContextCompacted event is the feedback
+
+
+async def test_handle_compact_command_idle_false_renders_nothing_to_compact(mocker):
+    # Idle but nothing to compact: handler.compact() returns False → the friendly line.
+    handler = mocker.Mock()
+    handler.compact = mocker.AsyncMock(return_value=False)
+    runner = mocker.Mock()
+    runner.phase = app.Phase.IDLE
+    lines: list[str] = []
+
+    await app._handle_compact_command(handler, runner, emit=lines.append)
+
+    handler.compact.assert_awaited_once_with()
+    assert lines == ["Decode - nothing to compact yet."]
+
+
+@pytest.mark.parametrize("phase", [app.Phase.DISPATCHING, app.Phase.RUNNING])
+async def test_handle_compact_command_busy_renders_busy_and_never_compacts(mocker, phase):
+    # Busy (DISPATCHING or RUNNING): never compact mid-turn — emit the busy line, leave the turn be.
+    handler = mocker.Mock()
+    handler.compact = mocker.AsyncMock()
+    runner = mocker.Mock()
+    runner.phase = phase
+    lines: list[str] = []
+
+    await app._handle_compact_command(handler, runner, emit=lines.append)
+
+    handler.compact.assert_not_awaited()  # no mid-turn compaction
+    assert lines == ["Decode - busy; try /compact again once the turn finishes."]
+
+
+def test_compact_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
+    # ADR-0006 §7: a project skill named `compact` is reachable via the dispatcher (load_skills),
+    # but `/compact` never reaches the skill branch — the loop matches `is_compact_command` first
+    # and `continue`s, so the reserved command wins (precedence is the loop's job, like `/quit`).
+    from decode.skills.loader import load_skills
+
+    _write_skill(tmp_path / ".decode" / "skills", "compact")
+
+    assert "compact" in load_skills(tmp_path)  # still reachable via the skill dispatcher
+    assert app.is_compact_command("/compact") is True  # the loop's /compact branch matches first
+
+
 # --- the /<skill-name> resource trailer (ADR-0004 §1,§5; task 033) ----------------------------
 
 
@@ -679,3 +804,29 @@ async def test_dispatcher_and_tui_produce_identical_payloads_for_the_same_skill(
         dispatcher_payload = await skills_tool.skill(ctx, name)
         tui_payload = app._handle_skill_command(name, "", cwd=tmp_path, emit=lambda _l: None)
         assert dispatcher_payload == tui_payload
+
+
+def _completions(completer: app.SlashCompleter, text: str) -> list[str]:
+    """The completion texts the SlashCompleter offers for ``text`` before the cursor."""
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    return [c.text for c in completer.get_completions(Document(text), CompleteEvent())]
+
+
+def test_slash_completer_suggests_commands_and_skills(tmp_path):
+    """Typing a ``/`` token completes the built-in commands + project skills; prose/args don't."""
+    completer = app.SlashCompleter(tmp_path)  # no project skills → built-in commands + skills only
+
+    # A bare "/" lists everything, including a built-in command and a built-in skill.
+    bare = _completions(completer, "/")
+    assert "/compact" in bare and "/quit" in bare
+    assert "/commit" in bare, "built-in skills appear in the menu too"
+
+    # A prefix narrows to matching candidates only (and replaces the whole token).
+    assert set(_completions(completer, "/co")) >= {"/compact", "/commit"}
+    assert "/quit" not in _completions(completer, "/co")
+
+    # No menu for normal prose, or once the command has an argument (the space after it).
+    assert _completions(completer, "hello world") == []
+    assert _completions(completer, "/agent build") == []

@@ -17,13 +17,18 @@ dummy key and the model is swapped per test via ``agent.override(model=...)``.
 
 import contextlib
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
@@ -31,9 +36,12 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from support.noop_helper import register_noop
 
+from decode.agent import loop
 from decode.agent.deps import AgentDeps, PermissionResolver, UserQuestionResolver
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
+from decode.context import compaction, session_log
+from decode.context.session_log import SessionLog
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Boundary, Runner, TurnContext
@@ -906,3 +914,415 @@ async def test_session_log_persists_only_new_messages_per_turn(agent, tmp_path):
     second_turn_raw = json.dumps(json.loads(lines[2]))
     assert "BETA-PROMPT" in second_turn_raw
     assert "ALPHA-PROMPT" not in second_turn_raw  # only this turn's new messages
+
+
+# --- task 044: the window-relative two-tier auto-compaction cascade -------------------------
+#
+# Driven through the real loop with FunctionModel/TestModel — no network. A streaming
+# FunctionModel reports a FIXED ``input_tokens`` of 50 (pydantic-ai's FunctionStreamedResponse
+# estimates the request from an empty message list in ``__post_init__``), so patching the window
+# alone lands the measured usage in a chosen tier band deterministically:
+#   * window=60 → full level int(60*0.80)=48 ≤ 50           → full compaction fires.
+#   * window=70 → full level int(70*0.80)=56 > 50, micro level int(70*0.60)=42 ≤ 50 → micro only.
+#   * window=200 → micro level int(200*0.60)=120 > 50       → neither tier fires.
+# The recent-tail cut is forced with a HUGE driven prompt (>> keep_recent_tokens), so the kept
+# tail is exactly the final turn and everything earlier is "old" — no fragile token arithmetic.
+
+# pydantic-ai's streaming FunctionModel always reports this fixed per-leg input-token estimate.
+_FUNCTION_MODEL_INPUT_TOKENS = 50
+# A prompt far larger than the patched keep_recent budget, so split_tail's kept tail is just the
+# final turn (the snap-back boundary) and every earlier message is "old".
+_HUGE_PROMPT = "keep working on the task " * 100
+# The skeleton the summarizer FunctionModel returns; build_summary_message frames it as the head.
+_FAKE_SKELETON = "# Conversation summary\n\n## Goal\nCOMPACTED-SUMMARY-MARKER\n"
+
+
+def _user_msg(text: str) -> ModelRequest:
+    """A user-turn request (a turn boundary split_tail can snap to)."""
+    return ModelRequest(parts=[UserPromptPart(content=text)])
+
+
+def _assistant_msg(text: str) -> ModelResponse:
+    """An assistant text response."""
+    return ModelResponse(parts=[TextPart(content=text)])
+
+
+def _tool_call_msg(name: str, call_id: str) -> ModelResponse:
+    """An assistant response issuing one tool call (pairs with a tool-return below)."""
+    return ModelResponse(parts=[ToolCallPart(tool_name=name, args="{}", tool_call_id=call_id)])
+
+
+def _tool_return_msg(name: str, call_id: str, content: str) -> ModelRequest:
+    """A request returning one tool result — the part microcompaction blanks."""
+    return ModelRequest(
+        parts=[ToolReturnPart(tool_name=name, content=content, tool_call_id=call_id)]
+    )
+
+
+def _text_model(*words: str) -> FunctionModel:
+    """A streaming FunctionModel that yields ``words`` then stops (input_tokens fixed at 50)."""
+    return FunctionModel(stream_function=_stream_words(*words))
+
+
+def _skeleton_summarizer() -> FunctionModel:
+    """A non-streaming FunctionModel that returns the fixed skeleton (the summarizer leg)."""
+
+    async def fill(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(content=_FAKE_SKELETON)])
+
+    return FunctionModel(fill)
+
+
+def _fresh_log(tmp_path: Path, tag: str) -> SessionLog:
+    """A deterministic SessionLog under ``tmp_path`` (fixed clock + id for stable filenames)."""
+    return SessionLog.create(
+        tmp_path,
+        cwd=tmp_path,
+        now=datetime(2026, 6, 26, 12, 0, tzinfo=UTC),
+        session_id=UUID(f"00000000-0000-0000-0000-0000000000{tag}"),
+    )
+
+
+def _tool_return_contents(history: list[ModelMessage]) -> list[str]:
+    """Every ToolReturnPart content string in ``history`` (to inspect blanking)."""
+    return [
+        str(part.content)
+        for message in history
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+
+
+def _log_line_types(log: SessionLog) -> list[str]:
+    """The ``type`` discriminant of every JSONL line in the session log."""
+    import json
+
+    types: list[str] = []
+    for line in log.path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            types.append(json.loads(line).get("type"))
+    return types
+
+
+async def test_run_leg_captures_input_tokens_and_property_exposes_it(agent):
+    """AC: a leg records run.result.usage.input_tokens; last_input_tokens exposes it (0 before)."""
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
+
+    # Default before any leg is 0 (the safe "don't fire" usage fallback).
+    assert handler.last_input_tokens == 0
+
+    with agent.override(model=_text_model("hello", " world")):
+        await _drive_collecting(handler, _ctx(0, "a prompt with a few words", emitted))()
+
+    # A non-zero capture, exposed through the public property (the gauge's clean read).
+    assert handler.last_input_tokens > 0
+    assert handler.last_input_tokens == handler._last_input_tokens
+
+
+async def test_full_tier_compacts_through_the_turn(agent, tmp_path, mocker):
+    """AC upper tier: window patched small → the turn fires compact() and checkpoints it."""
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 60)  # full band
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    log = _fresh_log(tmp_path, "01")
+
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        session_log=log,
+        message_history=[_user_msg("first"), _assistant_msg("first answer")],
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+
+    with agent.override(model=_text_model("ok")):
+        await _drive_collecting(handler, _ctx(0, _HUGE_PROMPT, emitted))()
+
+    # History is replaced with [summary_message, *tail]; the head frames the skeleton.
+    head = handler.message_history[0]
+    assert isinstance(head, ModelRequest)
+    head_text = "".join(str(getattr(p, "content", "")) for p in head.parts)
+    assert "Summary of the earlier conversation" in head_text
+    assert "COMPACTED-SUMMARY-MARKER" in head_text
+    # The cursor is reset to the compacted length so the next turn re-persists nothing.
+    assert handler._persisted_count == len(handler.message_history)
+    # A compaction checkpoint line was written (full compaction persists, ADR-0006 §6).
+    assert "compaction" in _log_line_types(log)
+    # The ContextCompacted event carries the pre-compaction tokens and the kept-message count.
+    compacted = [e for e in emitted if isinstance(e, events.ContextCompacted)]
+    assert len(compacted) == 1
+    assert compacted[0].before_tokens == _FUNCTION_MODEL_INPUT_TOKENS
+    assert compacted[0].kept_messages == len(handler.message_history) - 1
+
+
+async def test_middle_tier_microcompacts_through_the_turn(agent, tmp_path, mocker):
+    """AC middle tier: window in the micro band → in-memory blanking, no checkpoint, count steady."""
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 70)  # micro band
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    log = _fresh_log(tmp_path, "02")
+
+    seed: list[ModelMessage] = [
+        _user_msg("kickoff"),
+        _tool_call_msg("read", "c1"),
+        _tool_return_msg("read", "c1", "ORIGINAL-TOOL-BODY " + "z " * 200),
+        _assistant_msg("first answer"),
+        _user_msg("second"),
+        _assistant_msg("second answer"),
+    ]
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        session_log=log,
+        message_history=list(seed),
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+    count_before = len(seed) + 2  # the driven turn adds a user prompt + an assistant response
+
+    with agent.override(model=_text_model("ok")):
+        await _drive_collecting(handler, _ctx(0, _HUGE_PROMPT, emitted))()
+
+    # The old tool-output body was blanked IN MEMORY; the message count is unchanged.
+    assert len(handler.message_history) == count_before
+    assert compaction._MICRO_PLACEHOLDER in _tool_return_contents(handler.message_history)
+    assert not any(
+        "ORIGINAL-TOOL-BODY" in c for c in _tool_return_contents(handler.message_history)
+    )
+    # Microcompaction does NOT write a compaction line, and leaves the persisted cursor where the
+    # turn's persist left it (== len: the elided messages were already persisted in full fidelity).
+    assert "compaction" not in _log_line_types(log)
+    assert handler._persisted_count == len(handler.message_history)
+    # Exactly one ContextMicrocompacted, carrying the elided count + the pre-compaction tokens.
+    micro = [e for e in emitted if isinstance(e, events.ContextMicrocompacted)]
+    assert len(micro) == 1
+    assert micro[0].elided_count == 1
+    assert micro[0].before_tokens == _FUNCTION_MODEL_INPUT_TOKENS
+    # No full compaction happened at this tier.
+    assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
+
+
+async def test_microcompaction_keeps_full_fidelity_on_disk(agent, tmp_path, mocker):
+    """AC micro-not-persisted: the JSONL keeps the original tool output; load() replays it full."""
+    marker = "PERSISTED-TOOL-BODY-MARKER"
+    (tmp_path / "data.txt").write_text(marker + " and a few words to read", encoding="utf-8")
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 70)  # micro band
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 50)
+    log = _fresh_log(tmp_path, "03")
+
+    emitted: list[events.Event] = []
+    deps = AgentDeps(
+        cwd=tmp_path,
+        emit=emitted.append,
+        gate=PermissionGate(),  # DEFAULT mode → the read tool auto-allows, no prompt
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_no_user_resolver,
+    )
+    handler = AgentTurnHandler(
+        agent, deps=deps, session_log=log, compaction_model_or_settings=_skeleton_summarizer()
+    )
+
+    # Turn 1: a read-tool turn persists the FULL tool output to the log (recent → micro no-op).
+    with agent.override(model=_read_then_text("data.txt", final_text="read done")):
+        await _drive_collecting(handler, _ctx(0, "read the file", emitted))()
+    # Turn 2: a huge prompt pushes the tool output out of the recent tail → micro blanks it.
+    with agent.override(model=_text_model("ok")):
+        await _drive_collecting(handler, _ctx(1, _HUGE_PROMPT, emitted))()
+
+    # In memory the tool output is blanked.
+    assert [e for e in emitted if isinstance(e, events.ContextMicrocompacted)]
+    assert compaction._MICRO_PLACEHOLDER in _tool_return_contents(handler.message_history)
+    assert not any(marker in c for c in _tool_return_contents(handler.message_history))
+    # On disk the log keeps the ORIGINAL full tool output and never the placeholder (assert bytes).
+    raw = log.path.read_text(encoding="utf-8")
+    assert marker in raw
+    assert compaction._MICRO_PLACEHOLDER not in raw
+    assert "compaction" not in _log_line_types(log)
+    # Replay reconstructs the FULL history (original tool body, not the placeholder).
+    replayed = session_log.load(log.path)
+    assert any(marker in c for c in _tool_return_contents(replayed))
+    assert compaction._MICRO_PLACEHOLDER not in _tool_return_contents(replayed)
+
+
+async def test_no_repersist_after_full_compaction(agent, tmp_path, mocker):
+    """AC: after a full compaction the next turn appends only its own new messages."""
+    # A large window keeps the auto-cascade quiet; compaction is driven explicitly via compact().
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 10_000_000)
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    log = _fresh_log(tmp_path, "04")
+
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        session_log=log,
+        message_history=[
+            _user_msg("OLDEST-TURN-MARKER first"),
+            _assistant_msg("first answer"),
+            _user_msg(_HUGE_PROMPT),
+            _assistant_msg("recent answer"),
+        ],
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+
+    assert await handler.compact() is True
+    # The dropped oldest turn is gone from the running history.
+    assert not any(
+        "OLDEST-TURN-MARKER" in str(getattr(p, "content", ""))
+        for m in handler.message_history
+        if isinstance(m, ModelRequest)
+        for p in m.parts
+    )
+
+    with agent.override(model=_text_model("ok")):
+        await _drive_collecting(handler, _ctx(0, "NEXT-TURN-MARKER", emitted))()
+
+    import json
+
+    lines = [ln for ln in log.path.read_text(encoding="utf-8").splitlines() if ln]
+    last_line_raw = json.dumps(json.loads(lines[-1]))
+    assert json.loads(lines[-1])["type"] == "messages"  # a plain turn append, not a checkpoint
+    assert "NEXT-TURN-MARKER" in last_line_raw  # only this turn's new messages
+    assert "OLDEST-TURN-MARKER" not in last_line_raw  # the compacted prefix is not re-persisted
+
+
+async def test_below_both_tiers_is_a_no_op(agent, tmp_path, mocker):
+    """AC: usage below both levels compacts neither tier (history unchanged, no event)."""
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 200)  # below both
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+
+    emitted: list[events.Event] = []
+    seed: list[ModelMessage] = [
+        _user_msg("kickoff"),
+        _tool_return_msg("read", "c1", "ORIGINAL-TOOL-BODY " + "z " * 100),
+        _user_msg("second"),
+        _assistant_msg("second answer"),
+    ]
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=list(seed),
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+
+    with agent.override(model=_text_model("ok")):
+        await _drive_collecting(handler, _ctx(0, _HUGE_PROMPT, emitted))()
+
+    assert not [
+        e for e in emitted if isinstance(e, events.ContextCompacted | events.ContextMicrocompacted)
+    ]
+    # The seeded tool output is untouched (no blanking).
+    assert any("ORIGINAL-TOOL-BODY" in c for c in _tool_return_contents(handler.message_history))
+
+
+async def test_disabled_flag_skips_the_cascade(agent, mocker):
+    """AC: compaction_enabled=False fires neither tier even in a band that otherwise would."""
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 60)  # full band
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    mocker.patch.object(loop.settings, "compaction_enabled", False)
+
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=[_user_msg("first"), _assistant_msg("answer")],
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+
+    with agent.override(model=_text_model("ok")):
+        await _drive_collecting(handler, _ctx(0, _HUGE_PROMPT, emitted))()
+
+    assert not [
+        e for e in emitted if isinstance(e, events.ContextCompacted | events.ContextMicrocompacted)
+    ]
+
+
+async def test_zero_tokens_never_compacts(agent, mocker):
+    """AC: input_tokens == 0 (no leg measured) is the safe fallback — the cascade no-ops."""
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 1)  # tiny → would fire
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=[_user_msg("first"), _assistant_msg("answer")],
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+
+    # No leg has run, so last_input_tokens is 0; the cascade must not fire on a bogus zero.
+    assert handler.last_input_tokens == 0
+    await handler._maybe_auto_compact()
+
+    assert not [
+        e for e in emitted if isinstance(e, events.ContextCompacted | events.ContextMicrocompacted)
+    ]
+
+
+async def test_compact_returns_false_on_trivial_history(agent):
+    """AC: compact() no-ops (False) when the whole history already fits the recent tail."""
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=[_user_msg("just one short turn"), _assistant_msg("ok")],
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+
+    assert await handler.compact() is False
+    assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
+
+
+async def test_compact_returns_false_when_summary_is_none(agent, mocker):
+    """AC: a None summary (blank summarizer) makes compact() a no-op, history untouched."""
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    history: list[ModelMessage] = [
+        _user_msg("first"),
+        _assistant_msg("answer"),
+        _user_msg(_HUGE_PROMPT),
+        _assistant_msg("recent"),
+    ]
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=list(history),
+        compaction_model_or_settings=TestModel(custom_output_text="   "),  # blank → None summary
+    )
+
+    assert await handler.compact() is False
+    assert handler.message_history == history  # untouched
+    assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
+
+
+async def test_none_seam_disables_cascade_even_with_a_tiny_window(agent, tmp_path, mocker):
+    """AC (hard regression): compaction_model_or_settings=None disables the whole cascade.
+
+    Even with the window patched so a wired handler would fully compact, the unwired handler must
+    behave exactly as before: history grows normally, the turn persists, and no compaction event
+    is emitted.
+    """
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 1)  # would fire if wired
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    log = _fresh_log(tmp_path, "05")
+
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(  # no compaction_model_or_settings → None (the default)
+        agent,
+        deps=_deps(emitted.append),
+        session_log=log,
+        message_history=[_user_msg("first"), _assistant_msg("answer")],
+    )
+
+    with agent.override(model=_text_model("ok")):
+        await _drive_collecting(handler, _ctx(0, _HUGE_PROMPT, emitted))()
+
+    assert not [
+        e for e in emitted if isinstance(e, events.ContextCompacted | events.ContextMicrocompacted)
+    ]
+    assert "compaction" not in _log_line_types(log)
+    # History carried across normally (seed + this turn's two new messages), nothing dropped.
+    assert len(handler.message_history) == 4
+    head = handler.message_history[0]
+    assert isinstance(head, ModelRequest)
+    assert any(getattr(p, "content", None) == "first" for p in head.parts)

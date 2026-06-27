@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -63,6 +63,26 @@ class Settings(BaseSettings):
     # --- Memory caps (task 012/013) ---
     memory_max_lines: int = 200
     memory_max_bytes: int = 25_000
+
+    # --- Context compaction (ADR-0006) ---
+    # Window-relative two-tier cascade; settings only here (no readers yet — tasks 042/044/046/047).
+    # ``compaction_enabled`` gates ONLY the automatic cascade; manual ``/compact`` (task 045) ignores it.
+    compaction_enabled: bool = True
+    # The active model's MAX *input* context window, in tokens — the single source of truth (also the
+    # TUI fill gauge, task 047). Default = Gemini 2.5 Flash's input window; set this to YOUR active
+    # model's input window. pydantic-ai exposes no model window, so this number is the contract.
+    compaction_context_window_tokens: int = Field(1_048_576, gt=0)
+    # Per-tier reserve fractions: a tier fires when input_tokens >= window * (1 - reserve). Full fires
+    # at 80% full; micro fires EARLIER at 60% full. INVARIANT: micro reserves more than full so it fires
+    # first — ``microcompaction_reserve_fraction > compaction_reserve_fraction`` (asserted on defaults).
+    compaction_reserve_fraction: float = Field(0.20, ge=0.0, le=1.0)
+    microcompaction_reserve_fraction: float = Field(0.40, ge=0.0, le=1.0)
+    # Token budget of the recent tail full compaction keeps verbatim, and the cutoff microcompaction
+    # treats as "recent" (snapped to a turn boundary by task 042).
+    compaction_keep_recent_tokens: int = 20_000
+    # Second level: when set, the on-exit MEMORY.md LLM compressor (task 046) runs at the
+    # ``memory_max_lines`` cap instead of pure drop-oldest. Reuses the existing memory caps — no new ones.
+    memory_compression_enabled: bool = True
 
     # --- Harness artifacts: everything decode writes lives under <cwd>/.decode (Fix 1). ---
     decode_dir: Path = Path(".decode")

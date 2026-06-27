@@ -6,7 +6,7 @@ typed ``messages`` batch carrying one turn's ``new_messages()`` serialized via P
 :data:`~pydantic_ai.messages.ModelMessagesTypeAdapter`. ``load`` / ``load_latest`` replay the
 file back into a ``list[ModelMessage]`` that seeds ``decode --resume``.
 
-Four behaviours are exercised:
+Five behaviours are exercised:
 
 * **header** — opening a session writes line 0 as a typed ``session`` object with deterministic
   ``now`` / ``uuid`` (injected) and creates ``sessions_dir`` if absent;
@@ -14,6 +14,11 @@ Four behaviours are exercised:
   never rewritten (append-only);
 * **load round-trip** — a real short agent run (``TestModel`` / ``FunctionModel``, no network)
   produces real ``ModelMessage`` objects; persisting then reloading yields an equal, usable list;
+* **compaction** — a full compaction appends one typed ``compaction`` checkpoint line carrying
+  the serialized summary + kept tail (ADR-0006 §1); replay restarts the history from
+  ``[summary, *tail]`` at that line and continues, so a compacted file replays to the *compacted*
+  history, successive checkpoints land on the last one, and a malformed checkpoint degrades to
+  the un-compacted history (never raised);
 * **resilience** — a truncated / garbage trailing line (a crash mid-write) is skipped, not
   raised; an empty session (header only) loads to ``[]``; ``load_latest`` picks the newest file.
 """
@@ -47,6 +52,11 @@ def _conversation(user: str, assistant: str) -> list[ModelMessage]:
         ModelRequest(parts=[UserPromptPart(content=user)]),
         ModelResponse(parts=[TextPart(content=assistant)]),
     ]
+
+
+def _summary_message(text: str = "# Conversation summary\n\n## Goal\nship it") -> ModelMessage:
+    """A synthetic full-compaction summary head: one ``ModelRequest`` / ``UserPromptPart`` (§4)."""
+    return ModelRequest(parts=[UserPromptPart(content=text)])
 
 
 def _read_lines(path: Path) -> list[str]:
@@ -171,6 +181,144 @@ def test_load_returns_empty_for_a_header_only_session(tmp_path: Path):
     log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
 
     assert session_log.load(log.path) == []
+
+
+# --------------------------------------------------------------------------------------------
+# append_compaction — one typed checkpoint line (summary + tail), header/prior turns untouched
+# --------------------------------------------------------------------------------------------
+
+
+def test_append_compaction_appends_exactly_one_typed_compaction_line(tmp_path: Path):
+    import json
+
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    log.append_turn(_conversation("q1", "a1"))
+    header_line, turn_line = _read_lines(log.path)  # header + the prior turn
+
+    summary = _summary_message()
+    tail = _conversation("recent q", "recent a")
+    log.append_compaction(summary, tail)
+
+    lines = _read_lines(log.path)
+    assert len(lines) == 3  # header + prior turn + exactly one compaction line
+    assert lines[0] == header_line  # header untouched
+    assert lines[1] == turn_line  # prior turn untouched (append-only)
+    entry = json.loads(lines[2])
+    assert entry["type"] == "compaction"
+    # Both halves round-trip through the same Pydantic AI type adapter append_turn uses.
+    assert ModelMessagesTypeAdapter.validate_python(entry["summary"]) == [summary]
+    assert ModelMessagesTypeAdapter.validate_python(entry["tail"]) == tail
+
+
+# --------------------------------------------------------------------------------------------
+# load — a compaction checkpoint restarts history from [summary, *tail], in file order
+# --------------------------------------------------------------------------------------------
+
+
+def test_compact_then_resume_replays_the_compacted_history(tmp_path: Path):
+    # header -> turn1 -> turn2 -> turn3 -> compaction(summary, tail=[turn3]) replays to the
+    # compacted history [summary, *turn3] -- NOT the full verbatim transcript.
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    turn1 = _conversation("q1", "a1")
+    turn2 = _conversation("q2", "a2")
+    turn3 = _conversation("q3", "a3")
+    for turn in (turn1, turn2, turn3):
+        log.append_turn(turn)
+    summary = _summary_message()
+    log.append_compaction(summary, turn3)
+
+    replayed = session_log.load(log.path)
+
+    assert replayed == [summary, *turn3]
+
+
+def test_turns_after_a_compaction_continue_the_compacted_history(tmp_path: Path):
+    # ... -> compaction(summary, tail) -> turn4 replays to [summary, *tail, *turn4].
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    log.append_turn(_conversation("q1", "a1"))
+    tail = _conversation("q2", "a2")
+    log.append_turn(tail)
+    summary = _summary_message()
+    log.append_compaction(summary, tail)
+    turn4 = _conversation("q4", "a4")
+    log.append_turn(turn4)
+
+    replayed = session_log.load(log.path)
+
+    assert replayed == [summary, *tail, *turn4]
+
+
+def test_successive_compactions_replay_to_the_second_checkpoint(tmp_path: Path):
+    # Two checkpoints: the second discards the first (and its summary/turns); only the second
+    # checkpoint plus later turns survive -- successive compactions merge for free at the log.
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    log.append_turn(_conversation("q1", "a1"))
+    summary_one = _summary_message("# summary one")
+    log.append_compaction(summary_one, _conversation("q1", "a1"))
+    turn2 = _conversation("q2", "a2")
+    log.append_turn(turn2)
+    summary_two = _summary_message("# summary two")
+    log.append_compaction(summary_two, turn2)
+    turn3 = _conversation("q3", "a3")
+    log.append_turn(turn3)
+
+    replayed = session_log.load(log.path)
+
+    assert replayed == [summary_two, *turn2, *turn3]
+
+
+def test_load_tolerates_a_truncated_compaction_line(tmp_path: Path):
+    # A crash mid-write of a checkpoint line: the truncated compaction line is skipped, replay
+    # degrades to the un-compacted history -- never applied half-way, never raised.
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    turn1 = _conversation("q1", "a1")
+    turn2 = _conversation("q2", "a2")
+    log.append_turn(turn1)
+    log.append_turn(turn2)
+    with log.path.open("a", encoding="utf-8") as handle:
+        handle.write('{"type":"compaction","summary":[{"parts":[{"con')  # truncated JSON
+
+    replayed = session_log.load(log.path)
+
+    assert replayed == [*turn1, *turn2]
+
+
+def test_load_tolerates_a_malformed_compaction_payload(tmp_path: Path):
+    # Valid JSON, type == compaction, but the type adapter rejects the payload shape: skipped
+    # (logged at debug, not raised), degrading to the un-compacted history.
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    turn1 = _conversation("q1", "a1")
+    log.append_turn(turn1)
+    with log.path.open("a", encoding="utf-8") as handle:
+        handle.write('{"type":"compaction","summary":"not-a-message-list","tail":[]}\n')
+
+    replayed = session_log.load(log.path)
+
+    assert replayed == [*turn1]
+
+
+def test_load_latest_replays_through_a_compacted_file(tmp_path: Path):
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    log.append_turn(_conversation("q1", "a1"))
+    summary = _summary_message()
+    tail = _conversation("q2", "a2")
+    log.append_compaction(summary, tail)
+
+    replayed = session_log.load_latest(tmp_path)
+
+    assert replayed == [summary, *tail]
+
+
+def test_resolve_session_finds_and_replays_a_compacted_file(tmp_path: Path):
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    summary = _summary_message()
+    tail = _conversation("q", "a")
+    log.append_compaction(summary, tail)
+
+    found = session_log.resolve_session(tmp_path, str(_UUID))
+
+    assert found == log.path
+    assert session_log.load(found) == [summary, *tail]
 
 
 # --------------------------------------------------------------------------------------------

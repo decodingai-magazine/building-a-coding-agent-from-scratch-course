@@ -135,6 +135,26 @@ decode --resume <session>  # a specific session id / filename
 
 **Memory.** `decode` loads `AGENTS.md` (walking from the working dir upward) and the harness `.decode/MEMORY.md` into its context, and on exit appends a one-sentence summary of the session to `.decode/MEMORY.md` so the next session has a little context. Full transcripts are saved to `.decode/sessions/*.jsonl` and logs to `.decode/logs/decode.log` (all gitignored under `<cwd>/.decode/`).
 
+## Context compaction
+
+A long conversation grows toward the model's context window. `decode` keeps it in budget with a **cheapest-first cascade** that runs automatically at the end of each turn — measured against how full the window is — plus a manual override. The wiring and trade-offs are recorded in [`docs/adr/0006-conversation-compaction.md`](docs/adr/0006-conversation-compaction.md).
+
+| Tier | Fires when | Working looks like |
+|---|---|---|
+| **Microcompaction** (no LLM, in-memory) | input usage reaches **~60%** of the window | a `Decode - microcompacted context (elided N old tool output(s), …)` line; old tool-output bodies are blanked for the next turn. **Not persisted** — `--resume` still replays the full transcript. |
+| **Full compaction** (one LLM call) | input usage reaches **~80%** of the window, **or** you type **`/compact`** | a `Decode - compacted context (~N tokens → summary + M recent messages).` line; older turns collapse into a summary and recent turns stay verbatim. **Persisted** — `decode --resume` continues the *compacted* conversation. |
+
+The footer carries a **fill gauge** — `○ ◔ ◑ ◕ ●` plus a percentage of the window used — that tracks the same window: **green** below ~60%, **yellow** ~60–80%, **red** at/above ~80%, so you watch the context approach compaction.
+
+On exit, a second level compresses `.decode/MEMORY.md`: once it reaches its **200-line** cap, one cheap LLM call dedupes and merges the highest-signal facts instead of dropping the oldest lines (drop-oldest stays the guaranteed fallback, so the cap is always enforced).
+
+Tune it in `.env` — every setting is optional with a safe default:
+
+- `COMPACTION_CONTEXT_WINDOW_TOKENS` — your model's **input** window in tokens (default `1048576`, Gemini 2.5 Flash). The single source of truth that also drives the gauge.
+- `COMPACTION_RESERVE_FRACTION` (default `0.20`) — full compaction fires at `window * (1 - reserve)`, i.e. **80%** full.
+- `MICROCOMPACTION_RESERVE_FRACTION` (default `0.40`) — microcompaction fires earlier, at **60%** full (keep it larger than the full reserve so it fires first).
+- `COMPACTION_ENABLED=false` disables the **automatic** cascade; manual `/compact` still works.
+
 ## Develop
 
 All verbs run at the repo root via the [`Makefile`](Makefile) (wrapping `uv`):

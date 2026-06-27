@@ -125,6 +125,34 @@ class TaskListUpdated:
 
 
 @dataclass(frozen=True, slots=True)
+class ContextCompacted:
+    """Full compaction ran at a would-stop boundary (ADR-0006 §4-6).
+
+    The older turns were summarized into a synthetic head and dropped; ``before_tokens`` is the
+    provider-reported input-token count measured before compaction and ``kept_messages`` is how
+    many recent verbatim messages were kept past the summary. Surfaced as a dim system line.
+    """
+
+    before_tokens: int
+    kept_messages: int
+    kind: Literal["context_compacted"] = "context_compacted"
+
+
+@dataclass(frozen=True, slots=True)
+class ContextMicrocompacted:
+    """Microcompaction ran at a would-stop boundary — in memory only (ADR-0006 §3a).
+
+    Old tool-output bodies were blanked with a placeholder; ``elided_count`` is how many were
+    blanked and ``before_tokens`` is the input-token count measured before microcompaction. The
+    session log keeps full fidelity (this is not persisted). Surfaced as a dim system line.
+    """
+
+    elided_count: int
+    before_tokens: int
+    kind: Literal["context_microcompacted"] = "context_microcompacted"
+
+
+@dataclass(frozen=True, slots=True)
 class AgentError:
     """An error the harness surfaces to the user instead of crashing the REPL.
 
@@ -147,5 +175,7 @@ Event = (
     | PermissionRequested
     | AskUserRequested
     | TaskListUpdated
+    | ContextCompacted
+    | ContextMicrocompacted
     | AgentError
 )

@@ -41,7 +41,7 @@ The intended target tree. Most `src/` subpackages are created **when you reach t
     ├── sandbox/                   # Bash execution — local (Docker/Firecracker) + remote (Modal)
     ├── services/                  # services interface: LLM gateway, memory, LSP servers, MCP servers
     ├── runtime/                   # Kitaru: credentials proxy, durability, scheduling, HITL
-    ├── context/                   # context engineering: compaction + conversation log (SQLite)
+    ├── context/                   # context engineering: compaction + conversation log (JSONL)
     ├── memory/                    # AGENTS.md / MEMORY.md loading
     └── observability/             # Opik tracing
 ```
@@ -64,7 +64,7 @@ Single Python toolchain — `uv`, `ruff`, `pytest`. **Python 3.12+.**
 | Observability | `opik` | Tracing + eval harness. *added at its step* |
 | Sandbox / serving | `modal` (remote) · Docker/Firecracker (local) | *added at its step* |
 | Durability | Kitaru | Credentials proxy, durability, scheduling, HITL. *confirm package source* |
-| Datastore | SQLite | Conversation log for recovery. *added at its step* |
+| Datastore | SQLite | Conversation log is JSONL today; compaction landed on it (ADR-0006). SQLite remains a deferred durable-store option. |
 
 Per-step libraries are `uv add`-ed when you reach them (see the commented block in `pyproject.toml`) — the initial install stays light.
 
@@ -200,8 +200,8 @@ For each surface below: the thing to type, and what "working" looks like.
 - `decode --resume` (or `decode --resume <session-id>`) replays the latest (or named) session log
   from `.decode/sessions/*.jsonl` — the prior conversation is seeded and you continue it.
 - On quit (`/quit` or `Ctrl-D`), one cheap Gemini call appends a dated one-line summary to
-  `./MEMORY.md`. Quit, `cat MEMORY.md` (a new `- YYYY-MM-DD: …` bullet), then relaunch — that line
-  is injected back into the agent's instructions (it can recall what the last session did).
+  `.decode/MEMORY.md`. Quit, `cat .decode/MEMORY.md` (a new `- YYYY-MM-DD: …` bullet), then relaunch —
+  that line is injected back into the agent's instructions (it can recall what the last session did).
 
 # Documentation Conventions
 

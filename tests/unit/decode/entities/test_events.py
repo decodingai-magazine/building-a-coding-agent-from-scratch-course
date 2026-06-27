@@ -21,6 +21,8 @@ ALL_EVENT_TYPES = [
     events.PermissionRequested,
     events.AskUserRequested,
     events.TaskListUpdated,
+    events.ContextCompacted,
+    events.ContextMicrocompacted,
     events.AgentError,
 ]
 
@@ -36,6 +38,8 @@ def test_every_event_kind_discriminant_is_unique():
         events.PermissionRequested(tool_call_id="t", name="bash", args=""),
         events.AskUserRequested(tool_call_id="t", question="?"),
         events.TaskListUpdated(),
+        events.ContextCompacted(before_tokens=900, kept_messages=3),
+        events.ContextMicrocompacted(elided_count=2, before_tokens=700),
         events.AgentError(message="boom"),
     ]
     kinds = [e.kind for e in samples]
