@@ -6,8 +6,10 @@ Enricher (053), and the app-exit path (054) — and it owns the lifecycle the cl
 * **Lazy, one server per project root, cached** — mirroring ``bash``'s module-level ``_EXECUTOR`` and
   ``web``'s ``_TRANSPORT`` (AGENTS.md): :data:`_CLIENTS` maps a resolved root to its :class:`LspClient`,
   spawned on first use and reused thereafter. A spawn/handshake that **fails caches the
-  :data:`_BROKEN` sentinel** so a missing or crashing server is not re-spawned on every edit/tool call
-  (no retry storm) — that root stays "unavailable" until the process restarts.
+  :data:`_BROKEN` sentinel** so a server that can't even start is not re-spawned on every edit/tool
+  call (no retry storm) — that root stays "unavailable" until the process restarts. A server that
+  handshook **then crashed mid-session** is instead dropped and respawned **once** on the next call
+  (via :attr:`LspClient.is_alive`), so it recovers rather than failing against a dead pipe all session.
 * **A patchable spawn seam** — :func:`_spawn_process` is the one place a real subprocess is created;
   unit tests patch it to inject a fake process with canned framed responses, so the suite never spawns
   real ``ty`` (mirrors ``web``'s ``_TRANSPORT`` test seam).
@@ -70,16 +72,20 @@ async def _spawn_process(root: Path) -> asyncio.subprocess.Process:
 async def _get_client(cwd: Path) -> LspClient | None:
     """Return the cached client for ``cwd``'s root, spawning lazily on first use; ``None`` if unavailable.
 
-    ``lsp_enabled == False`` short-circuits to ``None`` **without spawning**. A previously failed root
-    (cached :data:`_BROKEN`) also returns ``None`` without re-spawning (no retry storm).
+    ``lsp_enabled == False`` short-circuits to ``None`` **without spawning**. A root whose initial
+    spawn/handshake failed (cached :data:`_BROKEN`) also returns ``None`` without re-spawning (no retry
+    storm). A cached client whose subprocess has since **died** is dropped and respawned **once** — a
+    mid-session crash recovers rather than failing against a dead pipe for the rest of the session.
     """
     if not settings.lsp_enabled:
         return None
     root = Path(cwd).resolve()
     cached = _CLIENTS.get(root)
     if isinstance(cached, LspClient):
-        return cached
-    if cached is _BROKEN:
+        if cached.is_alive:
+            return cached
+        del _CLIENTS[root]  # crashed mid-session → drop and respawn below (not _BROKEN forever)
+    elif cached is _BROKEN:
         return None
     client = await _start_client(root)
     _CLIENTS[root] = client if client is not None else _BROKEN

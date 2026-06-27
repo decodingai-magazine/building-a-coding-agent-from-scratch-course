@@ -67,6 +67,16 @@ class LspClient:
         # Per-URI document version: first touch is a didOpen (v1), later touches are didChange (v2+).
         self._versions: dict[str, int] = {}
 
+    @property
+    def is_alive(self) -> bool:
+        """True while the spawned subprocess is still running (its ``returncode`` is unset).
+
+        The service checks this before reusing a cached client: a server that handshook then crashed
+        mid-session is dropped and respawned once, instead of every later request failing against its
+        dead pipe for the rest of the session.
+        """
+        return self._process.returncode is None
+
     # --- handshake -----------------------------------------------------------------------------
 
     async def initialize(self) -> None:

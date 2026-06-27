@@ -225,6 +225,32 @@ async def test_different_roots_spawn_separately(tmp_path: Path, mocker):
     assert len(lsp_service._CLIENTS) == 2
 
 
+async def test_crashed_client_is_respawned_not_stuck_unavailable(tmp_path: Path, mocker):
+    # A server that handshakes fine and serves one op, then its subprocess dies mid-session. Unlike a
+    # never-spawned root (cached _BROKEN forever), a crashed-after-handshake client must recover: the
+    # next call drops it and respawns ONCE, rather than failing against the dead pipe all session.
+    healthy, replacement = (
+        FakeLanguageServer(_canned(tmp_path)),
+        FakeLanguageServer(_canned(tmp_path)),
+    )
+    spawn = _patch_spawn(mocker, side_effect=[healthy, replacement])
+    path = _seed_root(tmp_path)
+
+    first = await lsp_service.definition(tmp_path, str(path), line=10, column=5)
+    assert isinstance(first, Location) and spawn.call_count == 1  # handshook + cached
+
+    healthy._exit()  # ty crashes: the subprocess exits (returncode set, stdout at EOF)
+
+    second = await lsp_service.definition(tmp_path, str(path), line=10, column=5)
+
+    assert isinstance(second, Location)  # recovered against the fresh server, not UNAVAILABLE
+    assert spawn.call_count == 2  # the dead client was dropped and respawned exactly once
+    cached = lsp_service._CLIENTS[tmp_path.resolve()]
+    assert (
+        isinstance(cached, LspClient) and cached._process is replacement
+    )  # the fresh client is cached
+
+
 # --- best-effort: broken spawn, dead process, timeout, malformed frame, disabled ---------------
 
 
