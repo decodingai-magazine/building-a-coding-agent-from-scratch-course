@@ -102,5 +102,22 @@ class Settings(BaseSettings):
     # this singleton.
     skills_dir: Path = Path(".decode/skills")
 
+    # --- LSP / code intelligence (ADR-0007) ---
+    # The code-intelligence surface; settings only here (no readers yet — tasks 051/052/053/054).
+    # ``lsp_enabled`` is the master gate for the WHOLE feature (the ``lsp`` tool, the Diagnostics
+    # Enricher, and any server spawn). When ``False`` no Language Server is ever launched.
+    lsp_enabled: bool = True
+    # The swappable stdio Language Server. Default spawns ``ty server`` (Astral's type-checker, same
+    # vendor as ruff/uv); a drop-in is documented (``pylsp`` or any stdio LSP server). The spawn is
+    # ``[lsp_server_command, *lsp_server_args]`` — keep the executable and its args split.
+    lsp_server_command: str = "ty"
+    lsp_server_args: list[str] = ["server"]
+    # Gates ONLY the passive Diagnostics Enricher (task 053) — the errors-only block appended after a
+    # successful ``.py`` write/edit. Independent of the active ``lsp`` tool; both ride ``lsp_enabled``.
+    lsp_diagnostics_on_edit: bool = True
+    # Per-request best-effort wall-clock timeout (seconds); the server's ``initialize`` is bounded too.
+    # The lazy single spawn per root amortizes the cost. A non-positive value fails fast (Field gt=0).
+    lsp_request_timeout_s: float = Field(10.0, gt=0)
+
 
 settings = Settings()

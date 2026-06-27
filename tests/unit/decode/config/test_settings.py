@@ -29,6 +29,16 @@ _COMPACTION_ENV_VARS = (
     "MEMORY_COMPRESSION_ENABLED",
 )
 
+# LSP / code intelligence vars introduced by ADR-0007 (task 050). Cleared in default tests so a
+# developer's real environment cannot leak into the assertions.
+_LSP_ENV_VARS = (
+    "LSP_ENABLED",
+    "LSP_SERVER_COMMAND",
+    "LSP_SERVER_ARGS",
+    "LSP_DIAGNOSTICS_ON_EDIT",
+    "LSP_REQUEST_TIMEOUT_S",
+)
+
 
 def test_defaults(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -237,3 +247,64 @@ def test_rejects_a_reserve_fraction_outside_the_unit_interval(monkeypatch):
     monkeypatch.setenv("MICROCOMPACTION_RESERVE_FRACTION", "-0.1")
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+def test_lsp_defaults(monkeypatch):
+    for var in _LSP_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    assert s.lsp_enabled is True
+    assert s.lsp_server_command == "ty"
+    assert s.lsp_server_args == ["server"]
+    assert s.lsp_diagnostics_on_edit is True
+    assert s.lsp_request_timeout_s == 10.0
+
+
+def test_reads_lsp_vars_from_process_env(monkeypatch):
+    monkeypatch.setenv("LSP_ENABLED", "false")
+    monkeypatch.setenv("LSP_SERVER_COMMAND", "pylsp")
+    monkeypatch.setenv("LSP_SERVER_ARGS", '["-v"]')
+    monkeypatch.setenv("LSP_DIAGNOSTICS_ON_EDIT", "false")
+    monkeypatch.setenv("LSP_REQUEST_TIMEOUT_S", "2.5")
+    s = Settings(_env_file=None)
+    assert s.lsp_enabled is False
+    assert s.lsp_server_command == "pylsp"
+    assert s.lsp_server_args == ["-v"]
+    assert s.lsp_diagnostics_on_edit is False
+    assert s.lsp_request_timeout_s == 2.5
+
+
+def test_loads_lsp_vars_from_a_dotenv_file(tmp_path, monkeypatch):
+    for var in _LSP_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    env = tmp_path / ".env"
+    env.write_text(
+        "LSP_ENABLED=false\n"
+        "LSP_SERVER_COMMAND=pylsp\n"
+        'LSP_SERVER_ARGS=["--check-parent-process"]\n'
+        "LSP_DIAGNOSTICS_ON_EDIT=false\n"
+        "LSP_REQUEST_TIMEOUT_S=5.0\n"
+    )
+    s = Settings(_env_file=str(env))
+    assert s.lsp_enabled is False
+    assert s.lsp_server_command == "pylsp"
+    assert s.lsp_server_args == ["--check-parent-process"]
+    assert s.lsp_diagnostics_on_edit is False
+    assert s.lsp_request_timeout_s == 5.0
+
+
+@pytest.mark.parametrize("bad", ["0", "-1.0"])
+def test_rejects_a_non_positive_lsp_request_timeout(monkeypatch, bad):
+    """A timeout <= 0 fails fast at load, not deep in a request (Field(gt=0))."""
+    for var in _LSP_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("LSP_REQUEST_TIMEOUT_S", bad)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_env_example_lists_every_lsp_var():
+    """Drift guard: each LSP setting has a matching line in .env.example (AGENTS.md gate)."""
+    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
+    for var in _LSP_ENV_VARS:
+        assert var in env_example, f"{var} missing from .env.example"
