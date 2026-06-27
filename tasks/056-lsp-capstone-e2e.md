@@ -246,3 +246,89 @@ uv lock --check  ·  ruff format --check (128 files)  ·  ruff check (all passed
   root could double-spawn. The capstone is sequential so it never trips; flagging only for awareness.
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-27 — Acceptance Review (feature `lsp-integration`, tasks 050-056, PR #16)
+
+**VERDICT: ACCEPT**
+
+Reviewed the shipped code (not just task logs) from the user's perspective against the Tasks Plan
+ACs and the locked design (ADR-0007). All user-facing behaviors hold:
+
+- **Active `lsp` tool** — `ToolKind.READ_ONLY` (`registry.py:107`); auto-allows under default mode —
+  the capstone proves it never reaches the human resolver (`permission_requests == [write, write,
+  edit, write]`, no `lsp`). Four ops (`definition`/`references`/`hover`/`diagnostics`); returns
+  1-based `path:line:column` (`tools/lsp.py:_format_location`, client converts 0↔1-based at one
+  boundary). `UNAVAILABLE → ModelRetry` ("fall back to `read`/`grep`"), kept distinct from
+  `None`/`[]` → plain "no X found"; every recoverable problem is a `ModelRetry`, never a crash.
+- **Passive Diagnostics Enricher** — errors-only (`severity == 1`), `.py`-only (case-insensitive),
+  base string kept byte-for-byte (`f"{base}\n\n{summary}"`, `files.py:_enrich`), silent on
+  clean/non-`.py`/unavailable, rides the edit's approval (folded into the return site, no extra gate),
+  swallows every exception. Capstone asserts buggy→block, clean write+edit→base, non-`.py`→base +
+  server never queried, unavailable→base only.
+- **Best-effort + lifecycle** — service maps spawn-fail/timeout/closed-pipe/malformed→`UNAVAILABLE`,
+  caches the broken spawn (no retry storm); `lsp_enabled=False` short-circuits with no spawn;
+  `shutdown_all` on the `run_app` exit path (`app.py:914-917`) is a no-op when unspawned, idempotent,
+  and its failure is logged+swallowed so it never blocks `Decode - bye.` (no `ty server` orphan
+  confirmed).
+- **Config + docs** — 5 `LSP_*` settings present/env-overridable/documented (`.env.example:106-121`,
+  README:158-174); `ty` in `[dependency-groups] dev`; server swappable via
+  `lsp_server_command`/`args`. ADR-0007 Accepted, dated, five Nygard sections + coloured Mermaid,
+  self-consistent (~230 statement lines, the stale "~120" already corrected); the four glossary terms
+  appear verbatim in `src/`; AGENTS.md tree/Tech-Stack/Testing-E2E rows accurate (`build_agent` at
+  `factory.py:68:5` verified).
+- **Capstone** — both channels proven through the real `build_agent`/`Runner`/`render_event`/
+  `SessionLog` stack (hermetic, no key/network), AND the real-`ty` wire test genuinely RAN (3 passed,
+  `-rsx` shows no skip; `ty 0.0.55`). `make ci` → 922 passed, 0 warnings.
+
+**Adjacent / out of scope (non-blocking — not REJECT reasons):**
+- `service._get_client` has no lock around the lazy first spawn, so concurrent first-calls on a fresh
+  root could double-spawn. Sequential usage (the `lsp` tool + the enricher both call one-at-a-time)
+  never trips it; worth a one-line follow-up only if a future caller drives the service concurrently.
+- `.pyi` stub files are not enriched (`.py`-only `endswith`) — consistent with the spec's
+  "Python-only `.py`" wording.
+- The `lsp` tool does not validate `line`/`column` positivity (`0`/negative pass through); the spec
+  only requires presence, the client clamps to wire `(0,0)`, and the service is best-effort, so it
+  never crashes.
+
+User satisfaction guaranteed. Hand off to the PR Reviewer.
+
+### [PR Reviewer] 2026-06-27 15:42 — Review
+
+**VERDICT: NO BLOCKERS**
+
+Reviewed the full `feat/lsp-integration` diff (PR #16) — 20 production/doc files, ~1.4k src lines
+plus tests/tasks. Walked correctness, simplicity/anti-over-engineering, tests, standards (AGENTS.md),
+and docs (ADR/glossary).
+
+- Blockers: 0
+- Nits: 3 (non-blocking; appended to the PR #16 description)
+
+Notable confirmations:
+- Hand-rolled wire (`client.py`) is correct — Content-Length framing, initialize/initialized
+  handshake, match-by-id (decoy-skip tested), 0↔1-based conversion, timeout/malformed/closed-pipe all
+  resolve to UNAVAILABLE, shutdown bounded by a 2s grace + kill. Exercised end-to-end through the
+  fake-process seam in `test_service.py` AND a real-`ty 0.0.55` capstone wire test.
+- Enricher (`files._enrich`) preserves the exact `Wrote …`/`Edited …` base string, errors-only,
+  `.py`-only (case-insensitive), bounded `(+K more)`, swallows every failure — 15 dedicated tests.
+- First `services/` entry introduces NO premature shared abstraction (verified `services/__init__.py`
+  + ADR-0007 §Consequences); the per-root cache + spawn seam mirrors bash `_EXECUTOR`/web `_TRANSPORT`.
+- Standards clean: `-> None` annotations throughout, logger (no prints), async subprocess I/O,
+  `lsp_request_timeout_s` Field(gt=0), new env vars in `.env.example` + settings, no stray artifacts.
+- Docs complete: ADR-0007 Accepted (Nygard), glossary +4 terms used verbatim in `src/`, README +
+  AGENTS.md rows accurate.
+
+**Nits (also appended to PR description):**
+1. [Simplicity/Correctness — latent] `services/lsp/service.py:70 _get_client` — no lock around the
+   lazy first spawn; concurrent first-calls on a fresh root would double-spawn (the loser leaks an
+   orphan `ty` child `shutdown_all` can't reap). Unreachable today (ADR-0002 §7: tools sequential in
+   v1; parallel read-only lands with M3). Add a per-root `asyncio.Lock` when M3 arrives — not before.
+2. [Correctness/Robustness — non-hot-path] `services/lsp/client.py:156 _request` — a per-request
+   timeout can cancel `_read_result` mid-frame, leaving stdout mid-message; the client stays cached
+   (not `_BROKEN`), so that root can stay UNAVAILABLE for the session. No crash (best-effort holds);
+   consider evicting/`_BROKEN`-marking the client on timeout so one slow request can't wedge the root.
+3. [Standards/Docs — swappable-server caveat] `services/lsp/client.py:171 _read_result` never answers
+   server→client requests. `ty` is fine; the advertised `pylsp` drop-in sends `workspace/configuration`
+   / `client/registerCapability` — unanswered, each op blocks until `lsp_request_timeout_s` then
+   degrades to UNAVAILABLE. Worth a one-line caveat in the `pylsp`-swap note / ADR-0007.
+
+Pipeline may advance to hand-off.
