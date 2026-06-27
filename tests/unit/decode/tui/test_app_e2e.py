@@ -327,6 +327,56 @@ async def test_run_app_runs_memory_write_back_on_exit_with_the_session_history(m
     assert captured["cwd"] == Path.cwd()
 
 
+async def test_run_app_shuts_down_lsp_servers_on_exit(monkeypatch):
+    """On exit, ``run_app`` tears down any spawned Language Server (ADR-0007 §6, task 054).
+
+    The lazy per-root ``ty`` child must not orphan: after the REPL loop ends, ``run_app`` calls the
+    LSP Service shutdown entry (next to the memory write-back) so every spawned server is shut down.
+    We patch the service seam so no real subprocess is touched, then assert it fired exactly once and
+    the clean-exit line still rendered.
+    """
+    calls = {"count": 0}
+
+    async def fake_shutdown() -> None:
+        calls["count"] += 1
+
+    monkeypatch.setattr(app_mod, "shutdown_lsp_servers", fake_shutdown)
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("what can you do?")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert calls["count"] == 1, "LSP shutdown must run exactly once on the exit path"
+    assert "Decode - bye." in output  # exit still completes cleanly
+
+
+async def test_run_app_swallows_lsp_shutdown_failure_and_still_exits(monkeypatch):
+    """A failing LSP shutdown is logged and swallowed — exit is never blocked (task 054).
+
+    Mirrors ``extract_on_exit``'s "never raises, cannot block exit" contract: even when the teardown
+    raises (a wedged server), ``run_app`` returns normally and still prints ``Decode - bye.``.
+    """
+
+    async def boom() -> None:
+        raise RuntimeError("ty server is wedged")
+
+    monkeypatch.setattr(app_mod, "shutdown_lsp_servers", boom)
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("what can you do?")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "Decode - bye." in output  # the failure did not block exit or mask the bye line
+
+
 async def test_run_app_renders_you_quote_decode_prefix_and_capital_goodbye(monkeypatch):
     """Fix 2/4 through the real wiring: `you "…"`, one `Decode ` answer prefix, capital goodbye.
 
