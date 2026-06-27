@@ -32,9 +32,9 @@ decision.
 1. **Both channels, minimal, Python-only.**
    - **Active:** a single model-callable `lsp` tool with a four-op surface — `definition`,
      `references`, `hover`, `diagnostics`. It is `ToolKind.READ_ONLY` (it only reads code
-     intelligence), so the permission gate auto-allows it under `default` mode exactly like
-     `read`/`web_fetch` — no prompt, never raising `ApprovalRequired`. Unavailable/unknown-op/bad-args
-     map to `ModelRetry` (model-readable), never a crash.
+     intelligence), so — exactly like `read`/`web_fetch` — it raises `ApprovalRequired` until the call
+     is approved and the permission gate **auto-allows** it under `default` mode (no human prompt).
+     Unavailable/unknown-op/bad-args map to `ModelRetry` (model-readable), never a crash.
    - **Passive:** the **Diagnostics Enricher** — after a *successful* `write`/`edit` on a `.py` file,
      a pull-diagnostic request runs and an **errors-only** summary is appended to the tool's return
      string (the existing `Wrote …`/`Edited …` base string is kept **exact**; the block is appended
@@ -53,7 +53,7 @@ decision.
    swappable seam is the escape hatch.
 
 3. **Client: a hand-rolled thin JSON-RPC-over-stdio client** in a new `src/decode/services/lsp/`
-   package (~120 lines) — the **first** `services/` entry. **No protocol library** (no `multilspy`,
+   package (~230 statement lines, docstring-heavy) — the **first** `services/` entry. **No protocol library** (no `multilspy`,
    no `lsprotocol`): teaching the wire is the point. It spawns `ty server` with stdio pipes, does
    `Content-Length`+JSON framing, the `initialize`/`initialized` handshake, `textDocument/didOpen`,
    then `definition`/`references`/`hover` + a pull `diagnostic` request, **matching responses by id**;
@@ -103,7 +103,7 @@ flowchart TB
 
     subgraph svc["LSP Service — services/lsp/ (first services/ entry)"]
         seam["module-level per-root cache + spawn seam<br/>(mirrors bash _EXECUTOR / web _TRANSPORT)<br/>lazy · 1 server/root · broken spawn cached"]
-        client["hand-rolled JSON-RPC/stdio client (~120 lines, NO lib)<br/>Content-Length framing · initialize/initialized<br/>didOpen · match-by-id · 0-based↔1-based"]
+        client["hand-rolled JSON-RPC/stdio client (~230 statement lines, NO lib)<br/>Content-Length framing · initialize/initialized<br/>didOpen · match-by-id · 0-based↔1-based"]
         bridge["sync diagnostics-on-edit helper<br/>anyio.from_thread.run · best-effort → None"]
     end
 
@@ -142,7 +142,7 @@ flowchart TB
   arrives — honoring AGENTS.md's "no abstraction without a second caller." The module-level per-root
   seam reuses the established `_EXECUTOR`/`_TRANSPORT` pattern, so it is mockable and swappable.
 - **Hand-rolled wire is the teaching payoff and a small maintenance cost.** Framing/handshake/match-
-  by-id are ~120 lines we own; a protocol-library upgrade is deliberately forgone. The pull-only
+  by-id are ~230 statement lines we own; a protocol-library upgrade is deliberately forgone. The pull-only
   diagnostics model keeps the client request/response — no async notification state machine.
 - **`ty` is pre-1.0 — recorded honestly.** It is pinned by `uv.lock` and lives in the dev group; the
   swappable-server setting is the escape hatch if `ty` churns or a user prefers `pylsp`. An install
