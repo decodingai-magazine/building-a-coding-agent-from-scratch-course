@@ -147,9 +147,10 @@ class AgentTurnHandler:
         """The provider-reported input-token count of the most recent leg (``0`` before any leg).
 
         The clean public read the TUI footer fill gauge (task 047) uses, so it never reaches into
-        the private attribute. Populated after each leg from ``run.result.usage.input_tokens`` (a
-        property in pydantic-ai 2.0.0) — the same provider-authoritative number the compaction
-        trigger reads (ADR-0006 §3).
+        the private attribute. Populated after each leg from ``run.usage().input_tokens`` (``usage``
+        is a method on the run in pydantic-ai 1.x — ADR-0009 — returning a ``RunUsage`` whose
+        ``input_tokens`` field is the same provider-authoritative number the compaction trigger
+        reads, ADR-0006 §3).
         """
         return self._last_input_tokens
 
@@ -376,10 +377,12 @@ class AgentTurnHandler:
                     await self._stream_tool_node(ctx, node, run)
         # Carry the whole conversation (prior history + this leg) into the next turn.
         self.message_history = run.all_messages()
-        # Record this leg's provider-reported input tokens (a property in pydantic-ai 2.0.0): the
-        # compaction trigger (ADR-0006 §3) and the TUI fill gauge (task 047) read it. The last leg
-        # of a multi-leg turn carries the largest history, so this is the right would-stop measure.
-        self._last_input_tokens = run.result.usage.input_tokens
+        # Record this leg's provider-reported input tokens: the compaction trigger (ADR-0006 §3) and
+        # the TUI fill gauge (task 047) read it. The last leg of a multi-leg turn carries the largest
+        # history, so this is the right would-stop measure. ``usage`` is a *method* on the run in
+        # pydantic-ai 1.x (it was a property on ``run.result.usage`` under 2.0 — ADR-0009); the
+        # ``RunUsage.input_tokens`` field keeps the exact same meaning and ``int`` type.
+        self._last_input_tokens = run.usage().input_tokens
         # Keep the persisted-count cursor valid when pydantic-ai *coalesces* adjacent same-role
         # messages of the prior history while building this leg's request — notably the two adjacent
         # ``ModelRequest``s a full compaction leaves (the synthetic summary head + the tail's

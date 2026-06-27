@@ -89,9 +89,10 @@ def test_build_agent_uses_google_model_with_configured_id(mocker):
 
     assert isinstance(agent.model, GoogleModel)
     assert agent.model.model_name == "gemini-2.5-flash"
-    # google-gla (Generative-Language), NOT Vertex: the provider's system name is "google".
+    # google-gla (Generative-Language), NOT Vertex: the provider's system name is "google-gla"
+    # (pydantic-ai 1.x — it was "google" under 2.0; ADR-0009).
     assert isinstance(agent.model._provider, GoogleProvider)
-    assert agent.model.system == "google"
+    assert agent.model.system == "google-gla"
 
 
 def test_build_agent_respects_a_custom_model_id(mocker):
@@ -391,7 +392,8 @@ def _patch_provider(mocker, provider, *, modal_authenticated=True):
             "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
         )
         mocker.patch("decode.agent.factory.settings.gemini_model", "gemini-2.5-flash", create=False)
-        return GoogleModel, "google", "gemini-2.5-flash"
+        # GoogleModel.system is "google-gla" under pydantic-ai 1.x (was "google" under 2.0; ADR-0009).
+        return GoogleModel, "google-gla", "gemini-2.5-flash"
     if provider == "openrouter":
         mocker.patch(
             "decode.agent.factory.settings.openrouter_api_key", SecretStr("or-key"), create=False
