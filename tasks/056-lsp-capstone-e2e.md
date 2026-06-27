@@ -1,7 +1,7 @@
 ---
 id: 056-lsp-capstone-e2e
 feature: lsp-integration
-status: pending
+status: done
 ---
 
 # LSP capstone: active tool + passive enricher through the real stack (e2e)
@@ -48,20 +48,20 @@ exercises a REAL `ty server` when available.
 
 ## Acceptance criteria
 
-- [ ] Runs under `make integration-tests` / `make ci` with **no** `GEMINI_API_KEY` and **no** network;
+- [x] Runs under `make integration-tests` / `make ci` with **no** `GEMINI_API_KEY` and **no** network;
       the hermetic capstone swaps only the LSP service seam for a fake (model is a `FunctionModel`).
-- [ ] Active channel asserted: `lsp op=definition` auto-allows (no permission request recorded) and
+- [x] Active channel asserted: `lsp op=definition` auto-allows (no permission request recorded) and
       returns the canned `path:line:column` to the model.
-- [ ] Passive-errors asserted: a buggy `.py` write result == exact base `Wrote …` string + the
+- [x] Passive-errors asserted: a buggy `.py` write result == exact base `Wrote …` string + the
       appended errors-only diagnostics block.
-- [ ] Passive-clean asserted: a clean `.py` write/edit result == the base string unchanged.
-- [ ] Non-`.py` asserted: enricher never runs; base string unchanged.
-- [ ] Unavailable asserted: buggy `.py` write returns base only; `lsp` tool returns a `ModelRetry`;
+- [x] Passive-clean asserted: a clean `.py` write/edit result == the base string unchanged.
+- [x] Non-`.py` asserted: enricher never runs; base string unchanged.
+- [x] Unavailable asserted: buggy `.py` write returns base only; `lsp` tool returns a `ModelRetry`;
       no crash; the turn completes.
-- [ ] The real renderer runs on every event without raising; the JSONL session log writes and replays.
-- [ ] The optional real-`ty` test runs when `ty` is available and is **skipped** (not failed) when it
+- [x] The real renderer runs on every event without raising; the JSONL session log writes and replays.
+- [x] The optional real-`ty` test runs when `ty` is available and is **skipped** (not failed) when it
       is not; when it runs it asserts a real definition + a real error diagnostic.
-- [ ] `make ci` green, 0 warnings.
+- [x] `make ci` green, 0 warnings.
 
 ## User stories
 
@@ -107,3 +107,142 @@ guarded real-`ty` test.
 - 3 stories: hermetic both-channels proof, real-`ty` wire proof, graceful skip without `ty`.
 
 Ready for implementation.
+
+### [SWE] 2026-06-27 14:30 — Implementation
+
+**Files modified**
+- `tests/integration/test_lsp_capstone.py` — new: the LSP capstone (3 tests) driving both ADR-0007
+  channels through the real `build_agent`/`AgentTurnHandler`/`Runner`/`render_event`/`SessionLog`
+  stack with a `FunctionModel`, swapping only the task-051 `_spawn_process` seam for a fake.
+- `tests/support/lsp_fakes.py` — `FakeLanguageServer` now accepts a **callable** response value
+  `(request_message) -> result` (backward-compatible), so one fake answers `textDocument/diagnostic`
+  per file URI (error for `buggy.py`, clean otherwise). Existing static dict/list responses are
+  unchanged.
+
+**Tests**
+- Unit: 922 passing, 0 failing (full `make ci` suite; LSP units 122/122 after the fake change).
+- Integration: 12 passing — `test_lsp_capstone.py` adds 3 (both-channels hermetic, unavailable
+  degradation, real-`ty` wire).
+
+**Acceptance criteria**
+- [x] No `GEMINI_API_KEY`/no network; swaps only `_spawn_process` — verified by the conftest hermeticity
+      guard + `mocker.patch.object(lsp_service, "_spawn_process", ...)`.
+- [x] Active `lsp op=definition` auto-allows + returns `path:line:column` —
+      `test_lsp_capstone_both_channels_available` (`_DEF_RESULT` in tool returns; `lsp` never in
+      `permission_requests`).
+- [x] Passive-errors == exact base + errors-only block — same test (`buggy_return == _BUGGY_RESULT`,
+      `startswith(_BUGGY_BASE)`).
+- [x] Passive-clean (write + edit) == base unchanged — same test (`_CLEAN_WRITE_BASE` / `_CLEAN_EDIT_BASE`).
+- [x] Non-`.py` base unchanged + enricher never queried the server — same test (no `textDocument/diagnostic`
+      carries the `.md` URI).
+- [x] Unavailable: base only + `lsp` `ModelRetry` + no crash —
+      `test_lsp_capstone_unavailable_degrades_gracefully`.
+- [x] Real renderer ran on every event; JSONL log writes + replays — both hermetic tests
+      (`render_event` on every event; `session_log.load(...) == message_history`; header + 5 turns).
+- [x] Real-`ty` test runs when `ty` present, skips otherwise; asserts real definition + real error —
+      `test_lsp_capstone_real_ty_wire` (RAN here: `ty 0.0.55` on PATH).
+- [x] `make ci` green, 0 warnings (`filterwarnings=["error"]`).
+
+**Evidence**
+```
+$ uv run pytest tests/integration/test_lsp_capstone.py -v -rsx
+tests/integration/test_lsp_capstone.py::test_lsp_capstone_both_channels_available PASSED [ 33%]
+tests/integration/test_lsp_capstone.py::test_lsp_capstone_unavailable_degrades_gracefully PASSED [ 66%]
+tests/integration/test_lsp_capstone.py::test_lsp_capstone_real_ty_wire PASSED [100%]
+============================== 3 passed in 1.85s ===============================
+  (no skip/xfail lines under -rsx → the real-`ty` test genuinely RAN, not skipped)
+
+$ make ci
+============================= 922 passed in 8.85s ==============================
+```
+
+**Notes**
+- De-risked the real-`ty` wire before writing assertions: a probe through the real service returned
+  `definition → Location(path='sample.py', line=1, column=5)` and a severity-1 diagnostic
+  `Name \`not_defined_name\` used when not defined` — the real-`ty` test asserts the def resolves to
+  line 1 and an error names the undefined symbol (robust to message-wording churn in pre-1.0 `ty`).
+- Confirmed pydantic-ai runs sync tools via `anyio.to_thread.run_sync` (no `disable_threads` in
+  decode), so the enricher's real `anyio.from_thread.run` bridge works through the worker thread — the
+  capstone is the first place that bridge is proven end-to-end (units patched it out).
+- Unavailable is its own conversation/test because a broken spawn is cached **per root** (ADR-0007 §4);
+  reusing one root would mask the active/available path. The real-`ty` test calls `shutdown_all()` in a
+  `finally` so the real subprocess is reaped (no `ResourceWarning` under `filterwarnings=["error"]`).
+- DO NOT COMMIT — handing off to the Tester first.
+
+### [Tester] 2026-06-27 15:20 — QA
+
+**Test summary**
+- Format / lint / pre-commit: PASS (`ruff format --check`: 128 files formatted; `ruff check`: all passed)
+- Unit tests: 922 passed / 0 failed (full `make ci` suite) — LSP-area units 122/122
+- Integration tests: 3/3 in `test_lsp_capstone.py` (12 integration total in the suite)
+- `uv lock --check`: PASS
+- Warnings: 0 (`filterwarnings=["error"]` — any warning would fail the run)
+
+**E2E adversarial pass**
+- Happy path: `env -u GEMINI_API_KEY uv run pytest tests/integration/test_lsp_capstone.py -v -rsx`
+  → 3 passed, no skip/xfail lines (real-`ty` test genuinely RAN against `ty 0.0.55`) (PASS)
+- Break path 1 (env/hermeticity — no API key): conftest scrubs `GEMINI_API_KEY` for every test and the
+  explicit `env -u GEMINI_API_KEY` run still passes; only `_spawn_process` is patched (no network, no
+  real subprocess in the two hermetic tests) → 3 passed (PASS)
+- Break path 2 (state — `ty` absent / graceful skip): `PATH=/usr/bin:/bin .venv/bin/python -m pytest …
+  -rsx` (`shutil.which("ty")` → None) → 2 passed, 1 **skipped** (reason: "the `ty` language server
+  binary is not on PATH") — skipped, never failed (PASS)
+- Break path 3 (state — repeat ×3 + interleave with `test_service.py` sharing the module-level
+  `_CLIENTS` cache): 3 passed each run, 25 passed interleaved, `pgrep "ty server"` → none lingering
+  (the `_isolate_lsp_cache` autouse clear + the real-`ty` `shutdown_all()` finally hold) (PASS)
+- Break path 4 (feature smoke — real `ty`, ops the capstone does NOT cover + boundary): `references`
+  → `[helpers.py:1:5 (decl), :5:10 (call)]`; `hover` → `def helper() -> int…`; clean-file
+  `diagnostics` → `[]` (empty list, NOT `UNAVAILABLE` — "answered, nothing" preserved); `definition`
+  at an out-of-range column (6:99, past EOL) → `None`, no crash (PASS)
+
+**Acceptance criteria**
+- [x] PASS — No `GEMINI_API_KEY`/no network; swaps only the LSP service seam — `env -u GEMINI_API_KEY`
+      run green; conftest `_no_real_provider_key` scrubs the key suite-wide; `mocker.patch.object(
+      lsp_service, "_spawn_process", …)` is the only boundary (test_lsp_capstone.py:308)
+- [x] PASS — Active `lsp op=definition` auto-allows + returns `pkg/helpers.py:3:1` — asserts `_DEF_RESULT
+      in returns` and `"lsp" not in permission_requests`, final resolver list == `[write,write,edit,write]`
+      (lines 358-399); real client maps 0-based wire `(2,0)` → 1-based `3:1`
+- [x] PASS — Passive-errors == exact base + errors-only block — `buggy_return == _BUGGY_RESULT`
+      (`Wrote 'buggy.py' (…).` + `LSP diagnostics (ty) — fix these:\n  5:7  undefined name \`bar\``);
+      file content on disk == body (gated write ran) (lines 364-368)
+- [x] PASS — Passive-clean (write + edit) == base unchanged — `_CLEAN_WRITE_BASE`/`_CLEAN_EDIT_BASE in
+      returns`, edit applied to disk (`VALUE = 2`) (lines 371-375)
+- [x] PASS — Non-`.py`: enricher never runs — `_DOC_BASE in returns` AND no `textDocument/diagnostic`
+      carries the `.md` URI; non-vacuous (buggy.py + clean.py URIs WERE queried, proving the real
+      sync→async bridge ran) (lines 379-391)
+- [x] PASS — Unavailable: base only + `lsp` ModelRetry + no crash — retry carries "code intelligence is
+      unavailable", `_BUGGY_BASE in returns`, `_BUGGY_RESULT not in returns`, write ran, log replays
+      (test_lsp_capstone_unavailable_degrades_gracefully)
+- [x] PASS — Real renderer on every event + JSONL log writes/replays — `render_event` into a Rich buffer
+      on every event (unknown kind would raise); `_DEF_RESULT`/`_ERROR_MESSAGE` render; `session_log.load
+      == message_history`, header + 5 turn-appends (lines 402-413)
+- [x] PASS — Optional real-`ty` test runs when present, skips otherwise — RAN here (3 passed, no skip);
+      hidden-`ty` run → 2 passed/1 skipped (not failed); asserts real def resolves line 1 + real
+      severity-1 error names `not_defined_name` (lines 478-503)
+- [x] PASS — `make ci` green, 0 warnings — `922 passed in ~8.8s`; lock+format+lint all green
+
+**Evidence**
+```
+$ env -u GEMINI_API_KEY uv run pytest tests/integration/test_lsp_capstone.py -v -rsx
+test_lsp_capstone_both_channels_available PASSED      [ 33%]
+test_lsp_capstone_unavailable_degrades_gracefully PASSED [ 66%]
+test_lsp_capstone_real_ty_wire PASSED                 [100%]
+============================== 3 passed in 2.13s ===============================
+
+$ PATH=/usr/bin:/bin .venv/bin/python -m pytest tests/integration/test_lsp_capstone.py -rsx
+SKIPPED [1] …:478: the `ty` language server binary is not on PATH
+========================= 2 passed, 1 skipped in 1.68s =========================
+
+$ make ci
+uv lock --check  ·  ruff format --check (128 files)  ·  ruff check (all passed)
+============================= 922 passed in 8.82s ==============================
+```
+
+**Other issues found**
+- None blocking. The `lsp_fakes.py` change (callable response value) is minimal and backward-compatible
+  — only `test_service.py` and the new capstone consume the fake, all 122 LSP-area units pass.
+- Non-blocking follow-up (out of scope for this test-only task; pre-existing task-051 service behavior):
+  `service._get_client` has no lock around the lazy first spawn, so concurrent first-calls on a fresh
+  root could double-spawn. The capstone is sequential so it never trips; flagging only for awareness.
+
+**VERDICT: PASS**

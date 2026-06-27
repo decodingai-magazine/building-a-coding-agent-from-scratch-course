@@ -67,9 +67,12 @@ class FakeLanguageServer:
     """A canned, in-memory stand-in for one ``ty server`` stdio Language Server.
 
     ``responses`` maps an LSP method name → the JSON-RPC ``result`` to return for that request; a
-    method absent from the map answers with ``null``. ``hang_methods`` are never answered (so the
-    client times out), ``decoy_methods`` get a wrong-``id`` decoy response emitted *before* the real
-    one (proving match-by-id), and ``malformed_methods`` get a deliberately broken frame. The order of
+    method absent from the map answers with ``null``. A mapped value may also be a **callable**
+    ``(request_message) -> result`` — a per-request responder the dispatch invokes with the decoded
+    request, so a single fake can answer differently per file (e.g. URI-aware diagnostics: errors for
+    one ``.py`` URI, clean for another). ``hang_methods`` are never answered (so the client times out),
+    ``decoy_methods`` get a wrong-``id`` decoy response emitted *before* the real one (proving
+    match-by-id), and ``malformed_methods`` get a deliberately broken frame. The order of
     received method names is recorded in :attr:`received` (and full messages in :attr:`requests`) so a
     test can assert the handshake sequence and inspect a request's params.
     """
@@ -110,9 +113,10 @@ class FakeLanguageServer:
         if method in self.decoy_methods:
             # A stale response from a different id, fed FIRST — the client must skip it and match ours.
             self.stdout.feed_data(frame({"jsonrpc": "2.0", "id": -999, "result": {"decoy": True}}))
-        self.stdout.feed_data(
-            frame({"jsonrpc": "2.0", "id": msg_id, "result": self.responses.get(method)})
-        )
+        result = self.responses.get(method)
+        if callable(result):
+            result = result(message)  # a per-request responder (e.g. URI-aware diagnostics)
+        self.stdout.feed_data(frame({"jsonrpc": "2.0", "id": msg_id, "result": result}))
 
     # --- the subprocess surface the client's shutdown path drives ---
     def terminate(self) -> None:
