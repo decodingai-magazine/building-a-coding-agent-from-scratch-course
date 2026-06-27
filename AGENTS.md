@@ -80,7 +80,7 @@ Use the `context7` MCP server (when connected) to look up authoritative usage fo
 - **Modal:** https://modal.com/llms.txt — full reference at https://modal.com/llms-full.txt (large; only if needed).
 - **OpenRouter:** https://openrouter.ai/docs/llms.txt
 - **Opik:** https://www.comet.com/docs/opik/llms.txt — also append `/llms.txt` to any section URL for a scoped index.
-- **Kitaru (ZenML):** https://docs.zenml.io/llms.txt — full reference at https://docs.zenml.io/llms-full.txt.
+- **Kitaru (by ZenML):** https://docs.zenml.io/llms.txt — full reference at https://docs.zenml.io/llms-full.txt.
 
 ## Running commands
 

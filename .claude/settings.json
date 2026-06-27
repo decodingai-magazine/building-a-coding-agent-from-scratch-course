@@ -4,7 +4,8 @@
     "ponytail@ponytail": true,
     "context7@claude-plugins-official": true,
     "code-review@claude-plugins-official": true,
-    "commit-commands@claude-plugins-official": true
+    "commit-commands@claude-plugins-official": true,
+    "kitaru@kitaru": true
   },
   "extraKnownMarketplaces": {
     "iusztinpaul": {
