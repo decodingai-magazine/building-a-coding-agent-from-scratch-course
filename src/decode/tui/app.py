@@ -214,28 +214,23 @@ def parse_skill_command(line: str) -> tuple[str, str] | None:
     return name, trailing.strip()
 
 
-# Short metas for the built-in slash commands shown in the completion menu (skills bring their own
-# ``description``). The four reserved commands the ``run_app`` loop matches before the skill branch.
-_COMMAND_META: dict[str, str] = {
-    _AGENT_COMMAND: "switch the active agent (/agent <name>)",
-    _MODE_COMMAND: "switch the permission mode (/mode <name>)",
-    _COMPACT_COMMAND: "compact the conversation now",
-    _QUIT_COMMAND: "exit decode",
-}
-
-
 class SlashCompleter(Completer):
     """Autocomplete the slash commands + project skills as the user types ``/`` (like Claude Code).
 
     Built once per session from ``load_skills(cwd)`` so the menu lists every reachable ``/<skill>``
-    (its ``description`` as the meta) alongside the four built-in commands. Fires **only** while the
-    line-before-cursor is a single ``/`` token (no space yet) — so normal prose, and the ``<arg>``
-    after ``/agent``/``/mode``, never trigger it. ``prompt_toolkit`` renders the menu; this just
-    supplies the candidates.
+    (its ``description`` as the meta) alongside the four built-in commands the ``run_app`` loop
+    matches before the skill branch. Fires **only** while the line-before-cursor is a single ``/``
+    token (no space yet) — so normal prose, and the ``<arg>`` after ``/agent``/``/mode``, never
+    trigger it. ``prompt_toolkit`` renders the menu; this just supplies the candidates.
     """
 
     def __init__(self, cwd: Path) -> None:
-        self._meta = dict(_COMMAND_META)
+        self._meta = {
+            _AGENT_COMMAND: "switch the active agent (/agent <name>)",
+            _MODE_COMMAND: "switch the permission mode (/mode <name>)",
+            _COMPACT_COMMAND: "compact the conversation now",
+            _QUIT_COMMAND: "exit decode",
+        }
         self._meta.update(
             {f"/{name}": skill.description for name, skill in load_skills(cwd).items()}
         )
