@@ -40,6 +40,8 @@ from pydantic_ai import ApprovalRequired, ModelRetry, RunContext
 
 from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
+from decode.services import lsp as lsp_service
+from decode.services.lsp import Diagnostic
 from decode.tools.truncate import truncate
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,14 @@ FILE_TOOLS_MUTATING: dict[str, bool] = {
 # A UTF-8 byte-order mark. Some editors prepend it; we strip it before matching and restore it
 # verbatim on write so an ``edit`` never silently drops (or adds) a BOM.
 _UTF8_BOM = "﻿"
+
+# Passive Diagnostics Enricher (task 053, ADR-0007). The LSP ``DiagnosticSeverity.Error`` value — the
+# *only* severity the enricher surfaces inline (warnings/info/hints are dropped; the active ``lsp``
+# tool is the full-severity query surface).
+_LSP_ERROR_SEVERITY = 1
+# Bound the appended block so a flood of errors can't blow up the tool result; a ``(+K more)`` tail
+# names the remainder.
+_LSP_DIAGNOSTICS_LIMIT = 10
 
 
 def _is_within(base: Path, candidate: Path) -> bool:
@@ -289,7 +299,8 @@ def write(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_bytes(target, content.encode("utf-8"))
     logger.debug("wrote %d bytes to %r", len(content), path)
-    return f"Wrote {path!r} ({len(content)} characters)."
+    base = f"Wrote {path!r} ({len(content)} characters)."
+    return _enrich(base, ctx.deps.cwd, path)
 
 
 def edit(ctx: RunContext[AgentDeps], path: str, old_string: str, new_string: str) -> str:
@@ -344,7 +355,61 @@ def edit(ctx: RunContext[AgentDeps], path: str, old_string: str, new_string: str
     final = (_UTF8_BOM + restored) if had_bom else restored
     _atomic_write_bytes(target, final.encode("utf-8"))
     logger.debug("edited %r (eol=%r, bom=%s)", path, eol, had_bom)
-    return f"Edited {path!r} (replaced 1 occurrence)."
+    base = f"Edited {path!r} (replaced 1 occurrence)."
+    return _enrich(base, ctx.deps.cwd, path)
+
+
+def _enrich(base: str, cwd: Path, path: str) -> str:
+    """Append an errors-only LSP diagnostics block to a successful ``.py`` write/edit (ADR-0007).
+
+    The **passive** channel: the byte write already happened and was approved, so this surfaces the
+    just-written file's *errors* (LSP severity ``1``) inline — like opencode's "LSP errors detected,
+    please fix" — so the model corrects them without a user nudge. ``base`` (the exact ``Wrote …`` /
+    ``Edited …`` string) is returned **unchanged** unless there are errors, in which case the block is
+    appended as ``f"{base}\\n\\n{summary}"``.
+
+    Best-effort and silent: returns ``base`` untouched when the feature/setting is off, the file is
+    not ``.py``, the server is unavailable, the file is clean, or it has only warnings — and it
+    **swallows every exception**, so the enricher can never change or break the write/edit return or
+    the file write. No extra permission gate: it rides the write/edit approval already granted.
+    """
+    if not (settings.lsp_enabled and settings.lsp_diagnostics_on_edit):
+        return base
+    if not path.lower().endswith(".py"):
+        return base
+    try:
+        summary = _format_lsp_errors(lsp_service.diagnostics_on_edit(cwd, path))
+    except Exception as exc:  # best-effort: an enricher failure never touches the edit's return
+        logger.debug("lsp enricher skipped for %r (unavailable): %s", path, exc)
+        return base
+    if summary is None:
+        return base
+    logger.debug("lsp enricher appended diagnostics for %r", path)
+    return f"{base}\n\n{summary}"
+
+
+def _format_lsp_errors(diagnostics: list[Diagnostic] | None) -> str | None:
+    """Render an errors-only, bounded diagnostics block; ``None`` when there is nothing to report.
+
+    Keeps only LSP errors (``severity == 1``) — warnings / info / hints are dropped (the active
+    ``lsp`` tool is the full-severity query surface). Returns ``None`` for ``None`` input (server
+    unavailable), an empty list (clean file), or a list with no errors. Otherwise a server-named
+    header (``LSP diagnostics (<server>) — fix these:``) followed by up to
+    :data:`_LSP_DIAGNOSTICS_LIMIT` ``  line:column  message`` lines, with a ``  (+K more)`` tail when
+    truncated.
+    """
+    if not diagnostics:
+        return None
+    errors = [d for d in diagnostics if d.severity == _LSP_ERROR_SEVERITY]
+    if not errors:
+        return None
+    shown = errors[:_LSP_DIAGNOSTICS_LIMIT]
+    lines = [f"LSP diagnostics ({settings.lsp_server_command}) — fix these:"]
+    lines += [f"  {d.line}:{d.column}  {d.message}" for d in shown]
+    hidden = len(errors) - len(shown)
+    if hidden > 0:
+        lines.append(f"  (+{hidden} more)")
+    return "\n".join(lines)
 
 
 def _detect_eol(text: str) -> str:
