@@ -39,6 +39,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -211,6 +212,43 @@ def parse_skill_command(line: str) -> tuple[str, str] | None:
     if not name:
         return None
     return name, trailing.strip()
+
+
+# Short metas for the built-in slash commands shown in the completion menu (skills bring their own
+# ``description``). The four reserved commands the ``run_app`` loop matches before the skill branch.
+_COMMAND_META: dict[str, str] = {
+    _AGENT_COMMAND: "switch the active agent (/agent <name>)",
+    _MODE_COMMAND: "switch the permission mode (/mode <name>)",
+    _COMPACT_COMMAND: "compact the conversation now",
+    _QUIT_COMMAND: "exit decode",
+}
+
+
+class SlashCompleter(Completer):
+    """Autocomplete the slash commands + project skills as the user types ``/`` (like Claude Code).
+
+    Built once per session from ``load_skills(cwd)`` so the menu lists every reachable ``/<skill>``
+    (its ``description`` as the meta) alongside the four built-in commands. Fires **only** while the
+    line-before-cursor is a single ``/`` token (no space yet) — so normal prose, and the ``<arg>``
+    after ``/agent``/``/mode``, never trigger it. ``prompt_toolkit`` renders the menu; this just
+    supplies the candidates.
+    """
+
+    def __init__(self, cwd: Path) -> None:
+        self._meta = dict(_COMMAND_META)
+        self._meta.update(
+            {f"/{name}": skill.description for name, skill in load_skills(cwd).items()}
+        )
+
+    def get_completions(self, document, complete_event):  # type: ignore[no-untyped-def]
+        text = document.text_before_cursor
+        if not text.startswith("/") or " " in text:
+            return
+        for command in sorted(self._meta):
+            if command.startswith(text):
+                yield Completion(
+                    command, start_position=-len(text), display_meta=self._meta[command]
+                )
 
 
 def parse_mode_name(name: str) -> PermissionMode | None:
@@ -753,6 +791,8 @@ async def run_app(
 
     session: PromptSession[object] = PromptSession(
         key_bindings=_build_key_bindings(on_cycle_mode=cycle_mode),
+        completer=SlashCompleter(deps.cwd),
+        complete_while_typing=True,
         # ``handler`` is bound a few lines below; the toolbar lambda is invoked only during the
         # prompt loop (after the handler exists), so the late-bound reference is safe and lets the
         # footer's fill gauge read the live ``handler.last_input_tokens`` each render (task 047).
@@ -777,8 +817,19 @@ async def run_app(
     )
     runner = Runner(handler, on_event=_on_event)
 
+    # Which provider/model this session is talking to (the active model id lives in a per-provider
+    # settings field — same mapping as factory._build_model's branches).
+    active_model = {
+        "gemini": settings.gemini_model,
+        "openrouter": settings.openrouter_model,
+        "modal": settings.modal_endpoint_model,
+    }[settings.llm_provider]
     console.print(
-        render.render_event(events.AssistantTextDelta(text="Decode - type a line; /quit exits."))
+        render.render_event(
+            events.AssistantTextDelta(
+                text=f"Decode - {settings.llm_provider}:{active_model} - type a line; /quit exits."
+            )
+        )
     )
 
     with patch_stdout(raw=True):

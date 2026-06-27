@@ -38,6 +38,7 @@ from rich.console import Console
 from support.noop_helper import register_noop
 
 from decode.agent.deps import AgentDeps
+from decode.config.settings import settings
 from decode.tools.askuser import ask_user
 from decode.tui import app as app_mod
 
@@ -347,6 +348,8 @@ async def test_run_app_renders_you_quote_decode_prefix_and_capital_goodbye(monke
     # Fix 2: the answer carries the `Decode ` lead-in, immediately before the streamed reply.
     assert f"Decode {_CHAT_REPLY}" in output
     assert "Decode - bye." in output  # Fix 4: capitalized goodbye prose
+    # The startup banner names the active provider:model this session talks to.
+    assert f"Decode - {settings.llm_provider}:" in output
 
 
 async def test_run_app_persists_the_session_to_a_jsonl_log(monkeypatch, sessions_dir):

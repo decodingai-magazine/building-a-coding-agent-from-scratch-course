@@ -804,3 +804,29 @@ async def test_dispatcher_and_tui_produce_identical_payloads_for_the_same_skill(
         dispatcher_payload = await skills_tool.skill(ctx, name)
         tui_payload = app._handle_skill_command(name, "", cwd=tmp_path, emit=lambda _l: None)
         assert dispatcher_payload == tui_payload
+
+
+def _completions(completer: app.SlashCompleter, text: str) -> list[str]:
+    """The completion texts the SlashCompleter offers for ``text`` before the cursor."""
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    return [c.text for c in completer.get_completions(Document(text), CompleteEvent())]
+
+
+def test_slash_completer_suggests_commands_and_skills(tmp_path):
+    """Typing a ``/`` token completes the built-in commands + project skills; prose/args don't."""
+    completer = app.SlashCompleter(tmp_path)  # no project skills → built-in commands + skills only
+
+    # A bare "/" lists everything, including a built-in command and a built-in skill.
+    bare = _completions(completer, "/")
+    assert "/compact" in bare and "/quit" in bare
+    assert "/commit" in bare, "built-in skills appear in the menu too"
+
+    # A prefix narrows to matching candidates only (and replaces the whole token).
+    assert set(_completions(completer, "/co")) >= {"/compact", "/commit"}
+    assert "/quit" not in _completions(completer, "/co")
+
+    # No menu for normal prose, or once the command has an argument (the space after it).
+    assert _completions(completer, "hello world") == []
+    assert _completions(completer, "/agent build") == []
