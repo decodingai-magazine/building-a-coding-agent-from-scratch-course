@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -516,12 +517,26 @@ def _make_user_question_resolver(
     return resolver
 
 
-def _bottom_toolbar(deps: AgentDeps, gate: PermissionGate, handler: AgentTurnHandler) -> HTML:
-    """The footer as prompt_toolkit formatted text: the context fill gauge + the live hint (§9).
+# Footer animation cadence: prompt_toolkit re-renders the bottom toolbar every this many seconds
+# (PromptSession ``refresh_interval``) so the "working…" spinner animates while a turn runs — the
+# footer otherwise only repaints on keystrokes. Also the spinner's tick unit: one frame per refresh.
+_FOOTER_REFRESH_S = 0.1
 
-    Called by prompt_toolkit on every render with the session's ``deps`` + ``gate`` + ``handler``,
-    so the footer reflects the current ``deps.active_agent`` / ``gate.mode`` (updating immediately
-    after a ``/agent`` / ``/mode`` switch or Shift+Tab cycle) and the live context-window fill.
+
+def _bottom_toolbar(
+    deps: AgentDeps, gate: PermissionGate, handler: AgentTurnHandler, runner: Runner
+) -> HTML:
+    """The footer as prompt_toolkit formatted text: a busy spinner + context fill gauge + live hint.
+
+    Called by prompt_toolkit on every render with the session's ``deps`` + ``gate`` + ``handler`` +
+    ``runner``, so the footer reflects the current ``deps.active_agent`` / ``gate.mode`` (updating
+    immediately after a ``/agent`` / ``/mode`` switch or Shift+Tab cycle) and the live context fill.
+
+    While a turn is in flight (``runner.phase`` is not :data:`~decode.harness.runner.Phase.IDLE`)
+    the footer leads with an animated braille spinner + ``working…`` so the user knows to wait — an
+    indeterminate busy indicator, not a 0→1 bar. The frame advances each refresh; the
+    PromptSession's ``refresh_interval`` (``_FOOTER_REFRESH_S``) drives the animation while the turn
+    runs as a background task. When idle the spinner is absent and the footer is the gauge + hint.
 
     The gauge (ADR-0006 §9, task 047) reads the handler's **public** ``last_input_tokens`` property
     (never the private attr) over the single source of truth ``compaction_context_window_tokens``,
@@ -536,7 +551,12 @@ def _bottom_toolbar(deps: AgentDeps, gate: PermissionGate, handler: AgentTurnHan
     danger_at = 1 - settings.compaction_reserve_fraction
     label, color = render.context_gauge(fraction, warn_at=warn_at, danger_at=danger_at)
     hint = footer_hint(deps.active_agent.name, gate.mode.value)
-    return HTML(f'<style fg="{color}">{label}</style> <b>{hint}</b>')
+    if runner.phase is Phase.IDLE:
+        spinner = ""
+    else:
+        frame = render.spinner_frame(int(time.monotonic() / _FOOTER_REFRESH_S))
+        spinner = f'<style fg="cyan">{frame} working…</style> '
+    return HTML(f'{spinner}<style fg="{color}">{label}</style> <b>{hint}</b>')
 
 
 def _build_key_bindings(*, on_cycle_mode: Callable[[], None]) -> KeyBindings:
@@ -788,10 +808,13 @@ async def run_app(
         key_bindings=_build_key_bindings(on_cycle_mode=cycle_mode),
         completer=SlashCompleter(deps.cwd),
         complete_while_typing=True,
-        # ``handler`` is bound a few lines below; the toolbar lambda is invoked only during the
-        # prompt loop (after the handler exists), so the late-bound reference is safe and lets the
-        # footer's fill gauge read the live ``handler.last_input_tokens`` each render (task 047).
-        bottom_toolbar=lambda: _bottom_toolbar(deps, gate, handler),
+        # Re-render the footer on a timer so the "working…" spinner animates while a turn runs in
+        # the background (without this the footer only repaints on keystrokes).
+        refresh_interval=_FOOTER_REFRESH_S,
+        # ``handler`` / ``runner`` are bound a few lines below; the toolbar lambda is invoked only
+        # during the prompt loop (after they exist), so the late-bound reference is safe and lets the
+        # footer read the live ``handler.last_input_tokens`` and ``runner.phase`` each render.
+        bottom_toolbar=lambda: _bottom_toolbar(deps, gate, handler, runner),
     )
     # Persistence (ADR-0002 §9): replay a prior session if asked, then open a fresh append-only
     # JSONL log this run writes its turns to. The replayed history seeds the handler so the
