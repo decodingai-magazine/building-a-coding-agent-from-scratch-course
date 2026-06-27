@@ -119,5 +119,24 @@ class Settings(BaseSettings):
     # The lazy single spawn per root amortizes the cost. A non-positive value fails fast (Field gt=0).
     lsp_request_timeout_s: float = Field(10.0, gt=0)
 
+    # --- Kitaru durable runtime (ADR-0008) ---
+    # The Headless Runtime config surface (``decode run`` / ``runtime/``); settings only here — no
+    # readers yet (they land in tasks 058/059/061). ``runtime_enabled`` master-gates the WHOLE headless
+    # feature: ``False`` → ``decode run`` exits with a friendly line and never builds a Durable Flow.
+    runtime_enabled: bool = True
+    # ``KitaruAgent`` Checkpoint granularity: ``"turn"`` (one Checkpoint per agent turn — coarse, the
+    # simplest MVP default) or ``"calls"`` (per model/tool call). Task 058 passes it to ``KitaruAgent``.
+    runtime_checkpoint_strategy: Literal["turn", "calls"] = "turn"
+    # The durable Wait (HITL) poll timeout (seconds) in flow mode; matches Kitaru's local 600s default.
+    # A non-positive value fails fast (Field gt=0). Task 059 reads it.
+    runtime_wait_timeout_s: float = Field(600.0, gt=0)
+    # When ``True``, flow-mode model construction resolves the provider API key through the Kitaru
+    # Credentials Proxy (Kitaru secrets) instead of reading the ``SecretStr`` from settings — so a
+    # deployed flow payload carries handles, not raw keys. Default ``False``: the secrets-proxy surface
+    # is the least-exampled in Kitaru (ADR-0008 §5) and must be verified first (task 061 reads it).
+    runtime_credentials_proxy_enabled: bool = False
+    # The Kitaru secret name the Credentials Proxy reads the provider key from when enabled (task 061).
+    runtime_secret_name: str = "decode-llm-creds"
+
 
 settings = Settings()

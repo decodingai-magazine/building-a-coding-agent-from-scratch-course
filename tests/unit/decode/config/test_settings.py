@@ -39,6 +39,16 @@ _LSP_ENV_VARS = (
     "LSP_REQUEST_TIMEOUT_S",
 )
 
+# Kitaru durable runtime vars introduced by ADR-0008 (task 057). Cleared in default tests so a
+# developer's real environment cannot leak into the assertions.
+_RUNTIME_ENV_VARS = (
+    "RUNTIME_ENABLED",
+    "RUNTIME_CHECKPOINT_STRATEGY",
+    "RUNTIME_WAIT_TIMEOUT_S",
+    "RUNTIME_CREDENTIALS_PROXY_ENABLED",
+    "RUNTIME_SECRET_NAME",
+)
+
 
 def test_defaults(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -307,4 +317,81 @@ def test_env_example_lists_every_lsp_var():
     """Drift guard: each LSP setting has a matching line in .env.example (AGENTS.md gate)."""
     env_example = (Path(__file__).parents[4] / ".env.example").read_text()
     for var in _LSP_ENV_VARS:
+        assert var in env_example, f"{var} missing from .env.example"
+
+
+def test_runtime_defaults(monkeypatch):
+    for var in _RUNTIME_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    assert s.runtime_enabled is True
+    assert s.runtime_checkpoint_strategy == "turn"
+    assert s.runtime_wait_timeout_s == 600.0
+    assert s.runtime_credentials_proxy_enabled is False
+    assert s.runtime_secret_name == "decode-llm-creds"
+
+
+def test_reads_runtime_vars_from_process_env(monkeypatch):
+    monkeypatch.setenv("RUNTIME_ENABLED", "false")
+    monkeypatch.setenv("RUNTIME_CHECKPOINT_STRATEGY", "calls")
+    monkeypatch.setenv("RUNTIME_WAIT_TIMEOUT_S", "120.0")
+    monkeypatch.setenv("RUNTIME_CREDENTIALS_PROXY_ENABLED", "true")
+    monkeypatch.setenv("RUNTIME_SECRET_NAME", "my-creds")
+    s = Settings(_env_file=None)
+    assert s.runtime_enabled is False
+    assert s.runtime_checkpoint_strategy == "calls"
+    assert s.runtime_wait_timeout_s == 120.0
+    assert s.runtime_credentials_proxy_enabled is True
+    assert s.runtime_secret_name == "my-creds"
+
+
+def test_loads_runtime_vars_from_a_dotenv_file(tmp_path, monkeypatch):
+    for var in _RUNTIME_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    env = tmp_path / ".env"
+    env.write_text(
+        "RUNTIME_ENABLED=false\n"
+        "RUNTIME_CHECKPOINT_STRATEGY=calls\n"
+        "RUNTIME_WAIT_TIMEOUT_S=300.0\n"
+        "RUNTIME_CREDENTIALS_PROXY_ENABLED=true\n"
+        "RUNTIME_SECRET_NAME=dotenv-creds\n"
+    )
+    s = Settings(_env_file=str(env))
+    assert s.runtime_enabled is False
+    assert s.runtime_checkpoint_strategy == "calls"
+    assert s.runtime_wait_timeout_s == 300.0
+    assert s.runtime_credentials_proxy_enabled is True
+    assert s.runtime_secret_name == "dotenv-creds"
+
+
+@pytest.mark.parametrize("strategy", ["turn", "calls"])
+def test_runtime_checkpoint_strategy_accepts_each_valid_literal(monkeypatch, strategy):
+    monkeypatch.setenv("RUNTIME_CHECKPOINT_STRATEGY", strategy)
+    s = Settings(_env_file=None)
+    assert s.runtime_checkpoint_strategy == strategy
+
+
+def test_runtime_checkpoint_strategy_rejects_unknown_value(monkeypatch):
+    """A value outside {"turn", "calls"} fails fast at load, not inside the flow (Literal)."""
+    for var in _RUNTIME_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("RUNTIME_CHECKPOINT_STRATEGY", "hourly")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("bad", ["0", "-1.0"])
+def test_rejects_a_non_positive_runtime_wait_timeout(monkeypatch, bad):
+    """A wait timeout <= 0 fails fast at load, not deep in the durable wait (Field(gt=0))."""
+    for var in _RUNTIME_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("RUNTIME_WAIT_TIMEOUT_S", bad)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_env_example_lists_every_runtime_var():
+    """Drift guard: each runtime setting has a matching line in .env.example (AGENTS.md gate)."""
+    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
+    for var in _RUNTIME_ENV_VARS:
         assert var in env_example, f"{var} missing from .env.example"
