@@ -34,6 +34,7 @@ dependencies = [
     "markdownify>=1.2.2",
     "pyyaml>=6.0.3",
     "modal>=1.5.1",
+    "anyio>=4.14.0",
 ]
 
 # pydantic-ai (above) is the agent loop (ReAct) for src/decode/agent/; it pulls in

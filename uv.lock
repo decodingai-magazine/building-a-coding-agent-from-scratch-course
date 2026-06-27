@@ -530,6 +530,7 @@ name = "decode"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "click" },
     { name = "httpx" },
     { name = "markdownify" },
@@ -555,6 +556,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.14.0" },
     { name = "click", specifier = ">=8.4.2" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "markdownify", specifier = ">=1.2.2" },
