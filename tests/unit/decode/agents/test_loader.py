@@ -19,7 +19,9 @@ from decode.permissions.rules import Rule
 from decode.permissions.types import PermissionMode
 
 _BUILTIN_NAMES = {"build", "plan", "explore", "code-reviewer"}
-_READ_ONLY_TOOLS = {"read", "glob", "grep", "web_fetch", "todo_write"}
+# ``lsp`` (task 052 / ADR-0007) is a read-only Code Intelligence tool, so every persona that has
+# ``read``/``grep`` carries it too.
+_READ_ONLY_TOOLS = {"read", "glob", "grep", "lsp", "web_fetch", "todo_write"}
 
 
 # --- the four built-ins ---------------------------------------------------------------------
@@ -38,7 +40,7 @@ def test_build_agent_has_the_full_tool_set_and_default_mode():
 
     assert build.mode is PermissionMode.DEFAULT
     expected = {
-        "read", "glob", "grep", "write", "edit", "bash", "todo_write", "web_fetch",
+        "read", "glob", "grep", "lsp", "write", "edit", "bash", "todo_write", "web_fetch",
         "ask_user", "enter_plan_mode", "exit_plan_mode", "sleep", "skill",
     }  # fmt: skip
     assert set(build.tools) == expected
@@ -66,6 +68,16 @@ def test_explore_agent_is_read_only_default_mode():
     assert set(explore.tools) == _READ_ONLY_TOOLS | {"ask_user", "skill"}
     for mutating in ("write", "edit", "bash"):
         assert mutating not in explore.tools
+
+
+def test_all_builtin_personas_expose_the_lsp_tool():
+    # ADR-0007 / task 052: ``lsp`` is a read-only Code Intelligence tool every persona benefits from;
+    # without it in the persona's ``tools`` the per-tool ``prepare=`` callback would hide it.
+    agents = loader.load_builtin_agents()
+
+    assert set(agents) == _BUILTIN_NAMES
+    for name, agent in agents.items():
+        assert "lsp" in agent.tools, f"{name} persona must expose the lsp tool"
 
 
 def test_code_reviewer_carries_the_git_allow_rule():

@@ -65,6 +65,7 @@ from decode.memory.extract import extract_on_exit
 from decode.permissions import rules
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
+from decode.services.lsp.service import shutdown_all as shutdown_lsp_servers
 from decode.skills.loader import load_skills
 from decode.skills.payload import format_skill_payload
 from decode.tui import render
@@ -905,5 +906,14 @@ async def run_app(
     # assemble_memory. The accumulated conversation lives on the handler; ``deps.cwd`` is the
     # project root. Fully non-fatal — extract_on_exit never raises, so it cannot block exit.
     await extract_on_exit(handler.message_history, deps.cwd)
+
+    # On-exit LSP teardown (ADR-0007 §6): shut down every Language Server spawned this session so no
+    # ``ty server`` child orphans. A cheap no-op when none was spawned (lazy — the common case) and
+    # idempotent. Best-effort like the memory write-back: any failure is logged and swallowed so it
+    # can never block exit or mask the ``Decode - bye.`` line.
+    try:
+        await shutdown_lsp_servers()
+    except Exception:
+        logger.warning("lsp shutdown on exit failed; continuing shutdown", exc_info=True)
 
     console.print(render.render_event(events.AssistantTextDelta(text="Decode - bye.")))

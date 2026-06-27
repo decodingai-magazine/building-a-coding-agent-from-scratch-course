@@ -41,6 +41,7 @@ from decode.permissions.types import ToolKind
 from decode.tools import askuser as askuser_module
 from decode.tools import bash as bash_module
 from decode.tools import files
+from decode.tools import lsp as lsp_module
 from decode.tools import orchestration as orchestration_module
 from decode.tools import skills as skills_module
 from decode.tools import sleep as sleep_module
@@ -95,6 +96,14 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         name=web_module.WEB_FETCH_TOOL_NAME,
         func=web_module.web_fetch,
+        kind=ToolKind.READ_ONLY,
+    ),
+    # LSP (task 052 / ADR-0007): the active Code Intelligence tool (definition / references / hover /
+    # diagnostics). It only reads code intelligence — no disk/exec side effect → READ_ONLY, so the
+    # gate auto-allows it under every mode, exactly like the read-only file tools and web_fetch.
+    ToolSpec(
+        name=lsp_module.LSP_TOOL_NAME,
+        func=lsp_module.lsp,
         kind=ToolKind.READ_ONLY,
     ),
     # AskUser (task 011): the one blocking tool. NOT gated — it IS the human-interaction tool, so

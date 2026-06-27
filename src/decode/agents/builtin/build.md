@@ -5,6 +5,7 @@ tools:
   - read
   - glob
   - grep
+  - lsp
   - write
   - edit
   - bash

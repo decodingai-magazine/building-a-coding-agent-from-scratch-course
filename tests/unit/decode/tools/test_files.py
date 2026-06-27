@@ -32,6 +32,8 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import TurnContext
 from decode.permissions.gate import PermissionGate
+from decode.services import lsp as lsp_service
+from decode.services.lsp import Diagnostic
 from decode.tools import files
 from decode.tools.askuser import deny_user_question_resolver
 
@@ -706,3 +708,195 @@ async def test_edit_runs_through_the_agent_when_approved(tmp_path: Path, mocker)
     perms = [e for e in emitted if isinstance(e, events.PermissionRequested)]
     assert perms and perms[0].name == "edit"
     assert target.read_text(encoding="utf-8") == "the slow brown fox\n"
+
+
+# --- passive Diagnostics Enricher folded into write/edit (task 053, ADR-0007 passive channel) ---
+#
+# After a SUCCESSFUL `.py` write/edit, an errors-only `ty` diagnostics block is APPENDED to the base
+# `Wrote …`/`Edited …` string — riding the edit's already-granted approval, silent on clean/unavailable
+# files, best-effort (an enricher failure never breaks the edit). The sync seam the enricher calls is
+# the LSP Service's `diagnostics_on_edit(cwd, path) -> list[Diagnostic] | None` (task 051); these tests
+# patch it directly, so no real `ty`/subprocess runs (ADR-0007 §5).
+
+
+def _diag(
+    severity: int = 1, line: int = 5, column: int = 7, message: str = "undefined name `bar`"
+) -> Diagnostic:
+    """A 1-based decode-native diagnostic; severity 1 == LSP Error (the only kind the enricher shows)."""
+    return Diagnostic(severity=severity, line=line, column=column, message=message)
+
+
+def test_write_py_with_error_appends_diagnostics_block(tmp_path: Path, mocker):
+    mocker.patch.object(lsp_service, "diagnostics_on_edit", return_value=[_diag()])
+
+    out = files.write(_ctx(tmp_path), path="calc.py", content="x = bar\n")
+
+    base = "Wrote 'calc.py' (8 characters)."
+    assert out == f"{base}\n\nLSP diagnostics (ty) — fix these:\n  5:7  undefined name `bar`"
+    assert out.startswith(base)  # the base substring is byte-for-byte the original Wrote … string
+    assert (tmp_path / "calc.py").read_text(encoding="utf-8") == "x = bar\n"  # the write happened
+
+
+def test_edit_py_with_error_appends_diagnostics_block(tmp_path: Path, mocker):
+    target = tmp_path / "calc.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    mocker.patch.object(
+        lsp_service, "diagnostics_on_edit", return_value=[_diag(line=1, column=5, message="bad")]
+    )
+
+    out = files.edit(_ctx(tmp_path), path="calc.py", old_string="x = 1", new_string="x = bar")
+
+    base = "Edited 'calc.py' (replaced 1 occurrence)."
+    assert out == f"{base}\n\nLSP diagnostics (ty) — fix these:\n  1:5  bad"
+    assert out.startswith(base)  # byte-for-byte original Edited … string preserved
+    assert target.read_text(encoding="utf-8") == "x = bar\n"
+
+
+def test_write_clean_py_returns_base_unchanged(tmp_path: Path, mocker):
+    # Seam returns None (server answered, clean / unavailable) → the enricher stays silent.
+    mocker.patch.object(lsp_service, "diagnostics_on_edit", return_value=None)
+
+    out = files.write(_ctx(tmp_path), path="ok.py", content="x = 1\n")
+
+    assert out == "Wrote 'ok.py' (6 characters)."
+
+
+def test_edit_clean_py_returns_base_unchanged(tmp_path: Path, mocker):
+    # An empty diagnostics list (clean file) also yields no appended block.
+    target = tmp_path / "ok.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    mocker.patch.object(lsp_service, "diagnostics_on_edit", return_value=[])
+
+    out = files.edit(_ctx(tmp_path), path="ok.py", old_string="x = 1", new_string="x = 2")
+
+    assert out == "Edited 'ok.py' (replaced 1 occurrence)."
+
+
+def test_non_py_write_never_invokes_enricher_seam(tmp_path: Path, mocker):
+    seam = mocker.patch.object(lsp_service, "diagnostics_on_edit")
+
+    out = files.write(_ctx(tmp_path), path="README.md", content="hi\n")
+
+    assert out == "Wrote 'README.md' (3 characters)."
+    seam.assert_not_called()  # the enricher is .py-only — non-Python never reaches the seam
+
+
+def test_non_py_edit_never_invokes_enricher_seam(tmp_path: Path, mocker):
+    target = tmp_path / "notes.txt"
+    target.write_text("alpha\n", encoding="utf-8")
+    seam = mocker.patch.object(lsp_service, "diagnostics_on_edit")
+
+    out = files.edit(_ctx(tmp_path), path="notes.txt", old_string="alpha", new_string="beta")
+
+    assert out == "Edited 'notes.txt' (replaced 1 occurrence)."
+    seam.assert_not_called()
+
+
+def test_uppercase_py_extension_is_treated_as_python(tmp_path: Path, mocker):
+    # The .py gate is case-insensitive, so an upper/mixed-case extension still enriches.
+    mocker.patch.object(lsp_service, "diagnostics_on_edit", return_value=[_diag()])
+
+    out = files.write(_ctx(tmp_path), path="Calc.PY", content="x = bar\n")
+
+    assert out.startswith("Wrote 'Calc.PY' (8 characters).")
+    assert out.endswith("  5:7  undefined name `bar`")
+
+
+def test_lsp_disabled_never_invokes_enricher_seam(tmp_path: Path, mocker):
+    mocker.patch.object(files.settings, "lsp_enabled", False)
+    seam = mocker.patch.object(lsp_service, "diagnostics_on_edit")
+
+    out = files.write(_ctx(tmp_path), path="calc.py", content="x = bar\n")
+
+    assert out == "Wrote 'calc.py' (8 characters)."
+    seam.assert_not_called()  # master gate off → the enricher short-circuits before the seam
+
+
+def test_lsp_diagnostics_on_edit_disabled_never_invokes_enricher_seam(tmp_path: Path, mocker):
+    mocker.patch.object(files.settings, "lsp_diagnostics_on_edit", False)
+    seam = mocker.patch.object(lsp_service, "diagnostics_on_edit")
+
+    out = files.write(_ctx(tmp_path), path="calc.py", content="x = bar\n")
+
+    assert out == "Wrote 'calc.py' (8 characters)."
+    seam.assert_not_called()  # feature setting off → the enricher short-circuits before the seam
+
+
+def test_warnings_only_py_returns_base_unchanged(tmp_path: Path, mocker):
+    # Only warnings/info/hints (severities 2/3/4) — the enricher reports ERRORS (severity 1) ONLY.
+    mocker.patch.object(
+        lsp_service,
+        "diagnostics_on_edit",
+        return_value=[
+            _diag(severity=2, message="unused import `os`"),
+            _diag(severity=3, message="info"),
+            _diag(severity=4, message="hint"),
+        ],
+    )
+
+    out = files.write(_ctx(tmp_path), path="calc.py", content="import os\n")
+
+    assert out == "Wrote 'calc.py' (10 characters)."  # warnings filtered out → no block appended
+
+
+def test_only_error_severity_is_shown_when_mixed(tmp_path: Path, mocker):
+    # A mix: the one error is surfaced, the warning is dropped.
+    mocker.patch.object(
+        lsp_service,
+        "diagnostics_on_edit",
+        return_value=[
+            _diag(severity=2, line=7, column=1, message="unused import `os`"),
+            _diag(severity=1, line=4, column=6, message="undefined name `bar`"),
+        ],
+    )
+
+    out = files.write(_ctx(tmp_path), path="calc.py", content="import os\n")
+
+    base = "Wrote 'calc.py' (10 characters)."
+    assert out == f"{base}\n\nLSP diagnostics (ty) — fix these:\n  4:6  undefined name `bar`"
+    assert "unused import `os`" not in out  # the warning never appears
+
+
+def test_diagnostics_block_is_bounded_with_more_tail(tmp_path: Path, mocker):
+    diags = [_diag(line=i, column=1, message=f"err {i}") for i in range(1, 13)]  # 12 errors
+    mocker.patch.object(lsp_service, "diagnostics_on_edit", return_value=diags)
+
+    out = files.write(_ctx(tmp_path), path="calc.py", content="x = 1\n")
+
+    base = "Wrote 'calc.py' (6 characters)."
+    assert out.startswith(f"{base}\n\nLSP diagnostics (ty) — fix these:\n")
+    assert "  1:1  err 1" in out
+    assert "  10:1  err 10" in out  # first 10 shown
+    assert "  11:1  err 11" not in out  # the 11th is truncated
+    assert "  (+2 more)" in out  # the remaining 2 are named by the tail
+
+
+def test_enricher_seam_exception_is_swallowed_on_write(tmp_path: Path, mocker):
+    mocker.patch.object(lsp_service, "diagnostics_on_edit", side_effect=RuntimeError("boom"))
+
+    out = files.write(_ctx(tmp_path), path="calc.py", content="x = bar\n")
+
+    # Best-effort: the exception never changes the return or the file write.
+    assert out == "Wrote 'calc.py' (8 characters)."
+    assert (tmp_path / "calc.py").read_text(encoding="utf-8") == "x = bar\n"
+
+
+def test_enricher_seam_exception_is_swallowed_on_edit(tmp_path: Path, mocker):
+    target = tmp_path / "calc.py"
+    target.write_text("x = 1\n", encoding="utf-8")
+    mocker.patch.object(lsp_service, "diagnostics_on_edit", side_effect=RuntimeError("boom"))
+
+    out = files.edit(_ctx(tmp_path), path="calc.py", old_string="x = 1", new_string="x = 2")
+
+    assert out == "Edited 'calc.py' (replaced 1 occurrence)."
+    assert target.read_text(encoding="utf-8") == "x = 2\n"  # the edit landed despite the failure
+
+
+def test_denied_py_write_never_reaches_enricher_and_writes_nothing(tmp_path: Path, mocker):
+    seam = mocker.patch.object(lsp_service, "diagnostics_on_edit")
+
+    with pytest.raises(ApprovalRequired):
+        files.write(_ctx(tmp_path, approved=False), path="calc.py", content="x = bar\n")
+
+    seam.assert_not_called()  # the gate fires before any write — the enricher is never reached
+    assert not (tmp_path / "calc.py").exists()  # a denied write hits no disk

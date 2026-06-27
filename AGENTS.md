@@ -39,7 +39,8 @@ The intended target tree. Most `src/` subpackages are created **when you reach t
     ├── tools/                     # file I/O, Bash, web, tasks, MCP factory, skill dispatcher, LSP, AskUser
     ├── permissions/               # allow/ask/deny · modes (default/plan/edit/bypass) · settings.json
     ├── sandbox/                   # Bash execution — local (Docker/Firecracker) + remote (Modal)
-    ├── services/                  # services interface: LLM gateway, memory, LSP servers, MCP servers
+    ├── services/lsp/              # LSP Service — hand-rolled stdio client; FIRST concrete services/ entry (ADR-0007)
+    ├── services/                  # services interface: LLM gateway, memory, MCP servers land here later
     ├── runtime/                   # Kitaru: credentials proxy, durability, scheduling, HITL
     ├── context/                   # context engineering: compaction + conversation log (JSONL)
     ├── memory/                    # AGENTS.md / MEMORY.md loading
@@ -60,6 +61,7 @@ Single Python toolchain — `uv`, `ruff`, `pytest`. **Python 3.12+.**
 | CLI / TUI | `click` · `prompt_toolkit` · `rich` | Click wrapper is thin; logic in pure functions. |
 | Agent loop | `pydantic-ai` | ReAct loop (LLM ⇄ tools). *added at its step* |
 | MCP | `fastmcp` | MCP tool factory + servers. *added at its step* |
+| Code intelligence | `ty` (stdio LSP server) | Python `lsp` tool + post-edit diagnostics over a hand-rolled stdio client; swappable (`pylsp`), dev-group, pre-1.0, best-effort (ADR-0007). *added at its step* |
 | Inference | `google-genai` (Gemini) · OpenRouter · Modal | Behind one **LLM Gateway**; OpenRouter is OpenAI-compatible. *added per step* |
 | Observability | `opik` | Tracing + eval harness. *added at its step* |
 | Sandbox / serving | `modal` (remote) · Docker/Firecracker (local) | *added at its step* |
@@ -185,6 +187,7 @@ For each surface below: the thing to type, and what "working" looks like.
 | **Todo checklist** | `make a 3-step plan to add a CLI flag and track it` | a blue **tasks** panel renders the checklist (`[ ]` / `[~]` / `[x]`) and re-renders as the model updates statuses. |
 | **web_fetch** | `fetch https://example.com and summarize it` | `permission? web_fetch …` → `y` → the page comes back as Markdown (HTML stripped) and the model summarizes it. |
 | **ask_user** | `deploy my app` (something underspecified) | the model calls `ask_user`; an `ask: …` question renders with a `type your answer:` cue; your next typed line **is** the answer and the turn resumes with it. |
+| **lsp (code intelligence)** | `where is build_agent defined?` | the model calls `lsp` (`definition`); it **auto-allows** (read-only — no prompt) and the answer cites the location (`src/decode/agent/factory.py:68:5`). Then ask it to `write a broken bad.py with a syntax error` → the approved write's result carries an appended `LSP diagnostics (ty) — fix these:` block and the model corrects it. |
 
 **Mid-turn interaction** (while a turn is streaming — ADR-0002 §4-5):
 

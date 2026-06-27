@@ -118,7 +118,7 @@ You get an interactive REPL. Type a message and the agent streams a reply; when 
 | Approve / deny a tool | type `y` / `n` at the prompt |
 | Quit | `Ctrl-D` or `/quit` |
 
-**Tools the agent can call** (all gated): `read` · `glob` · `grep` · `write` · `edit` · `bash` · `todo_write` (a task checklist) · `web_fetch` (HTML→Markdown) · `ask_user`.
+**Tools the agent can call** (all gated): `read` · `glob` · `grep` · `lsp` (Python code intelligence) · `write` · `edit` · `bash` · `todo_write` (a task checklist) · `web_fetch` (HTML→Markdown) · `ask_user`.
 
 **Skills** are reusable playbooks you trigger with `/<name>` (or that the agent invokes itself). They live in `.decode/skills/<name>/SKILL.md` and ship with the repo. For example, `repo-architecture` clones a GitHub repo, explores it in read-only passes, and writes an `ARCHITECTURE.md` — problem · usage · components · interfaces · end-to-end dataflow, all backed by Mermaid diagrams:
 
@@ -154,6 +154,24 @@ Tune it in `.env` — every setting is optional with a safe default:
 - `COMPACTION_RESERVE_FRACTION` (default `0.20`) — full compaction fires at `window * (1 - reserve)`, i.e. **80%** full.
 - `MICROCOMPACTION_RESERVE_FRACTION` (default `0.40`) — microcompaction fires earlier, at **60%** full (keep it larger than the full reserve so it fires first).
 - `COMPACTION_ENABLED=false` disables the **automatic** cascade; manual `/compact` still works.
+
+## LSP / code intelligence
+
+Beyond the text tools (`read`, `grep`), `decode` can see your Python as a **semantic graph** by talking to a Language Server over LSP. It ships **`ty`** (Astral's type-checker, same vendor as `ruff`/`uv`) by default. The design and trade-offs are recorded in [`docs/adr/0007-lsp-integration.md`](docs/adr/0007-lsp-integration.md).
+
+Two channels deliver it:
+
+- **The `lsp` tool** (active) — the agent calls it on demand with one of four ops: `definition` (jump to where a symbol is defined), `references` (find every use), `hover` (type / signature / docs), and `diagnostics` (a file's problems, all severities). It's read-only, so the gate auto-allows it like `read` — no prompt.
+- **Post-edit diagnostics** (passive) — after a successful `write` / `edit` of a `.py` file, that file's **errors** are appended to the tool's result as an `LSP diagnostics (ty) — fix these:` block, so the agent sees and fixes its mistakes inline. Errors only — clean files (and warnings-only files) stay silent.
+
+It is **best-effort**: if `ty` isn't installed (it's a dev-group dependency) or the server is missing / slow, both channels degrade silently — the agent just falls back to the text tools and no turn ever breaks.
+
+Tune it in `.env` — every setting is optional with a safe default:
+
+- `LSP_ENABLED=false` disables the whole feature (no Language Server is ever spawned).
+- `LSP_SERVER_COMMAND` / `LSP_SERVER_ARGS` — **swap the server**: the default is `ty` + `["server"]`; drop in `pylsp` (or any stdio LSP server) by overriding these (the spawn is `[LSP_SERVER_COMMAND, *LSP_SERVER_ARGS]`).
+- `LSP_DIAGNOSTICS_ON_EDIT=false` turns off only the post-edit diagnostics; the `lsp` tool still works.
+- `LSP_REQUEST_TIMEOUT_S` (default `10.0`) — per-request wall-clock timeout.
 
 ## Develop
 

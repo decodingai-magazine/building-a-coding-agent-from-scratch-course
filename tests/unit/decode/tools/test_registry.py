@@ -34,6 +34,8 @@ def test_registry_lists_the_expected_tools():
         "read",
         "glob",
         "grep",
+        # The active Code Intelligence tool (task 052 / ADR-0007): READ_ONLY, like the file readers.
+        "lsp",
         "write",
         "edit",
         "bash",
@@ -67,6 +69,8 @@ def test_tool_kinds_match_each_spec():
     assert by_name["grep"].kind is ToolKind.READ_ONLY
     # web_fetch has no local side effect (network egress only): READ_ONLY.
     assert by_name["web_fetch"].kind is ToolKind.READ_ONLY
+    # lsp only reads code intelligence (task 052 / ADR-0007): READ_ONLY, auto-allowed like the readers.
+    assert by_name["lsp"].kind is ToolKind.READ_ONLY
     # todo_write is an in-memory checklist with no disk/exec side effect: READ_ONLY (ADR-0003 §2),
     # so it works in plan mode and never prompts.
     assert by_name["todo_write"].kind is ToolKind.READ_ONLY
@@ -91,6 +95,7 @@ def test_tool_kind_reflects_the_registered_kinds():
     assert tool_kind("glob") is ToolKind.READ_ONLY
     assert tool_kind("grep") is ToolKind.READ_ONLY
     assert tool_kind("web_fetch") is ToolKind.READ_ONLY
+    assert tool_kind("lsp") is ToolKind.READ_ONLY
     assert tool_kind("todo_write") is ToolKind.READ_ONLY
     assert tool_kind("write") is ToolKind.FILE_EDIT
     assert tool_kind("edit") is ToolKind.FILE_EDIT
@@ -115,6 +120,7 @@ def test_register_tools_registers_every_spec_on_the_agent(mocker):
         "read",
         "glob",
         "grep",
+        "lsp",
         "write",
         "edit",
         "bash",
