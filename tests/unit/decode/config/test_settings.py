@@ -215,3 +215,25 @@ def test_loads_compaction_vars_from_a_dotenv_file(tmp_path, monkeypatch):
     assert s.microcompaction_reserve_fraction == 0.30
     assert s.compaction_keep_recent_tokens == 9999
     assert s.memory_compression_enabled is False
+
+
+def test_rejects_a_non_positive_context_window(monkeypatch):
+    """A window <= 0 fails fast at load, not deep in the trigger (Field(gt=0))."""
+    for var in _COMPACTION_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("COMPACTION_CONTEXT_WINDOW_TOKENS", "0")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_rejects_a_reserve_fraction_outside_the_unit_interval(monkeypatch):
+    """Reserve fractions must be in [0, 1] (Field(ge=0, le=1)) — a bad value is rejected at load."""
+    for var in _COMPACTION_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("COMPACTION_RESERVE_FRACTION", "1.5")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+    monkeypatch.delenv("COMPACTION_RESERVE_FRACTION", raising=False)
+    monkeypatch.setenv("MICROCOMPACTION_RESERVE_FRACTION", "-0.1")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

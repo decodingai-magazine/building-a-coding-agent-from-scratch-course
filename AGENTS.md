@@ -200,8 +200,8 @@ For each surface below: the thing to type, and what "working" looks like.
 - `decode --resume` (or `decode --resume <session-id>`) replays the latest (or named) session log
   from `.decode/sessions/*.jsonl` — the prior conversation is seeded and you continue it.
 - On quit (`/quit` or `Ctrl-D`), one cheap Gemini call appends a dated one-line summary to
-  `./MEMORY.md`. Quit, `cat MEMORY.md` (a new `- YYYY-MM-DD: …` bullet), then relaunch — that line
-  is injected back into the agent's instructions (it can recall what the last session did).
+  `.decode/MEMORY.md`. Quit, `cat .decode/MEMORY.md` (a new `- YYYY-MM-DD: …` bullet), then relaunch —
+  that line is injected back into the agent's instructions (it can recall what the last session did).
 
 # Documentation Conventions
 

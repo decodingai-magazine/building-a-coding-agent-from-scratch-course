@@ -294,23 +294,26 @@ class AgentTurnHandler:
         picks the recent tail with :func:`~decode.context.compaction.split_tail`, and replaces the
         running history with ``[summary_message, *tail]`` (a prior summary, if any, rides as the
         head so successive compactions merge for free). Returns ``False`` — a no-op that leaves the
-        history untouched — when there is nothing to compact: a ``None`` summary (an empty / trivial
-        history or a failed summarizer call) or a ``split`` of ``0`` (the whole history already fits
-        the recent-tail budget). On success, when a session log is wired the new ``[summary, *tail]``
+        history untouched — when there is nothing to compact: a ``split`` of ``0`` (the whole history
+        already fits the recent-tail budget — checked FIRST, so a no-op never spends a summarizer call)
+        or a ``None`` summary (an empty / trivial history or a failed summarizer call). On success, when
+        a session log is wired the new ``[summary, *tail]``
         is written as one ``compaction`` checkpoint (an ``OSError`` is logged and swallowed, like
         :meth:`_persist_turn` — persistence never breaks the turn), the persisted-count cursor is
         reset to the new length so the next turn appends only its own messages, and a
         :class:`~decode.entities.events.ContextCompacted` event is emitted.
         """
-        skeleton = await summarize_for_compaction(
-            self.message_history, model_or_settings=self._compaction_model_or_settings
-        )
-        if skeleton is None:
-            return False
+        # Cheap no-op check first: if the whole history already fits the recent-tail budget there is
+        # nothing to summarize, so skip the LLM call entirely.
         split = split_tail(
             self.message_history, keep_recent_tokens=settings.compaction_keep_recent_tokens
         )
         if split == 0:
+            return False
+        skeleton = await summarize_for_compaction(
+            self.message_history, model_or_settings=self._compaction_model_or_settings
+        )
+        if skeleton is None:
             return False
         before_tokens = self._last_input_tokens
         summary_message = build_summary_message(skeleton)

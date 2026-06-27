@@ -329,6 +329,9 @@ async def test_compaction_capstone_micro_full_persist_resume(tmp_path, monkeypat
         await _run_turn(runner, f"{_TAG_MICRO} sleep a beat {_HUGE}")
         assert handler.last_input_tokens == _USAGE_MICRO
         history_after_micro = list(handler.message_history)
+        # Snapshot the on-disk compaction-line count AT the micro turn (before full runs), so AC1 can
+        # prove micro persisted nothing per-turn rather than inferring it from the end-state total.
+        compaction_lines_after_micro = _log_line_types(log).count("compaction")
 
         # 3. full: two inline sleeps — usage 150, >= 120 → full compaction.
         await _run_turn(runner, f"{_TAG_FULL} sleep twice {_HUGE}")
@@ -355,8 +358,12 @@ async def test_compaction_capstone_micro_full_persist_resume(tmp_path, monkeypat
     assert _MICRO_PLACEHOLDER in micro_returns, "the old write result was blanked in memory"
     assert _SETUP_RESULT not in micro_returns, "the original write body is gone from memory"
 
-    # Microcompaction is in-memory only: no ContextCompacted yet at the micro turn, and the on-disk
-    # log keeps the ORIGINAL full write result (never the placeholder) — full fidelity for recovery.
+    # Microcompaction is in-memory only: the snapshot taken AT the micro turn proves it persisted no
+    # compaction line (per-turn evidence, not inferred from the end-state total below).
+    assert compaction_lines_after_micro == 0, (
+        "micro wrote no compaction line (snapshot at its turn)"
+    )
+    # And the end state still carries exactly the one line the later FULL tier wrote.
     assert _log_line_types(log).count("compaction") == 1, (
         "only the later FULL tier writes a compaction line; micro writes none"
     )
@@ -427,7 +434,9 @@ async def test_compaction_capstone_micro_full_persist_resume(tmp_path, monkeypat
     # ========================================================================================
     rendered = render_buffer.getvalue()
     assert "microcompacted context" in rendered, "the microcompaction line renders in the TUI"
-    assert "compacted context" in rendered, "the full-compaction line renders in the TUI"
+    # "compacted context" is a substring of "microcompacted context", so assert a fragment unique to
+    # the FULL line (render._render_context_compacted: "… → summary + N recent messages.").
+    assert "recent messages)" in rendered, "the full-compaction line renders in the TUI"
 
     # Only the setup ``write`` ever reached the human resolver (the single gated call/result pair);
     # the ungated inline ``sleep``s never prompt (ADR-0003 §8).
