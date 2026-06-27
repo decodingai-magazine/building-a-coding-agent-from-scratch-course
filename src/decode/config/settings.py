@@ -71,13 +71,10 @@ class Settings(BaseSettings):
     # The active model's MAX *input* context window, in tokens — the single source of truth (also the
     # TUI fill gauge, task 047). Default = Gemini 2.5 Flash's input window; set this to YOUR active
     # model's input window. pydantic-ai exposes no model window, so this number is the contract.
-    # Validated ``> 0`` so a misconfiguration fails fast at load (symmetry with the gauge's window>0
-    # guard, task 047) rather than raising deep in the trigger mid-turn.
     compaction_context_window_tokens: int = Field(1_048_576, gt=0)
     # Per-tier reserve fractions: a tier fires when input_tokens >= window * (1 - reserve). Full fires
     # at 80% full; micro fires EARLIER at 60% full. INVARIANT: micro reserves more than full so it fires
     # first — ``microcompaction_reserve_fraction > compaction_reserve_fraction`` (asserted on defaults).
-    # Validated to ``[0, 1]`` so a bad fraction is rejected at load, not deep in ``reserve_threshold``.
     compaction_reserve_fraction: float = Field(0.20, ge=0.0, le=1.0)
     microcompaction_reserve_fraction: float = Field(0.40, ge=0.0, le=1.0)
     # Token budget of the recent tail full compaction keeps verbatim, and the cutoff microcompaction

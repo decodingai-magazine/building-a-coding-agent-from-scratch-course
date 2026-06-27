@@ -303,8 +303,6 @@ class AgentTurnHandler:
         reset to the new length so the next turn appends only its own messages, and a
         :class:`~decode.entities.events.ContextCompacted` event is emitted.
         """
-        # Cheap no-op check first: if the whole history already fits the recent-tail budget there is
-        # nothing to summarize, so skip the LLM call entirely.
         split = split_tail(
             self.message_history, keep_recent_tokens=settings.compaction_keep_recent_tokens
         )
