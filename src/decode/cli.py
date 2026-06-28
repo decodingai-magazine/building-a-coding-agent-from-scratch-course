@@ -45,6 +45,14 @@ _MODAL_PROXY_TOKENS_MESSAGE = (
 # The startup Agent persona when ``--agent`` is omitted (ADR-0003 §9): the full-tool build agent.
 _DEFAULT_AGENT = "build"
 
+# The friendly line shown when ``decode run`` is invoked but the Headless Runtime is disabled
+# (``RUNTIME_ENABLED=false``; ADR-0008). Like the provider guard, this exits non-zero with one line
+# instead of building a Durable Flow.
+_RUNTIME_DISABLED_MESSAGE = (
+    "Decode: the headless runtime is disabled — set RUNTIME_ENABLED=true in your environment "
+    "or .env to use `decode run` (see .env.example)."
+)
+
 
 def _provider_config_error() -> str | None:
     """Return one friendly line if the selected LLM Provider's required config is missing, else None.
@@ -94,7 +102,7 @@ def _provider_config_error() -> str | None:
     return None  # defensive: the settings ``Literal`` blocks any other value upstream.
 
 
-@click.command()
+@click.group(invoke_without_command=True)
 @click.option(
     "--resume",
     is_flag=False,
@@ -118,8 +126,19 @@ def _provider_config_error() -> str | None:
     help="Start in this permission mode (default / plan / edit / bypass); "
     "defaults to the agent's own default mode.",
 )
-def cli(resume: str | None, agent: str, mode: str | None) -> None:
-    """Decode — a terminal coding agent you run in your terminal."""
+@click.pass_context
+def cli(ctx: click.Context, resume: str | None, agent: str, mode: str | None) -> None:
+    """Decode — a terminal coding agent you run in your terminal.
+
+    Bare ``decode`` (no subcommand) launches the interactive REPL with the flags below — the
+    behaviour is identical to the pre-runtime build. ``decode run "<task>"`` (ADR-0008) runs a
+    single task headlessly through the durable runtime instead.
+    """
+    # A subcommand (e.g. ``run``) was invoked: let it handle everything. The REPL-only flags and
+    # startup guards below apply solely to the bare ``decode`` REPL path, so we return before them.
+    if ctx.invoked_subcommand is not None:
+        return
+
     logger.debug("decode starting (resume=%s, agent=%s, mode=%s)", resume, agent, mode)
     # Per-provider config startup guard (ADR-0005 §6, generalizes the task-004 GEMINI_API_KEY guard):
     # build_agent() constructs the selected provider's model, which raises a raw pydantic_ai.UserError
@@ -160,6 +179,44 @@ def cli(resume: str | None, agent: str, mode: str | None) -> None:
     # the matching session log and seeds the conversation (ADR-0002 §9, task 014) and starts with
     # the selected ``agent`` persona (ADR-0003 §7,9), in ``--mode`` if given (else the agent default).
     asyncio.run(run_app(resume=resume, agent=agent, mode=mode))
+
+
+@cli.command("run")
+@click.argument("task")
+def run(task: str) -> None:
+    """Run a single TASK headlessly through the durable runtime, then print the result (ADR-0008).
+
+    The autonomous counterpart to the REPL: ``decode run "<task>"`` builds the same agent as the
+    TUI but drives it through a Kitaru Durable Flow (checkpoints + replay), under BYPASS so every
+    tool runs with no prompt. The agent's final text is printed to stdout. There is no human in the
+    loop in this slice (task 058) — ``ask_user`` / approvals are headless no-ops; durable waits are
+    task 059.
+
+    Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): the per-provider
+    config guard (it builds a model) fires first, then ``RUNTIME_ENABLED`` — a disabled runtime
+    never builds a flow. ``kitaru`` is imported lazily here so the REPL path never loads it.
+    """
+    config_error = _provider_config_error()
+    if config_error is not None:
+        logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
+        click.echo(config_error, err=True)
+        raise click.exceptions.Exit(1)
+
+    if not settings.runtime_enabled:
+        logger.debug("runtime disabled; refusing to run")
+        click.echo(_RUNTIME_DISABLED_MESSAGE, err=True)
+        raise click.exceptions.Exit(1)
+
+    # Lazy import: keep kitaru (and its heavy zenml/temporalio stack) off the REPL path entirely —
+    # only ``decode run`` pays the import cost. The flow runs on the local Kitaru stack, offline.
+    from decode.runtime import run_agent_task
+
+    logger.debug("decode run starting (task=%r)", task)
+    # ``flow.run(...).wait()`` returns the flow's terminal checkpoint — a pydantic-ai
+    # ``AgentRunResult`` — so surface its ``.output`` text (the flow's str return is not what Kitaru
+    # hands back). ``getattr`` keeps it robust if a future Kitaru version returns the str directly.
+    result = run_agent_task.run(task=task).wait()
+    click.echo(getattr(result, "output", result))
 
 
 if __name__ == "__main__":

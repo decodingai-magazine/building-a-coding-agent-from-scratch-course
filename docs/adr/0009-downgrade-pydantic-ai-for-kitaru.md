@@ -38,8 +38,21 @@ A spike measured the real cost before committing:
 ## Decision
 
 1. **Pin to kitaru-compatible ranges** in `pyproject.toml`: `pydantic>=2.0,<2.13`,
-   `pydantic-ai>=1.89,<1.104`, `click>=8.1,<8.3`; add `kitaru[local,pydantic-ai,llm]>=0.18.0`. `uv.lock`
-   captures the full resolved tree.
+   `pydantic-ai-slim[google,openai]>=1.95,<1.96`, `click>=8.1,<8.3`; add
+   `kitaru[local,pydantic-ai,llm]>=0.18.0`. `uv.lock` captures the full resolved tree.
+
+   > **Amendment (2026-06-28, task 058).** This pin was originally `pydantic-ai>=1.89,<1.104` — the
+   > **meta** `pydantic-ai` package. That was wrong: the meta package drags *every* provider extra
+   > (mistral/temporal/…), and the `mistral` extra's yanked `mistralai` releases cap the resolver at
+   > **`pydantic-ai-slim 1.94.0`** — which **pre-dates `pydantic_ai.tools.AgentNativeTool`**, a symbol
+   > `kitaru`'s `KitaruAgent` adapter imports at load. So the locked tree could not even *import* the
+   > adapter ADR-0008 depends on (the grooming spike measured the downgrade's test cost but never
+   > imported `KitaruAgent`). Fix: depend on **`pydantic-ai-slim[google,openai]`** — decode only uses
+   > the gemini + openai/openrouter model classes — and bump the floor to **1.95** (the first version
+   > with `AgentNativeTool`). Resolves to **1.95.1**: the adapter imports, the full suite stays green,
+   > and ~40 unneeded transitive deps (temporalio/xai-sdk/mcp/tokenizers/…) drop out. Capped `<1.96`
+   > because 1.99+ re-breaks 51 agent-loop tests (a 1.x↔1.x API drift, same class as the original
+   > downgrade). Landed in task 058's commit, refining task 063.
 2. **Drop kitaru's `mcp` extra.** It pins `mcp 1.19.x` against pydantic-ai's `mcp >=1.24`. decode has
    no MCP feature until step 15; revisit the extra (or a compatible kitaru) then.
 3. **Repair the agent loop for pydantic-ai 1.x, minimally and centrally.** Fix the `usage` access in
@@ -82,7 +95,14 @@ flowchart TB
 - **The footprint cost is real and recorded.** decode's runtime tree grows from ~12 deps to a
   zenml/temporalio-class stack; four libraries are rolled back; the `mcp` extra is deferred. This is
   the price of kitaru; the "kept light on purpose" note in `pyproject.toml` no longer fully holds for
-  the runtime path.
+  the runtime path. **(Amended task 058:** moving from the meta `pydantic-ai` package to
+  `pydantic-ai-slim[google,openai]` — see Decision §1 — sheds ~40 of those transitive deps, so the
+  footprint regression is materially smaller than first recorded.**)**
+- **The dependency claim needed correcting (task 058).** This ADR's grooming spike asserted the
+  downgrade "resolves" and the adapter works, but never imported `KitaruAgent`. Task 058's de-risk
+  found the locked meta-package `pydantic-ai 1.94.0` lacks `AgentNativeTool` and cannot import the
+  adapter at all; the slim-package pin (Decision §1) is the fix. The lesson: a dependency ADR must
+  exercise the *actual import path* of the thing it unblocks, not just re-run the existing suite.
 - **The repair is small, not a rewrite.** 51 failing tests share a few 1.x API shims, confined to
   `agent/loop.py` behind a stable public surface; 872 tests were already green under 1.x.
 - **A new ceiling.** Until kitaru supports pydantic-ai 2.x, decode cannot adopt pydantic-ai 2.x

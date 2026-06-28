@@ -29,6 +29,7 @@ from pydantic_ai import ApprovalRequired, RunContext
 from decode.agent.deps import AgentDeps
 from decode.entities import events
 from decode.entities.task import Task
+from decode.tools.approval import needs_approval
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ def todo_write(ctx: RunContext[AgentDeps], tasks: list[Task]) -> str:
     and *before* the store is touched — so a denied call never mutates the task list. Returns a
     short confirmation string the model sees on its next leg.
     """
-    if not ctx.tool_call_approved:
+    if needs_approval(ctx):
         logger.debug("todo_write requires approval (%d task(s))", len(tasks))
         raise ApprovalRequired
 

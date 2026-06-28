@@ -33,6 +33,7 @@ from pydantic_ai import ApprovalRequired, ModelRetry, RunContext
 
 from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
+from decode.tools.approval import needs_approval
 from decode.tools.exec import CommandExecutor, ExecResult, LocalExecutor
 from decode.tools.truncate import Truncated, truncate
 
@@ -64,7 +65,7 @@ async def bash(
     Returns a model-readable :class:`pydantic_ai.ModelRetry` for an empty command or a
     non-positive ``timeout`` so the model can correct itself instead of crashing the REPL.
     """
-    if not ctx.tool_call_approved:
+    if needs_approval(ctx):
         logger.debug("bash requires approval (command=%r)", command)
         raise ApprovalRequired
 

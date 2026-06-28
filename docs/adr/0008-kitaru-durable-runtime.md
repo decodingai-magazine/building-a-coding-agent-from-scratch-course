@@ -70,6 +70,24 @@ credentials-proxy surface is recorded as least-exampled (verify-first).
    resumes near the failure instead of re-running tools. No `@checkpoint` is wrapped around the agent
    by hand.
 
+   > **Amendment (2026-06-28, task 058) — bypass runs decode's tools *inline*, it does not bypass the
+   > whole loop.** §1's "headless replaces decode's loop" framing was incomplete. **Every** decode
+   > tool — even read-only `read`/`glob`/`grep` — opens its body with `raise ApprovalRequired` until
+   > approved; that deferral is resolved by decode's **loop** (`agent/loop.py`), which `run_sync` does
+   > **not** run. And the Kitaru adapter converts *any* `ApprovalRequired` inside a checkpoint into a
+   > flow-scope `kitaru.wait()` (a HITL pause) — so under `run_sync` the *first* tool call of an
+   > unattended bypass run would raise `KitaruUsageError` ("waits must be at flow scope"), not return
+   > a clean string. The premise "bypass → no `ApprovalRequired`" only holds if a tool consults the
+   > mode. Fix (small, central): one predicate, `decode.tools.approval.needs_approval(ctx)` =
+   > `not ctx.tool_call_approved and ctx.deps.gate.mode is not BYPASS`, replaces the inline
+   > `not ctx.tool_call_approved` check at all 9 gated sites (`files.py` ×5, `web`, `tasks`, `bash`,
+   > `lsp`). Under **BYPASS** a gated tool runs
+   > **inline** (no deferral, no wait); under default/plan/edit it defers exactly as before and the
+   > loop resolves it through the gate — **interactive behaviour is byte-unchanged**. So the headless
+   > flow *keeps* the `KitaruAgent` adapter for durability and simply makes the shared tools
+   > bypass-aware; it does not re-run the interactive loop and does not hand-drive
+   > `DeferredToolResults`.
+
 3. **HITL = swap the single decision channel for a `wait()` bridge.** decode already routes
    `ask_user` *and* every permission approval (exit-plan-mode, write/bash gates) through **one**
    resolver, `resolve_user_question` (`agent/deps.py:81`). In **headless** mode that resolver is the
@@ -79,6 +97,14 @@ credentials-proxy surface is recorded as least-exampled (verify-first).
    rewrite. Tool-time waits use the adapter's `hitl_tool` / `wait_for_input`, or opt the waiting tool
    out of granular checkpoints (`tool_checkpoint_config_by_name={...: False}`), per the adapter rule
    that waits live at flow scope.
+
+   > **Amendment (2026-06-28, task 058).** With the §2 amendment in place, 059's headless HITL is the
+   > natural complement: instead of forcing BYPASS, headless deps use a non-bypass mode so a gated
+   > tool's `ApprovalRequired` *does* fire, and the adapter's `ApprovalRequired → kitaru.wait()` bridge
+   > (with the gated tools opted out of granular checkpoints, `tool_checkpoint_config_by_name={tool:
+   > False}`, and `allow_sync_tool_body_waits=True`) turns each approval into a durable wait resolved
+   > out-of-band by `kitaru executions input`. 058 ships the BYPASS (no-human) slice; 059 layers the
+   > durable approvals on top — no tool change, just the deps mode + adapter config.
 
 4. **`sleep` → a durable, resumable timer.** In flow mode the `sleep` tool (`tools/sleep.py:37`, today
    a bare `asyncio.sleep`) becomes `kitaru.wait(name="sleep", timeout=…)` — the execution can pause and

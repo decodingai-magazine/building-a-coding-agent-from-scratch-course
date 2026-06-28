@@ -74,6 +74,43 @@ def test_cli_runs_and_exits_zero():
     assert "Decode" in result.output
 
 
+def test_run_subcommand_is_registered_without_breaking_the_bare_repl(mocker):
+    """ADR-0008: ``cli`` is now a group exposing ``run``, yet bare ``decode`` still reaches the REPL.
+
+    The group uses ``invoke_without_command=True`` so a bare ``decode`` (no subcommand) launches the
+    REPL exactly as before — proving the backward-compat the task requires — while ``decode run``
+    is available as a sibling subcommand.
+    """
+    assert "run" in cli.commands  # the headless subcommand exists
+
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+    result = CliRunner().invoke(cli, ["--agent", "plan", "--mode", "edit"])
+
+    assert result.exit_code == 0
+    run_app.assert_awaited_once()  # bare decode (no subcommand) still drives the REPL
+    assert run_app.await_args.kwargs.get("agent") == "plan"
+    assert run_app.await_args.kwargs.get("mode") == "edit"
+
+
+def test_importing_the_cli_does_not_import_kitaru():
+    """The REPL entrypoint must stay kitaru-free: ``decode run`` imports the runtime lazily (ADR-0008).
+
+    Importing ``decode.cli`` in a fresh interpreter must not pull in ``kitaru`` (a heavy
+    zenml/temporalio stack) — only ``decode run`` does, inside the subcommand body. A subprocess
+    keeps the check honest regardless of what the rest of the suite already imported.
+    """
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "import decode.cli, sys; assert 'kitaru' not in sys.modules"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_cli_accepts_resume_flag():
     result = CliRunner().invoke(cli, ["--resume"])
     assert result.exit_code == 0
