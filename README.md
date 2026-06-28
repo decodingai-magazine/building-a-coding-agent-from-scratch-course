@@ -150,6 +150,28 @@ The agent tool-loops headlessly and prints the result; the process exits `0`. Ea
 - **Guards.** `decode run` needs the same provider config as the REPL (e.g. `GEMINI_API_KEY`); a missing key prints one friendly line and exits non-zero. Set `RUNTIME_ENABLED=false` to disable the subcommand entirely (it then exits with a friendly line and builds no flow).
 - **`sleep` is a durable timer in the durable run.** In a durable headless run (`decode run --hitl`), `sleep` becomes a Kitaru wait — the execution can pause and the process exit, then resume — instead of pinning a worker; in the TUI it stays a plain in-process `asyncio.sleep` (ADR-0008 §4).
 
+### Credentials proxy (keep the model key out of the flow payload)
+
+By default a headless run reads the model key from `.env` (e.g. `GEMINI_API_KEY`) exactly like the REPL. For a **deployed** flow you don't want the raw key serialized into the execution's arguments — so `decode` can instead resolve the key from a **Kitaru secret** at model construction, leaving only the secret *name* in the flow. The design is in [`docs/adr/0008-kitaru-durable-runtime.md`](docs/adr/0008-kitaru-durable-runtime.md) §5; it is **opt-in** and off by default.
+
+Create the secret once (the raw key then lives only in Kitaru, never in the flow payload):
+
+```bash
+kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=…   # CLI; OPENROUTER_API_KEY for openrouter
+```
+
+```python
+from kitaru import create_secret  # Python equivalent
+create_secret("decode-llm-creds", {"GEMINI_API_KEY": "…"}, private=True)
+```
+
+Then turn the proxy on in `.env`:
+
+- `RUNTIME_CREDENTIALS_PROXY_ENABLED=true` — flow-mode model construction resolves the provider key from a Kitaru secret instead of the `SecretStr` in settings. **Default `false`** (and it only ever applies to `decode run`; the interactive REPL is untouched).
+- `RUNTIME_SECRET_NAME` (default `decode-llm-creds`) — the Kitaru secret name the key is read from. The secret's key must be the provider's env-var name (`GEMINI_API_KEY` / `OPENROUTER_API_KEY`).
+
+With it on, a `decode run` flow constructs the model with the key fetched from the secret; the execution's serialized arguments carry only the task and the secret name. The settings key is no longer required (or consulted) for that provider — so a leftover `GEMINI_API_KEY` in `.env` is harmless. A missing secret (or one without the provider key) is caught by a **proxy-aware pre-flight** before any flow is built: `decode run` prints one friendly line naming the fix (`kitaru secrets set <name> --GEMINI_API_KEY=…`) and exits non-zero — never a traceback, and never a silent fallback to the settings key. (Modal's dual proxy-token auth is a separate sandbox-header surface and is not routed through this proxy.)
+
 ## Context compaction
 
 A long conversation grows toward the model's context window. `decode` keeps it in budget with a **cheapest-first cascade** that runs automatically at the end of each turn — measured against how full the window is — plus a manual override. The wiring and trade-offs are recorded in [`docs/adr/0006-conversation-compaction.md`](docs/adr/0006-conversation-compaction.md).

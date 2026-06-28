@@ -12,6 +12,7 @@ init_logger()
 
 import asyncio  # noqa: E402  (intentional post-logger import)
 import logging  # noqa: E402
+from collections.abc import Callable  # noqa: E402
 
 import click  # noqa: E402
 
@@ -100,6 +101,86 @@ def _provider_config_error() -> str | None:
             return _MODAL_PROXY_TOKENS_MESSAGE
         return None
     return None  # defensive: the settings ``Literal`` blocks any other value upstream.
+
+
+# The single-api-key providers whose model key the Credentials Proxy resolves from a Kitaru secret
+# (ADR-0008 §5), mirroring ``decode.agent.factory.PROXY_SECRET_KEY``. ``modal`` is absent: it
+# authenticates with proxy *tokens* read from settings, so it is never proxied and keeps the
+# settings-shape guard even when ``RUNTIME_CREDENTIALS_PROXY_ENABLED`` is on.
+_PROXY_PROVIDERS: frozenset[str] = frozenset({"gemini", "openrouter"})
+
+
+def _uses_credentials_proxy() -> bool:
+    """True when ``decode run`` sources the model key from the Kitaru Credentials Proxy (ADR-0008 §5).
+
+    Only the single-api-key providers (``gemini`` / ``openrouter``) are proxied; ``modal`` is never
+    proxied (its proxy *tokens* live in settings), so this stays ``False`` for it. When ``False`` the
+    headless path keeps the byte-identical settings-key/token guard (:func:`_provider_config_error`).
+    """
+    return settings.runtime_credentials_proxy_enabled and settings.llm_provider in _PROXY_PROVIDERS
+
+
+def _proxy_secret_message() -> str:
+    """The one friendly line when the Credentials Proxy is on but the Kitaru secret is unusable.
+
+    Names the *real* fix — create the Kitaru secret — instead of the misleading ``set GEMINI_API_KEY``
+    settings line, because with the proxy on the model key comes from Kitaru, not settings (ADR-0008 §5).
+    The provider's key name comes from the factory's single-source ``PROXY_SECRET_KEY`` map.
+    """
+    from decode.agent.factory import PROXY_SECRET_KEY  # cheap + kitaru-free; lazy for symmetry
+
+    secret_name = settings.runtime_secret_name
+    key_name = PROXY_SECRET_KEY.get(settings.llm_provider, "GEMINI_API_KEY")
+    return (
+        f"Decode: RUNTIME_CREDENTIALS_PROXY_ENABLED is on but the Kitaru secret {secret_name!r} is "
+        f"missing or has no {key_name} value — create it with "
+        f"`kitaru secrets set {secret_name} --{key_name}=…` (see .env.example)."
+    )
+
+
+def _proxy_credential_error() -> str | None:
+    """Validate the Credentials Proxy's Kitaru secret resolves; a friendly line if not (ADR-0008 §5).
+
+    The proxy-aware counterpart to :func:`_provider_config_error` for ``decode run``: it resolves the
+    provider key from the Kitaru secret once, up front (offline on the local stack), so a **missing**
+    secret (``KitaruRuntimeError``) or a secret **lacking** the provider key (``RuntimeError``) becomes
+    one friendly stderr line instead of a ~30-frame traceback from inside the flow (task 061, User
+    Story #3). The throwaway resolution here is deliberate: the flow resolves the key *again* inside
+    its body so the raw key never rides in the flow payload (the "secrets never reach the … payload"
+    invariant). ``kitaru`` is reached only through the factory seam, which imports it lazily, so the
+    REPL path never loads it.
+    """
+    from decode.agent.factory import resolve_provider_key_via_proxy
+
+    try:
+        resolve_provider_key_via_proxy(settings.llm_provider)  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        logger.debug("credentials proxy secret unavailable for %s: %s", settings.llm_provider, exc)
+        return _proxy_secret_message()
+    return None
+
+
+def _launch_durable[T](run_flow: Callable[[], T]) -> T:
+    """Run a durable flow, turning a proxy credential-seam failure into one friendly line (ADR-0008 §5).
+
+    Belt-and-braces behind :func:`_proxy_credential_error`'s pre-flight (which validates the secret
+    before launch), so this only fires on a rare edge — the secret deleted between validation and
+    launch, or a future non-local stack where the in-flow ``get_secret`` differs. It is scoped to an
+    **engaged proxy** and to Kitaru's own ``KitaruRuntimeError`` so an unrelated flow error is never
+    masked; with the proxy off the flow runs unwrapped, byte-identical to before.
+    """
+    if not _uses_credentials_proxy():
+        return run_flow()
+    from kitaru.errors import (
+        KitaruRuntimeError,
+    )  # kitaru is already loaded on the ``decode run`` path
+
+    try:
+        return run_flow()
+    except KitaruRuntimeError as exc:
+        logger.debug("credentials proxy seam failed at flow launch: %s", exc)
+        click.echo(_proxy_secret_message(), err=True)
+        raise click.exceptions.Exit(1) from exc
 
 
 @click.group(invoke_without_command=True)
@@ -209,19 +290,37 @@ def run(task: str, hitl: bool) -> None:
       ``edit`` / ``bash`` **approval** waits use the adapter's fixed ``600s`` default (ADR-0008 §3).
 
     Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): the per-provider
-    config guard (it builds a model) fires first, then ``RUNTIME_ENABLED`` — a disabled runtime
-    never builds a flow. ``kitaru`` is imported lazily here so the REPL path never loads it.
+    config guard (it builds a model) fires first, then ``RUNTIME_ENABLED`` — a disabled runtime never
+    builds a flow. When the **Credentials Proxy** is on (ADR-0008 §5) the model key comes from a Kitaru
+    secret, not settings, so the settings-key guard is replaced by a proxy-aware pre-flight that
+    validates the secret resolves before any flow is built — a missing/incomplete secret is one
+    friendly line, never a traceback. ``kitaru`` is imported lazily here so the REPL path never loads it.
     """
-    config_error = _provider_config_error()
-    if config_error is not None:
-        logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
-        click.echo(config_error, err=True)
-        raise click.exceptions.Exit(1)
+    # Per-provider config guard. Proxy-aware (ADR-0008 §5): for proxy-OFF and for modal (never
+    # proxied), this is the byte-identical settings-key/token guard. A proxied provider under the
+    # proxy validates the Kitaru secret instead — deferred to the pre-flight below, after the runtime
+    # guard, because that lookup boots Kitaru and a disabled runtime must short-circuit first.
+    if not _uses_credentials_proxy():
+        config_error = _provider_config_error()
+        if config_error is not None:
+            logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
+            click.echo(config_error, err=True)
+            raise click.exceptions.Exit(1)
 
     if not settings.runtime_enabled:
         logger.debug("runtime disabled; refusing to run")
         click.echo(_RUNTIME_DISABLED_MESSAGE, err=True)
         raise click.exceptions.Exit(1)
+
+    # Credentials-proxy pre-flight (ADR-0008 §5): validate the Kitaru secret resolves BEFORE building
+    # a flow, so a missing/incomplete secret exits with one friendly line (naming ``kitaru secrets
+    # set``) instead of a ~30-frame KitaruRuntimeError traceback from inside the flow body. Boots
+    # Kitaru, hence after the runtime guard. Applies to both the bypass and ``--hitl`` paths.
+    if _uses_credentials_proxy():
+        credential_error = _proxy_credential_error()
+        if credential_error is not None:
+            click.echo(credential_error, err=True)
+            raise click.exceptions.Exit(1)
 
     # Lazy import: keep kitaru (and its heavy zenml/temporalio stack) off the REPL path entirely —
     # only ``decode run`` pays the import cost. The flow runs on the local Kitaru stack, offline.
@@ -235,7 +334,8 @@ def run(task: str, hitl: bool) -> None:
     # ``flow.run(...).wait()`` returns the flow's terminal checkpoint — a pydantic-ai
     # ``AgentRunResult`` — so surface its ``.output`` text (the flow's str return is not what Kitaru
     # hands back). ``getattr`` keeps it robust if a future Kitaru version returns the str directly.
-    result = run_agent_task.run(task=task).wait()
+    # ``_launch_durable`` is the belt-and-braces credential-seam safety net (a no-op when proxy off).
+    result = _launch_durable(lambda: run_agent_task.run(task=task).wait())
     click.echo(getattr(result, "output", result))
 
 
@@ -250,7 +350,10 @@ def _run_hitl(task: str) -> None:
     from decode.runtime import run_hitl_agent_task
 
     logger.debug("decode run --hitl starting (task=%r)", task)
-    result = run_hitl_agent_task(task)
+    # ``_launch_durable`` is the belt-and-braces credential-seam safety net behind the pre-flight in
+    # ``run`` (a no-op when the proxy is off): a missing-secret edge becomes one friendly line, not a
+    # raw traceback, and never the ``is_finished``/``is_successful`` paused mis-report.
+    result = _launch_durable(lambda: run_hitl_agent_task(task))
     if result.paused:
         click.echo(
             f"Decode: the task paused on a durable human-in-the-loop wait (execution "

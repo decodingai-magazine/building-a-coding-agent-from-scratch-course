@@ -160,8 +160,12 @@ def _build_runtime_agent() -> KitaruAgent[AgentDeps, str | DeferredToolRequests]
     ``KitaruAgent`` is constructed, so a test can patch it to inject a scripted-model agent and
     exercise the real ``@flow`` + adapter offline. ``checkpoint_strategy`` comes from settings
     (``"turn"`` — one checkpoint per turn — is the MVP default; ``"calls"`` is per model/tool call).
+
+    ``flow_mode=True`` engages the **Credentials Proxy** (ADR-0008 §5): when
+    ``settings.runtime_credentials_proxy_enabled`` the provider key is resolved from a Kitaru secret
+    here (inside the flow body), so a deployed flow payload carries the secret name, not the raw key.
     """
-    agent = build_agent()
+    agent = build_agent(flow_mode=True)
     return KitaruAgent(
         agent,
         name=RUNTIME_AGENT_NAME,
@@ -277,9 +281,10 @@ def _build_hitl_runtime_agent() -> KitaruAgent[AgentDeps, str | DeferredToolRequ
     """The patchable HITL runtime seam: wrap ``build_agent()`` in the HITL ``KitaruAgent``.
 
     Mirrors :func:`_build_runtime_agent` (the bypass seam) so a test patches it to inject a
-    scripted-model agent and drive the real ``@flow`` + adapter waits offline.
+    scripted-model agent and drive the real ``@flow`` + adapter waits offline. ``flow_mode=True``
+    engages the Credentials Proxy on the same terms as the bypass seam (ADR-0008 §5).
     """
-    return _to_hitl_durable_agent(build_agent())
+    return _to_hitl_durable_agent(build_agent(flow_mode=True))
 
 
 def _build_hitl_deps() -> AgentDeps:
