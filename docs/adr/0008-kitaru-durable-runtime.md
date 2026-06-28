@@ -105,6 +105,55 @@ credentials-proxy surface is recorded as least-exampled (verify-first).
    > False}`, and `allow_sync_tool_body_waits=True`) turns each approval into a durable wait resolved
    > out-of-band by `kitaru executions input`. 058 ships the BYPASS (no-human) slice; 059 layers the
    > durable approvals on top — no tool change, just the deps mode + adapter config.
+   >
+   > **Amendment (2026-06-28, task 059 — what shipped, verified against the installed adapter 0.18).**
+   > 059 added a *second* flow, `runtime/flow.py::run_agent_task_hitl` (the bypass `run_agent_task`
+   > stays untouched), launched by `decode run --hitl`. Five realities the pre-implementation framing
+   > did not anticipate, each confirmed by spiking the real local stack offline:
+   >
+   > 1. **HITL forces `checkpoint_strategy="calls"`** — *not* `settings.runtime_checkpoint_strategy`.
+   >    The per-tool checkpoint opt-out that hoists a wait to flow scope is only accepted under
+   >    `"calls"`; under `"turn"` the single turn-checkpoint wraps the tool and the wait raises "must
+   >    be at flow scope". So the AC's "under turn no opt-out is needed" does not hold for an
+   >    *actually-waiting* HITL run — `"turn"` cannot host flow-scope waits at all. `runtime_checkpoint_strategy`
+   >    therefore governs only the bypass run.
+   > 2. **Read-only tools must run inline, or a HITL run pauses/crashes on its first `read`.** Under
+   >    `run_sync` no decode loop applies the gate's read-only-allow floor, so a new deps flag
+   >    `AgentDeps.headless_durable_waits` makes `needs_approval` apply it itself: read-only → inline,
+   >    mutating → `ApprovalRequired` → durable wait. Interactive deps leave the flag `False`
+   >    (byte-unchanged). The opt-out map is the *waiting* tools only — `write`/`edit`/`bash` +
+   >    `ask_user`/`exit_plan_mode`.
+   > 3. **`ask_user`/`exit_plan_mode` bridge via `resolve_user_question` → `wait_for_input`;
+   >    approvals are the adapter's native `ApprovalRequired → wait`.** `resolve_permission` is *not*
+   >    the approval bridge under `run_sync` (no loop calls it) — it stays the deny safety-net. The
+   >    async resolver calls the **sync** `wait_for_input` directly (no `anyio.to_thread`): under
+   >    `run_sync` + `allow_sync_tool_body_waits=True` the agent's event loop runs on Kitaru's
+   >    workflow thread, which is where a flow-scope wait must be created.
+   >    **Known limitation — `runtime_wait_timeout_s` scopes only the waits decode drives.** Because
+   >    `wait_for_input` is decode's own call, it passes `timeout=runtime_wait_timeout_s`, so the
+   >    `ask_user`/`exit_plan_mode` question waits honor the setting. The `write`/`edit`/`bash`
+   >    **approval** waits are created *inside the adapter* from `ApprovalRequired` as
+   >    `kitaru.wait(timeout=None)`, which falls back to ZenML's fixed `600s` default — they ignore
+   >    `runtime_wait_timeout_s` (a live run with `RUNTIME_WAIT_TIMEOUT_S=6` still logs
+   >    `timeout=600s`). Honoring the setting on approval waits would require forking the adapter's
+   >    `_invoke_wait`; decode imports infrastructure rather than forking it, so the divergence is
+   >    documented and deferred, not patched around.
+   > 4. **A denied approval STOPS the run; it does not feed back to the model.** The adapter resolves
+   >    a deny by raising `_ToolApprovalDenied` out of `run_sync` — there is no pydantic-ai
+   >    deny-result round-trip, because the adapter intercepts every `ApprovalRequired` and never lets
+   >    it surface as a `DeferredToolRequests` the flow could hand-drive. The flow catches it and
+   >    finishes with a denial message (the denied tool never ran). This is the one place headless
+   >    HITL **differs** from the interactive gate (which returns the deny reason and lets the model
+   >    adapt); a feed-back-on-deny path would need decode's mutating tools to bridge approvals
+   >    themselves rather than raise `ApprovalRequired` — deferred as a possible follow-up.
+   > 5. **`"calls"` + opt-out breaks Kitaru's `.wait()` return-value extraction** (several terminal
+   >    model-request checkpoints → `_MultipleTerminalStepsOutputError`). The flow stores its final
+   >    text in a closing `@checkpoint` as a named artifact (`decode_runtime_output`) and the reader
+   >    loads it back by name; a paused run (unresolved wait) returns no artifact and the reader
+   >    reports the paused `exec_id`. **Offline tests** resolve each wait inline by patching Kitaru's
+   >    local interactive-input seam (a background `KitaruClient.input` thread re-inits ZenML's
+   >    per-thread store and races SQLite; post-timeout `resume` needs a deployed flow the in-process
+   >    local stack lacks).
 
 4. **`sleep` → a durable, resumable timer.** In flow mode the `sleep` tool (`tools/sleep.py:37`, today
    a bare `asyncio.sleep`) becomes `kitaru.wait(name="sleep", timeout=…)` — the execution can pause and

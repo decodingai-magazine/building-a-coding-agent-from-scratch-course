@@ -183,14 +183,30 @@ def cli(ctx: click.Context, resume: str | None, agent: str, mode: str | None) ->
 
 @cli.command("run")
 @click.argument("task")
-def run(task: str) -> None:
+@click.option(
+    "--hitl",
+    is_flag=True,
+    help=(
+        "Human-in-the-loop: run under a gating gate so mutating tools and ask_user pause on durable "
+        "Kitaru waits resolved out-of-band (`kitaru executions input`), instead of bypassing them."
+    ),
+)
+def run(task: str, hitl: bool) -> None:
     """Run a single TASK headlessly through the durable runtime, then print the result (ADR-0008).
 
     The autonomous counterpart to the REPL: ``decode run "<task>"`` builds the same agent as the
-    TUI but drives it through a Kitaru Durable Flow (checkpoints + replay), under BYPASS so every
-    tool runs with no prompt. The agent's final text is printed to stdout. There is no human in the
-    loop in this slice (task 058) — ``ask_user`` / approvals are headless no-ops; durable waits are
-    task 059.
+    TUI but drives it through a Kitaru Durable Flow (checkpoints + replay). Two modes:
+
+    \b
+    * default — **bypass** (task 058): every tool runs inline with no prompt; the agent's final text
+      is printed to stdout. ``ask_user`` / approvals are headless no-ops.
+    * ``--hitl`` — **human-in-the-loop** (task 059): a gating gate so ``write`` / ``edit`` / ``bash``
+      and ``ask_user`` pause the whole execution on a durable wait. If a wait is resolved out-of-band
+      while the run polls it continues and prints the result; otherwise the run pauses and prints the
+      execution id + the ``kitaru executions input`` command to resolve it. The poll timeout differs
+      by wait kind (a known limitation — decode does not fork the adapter): the ``ask_user`` /
+      ``exit_plan_mode`` answer waits honor ``runtime_wait_timeout_s``; the native ``write`` /
+      ``edit`` / ``bash`` **approval** waits use the adapter's fixed ``600s`` default (ADR-0008 §3).
 
     Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): the per-provider
     config guard (it builds a model) fires first, then ``RUNTIME_ENABLED`` — a disabled runtime
@@ -209,6 +225,10 @@ def run(task: str) -> None:
 
     # Lazy import: keep kitaru (and its heavy zenml/temporalio stack) off the REPL path entirely —
     # only ``decode run`` pays the import cost. The flow runs on the local Kitaru stack, offline.
+    if hitl:
+        _run_hitl(task)
+        return
+
     from decode.runtime import run_agent_task
 
     logger.debug("decode run starting (task=%r)", task)
@@ -217,6 +237,33 @@ def run(task: str) -> None:
     # hands back). ``getattr`` keeps it robust if a future Kitaru version returns the str directly.
     result = run_agent_task.run(task=task).wait()
     click.echo(getattr(result, "output", result))
+
+
+def _run_hitl(task: str) -> None:
+    """Drive the HITL Durable Flow and print the result, or the pause + how to resolve it (ADR-0008 §3).
+
+    A finished run prints the agent's final text. A run that paused on an unresolved durable wait
+    prints the execution id and the ``kitaru executions`` commands an operator uses to inspect and
+    resolve it out-of-band, then resume — exit stays zero (a pause is a normal HITL outcome, not an
+    error).
+    """
+    from decode.runtime import run_hitl_agent_task
+
+    logger.debug("decode run --hitl starting (task=%r)", task)
+    result = run_hitl_agent_task(task)
+    if result.paused:
+        click.echo(
+            f"Decode: the task paused on a durable human-in-the-loop wait (execution "
+            f"{result.exec_id}). Resolve it out-of-band, then resume:",
+            err=True,
+        )
+        click.echo("  kitaru executions list", err=True)
+        click.echo(
+            f"  kitaru executions input {result.exec_id} --wait <name> --value '<answer>'", err=True
+        )
+        click.echo(f"  kitaru executions resume {result.exec_id}", err=True)
+        return
+    click.echo(result.output)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,13 @@ It carries:
   read it fresh per turn, so switching agents changes the prompt + tool set on the next turn with no
   agent rebuild. Defaults to the ``build`` persona (the full-tool set) so a deps built without one
   behaves exactly as Milestone 1 did.
+* ``headless_durable_waits`` — the Headless Runtime HITL flag (ADR-0008 §3). ``False`` for every
+  interactive run (and the 058 bypass run), so :func:`decode.tools.approval.needs_approval` keeps
+  its mode-binary behaviour byte-for-byte. ``True`` **only** in the gating headless flow (task 059):
+  there is no interactive loop to run the gate, so a gated tool must decide *itself* whether to
+  pause — read-only tools run inline, mutating tools raise ``ApprovalRequired`` which the Kitaru
+  adapter turns into a durable ``kitaru.wait()``. Defaults ``False`` so nothing outside the runtime
+  changes.
 
 Later tasks widen this dataclass further (the session log in 014) — those fields land with the
 task that uses them. Keeping ``emit`` / ``resolve_permission`` / ``resolve_user_question`` plain
@@ -99,3 +106,4 @@ class AgentDeps:
     resolve_user_question: UserQuestionResolver
     task_store: list[Task] = field(default_factory=list)
     active_agent: AgentDef = field(default_factory=_default_active_agent)
+    headless_durable_waits: bool = False
