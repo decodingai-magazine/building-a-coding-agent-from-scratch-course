@@ -148,6 +148,7 @@ The agent tool-loops headlessly and prints the result; the process exits `0`. Ea
 - **No human in the loop (this slice).** The run is autonomous, so it executes under **bypass** — every tool runs with no approval prompt (an `ask_user` becomes a no-op the agent works around). Durable human-in-the-loop approvals are a later step.
 - **Setup.** It runs on Kitaru's **local stack, fully offline** — no Kitaru server and no `kitaru init` are required (a `default` stack is used). The interactive REPL is unaffected and never loads Kitaru.
 - **Guards.** `decode run` needs the same provider config as the REPL (e.g. `GEMINI_API_KEY`); a missing key prints one friendly line and exits non-zero. Set `RUNTIME_ENABLED=false` to disable the subcommand entirely (it then exits with a friendly line and builds no flow).
+- **`sleep` is a durable timer in the durable run.** In a durable headless run (`decode run --hitl`), `sleep` becomes a Kitaru wait — the execution can pause and the process exit, then resume — instead of pinning a worker; in the TUI it stays a plain in-process `asyncio.sleep` (ADR-0008 §4).
 
 ## Context compaction
 

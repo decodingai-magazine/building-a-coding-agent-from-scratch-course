@@ -40,6 +40,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,6 +61,11 @@ from decode.tools.askuser import ASK_USER_TOOL_NAME, deny_user_question_resolver
 from decode.tools.bash import BASH_TOOL_NAME
 from decode.tools.files import EDIT_TOOL_NAME, WRITE_TOOL_NAME
 from decode.tools.orchestration import EXIT_PLAN_MODE_TOOL_NAME
+from decode.tools.sleep import (
+    SLEEP_TOOL_NAME,
+    install_durable_sleeper,
+    reset_sleeper,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,13 +89,16 @@ _HITL_DENIED_MESSAGE = (
     "The operator denied a required tool approval, so the task was stopped before that step ran."
 )
 
-# The gated tools that PAUSE in the HITL flow and so must be opted out of their per-call checkpoints
-# (the Kitaru adapter rule: a wait must live at flow scope, not inside a ``*_tool`` checkpoint —
-# ADR-0008 §3). Two reasons a tool waits: ``write`` / ``edit`` / ``bash`` raise ``ApprovalRequired``
-# (the adapter turns it into a durable approval wait); ``ask_user`` / ``exit_plan_mode`` call
-# ``wait_for_input`` from their body. Read-only tools never wait (they run inline under
-# ``needs_approval``), so they are deliberately absent — opting them out is unnecessary and keeping
-# them in keeps the per-call checkpoint that records their work.
+# The tools that PAUSE on a flow-scope wait in the durable runtime and so must be opted out of their
+# per-call checkpoints (the Kitaru adapter rule: a wait must live at flow scope, not inside a
+# ``*_tool`` checkpoint — ADR-0008 §3). Three reasons a tool waits: ``write`` / ``edit`` / ``bash``
+# raise ``ApprovalRequired`` (the adapter turns it into a durable approval wait); ``ask_user`` /
+# ``exit_plan_mode`` call ``wait_for_input`` from their body; and ``sleep``, once the durable sleeper
+# is installed (ADR-0008 §4), calls ``kitaru.wait`` directly as a durable timer. ``sleep`` is the one
+# *ungated* member — it never raises ``ApprovalRequired`` — but it still creates a flow-scope wait, so
+# it needs the same checkpoint opt-out as the gated waiters. Read-only tools never wait (they run
+# inline under ``needs_approval``), so they are deliberately absent — opting them out is unnecessary
+# and keeping them in keeps the per-call checkpoint that records their work.
 _HITL_WAIT_TOOL_NAMES: frozenset[str] = frozenset(
     {
         WRITE_TOOL_NAME,
@@ -96,8 +106,29 @@ _HITL_WAIT_TOOL_NAMES: frozenset[str] = frozenset(
         BASH_TOOL_NAME,
         ASK_USER_TOOL_NAME,
         EXIT_PLAN_MODE_TOOL_NAME,
+        SLEEP_TOOL_NAME,
     }
 )
+
+
+@contextmanager
+def _durable_sleeper() -> Iterator[None]:
+    """Install the durable ``sleep`` seam for a durable run, reset on exit (ADR-0008 §4, task 060).
+
+    The durable HITL flow runs inside this context so a ``sleep`` call pauses on a flow-scope
+    ``kitaru.wait`` (a resumable timer) instead of an in-process :func:`asyncio.sleep`. The reset in
+    ``finally`` is load-bearing: the seam is a module-level global, so without it a later in-process
+    interactive ``sleep`` (the REPL shares the process in tests) would inherit the durable sleeper and
+    try to create a Kitaru wait outside any flow. The durable sleeper only works under the HITL agent
+    config — ``checkpoint_strategy="calls"`` + ``sleep`` opted out of its checkpoint
+    (:data:`_HITL_WAIT_TOOL_NAMES`) + ``allow_sync_tool_body_waits=True`` — because a ``"turn"``
+    checkpoint cannot host a flow-scope wait at all (the same constraint task 059 hit for approvals).
+    """
+    install_durable_sleeper()
+    try:
+        yield
+    finally:
+        reset_sleeper()
 
 
 def _headless_emit(event: events.Event) -> None:
@@ -293,20 +324,27 @@ def run_agent_task_hitl(task: str) -> str:
     The gating complement of :func:`run_agent_task`: same ``build_agent()``, but under a gating gate
     so a mutating tool pauses the whole execution on a durable Kitaru wait an operator resolves
     out-of-band (``kitaru executions input``), and ``ask_user`` / ``exit_plan_mode`` likewise pause
-    on a ``wait_for_input``. Read-only tools still run inline. A **denied** approval is caught and the
-    run finishes with :data:`_HITL_DENIED_MESSAGE` (the adapter raises rather than feeding the denial
-    back to the model — ADR-0008 §3). The final text is stored via :func:`_capture_runtime_output`;
-    use :func:`run_hitl_agent_task` to launch and read it back.
+    on a ``wait_for_input``. Read-only tools still run inline. A ``sleep`` becomes a **durable timer**
+    here (ADR-0008 §4): the :func:`_durable_sleeper` context swaps its seam so it pauses on a
+    flow-scope ``kitaru.wait`` — the execution can suspend and the process exit, then resume — and the
+    seam is reset on exit so an in-process ``sleep`` is unaffected. A **denied** approval is caught and
+    the run finishes with :data:`_HITL_DENIED_MESSAGE` (the adapter raises rather than feeding the
+    denial back to the model — ADR-0008 §3). The final text is stored via
+    :func:`_capture_runtime_output`; use :func:`run_hitl_agent_task` to launch and read it back.
     """
     durable_agent = _build_hitl_runtime_agent()
     deps = _build_hitl_deps()
-    try:
-        result = durable_agent.run_sync(task, deps=deps)
-    except _ToolApprovalDenied:
-        # The operator rejected a tool approval. The adapter raises out of ``run_sync`` (it has no
-        # feed-back-to-model path), so the run stops here — the denied tool never acted.
-        logger.debug("HITL run stopped: an operator denied a tool approval")
-        return _capture_runtime_output(_HITL_DENIED_MESSAGE)
+    # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a
+    # ``sleep`` in this run pauses on a flow-scope ``kitaru.wait`` (ADR-0008 §4) while a later
+    # in-process interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).
+    with _durable_sleeper():
+        try:
+            result = durable_agent.run_sync(task, deps=deps)
+        except _ToolApprovalDenied:
+            # The operator rejected a tool approval. The adapter raises out of ``run_sync`` (it has no
+            # feed-back-to-model path), so the run stops here — the denied tool never acted.
+            logger.debug("HITL run stopped: an operator denied a tool approval")
+            return _capture_runtime_output(_HITL_DENIED_MESSAGE)
     output = result.output
     if not isinstance(output, str):
         # A deferred request escaping ``run_sync`` means a wait-capable tool was not opted out (so

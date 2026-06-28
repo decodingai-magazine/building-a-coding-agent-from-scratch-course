@@ -40,6 +40,7 @@ from decode.runtime.flow import (
     _to_hitl_durable_agent,
     flow_resolve_user_question,
 )
+from decode.tools import sleep as sleep_module
 from decode.tools.registry import register_tools
 
 # The real flow boots the Kitaru/ZenML stack; scope its two third-party deprecation warnings (see
@@ -262,6 +263,54 @@ def test_unanswered_write_approval_leaves_the_run_paused(
 
 
 # ---------------------------------------------------------------------------
+# sleep → durable timer: the async→sync kitaru.wait bridge, end-to-end (task 060, ADR-0008 §4)
+# ---------------------------------------------------------------------------
+def test_sleep_becomes_a_durable_flow_scope_wait(monkeypatch, inline_wait_resolver):
+    """A ``sleep`` in the durable run pauses on a flow-scope ``kitaru.wait`` named "sleep", not ``asyncio.sleep``.
+
+    The de-risk the task called for: the **async** ``sleep`` tool body calls the **sync**
+    ``kitaru.wait`` from inside ``run_sync`` (``allow_sync_tool_body_waits=True``) with no event-loop
+    error and no deadlock. The wait lands at flow scope (the inline resolver records it, named
+    "sleep"), the durable sleeper clamps to the cap, and the flow completes once the wait resolves —
+    proving the seam the flow installs is the durable one, not the in-process sleep.
+    """
+    inline_wait_resolver.answers = ["resume"]  # the timer "fires" → continue the flow
+    monkeypatch.setattr(sleep_module.settings, "sleep_max_s", 3.0)
+    _patch_hitl_seam(
+        monkeypatch,
+        _echo_agent(
+            ModelResponse(parts=[ToolCallPart(tool_name="sleep", args={"seconds": 10_000})])
+        ),
+    )
+
+    result = run_hitl_agent_task("back off then continue")
+
+    assert result.paused is False
+    # The capped confirmation flowed back through the model — the durable wait returned, no hang.
+    assert result.output == "tool said: Slept 3.0 s."
+    # Exactly one flow-scope wait, named "sleep" (the durable timer), was created and resolved.
+    assert inline_wait_resolver.names == [sleep_module.SLEEP_TOOL_NAME]
+    # The seam was reset on flow exit — a later in-process ``sleep`` uses ``asyncio.sleep`` again.
+    assert sleep_module._SLEEPER is sleep_module._interactive_sleep
+
+
+def test_durable_sleeper_context_installs_then_resets_the_seam():
+    """:func:`_durable_sleeper` swaps in the durable seam inside the block and restores it on exit."""
+    assert sleep_module._SLEEPER is sleep_module._interactive_sleep
+    with flow_mod._durable_sleeper():
+        assert sleep_module._SLEEPER is sleep_module._durable_sleep
+    assert sleep_module._SLEEPER is sleep_module._interactive_sleep
+
+
+def test_durable_sleeper_context_resets_even_on_error():
+    """The reset is in a ``finally`` — an exception inside the run must not leak the durable seam."""
+    with pytest.raises(RuntimeError), flow_mod._durable_sleeper():
+        assert sleep_module._SLEEPER is sleep_module._durable_sleep
+        raise RuntimeError("boom")
+    assert sleep_module._SLEEPER is sleep_module._interactive_sleep
+
+
+# ---------------------------------------------------------------------------
 # unit: the resolver bridge + deps + agent config (fast, no flow)
 # ---------------------------------------------------------------------------
 def test_hitl_wait_name_is_deterministic_and_question_derived():
@@ -313,10 +362,12 @@ def test_to_hitl_durable_agent_forces_calls_and_opts_out_the_waiting_tools():
 
     assert isinstance(durable, KitaruAgent)
     assert durable.name == HITL_RUNTIME_AGENT_NAME
-    # The wait-capable tools (write/edit/bash + ask_user/exit_plan_mode) are opted out of their
-    # per-call checkpoints so their waits land at flow scope; read-only tools are not.
+    # The wait-capable tools are opted out of their per-call checkpoints so their waits land at flow
+    # scope; read-only tools are not. ``sleep`` joins them (task 060): once the durable sleeper is
+    # installed it pauses on a flow-scope ``kitaru.wait``, so it needs the same opt-out as the gated
+    # waiters even though it is ungated.
     assert (
-        frozenset({"write", "edit", "bash", "ask_user", "exit_plan_mode"})
+        frozenset({"write", "edit", "bash", "ask_user", "exit_plan_mode", "sleep"})
         == flow_mod._HITL_WAIT_TOOL_NAMES
     )
 
