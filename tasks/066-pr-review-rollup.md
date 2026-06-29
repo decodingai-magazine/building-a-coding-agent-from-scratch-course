@@ -227,3 +227,71 @@ $ make lint-check                    # All checks passed!
   are untouched by this delta, and remain non-blocking — out of scope here.
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-29 18:20 — Acceptance Review (re-confirmation, post-cure)
+
+**VERDICT: ACCEPT**
+
+Re-ran the user-/documentation-integrity acceptance review on the kitaru-runtime feature
+(PR #19) after the rollup-066 cure (`d94474a`). The single `[PA]` documentation-discipline
+Blocker is cured; nothing else regressed. Evidence verified by reading files + git, not by
+running code (the Tester owns runtime; 1032 passed / 0 warnings).
+
+**Verified — a future contributor who hits the caps can discover *why*:**
+- `docs/adr/0009-downgrade-pydantic-ai-for-kitaru.md` exists (`ls docs/adr/` shows it,
+  7600 bytes); **Status: Accepted** (line 3), Date 2026-06-28. Records the still-in-force
+  pydantic-ai 2.0→1.x downgrade + the pydantic/click/pydantic-ai caps, including the
+  task-058 "meta→slim, floor 1.95, cap <1.96" amendment (Decision §1, lines 44–55).
+- **Byte-identical restore confirmed:** `git diff 695816c^:docs/adr/0009-...md HEAD:...` is
+  empty, rc=0 (695816c had deleted all 120 lines). RESTORE over fold was the right call —
+  one-decision-per-ADR holds (see below).
+
+**Verified — ADR caps match `pyproject.toml` exactly** (ADR Decision §1 ↔ pyproject deps):
+- `pydantic>=2.0,<2.13` — pyproject:26 ✓
+- `click>=8.1,<8.3` — pyproject:29 ✓
+- `pydantic-ai-slim[google,openai]>=1.95,<1.96` — pyproject:38 ✓
+- `kitaru[local,pydantic-ai,llm]>=0.18.0`, `mcp` extra dropped — pyproject:44 ✓
+- Context-table sub-caps also echoed in the pin comments (`≤2.12.5`, `≤8.2.1`). No drift.
+
+**Verified — no dangling pointer remains:** `git grep -n "ADR-0009"` — every hit
+(AGENTS.md:68, pyproject:26/29/32, src/decode/agent/loop.py:151/383, tests, tasks) now
+resolves to the existing ADR file. The obsolete `NEEDS ADR-0009 amend` breadcrumb is gone
+from `pyproject.toml` (it survives only as historical record inside the task logs, which is
+correct).
+
+**Verified — the ADR set is coherent (two distinct decisions, not redundant):**
+- ADR-0008 = "Kitaru durable runtime — a headless flow as a second entry path" (the *choice*
+  of Kitaru). ADR-0009 = "Downgrade pydantic-ai 2.0→1.x (and cap pydantic/click) to integrate
+  the Kitaru runtime" (the *cost/consequence* of that choice). Both Accepted; neither
+  duplicates the other. Folding 0009 into 0008 would have violated one-decision-per-ADR — the
+  RESTORE was the correct resolution.
+
+**Verified — no behavior/product change:** `git show d94474a --stat` = docs + one config
+*comment* + task logs only. `pyproject.toml` diff is the comment-only line-37 breadcrumb
+removal (the `pydantic-ai-slim` pin itself is untouched → `uv lock --check` clean). `AGENTS.md`
+diff finishes the truncated Gemini bullet (`... GEMINI_API_KEY (no dedicated CLI).`). No `src/`
+or `tests/` file touched.
+
+Rollup AC "PA re-runs acceptance review and ACCEPTS" → satisfied. All original-feature
+acceptance criteria remain verified from the user/documentation-integrity POV. Hand off to the
+PR Reviewer for the final `NO BLOCKERS` confirmation, then human squash-merge.
+
+### [PR Reviewer] 2026-06-29 17:55 — Re-review (post-066 cure)
+
+**VERDICT: NO BLOCKERS**
+
+Re-reviewed the 066 cure commit `d94474a` against the one carried Blocker from the prior pass.
+
+- ADR-0009 restored **byte-identical** to the pre-deletion version (`git diff
+  695816c~1:docs/adr/0009-...md d94474a:...` → empty). Status: Accepted; the task-058 amendment
+  (slim-package pin, floor 1.95) intact.
+- Documented caps match `pyproject.toml`: `pydantic>=2.0,<2.13`, `click>=8.1,<8.3`,
+  `pydantic-ai-slim[google,openai]>=1.95,<1.96`, `kitaru[...]>=0.18.0` mcp-extra dropped.
+- Zero dangling `ADR-0009` refs — every hit resolves to the existing file. `NEEDS ADR-0009
+  amend` breadcrumb gone from `pyproject.toml` (survives only inside task logs as history).
+- Cure is comment/doc-only: `git show d94474a --stat` = AGENTS.md + docs/adr/0009 + one
+  pyproject *comment* + task logs. No `src/` or `tests/` change → no new Blockers.
+
+Blockers: 0; Nits: 2 (both pre-existing, carried forward, appended to PR #19 description).
+064/065 code + 057–062 slice not re-litigated (already cleared). Pipeline may advance to
+hand-off / human squash-merge.
