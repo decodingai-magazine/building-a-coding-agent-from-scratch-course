@@ -233,3 +233,67 @@ PHASE4 fresh re-run           legs=5 (delta=2)  # new exec re-pays
 - File ownership clean: diff is only `tests/integration/test_runtime_capstone.py` (new) + `tasks/062-runtime-capstone-e2e.md`; `git diff --stat -- src/` is empty (no production code touched).
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-28 — Acceptance Review (feature `kitaru-runtime`, tasks 057-062, PR #19)
+
+**VERDICT: ACCEPT**
+
+Reviewed the whole feature from the user's perspective — the `decode run` / `decode run --hitl`
+surfaces, every friendly guard line, the flow output paths, the README headless + credentials
+sections, the AGENTS.md E2E rows, `.env.example`, ADR-0008/0009, and the six glossary rows. The
+interactive TUI is genuinely untouched (`git diff main...HEAD -- src/decode/tui/` is empty;
+`agent/loop.py` carries only the documented ADR-0009 `last_input_tokens` usage shim, and the
+compaction trigger + Context Gauge read it unchanged with the full suite green at 1010).
+
+Per sub-feature (concrete evidence):
+- **Durability + replay (058/062):** `decode run "<task>"` tool-loops headlessly under bypass and
+  prints the agent's final text, exit 0; tools still honor sandbox containment + arg validation
+  inline under bypass (Tester breaks 1-4). `flow.replay()` serves finished MODEL checkpoints from
+  cache on the local stack (capstone break path 2: delta=0 cache hit, delta=1 when uncached,
+  delta=2 on a fresh run) — replay-from-cache is real, not a stand-in.
+- **HITL (059):** a gated `write`/`bash` and `ask_user`/`exit_plan_mode` pause the execution on a
+  named durable wait resolved out-of-band (`kitaru executions input`); an injected allow runs the
+  tool, an answer becomes the tool result; live break path confirmed an unapproved write never ran.
+- **Durable sleep (060):** `sleep` becomes a flow-scope `kitaru.wait(name="sleep", timeout=capped)`
+  in `decode run --hitl`, clamp + nan/negative `ModelRetry` fire before the wait, seam resets on
+  exit (no leak into an in-process REPL sleep).
+- **Credentials proxy (061):** with the proxy on, the gemini/openrouter model key resolves from a
+  Kitaru secret inside the flow body; the serialized payload + all logs carry only the task + secret
+  name (re-attacked on the real store — leaked nowhere); a missing/incomplete secret is one friendly
+  pre-flight line on both `decode run` and `--hitl`, never a traceback, never a silent settings
+  fallback.
+
+Explicit ruling on the four flagged deviations:
+1. **Headless deny STOPS the run (no feed-back-to-model)** — **ACCEPT.** A clean abort with a clear
+   message (`_HITL_DENIED_MESSAGE`) is the safer default for an *unattended* run than letting the
+   model adapt around a denied destructive op with no human watching. Accurately documented (ADR-0008
+   §3, AC2, the AGENTS.md HITL row "`'false'` (deny → the run stops, the tool never ran)").
+2. **HITL forces `checkpoint_strategy="calls"` + durable sleep is `--hitl`-only** — **ACCEPT.** A
+   flow-scope wait cannot live under a `"turn"` checkpoint (a true adapter constraint, Tester
+   reproduced the `KitaruUsageError` live), and a durable sleep only makes sense in the wait-capable
+   pausing flow — the plain bypass run is non-pausing by design, so it correctly keeps `asyncio.sleep`.
+   The user does not need durable sleep in plain `decode run`. Documented in README l.151, task 060
+   User Story 1, the flow docstring; `runtime_checkpoint_strategy` governing only the bypass run is noted.
+3. **modal not routed through the credentials proxy** — **ACCEPT.** The two single-api-key providers
+   (gemini — the default — and openrouter) ARE proxied; modal authenticates with dual proxy *tokens*
+   (a header surface belonging to the later sandbox step), a genuinely different mechanism. Documented
+   in `factory.py` (l.119-121, 160-164), `cli.py` (l.106-110), README l.173, ADR-0008 §5.
+4. **HITL answer-reuse / wait-resume on replay deferred to a deployed stack (step 12)** — **ACCEPT.**
+   Durability replay-from-cache is proven locally (deviation reconciled above); the wait-answer reuse
+   is deferred precisely because the wait is opted out of its per-call checkpoint to land at flow
+   scope (so it is never cached and a replay re-asks) — an inherent consequence of the correct design,
+   not a hidden gap. AC3 wording corrected; the capstone asserts what is locally provable (the
+   deterministic wait name a deployed replay would reuse the answer by).
+
+ADR-0009's heavy-footprint downgrade is honestly recorded (the caps table, the ~40 transitive deps,
+the meta→`pydantic-ai-slim[google,openai]` correction that sheds them, the new pydantic-ai-2.x
+ceiling, reversibility). The glossary additions (Headless Runtime, Durable Flow, Checkpoint, Replay,
+Wait (HITL), Credentials Proxy) read consistently with the shipped code and cross-reference the
+existing Decision Channel / Sandbox / Provider Seam rows correctly.
+
+Note (non-blocking, for a future deployed-stack step, not this MVP): the glossary's **Replay** /
+**Wait (HITL)** rows state the *designed* "Replay reuses the prior answer" behavior — accurate as the
+concept and on a deployed stack; the local-stack re-ask limitation lives in ADR-0008 §3 + AC3. A
+one-line "(on a deployed stack)" qualifier there would be tidy but is not user-facing and not REJECT-worthy.
+
+All acceptance criteria verified from the user POV. Hand off to the PR Reviewer.
