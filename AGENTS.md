@@ -110,10 +110,11 @@ Access infra **CLI-only** (no web UIs) so runs are reproducible and the orchestr
 
 For each external-service slug below (wrapped in `<!-- stack:* -->` for find-and-delete), the one-liner + its CLI. Grep `<!-- stack:` to locate or remove one.
 
-- **Gemini** — primary LLM API via the `google-genai` SDK; one of three inference backends behind the LLM Gateway (with **OpenRouter**, OpenAI-compatible, and **Modal**-served open models). squid spec: `llm-gemini`.
-- **Modal** — remote sandbox + open-model serving; `modal run` / `modal deploy` / `modal token set`. squid spec: `model-serving-modal`.
-- **Opik** — LLM tracing + eval harness; `opik` CLI / `OPIK_API_KEY`. squid spec: `observability-opik`.
-- **Kitaru** — ...
+- **Gemini** — primary LLM API via the `google-genai` SDK; 
+- **OpenRouter** — OpenAI-compatible inference backend; `openrouter` CLI.
+- **Modal** — remote sandbox + open-model serving/inference backend; `modal run` / `modal deploy` / `modal token set`.
+- **Opik** — LLM tracing + eval harness; `opik` CLI.
+- **Kitaru** — runtime (durability, HITL); `kitaru` CLI. More within the `kitaru` skills and docs.
 
 - **Project MCP servers:** *AGENT: fill in any MCP server this project's code talks to and the config it needs.*
 
