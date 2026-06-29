@@ -1,43 +1,67 @@
-"""Fixtures for the Headless Runtime tests (ADR-0008).
+"""Headless-Runtime test fixtures (ADR-0008), registered at the **rootdir** ``tests/conftest.py``.
 
-The round-trip tests run the **real** Kitaru ``@flow`` + ``KitaruAgent`` on the **local** stack —
-no Kitaru server, no network — by swapping only the model boundary (a ``FunctionModel`` agent
-injected through the ``_build_runtime_agent`` seam) and isolating Kitaru/ZenML's on-disk store under
-a per-test ``tmp_path``. This mirrors how the LSP feature patches its service seam (ADR-0007) and
-keeps the suite hermetic under ``filterwarnings=["error"]``.
+Why these live in ``tests/support`` and are imported into the rootdir conftest — not in
+``tests/unit/decode/runtime/conftest.py`` where they used to be (task 065):
 
-For the HITL tests (task 059) the :func:`inline_wait_resolver` fixture resolves each durable Kitaru
-wait **inline on the same thread**, so a wait-paused flow never blocks: it is the hermetic stand-in
-for an operator running ``kitaru executions input``. See that fixture for why this path (and not a
-background ``KitaruClient.input`` thread) is the offline-safe one.
+Under ``--import-mode=importlib`` a per-package ``conftest`` is only reliably applied to its tests
+when those tests are collected **contiguously**. If a non-runtime test file (e.g.
+``tests/unit/decode/test_cli.py``, or — under ``pytest-randomly`` running unit+integration together —
+any file outside ``tests/unit/decode/runtime/``) is collected *between* two runtime files, pytest
+de-associates the runtime ``conftest`` from the second runtime file: its autouse store-isolation
+stopped running AND its named fixtures (``inline_wait_resolver``) errored as "fixture not found".
+A de-associated autouse isolation let a later ``create_secret``/``get_secret`` fall through to the
+developer's **real** ZenML store/server. ``tests/unit/decode/`` cannot be made an ``__init__.py``
+package (it would shadow the real ``decode`` source package), and the only common ancestor that is
+*always* in scope for every collected test — so its autouse + named fixtures apply in **any**
+collection order — is the rootdir ``tests/conftest.py``. Registering these fixtures there (via a
+plain ``from support.runtime_fixtures import …`` in that conftest) makes the isolation order-robust.
+
+The autouse :func:`isolated_kitaru_store` therefore runs for the whole suite but is **gated** to the
+unit runtime package (``request.path.parent.name == "runtime"``); for every other test it is a pure
+no-op that imports nothing. The scripted-agent builder is the sibling :mod:`support.runtime_agents`.
 """
 
 from __future__ import annotations
 
 import gc
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
-from pydantic_ai import Agent, DeferredToolRequests
-from pydantic_ai.messages import ModelResponse
-from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from decode.agent.deps import AgentDeps
-from decode.tools.registry import register_tools
+
+def _is_runtime_unit_test(request: pytest.FixtureRequest) -> bool:
+    """True only for tests in the unit runtime package (``tests/unit/decode/runtime/``).
+
+    The gate keeps the rootdir-registered autouse fixture inert for every other test (it imports no
+    zenml/kitaru and has no side effect). The integration runtime capstone lives under
+    ``tests/integration`` (parent ``integration``) and isolates its own store, so it is excluded.
+    """
+    return request.path.parent.name == "runtime"
 
 
 @pytest.fixture(autouse=True)
-def isolated_kitaru_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Redirect Kitaru/ZenML's store + config under ``tmp_path`` so flows run offline, hermetically.
+def isolated_kitaru_store(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Path | None]:
+    """Redirect Kitaru/ZenML's store + config under ``tmp_path`` for every unit runtime test.
 
     Kitaru's local stack persists checkpoints/metadata through ZenML, which by default writes under
-    the user's home. We redirect ``Path.home`` / ``click.get_app_dir`` / ``ZENML_CONFIG_PATH`` to
-    ``tmp_path``, disable analytics, and reset the ZenML global-config + client singletons before
-    and after so no test ever touches real user state or makes a network call. ``cwd`` is moved into
-    ``tmp_path`` too, so any tool that writes a file stays inside the sandbox.
+    the user's home (or a configured ZenML server). We redirect ``Path.home`` / ``click.get_app_dir``
+    / ``ZENML_CONFIG_PATH`` to ``tmp_path``, disable analytics, and reset the ZenML global-config +
+    client singletons before and after so no test ever touches real user state or makes a network
+    call. ``cwd`` is moved into ``tmp_path`` too, so any tool that writes a file stays inside the
+    sandbox. The reset runs *before* the yield so a sibling non-isolated test that initialized ZenML
+    against a real store cannot leak into this test. This fixture is autouse + registered at the
+    rootdir conftest so it applies in any collection order (see the module docstring); it is a pure
+    no-op for non-runtime tests.
     """
+    if not _is_runtime_unit_test(request):
+        yield None
+        return
+
     from zenml.client import Client
     from zenml.config.global_config import GlobalConfiguration
 
@@ -76,6 +100,75 @@ def isolated_kitaru_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> It
         gc.collect()
 
 
+def _active_store_url() -> str:
+    """Return the URL of the ZenML store the next secret/execution op would hit (the live config)."""
+    from zenml.config.global_config import GlobalConfiguration
+
+    return str(GlobalConfiguration().store_configuration.url)
+
+
+def _assert_store_isolated_under(tmp_path: Path) -> None:
+    """Fail loudly if the active ZenML store is not the per-test ``tmp_path`` one (task 065 guard).
+
+    Called right before a secret op, this is the tripwire for an isolation regression: if the autouse
+    :func:`isolated_kitaru_store` re-pin ever stops taking effect (a sibling non-isolated test
+    poisoning the global config, or the autouse fixture silently not applying), the active store URL
+    is no longer the ``sqlite:///<tmp_path>/...`` one and the test errors here — instead of silently
+    writing to a developer's real ZenML store/server (which on this machine is a live server).
+    """
+    url = _active_store_url()
+    assert str(tmp_path) in url, (
+        f"Kitaru store isolation regressed: the active ZenML store {url!r} is not under the per-test "
+        f"tmp_path {str(tmp_path)!r}. A secret/execution op would hit a REAL ZenML store — refusing."
+    )
+
+
+def _delete_runtime_secret_best_effort(name: str) -> None:
+    """Delete the per-test secret if it exists, best-effort (defense-in-depth teardown, task 065).
+
+    Runs while the test's (isolated) store is still active, before the autouse fixture resets the
+    singletons. In the normal case the secret lives in ``tmp_path`` and vanishes with it anyway; this
+    only matters if a fall-through ever recurs — and because the name is unique-per-test it can only
+    ever target test junk, never a developer's real ``decode-llm-creds``.
+    """
+    try:
+        from kitaru import delete_secret
+
+        delete_secret(name)
+    except Exception:
+        pass
+
+
+@pytest.fixture
+def runtime_secret_name(
+    isolated_kitaru_store: Path | None, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[str]:
+    """A unique-per-test Kitaru secret name — defense-in-depth for the store isolation (task 065).
+
+    The autouse :func:`isolated_kitaru_store` already pins every runtime test to its own ``tmp_path``
+    ZenML store; a unique name is belt-and-braces. Should a fall-through to a real store ever recur,
+    the test can only create/find a ``decode-test-creds-<uuid>`` — never the production-named
+    ``decode-llm-creds`` — so it can neither collide with nor leave that secret in a developer's
+    store, and the missing-secret tests stay order-independent. The name is wired through BOTH
+    ``settings.runtime_secret_name`` (the direct read the proxy / factory use) and the
+    ``RUNTIME_SECRET_NAME`` env var (so the in-flow ``reload_settings`` keeps it). The fixture asserts
+    the active store is the isolated one before yielding, and best-effort deletes the secret on
+    teardown (while the isolated store is still active). The production default ``runtime_secret_name``
+    is unchanged — only the *tests'* chosen name.
+    """
+    from decode.config.settings import settings
+
+    assert isolated_kitaru_store is not None  # only runtime tests use this fixture
+    name = f"decode-test-creds-{uuid4().hex[:12]}"
+    _assert_store_isolated_under(isolated_kitaru_store)
+    monkeypatch.setattr(settings, "runtime_secret_name", name)
+    monkeypatch.setenv("RUNTIME_SECRET_NAME", name)
+    try:
+        yield name
+    finally:
+        _delete_runtime_secret_best_effort(name)
+
+
 def _dispose_kitaru_engine() -> None:
     """Dispose ZenML's live SQLAlchemy engine so its pooled SQLite sockets close deterministically."""
     from zenml.config.global_config import GlobalConfiguration
@@ -102,40 +195,6 @@ def _close_idle_event_loop() -> None:
     if loop is not None and not loop.is_running() and not loop.is_closed():
         loop.close()
         asyncio.set_event_loop(None)
-
-
-# A model leg: a callable producing the next ``ModelResponse`` from the message history.
-ModelLeg = Callable[[list[ModelResponse], AgentInfo], ModelResponse]
-
-
-def make_scripted_agent(
-    responses: Sequence[ModelResponse],
-    *,
-    name: str = "decode-runtime",
-) -> tuple[Agent[AgentDeps, str | DeferredToolRequests], dict[str, int]]:
-    """Build a real decode agent (all tools registered) on a scripted ``FunctionModel``.
-
-    ``responses`` is replayed one per model leg (the last one repeats if the agent asks for more),
-    so a test scripts e.g. ``[<call write>, <final text>]``. Returns the agent plus a mutable
-    ``{"legs": n}`` counter the caller can assert against (e.g. to prove a replay served the turn
-    from cache without a fresh model leg). The agent carries ``deps_type=AgentDeps`` and
-    ``output_type=[str, DeferredToolRequests]`` exactly like ``build_agent()``.
-    """
-    counter = {"legs": 0}
-
-    def model_fn(messages: list[ModelResponse], info: AgentInfo) -> ModelResponse:
-        index = min(counter["legs"], len(responses) - 1)
-        counter["legs"] += 1
-        return responses[index]
-
-    agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
-        FunctionModel(model_fn),
-        deps_type=AgentDeps,
-        output_type=[str, DeferredToolRequests],
-        name=name,
-    )
-    register_tools(agent)
-    return agent, counter
 
 
 class WaitRecorder:

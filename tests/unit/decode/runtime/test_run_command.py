@@ -13,11 +13,11 @@ import pytest
 from click.testing import CliRunner
 from pydantic import SecretStr, ValidationError
 from pydantic_ai.messages import ModelResponse, TextPart
+from support.runtime_agents import make_scripted_agent
 
 import decode.cli as cli_mod
 import decode.runtime.flow as flow_mod
 from decode.cli import cli
-from tests.unit.decode.runtime.conftest import make_scripted_agent
 
 # The real flow boots the Kitaru/ZenML stack; scope its two third-party deprecation warnings (see
 # test_flow.py) so the strict ``filterwarnings=["error"]`` gate stays green here too.
@@ -97,16 +97,22 @@ def test_run_command_provider_guard_fires_without_a_key(monkeypatch):
 # with one friendly stderr line naming ``kitaru secrets set`` — never the ~30-frame KitaruRuntimeError
 # traceback the unguarded ``run_agent_task.run(...).wait()`` used to dump.
 
-_SECRET_NAME = "decode-llm-creds"
+# The Kitaru secret name comes from the ``runtime_secret_name`` fixture (a unique per-test
+# ``decode-test-creds-<uuid>`` wired into ``settings.runtime_secret_name`` + ``RUNTIME_SECRET_NAME``) —
+# never the hardcoded production default — so a hypothetical store-isolation fall-through can never
+# collide with or leave a real-store ``decode-llm-creds``, and the missing-secret guards assert a name
+# that is genuinely absent in any store (task 065).
 
 
 @pytest.fixture
-def _proxy_on(monkeypatch):
-    """Enable the credentials proxy for gemini with the runtime on (the secret is created per test)."""
+def _proxy_on(monkeypatch, runtime_secret_name):
+    """Enable the credentials proxy for gemini with the runtime on (the secret is created per test).
+
+    ``runtime_secret_name`` (unique per test) is wired by the same-named fixture, not here.
+    """
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
     monkeypatch.setattr(cli_mod.settings, "runtime_credentials_proxy_enabled", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_secret_name", _SECRET_NAME)
 
 
 def _no_flow_tripwires(monkeypatch):
@@ -120,7 +126,7 @@ def _no_flow_tripwires(monkeypatch):
 
 
 def test_run_command_proxy_missing_secret_is_a_friendly_line_not_a_traceback(
-    monkeypatch, _proxy_on
+    monkeypatch, _proxy_on, runtime_secret_name
 ):
     """Scenario B: proxy ON + a leftover settings key + NO secret → friendly line, no raw traceback.
 
@@ -138,7 +144,7 @@ def test_run_command_proxy_missing_secret_is_a_friendly_line_not_a_traceback(
     # The raw credential error did not escape as a traceback.
     assert not isinstance(result.exception, RuntimeError)
     # The friendly line names the Kitaru secret + the real fix, not the misleading settings message.
-    assert _SECRET_NAME in result.stderr
+    assert runtime_secret_name in result.stderr
     assert "kitaru secrets set" in result.stderr
     assert "set GEMINI_API_KEY in your environment" not in result.stderr
 
@@ -161,11 +167,13 @@ def test_run_command_proxy_no_settings_key_names_the_secret_not_the_settings_var
     assert "set GEMINI_API_KEY in your environment" not in result.stderr
 
 
-def test_run_command_proxy_secret_missing_provider_key_is_friendly(monkeypatch, _proxy_on):
+def test_run_command_proxy_secret_missing_provider_key_is_friendly(
+    monkeypatch, _proxy_on, runtime_secret_name
+):
     """Proxy ON + the secret exists but lacks ``GEMINI_API_KEY`` → a friendly line, non-zero, no flow."""
     from kitaru import create_secret
 
-    create_secret(_SECRET_NAME, {"SOME_OTHER_KEY": "x"}, private=True)
+    create_secret(runtime_secret_name, {"SOME_OTHER_KEY": "x"}, private=True)
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr("leftover-from-the-repl"))
     _no_flow_tripwires(monkeypatch)
 
@@ -173,11 +181,13 @@ def test_run_command_proxy_secret_missing_provider_key_is_friendly(monkeypatch, 
 
     assert result.exit_code != 0
     assert not isinstance(result.exception, RuntimeError)
-    assert _SECRET_NAME in result.stderr
+    assert runtime_secret_name in result.stderr
     assert "GEMINI_API_KEY" in result.stderr
 
 
-def test_run_hitl_proxy_missing_secret_is_a_friendly_line_not_a_traceback(monkeypatch, _proxy_on):
+def test_run_hitl_proxy_missing_secret_is_a_friendly_line_not_a_traceback(
+    monkeypatch, _proxy_on, runtime_secret_name
+):
     """``decode run --hitl`` shares the proxy-aware pre-flight: missing secret → friendly line, no flow."""
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr("leftover-from-the-repl"))
     _no_flow_tripwires(monkeypatch)
@@ -186,11 +196,13 @@ def test_run_hitl_proxy_missing_secret_is_a_friendly_line_not_a_traceback(monkey
 
     assert result.exit_code != 0
     assert not isinstance(result.exception, RuntimeError)
-    assert _SECRET_NAME in result.stderr
+    assert runtime_secret_name in result.stderr
     assert "kitaru secrets set" in result.stderr
 
 
-def test_run_command_proxy_with_a_valid_secret_runs_the_flow(monkeypatch, _proxy_on):
+def test_run_command_proxy_with_a_valid_secret_runs_the_flow(
+    monkeypatch, _proxy_on, runtime_secret_name
+):
     """Proxy ON + a valid secret → the pre-flight passes and the flow runs, printing the output.
 
     Confirms the proxy-aware guard does not block the happy path: with the Kitaru secret present, the
@@ -198,7 +210,7 @@ def test_run_command_proxy_with_a_valid_secret_runs_the_flow(monkeypatch, _proxy
     """
     from kitaru import create_secret
 
-    create_secret(_SECRET_NAME, {"GEMINI_API_KEY": "real-kitaru-key"}, private=True)
+    create_secret(runtime_secret_name, {"GEMINI_API_KEY": "real-kitaru-key"}, private=True)
     _patch_seam(monkeypatch, "the proxied answer")
 
     result = CliRunner().invoke(cli, ["run", "summarize the repo"])
@@ -217,24 +229,26 @@ def test_run_command_proxy_with_a_valid_secret_runs_the_flow(monkeypatch, _proxy
 
 
 @pytest.fixture
-def _secret_store_on(monkeypatch):
+def _secret_store_on(monkeypatch, runtime_secret_name):
     """Enable the secret-store config source for gemini, runtime on, proxy off (secret created per test).
 
     Provider vars are cleared from the real env so a key/model living only in the Kitaru secret is the
     unambiguous source. The flag is set on the singleton directly; the source keys off the in-flow
     hydration flag the context manager flips, so this is enough for the cli pre-flight to engage it.
+    ``runtime_secret_name`` (unique per test) is wired by the same-named fixture, not here.
     """
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
     monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_config", True)
     monkeypatch.setattr(cli_mod.settings, "runtime_credentials_proxy_enabled", False)
-    monkeypatch.setattr(cli_mod.settings, "runtime_secret_name", _SECRET_NAME)
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
     for var in ("GEMINI_API_KEY", "GEMINI_MODEL", "LLM_PROVIDER"):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_run_secret_store_only_key_satisfies_the_provider_guard(monkeypatch, _secret_store_on):
+def test_run_secret_store_only_key_satisfies_the_provider_guard(
+    monkeypatch, _secret_store_on, runtime_secret_name
+):
     """A key living ONLY in the Kitaru secret (proxy off) satisfies the guard — the run proceeds.
 
     Symptom 1 of the Tester-flagged gap: with RUNTIME_SECRET_STORE_CONFIG on and the key only in the
@@ -245,7 +259,7 @@ def test_run_secret_store_only_key_satisfies_the_provider_guard(monkeypatch, _se
     from kitaru import create_secret
 
     create_secret(
-        _SECRET_NAME,
+        runtime_secret_name,
         {"LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "sk-only-in-the-secret"},
         private=True,
     )
@@ -260,7 +274,7 @@ def test_run_secret_store_only_key_satisfies_the_provider_guard(monkeypatch, _se
 
 
 def test_run_secret_store_missing_secret_is_a_friendly_line_not_a_traceback(
-    monkeypatch, _secret_store_on
+    monkeypatch, _secret_store_on, runtime_secret_name
 ):
     """RUNTIME_SECRET_STORE_CONFIG on + NO secret → one friendly line naming the secret, no flow, no traceback.
 
@@ -275,12 +289,12 @@ def test_run_secret_store_missing_secret_is_a_friendly_line_not_a_traceback(
     # The raw secret error did not escape as a traceback.
     assert not isinstance(result.exception, (RuntimeError, ValidationError))
     assert "RUNTIME_SECRET_STORE_CONFIG" in result.stderr
-    assert _SECRET_NAME in result.stderr
+    assert runtime_secret_name in result.stderr
     assert "kitaru secrets set" in result.stderr
 
 
 def test_run_hitl_secret_store_missing_secret_is_a_friendly_line_not_a_traceback(
-    monkeypatch, _secret_store_on
+    monkeypatch, _secret_store_on, runtime_secret_name
 ):
     """``decode run --hitl`` shares the secret-store pre-flight: missing secret → friendly line, no flow."""
     _no_flow_tripwires(monkeypatch)
@@ -290,12 +304,12 @@ def test_run_hitl_secret_store_missing_secret_is_a_friendly_line_not_a_traceback
     assert result.exit_code != 0
     assert not isinstance(result.exception, (RuntimeError, ValidationError))
     assert "RUNTIME_SECRET_STORE_CONFIG" in result.stderr
-    assert _SECRET_NAME in result.stderr
+    assert runtime_secret_name in result.stderr
     assert "kitaru secrets set" in result.stderr
 
 
 def test_run_secret_store_malformed_secret_is_a_friendly_line_not_a_traceback(
-    monkeypatch, _secret_store_on
+    monkeypatch, _secret_store_on, runtime_secret_name
 ):
     """A stored value that fails a pydantic field (bogus LLM_PROVIDER) → friendly line, exit 1, no traceback.
 
@@ -305,7 +319,7 @@ def test_run_secret_store_malformed_secret_is_a_friendly_line_not_a_traceback(
     """
     from kitaru import create_secret
 
-    create_secret(_SECRET_NAME, {"LLM_PROVIDER": "totally-bogus"}, private=True)
+    create_secret(runtime_secret_name, {"LLM_PROVIDER": "totally-bogus"}, private=True)
     _no_flow_tripwires(monkeypatch)
 
     result = CliRunner().invoke(cli, ["run", "list the files"])
@@ -313,4 +327,4 @@ def test_run_secret_store_malformed_secret_is_a_friendly_line_not_a_traceback(
     assert result.exit_code != 0
     assert not isinstance(result.exception, (RuntimeError, ValidationError))
     assert "RUNTIME_SECRET_STORE_CONFIG" in result.stderr
-    assert _SECRET_NAME in result.stderr
+    assert runtime_secret_name in result.stderr

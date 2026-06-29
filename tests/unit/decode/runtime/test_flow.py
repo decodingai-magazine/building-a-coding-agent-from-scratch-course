@@ -13,10 +13,10 @@ from __future__ import annotations
 import pytest
 from kitaru.adapters.pydantic_ai import KitaruAgent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from support.runtime_agents import make_scripted_agent
 
 import decode.runtime.flow as flow_mod
 from decode.runtime import run_agent_task
-from tests.unit.decode.runtime.conftest import make_scripted_agent
 
 # Running the real flow boots the Kitaru/ZenML stack, which emits two third-party deprecation
 # warnings unrelated to decode (``filterwarnings=["error"]`` would otherwise fail the run): passlib
