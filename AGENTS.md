@@ -110,7 +110,7 @@ Access infra **CLI-only** (no web UIs) so runs are reproducible and the orchestr
 
 For each external-service slug below (wrapped in `<!-- stack:* -->` for find-and-delete), the one-liner + its CLI. Grep `<!-- stack:` to locate or remove one.
 
-- **Gemini** — primary LLM API via the `google-genai` SDK; 
+- **Gemini** — primary LLM API via the `google-genai` SDK; `GEMINI_API_KEY` (no dedicated CLI).
 - **OpenRouter** — OpenAI-compatible inference backend; `openrouter` CLI.
 - **Modal** — remote sandbox + open-model serving/inference backend; `modal run` / `modal deploy` / `modal token set`.
 - **Opik** — LLM tracing + eval harness; `opik` CLI.

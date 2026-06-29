@@ -199,3 +199,31 @@ $ git diff --name-only HEAD -- src/ docs/  → (empty)
 - The `code-review` plugin is enabled in `.claude/settings.json` but is a slash-command plugin not invocable from the Tester agent context; performed the equivalent manual diff review (no defects found — no weakened assertions, all signatures typed, no `print()` in changed code, diff scoped to `tests/`).
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-29 — Acceptance Review (re-review, PR #19, 065 delta)
+
+**VERDICT: ACCEPT**
+
+Acceptance for a test-infra-only task is "the feature still behaves as before; the developer's real
+store is never touched." Both confirmed from the user's perspective.
+
+- **Genuinely test-infra only** — `git show cf86260 --name-only` touches only `tasks/065-…` +
+  `tests/` (conftest, support/, integration/, unit/runtime/). Zero `src/` and zero `docs/` changes →
+  no user-facing behavior change; the runtime still behaves exactly as accepted for 057-064.
+- **Adverse-order guard has teeth** — `tests/integration/test_runtime_store_isolation.py` runs the
+  Tester's exact failing trio (`test_secret_store_config → test_cli → test_run_command`) in a
+  subprocess sandboxed to a throwaway `HOME`/`ZENML_CONFIG_PATH`, and asserts BOTH `returncode == 0`
+  AND no `decode-*` secret in the sandboxed store — it would fail again if the isolation regressed.
+  Ran the integration suite → 20 passed (incl. this guard + the runtime capstone); ran the 064 unit
+  delta → 64 passed.
+- **Developer's real store never touched (observed live)** — after my own delta run with the
+  developer's real ambient ZenML config, I scanned
+  `~/Library/Application Support/zenml/local_stores/default_zen_store/zenml.db` directly:
+  `total_secrets=0, decode-*=[]`. The per-test re-pinned isolation + unique `decode-test-creds-<uuid>`
+  names + teardown delete held — exactly the "run tests in any order without risk" user story.
+
+Spot-check that 057-062 still hangs together: the runtime capstone (`test_runtime_capstone.py`) and
+the `decode run` happy path (`test_run_command.py::test_run_command_prints_the_agents_output`) are
+green in the runs above. Did not re-litigate the already-accepted slice.
+
+User satisfaction guaranteed. Hand off to the PR Reviewer.

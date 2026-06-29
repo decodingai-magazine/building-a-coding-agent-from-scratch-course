@@ -525,3 +525,74 @@ $ # clean subprocess: import decode.cli + Settings() → kitaru modules == []
   only, no traceback, on both `run` and `--hitl`.
 
 **VERDICT: PASS**
+
+### [PA] 2026-06-29 — Acceptance Review (re-review, PR #19, 064 delta)
+
+**VERDICT: ACCEPT**
+
+Walked the 064 delta from the operator's perspective against every AC; all hold.
+
+- **Hydration from the named Kitaru secret** — `runtime/flow.py::_config_from_secret_store` flips the
+  source on + `reload_settings()` rebuilds the singleton in place so `build_agent` (inside the flow)
+  reads the hydrated provider/model/key. Verified `test_secret_store_config.py::test_headless_flow_hydrates_settings_seen_by_build_agent`
+  green (ran 64-test 064 unit delta → 64 passed). README §176-194 documents the surface clearly.
+- **REPL unaffected / never imports kitaru** — `KitaruSecretSettingsSource.__call__` returns `{}` and
+  skips the lazy `from kitaru import get_secret` unless `is_secret_hydration_active()`; the import-time
+  singleton has the flag OFF (`settings.py:26,72-91`). Clean-subprocess no-import test green.
+- **Real env overrides the secret** — `settings_customise_sources` → `(init, env, Kitaru, dotenv,
+  file_secret)` (`settings.py:244-250`): env > Kitaru > .env > default. `test_real_env_overrides_kitaru_secret_in_flow`
+  + the `test_settings.py` precedence trio green. Matches README §191.
+- **Missing/malformed secret → one friendly stderr line, no traceback** — the round-2
+  `cli._secret_store_config_error()` (`cli.py:151-191`) hydrates up front, runs the provider guard on
+  the *hydrated* config (secret-only key now satisfies it), and converts `(RuntimeError,
+  ValidationError)` into one line naming `kitaru secrets set <name> …`. Verified by
+  `test_run_secret_store_{missing,malformed}_secret_is_a_friendly_line_not_a_traceback` +
+  `test_run_hitl_secret_store_missing_secret…` and `test_run_secret_store_only_key_satisfies_the_provider_guard`.
+  Closes both items I would otherwise have flagged.
+- **No `os.environ` write** — source returns a value-map pydantic validates; the context manager
+  restores via `settings.__dict__` only. `test_hydration_never_writes_os_environ` green.
+- **Credential architecture coherent + honest** — ADR-0008 §5 amendment (renames 061's "Credentials
+  Proxy" → model-key secret resolution; rejects env-injection as a leak vector; scopes 064 as the
+  secret-store *config source*) + the "Future work — the Credential Proxy at the sandbox step" section
+  ("design intent, not a built feature") + the glossary split ("Secret-Store Config (Kitaru)" vs a
+  reserved, *deferred* "Credential Proxy") + README §196 ("distinct from the **future** credential
+  proxy … deferred to the sandbox milestone"). No doc claims the header-injection proxy already works.
+
+**Non-blocking note (NOT a defect; deliberately scoped out, ADR-0008 §5 pt.1).** README §154 still
+titles the 061 model-key feature "Credentials proxy" (mirroring the env var `RUNTIME_CREDENTIALS_PROXY_ENABLED`)
+while §196 uses "credential proxy" for the deferred header-injection feature. The parentheticals
+disambiguate ("model key" vs "tool credentials"; "future"/"deferred"), so the docs remain honest and a
+reader can follow them correctly. The code-identifier rename is explicitly out of 064 scope — a
+documented conceptual-vs-identifier divergence to clean up when the real proxy is built. No action now.
+
+User satisfaction guaranteed. Hand off to the PR Reviewer.
+
+### [PR Reviewer] 2026-06-29 17:22 — Re-review (rollup)
+
+**VERDICT: BLOCKERS**
+
+Re-reviewed the delta since the prior NO-BLOCKERS pass (`c37ee26..cf86260`: `695816c` docs,
+`b54fe7e` task 064, `cf86260` task 065). Walked all dimensions (perf, clean code, tests, standards
+— UTC/types/`-> None`/no-`print`/no-`os.environ`/secret-never-leaks — docs, simplicity).
+
+Filed rollup task: `tasks/066-pr-review-rollup.md`.
+
+Blockers: 1; Nits: 3 (+2 prior Nits verified resolved).
+
+- **Code (064 source + 065 test-infra): clean** — no code Blockers. Secret→`Settings`-only (never
+  `os.environ`), log carries field names only, byte-identical restore in `finally` on success+error,
+  inert/kitaru-free REPL path (subprocess-proven), correct `env > Kitaru secret > .env > default`
+  precedence, in-place `reload_settings` zero-warning under `filterwarnings=["error"]`, guard ordering
+  (RUNTIME_ENABLED short-circuits before any kitaru boot) all verified. Tests are thorough
+  (integration + unit + cli + subprocess). The three orchestrator-flagged simplicity points
+  (getter seam, snapshot/restore divergence, nested CM) independently judged load-bearing — not flagged.
+- **Blocker is documentation-discipline, `[PA]`-routed:** `695816c` deleted Accepted ADR-0009 (the
+  pydantic-ai 2.0→1.x downgrade + version caps) without superseding/migrating it; the decision is still
+  in force in `pyproject.toml`, and `pyproject.toml` (×4) + `AGENTS.md` (×1) still cite the now-missing
+  ADR-0009 (this also subsumes prior Nit #1). ADR-0008 was checked — it does NOT carry the downgrade
+  rationale.
+- Prior Nit #2 (glossary qualifiers) and Nit #4 (`_launch_durable` belt-and-braces) verified resolved.
+  Prior Nit #3 (`run_hitl_agent_task` paused/output for non-finished) still present — carried as a Nit.
+
+Pipeline re-engages PA grooming on the `[PA]` rollup; re-invoke me after the ADR is restored/migrated
++ references repointed, and the branch re-pushed.
