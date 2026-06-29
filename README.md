@@ -135,6 +135,66 @@ decode --resume <session>  # a specific session id / filename
 
 **Memory.** `decode` loads `AGENTS.md` (walking from the working dir upward) and the harness `.decode/MEMORY.md` into its context, and on exit appends a one-sentence summary of the session to `.decode/MEMORY.md` so the next session has a little context. Full transcripts are saved to `.decode/sessions/*.jsonl` and logs to `.decode/logs/decode.log` (all gitignored under `<cwd>/.decode/`).
 
+## Headless runtime (`decode run`)
+
+`decode run "<task>"` is the **unattended** counterpart to the REPL: it runs a single task to completion with no human at the keyboard and prints the agent's final answer. It builds the **same** agent as the TUI but drives it through a [Kitaru](https://docs.zenml.io/) **durable flow** — each turn is checkpointed, so an expensive multi-tool run survives a crash and resumes from where it stopped instead of re-paying for finished work. The design is recorded in [`docs/adr/0008-kitaru-durable-runtime.md`](docs/adr/0008-kitaru-durable-runtime.md).
+
+```bash
+decode run "list the python files under src and summarize what the cli module does"
+```
+
+The agent tool-loops headlessly and prints the result; the process exits `0`. Each run is recorded as a durable, inspectable Kitaru **checkpointed execution**; a *crashed* run can be resumed with its finished checkpoints replayed from cache (full crash-resume lands in a later step). A fresh re-run of the same task is a **new** execution, not a cache hit.
+
+- **No human in the loop (this slice).** The run is autonomous, so it executes under **bypass** — every tool runs with no approval prompt (an `ask_user` becomes a no-op the agent works around). Durable human-in-the-loop approvals are a later step.
+- **Setup.** It runs on Kitaru's **local stack, fully offline** — no Kitaru server and no `kitaru init` are required (a `default` stack is used). The interactive REPL is unaffected and never loads Kitaru.
+- **Inspect a run.** Executions are recorded on the local stack: `kitaru executions list` / `get <id>` / `logs <id>` / `replay <id>`. For a web view, `kitaru login` (no args) starts Kitaru's bundled local dashboard at `http://localhost:8383`.
+- **Guards.** `decode run` needs the same provider config as the REPL (e.g. `GEMINI_API_KEY`); a missing key prints one friendly line and exits non-zero. Set `RUNTIME_ENABLED=false` to disable the subcommand entirely (it then exits with a friendly line and builds no flow).
+- **`sleep` is a durable timer in the durable run.** In a durable headless run (`decode run --hitl`), `sleep` becomes a Kitaru wait — the execution can pause and the process exit, then resume — instead of pinning a worker; in the TUI it stays a plain in-process `asyncio.sleep` (ADR-0008 §4).
+
+### Credentials proxy (keep the model key out of the flow payload)
+
+By default a headless run reads the model key from `.env` (e.g. `GEMINI_API_KEY`) exactly like the REPL. For a **deployed** flow you don't want the raw key serialized into the execution's arguments — so `decode` can instead resolve the key from a **Kitaru secret** at model construction, leaving only the secret *name* in the flow. The design is in [`docs/adr/0008-kitaru-durable-runtime.md`](docs/adr/0008-kitaru-durable-runtime.md) §5; it is **opt-in** and off by default.
+
+Create the secret once (the raw key then lives only in Kitaru, never in the flow payload):
+
+```bash
+kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=…   # CLI; OPENROUTER_API_KEY for openrouter
+```
+
+```python
+from kitaru import create_secret  # Python equivalent
+create_secret("decode-llm-creds", {"GEMINI_API_KEY": "…"}, private=True)
+```
+
+Then turn the proxy on in `.env`:
+
+- `RUNTIME_CREDENTIALS_PROXY_ENABLED=true` — flow-mode model construction resolves the provider key from a Kitaru secret instead of the `SecretStr` in settings. **Default `false`** (and it only ever applies to `decode run`; the interactive REPL is untouched).
+- `RUNTIME_SECRET_NAME` (default `decode-llm-creds`) — the Kitaru secret name the key is read from. The secret's key must be the provider's env-var name (`GEMINI_API_KEY` / `OPENROUTER_API_KEY`).
+
+With it on, a `decode run` flow constructs the model with the key fetched from the secret; the execution's serialized arguments carry only the task and the secret name. The settings key is no longer required (or consulted) for that provider — so a leftover `GEMINI_API_KEY` in `.env` is harmless. A missing secret (or one without the provider key) is caught by a **proxy-aware pre-flight** before any flow is built: `decode run` prints one friendly line naming the fix (`kitaru secrets set <name> --GEMINI_API_KEY=…`) and exits non-zero — never a traceback, and never a silent fallback to the settings key. (Modal's dual proxy-token auth is a separate sandbox-header surface and is not routed through this proxy.)
+
+### Secret-store config source (centralize the whole config in one Kitaru secret)
+
+The credentials proxy above resolves just the *model key*. You can go one step further and keep the **whole** `decode run` configuration — provider, model, every key, the compaction/LSP tuning — in the **same** Kitaru secret, so an operator manages one place instead of an `.env`. Because `decode`'s settings already map every `.env.example` variable to a field, this needs no per-variable wiring. Set the values on the secret named by `RUNTIME_SECRET_NAME` (default `decode-llm-creds`), keyed by their `.env.example` names:
+
+```bash
+kitaru secrets set decode-llm-creds --private \
+  --LLM_PROVIDER=gemini --GEMINI_MODEL=gemini-2.5-flash --GEMINI_API_KEY=…
+```
+
+Then turn the source on in `.env`:
+
+- `RUNTIME_SECRET_STORE_CONFIG=true` — a `decode run` flow hydrates its `Settings` from that secret. **Default `false`**, and **headless-only**: bare `decode` (the REPL) never reads the secret and never imports Kitaru.
+
+Two rules make it safe:
+
+- **The real process env wins.** Precedence is `env > Kitaru secret > .env > defaults`, so anything you actually export still overrides the secret (handy for a one-off `GEMINI_MODEL=… decode run …`); the secret overrides `.env` and the built-in defaults.
+- **Values land in `Settings`, never `os.environ`.** The hydrated config lives only in the in-process `Settings` object — it is **never** written to the process or worker environment, so a model-chosen `bash` command can never read a Kitaru-sourced secret out of its env. The singleton is restored when the flow exits, so a later in-process run is unaffected.
+
+With the source on, `decode run` runs a **secret-store pre-flight** before building the flow: it hydrates `Settings` from the secret up front and validates the result, so the provider *key* can live **only in the secret** (no `.env` entry and no credentials-proxy flag needed) and still satisfy the startup config guard. A missing secret, or a stored value that fails validation (e.g. a bogus `LLM_PROVIDER`), exits with one friendly line naming the fix (`kitaru secrets set <name> …`) and a non-zero code — never a traceback from inside the flow. (You can still keep the key in `.env` and let the secret carry only the model/tuning if you prefer.)
+
+This **secret-store config source** is distinct from the future **credential proxy** (mitmproxy header injection for a sandboxed worker's *tool* credentials), which is deferred to the sandbox milestone. With both this and the credentials proxy on, they compose: the model key resolves through the proxy and the rest of the surface hydrates from the same secret — a coherent run with no raw key in the flow payload.
+
 ## Context compaction
 
 A long conversation grows toward the model's context window. `decode` keeps it in budget with a **cheapest-first cascade** that runs automatically at the end of each turn — measured against how full the window is — plus a manual override. The wiring and trade-offs are recorded in [`docs/adr/0006-conversation-compaction.md`](docs/adr/0006-conversation-compaction.md).

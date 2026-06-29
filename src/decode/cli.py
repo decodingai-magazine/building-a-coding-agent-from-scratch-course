@@ -14,6 +14,7 @@ import asyncio  # noqa: E402  (intentional post-logger import)
 import logging  # noqa: E402
 
 import click  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from decode.agents.loader import load_agent  # noqa: E402
 from decode.config.settings import settings  # noqa: E402
@@ -44,6 +45,14 @@ _MODAL_PROXY_TOKENS_MESSAGE = (
 
 # The startup Agent persona when ``--agent`` is omitted (ADR-0003 §9): the full-tool build agent.
 _DEFAULT_AGENT = "build"
+
+# The friendly line shown when ``decode run`` is invoked but the Headless Runtime is disabled
+# (``RUNTIME_ENABLED=false``; ADR-0008). Like the provider guard, this exits non-zero with one line
+# instead of building a Durable Flow.
+_RUNTIME_DISABLED_MESSAGE = (
+    "Decode: the headless runtime is disabled — set RUNTIME_ENABLED=true in your environment "
+    "or .env to use `decode run` (see .env.example)."
+)
 
 
 def _provider_config_error() -> str | None:
@@ -94,7 +103,95 @@ def _provider_config_error() -> str | None:
     return None  # defensive: the settings ``Literal`` blocks any other value upstream.
 
 
-@click.command()
+def _uses_credentials_proxy() -> bool:
+    """True when ``decode run`` sources the model key from the Kitaru Credentials Proxy (ADR-0008 §5).
+
+    Only the single-api-key providers (``gemini`` / ``openrouter``) are proxied; ``modal`` is never
+    proxied (its proxy *tokens* live in settings), so this stays ``False`` for it. When ``False`` the
+    headless path keeps the byte-identical settings-key/token guard (:func:`_provider_config_error`).
+    The proxied providers are exactly the keys of the factory's single-source ``PROXY_SECRET_KEY`` map
+    (imported lazily — cheap + kitaru-free — to keep it off the REPL path).
+    """
+    from decode.agent.factory import PROXY_SECRET_KEY  # cheap + kitaru-free; lazy for symmetry
+
+    return settings.runtime_credentials_proxy_enabled and settings.llm_provider in PROXY_SECRET_KEY
+
+
+def _proxy_credential_error() -> str | None:
+    """Validate the Credentials Proxy's Kitaru secret resolves; a friendly line if not (ADR-0008 §5).
+
+    The proxy-aware counterpart to :func:`_provider_config_error` for ``decode run``: it resolves the
+    provider key from the Kitaru secret once, up front (offline on the local stack), so a **missing**
+    secret (``KitaruRuntimeError``) or a secret **lacking** the provider key (``RuntimeError``) becomes
+    one friendly stderr line instead of a ~30-frame traceback from inside the flow (task 061, User
+    Story #3). The line names the *real* fix — create the Kitaru secret — not the misleading ``set
+    GEMINI_API_KEY`` settings line, because with the proxy on the model key comes from Kitaru, not
+    settings; the provider's key name comes from the factory's single-source ``PROXY_SECRET_KEY`` map.
+    The throwaway resolution here is deliberate: the flow resolves the key *again* inside its body so
+    the raw key never rides in the flow payload (the "secrets never reach the … payload" invariant).
+    ``kitaru`` is reached only through the factory seam, which imports it lazily, so the REPL path never
+    loads it.
+    """
+    from decode.agent.factory import PROXY_SECRET_KEY, resolve_provider_key_via_proxy
+
+    try:
+        resolve_provider_key_via_proxy(settings.llm_provider)  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        logger.debug("credentials proxy secret unavailable for %s: %s", settings.llm_provider, exc)
+        secret_name = settings.runtime_secret_name
+        key_name = PROXY_SECRET_KEY.get(settings.llm_provider, "GEMINI_API_KEY")
+        return (
+            f"Decode: RUNTIME_CREDENTIALS_PROXY_ENABLED is on but the Kitaru secret {secret_name!r} is "
+            f"missing or has no {key_name} value — create it with "
+            f"`kitaru secrets set {secret_name} --{key_name}=…` (see .env.example)."
+        )
+    return None
+
+
+def _secret_store_config_error() -> str | None:
+    """Hydrate + validate the secret-store config before the flow; one friendly line if it fails (ADR-0008 §5).
+
+    The secret-store-config counterpart to :func:`_proxy_credential_error` for ``decode run`` (task
+    064). When ``settings.runtime_secret_store_config`` is on, the whole provider config (provider,
+    model, key, tuning) is hydrated from the Kitaru secret — but *inside the flow*, after this cli's
+    provider-config guard has already run. Without this, two symptoms follow: (1) a key living **only**
+    in the secret trips the misleading ``set GEMINI_API_KEY`` line because the guard saw the
+    un-hydrated settings; and (2) a missing/malformed secret blows up as a ~30-frame traceback from
+    inside the flow body. This reuses the flow's own
+    :func:`~decode.runtime.flow._config_from_secret_store` context to hydrate the ``settings``
+    singleton up front, runs the provider-config guard against THAT hydrated config (so a secret-only
+    key satisfies it), and converts a missing/malformed secret (``KitaruRuntimeError`` ⊂
+    ``RuntimeError``, or a pydantic ``ValidationError`` from a bad stored value) into one friendly
+    stderr line naming the real fix. The context restores the singleton on exit and the flow
+    re-hydrates idempotently in its own body. With the Credentials Proxy also on the settings-key guard
+    is skipped here (the key comes from the secret via the proxy, whose pre-flight names the right fix)
+    — so the two never emit conflicting lines. ``kitaru`` is reached only through that lazily-imported
+    context, so the REPL path never loads it.
+    """
+    from decode.runtime.flow import _config_from_secret_store
+
+    # Read the secret name from the pre-hydration singleton — that is the name the source fetches with,
+    # so the error line names the secret the operator must actually create/repair.
+    secret_name = settings.runtime_secret_name
+    try:
+        with _config_from_secret_store():
+            # Inside the context ``settings`` is hydrated from the Kitaru secret. Validate the hydrated
+            # provider config — but only when the proxy is off; with it on the key comes from the secret
+            # via the proxy pre-flight (which names the right fix), so defer to it rather than risk a
+            # misleading settings-key line here.
+            if _uses_credentials_proxy():
+                return None
+            return _provider_config_error()
+    except (RuntimeError, ValidationError) as exc:
+        logger.debug("secret-store config secret %r missing or invalid: %s", secret_name, exc)
+        return (
+            f"Decode: RUNTIME_SECRET_STORE_CONFIG is on but the Kitaru secret {secret_name!r} could "
+            f"not be loaded (it is missing, or a stored value is invalid) — create or repair it with "
+            f"`kitaru secrets set {secret_name} --LLM_PROVIDER=… --GEMINI_API_KEY=…` (see .env.example)."
+        )
+
+
+@click.group(invoke_without_command=True)
 @click.option(
     "--resume",
     is_flag=False,
@@ -118,8 +215,19 @@ def _provider_config_error() -> str | None:
     help="Start in this permission mode (default / plan / edit / bypass); "
     "defaults to the agent's own default mode.",
 )
-def cli(resume: str | None, agent: str, mode: str | None) -> None:
-    """Decode — a terminal coding agent you run in your terminal."""
+@click.pass_context
+def cli(ctx: click.Context, resume: str | None, agent: str, mode: str | None) -> None:
+    """Decode — a terminal coding agent you run in your terminal.
+
+    Bare ``decode`` (no subcommand) launches the interactive REPL with the flags below — the
+    behaviour is identical to the pre-runtime build. ``decode run "<task>"`` (ADR-0008) runs a
+    single task headlessly through the durable runtime instead.
+    """
+    # A subcommand (e.g. ``run``) was invoked: let it handle everything. The REPL-only flags and
+    # startup guards below apply solely to the bare ``decode`` REPL path, so we return before them.
+    if ctx.invoked_subcommand is not None:
+        return
+
     logger.debug("decode starting (resume=%s, agent=%s, mode=%s)", resume, agent, mode)
     # Per-provider config startup guard (ADR-0005 §6, generalizes the task-004 GEMINI_API_KEY guard):
     # build_agent() constructs the selected provider's model, which raises a raw pydantic_ai.UserError
@@ -160,6 +268,128 @@ def cli(resume: str | None, agent: str, mode: str | None) -> None:
     # the matching session log and seeds the conversation (ADR-0002 §9, task 014) and starts with
     # the selected ``agent`` persona (ADR-0003 §7,9), in ``--mode`` if given (else the agent default).
     asyncio.run(run_app(resume=resume, agent=agent, mode=mode))
+
+
+@cli.command("run")
+@click.argument("task")
+@click.option(
+    "--hitl",
+    is_flag=True,
+    help=(
+        "Human-in-the-loop: run under a gating gate so mutating tools and ask_user pause on durable "
+        "Kitaru waits resolved out-of-band (`kitaru executions input`), instead of bypassing them."
+    ),
+)
+def run(task: str, hitl: bool) -> None:
+    """Run a single TASK headlessly through the durable runtime, then print the result (ADR-0008).
+
+    The autonomous counterpart to the REPL: ``decode run "<task>"`` builds the same agent as the
+    TUI but drives it through a Kitaru Durable Flow (checkpoints + replay). Two modes:
+
+    \b
+    * default — **bypass** (task 058): every tool runs inline with no prompt; the agent's final text
+      is printed to stdout. ``ask_user`` / approvals are headless no-ops.
+    * ``--hitl`` — **human-in-the-loop** (task 059): a gating gate so ``write`` / ``edit`` / ``bash``
+      and ``ask_user`` pause the whole execution on a durable wait. If a wait is resolved out-of-band
+      while the run polls it continues and prints the result; otherwise the run pauses and prints the
+      execution id + the ``kitaru executions input`` command to resolve it. The poll timeout differs
+      by wait kind (a known limitation — decode does not fork the adapter): the ``ask_user`` /
+      ``exit_plan_mode`` answer waits honor ``runtime_wait_timeout_s``; the native ``write`` /
+      ``edit`` / ``bash`` **approval** waits use the adapter's fixed ``600s`` default (ADR-0008 §3).
+
+    Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): the per-provider
+    config guard (it builds a model) fires first, then ``RUNTIME_ENABLED`` — a disabled runtime never
+    builds a flow. Two kitaru-backed config sources (ADR-0008 §5) move that key guard to a pre-flight
+    after the runtime guard, because each boots Kitaru: when the **secret-store config source**
+    (``RUNTIME_SECRET_STORE_CONFIG``) is on the whole provider config is hydrated from a Kitaru secret
+    up front, so a key/model living only in the secret satisfies the guard and a missing/malformed
+    secret is one friendly line; when the **Credentials Proxy** is on the model key comes from a Kitaru
+    secret, validated by a proxy-aware pre-flight. With both on they compose (secret-store hydration
+    first, then the proxy resolves its key from the now-hydrated secret), never two conflicting lines.
+    ``kitaru`` is imported lazily here so the REPL path never loads it.
+    """
+    secret_store_on = settings.runtime_secret_store_config
+
+    # Per-provider config guard. Skipped here when a kitaru-backed source supplies the config — the
+    # Credentials Proxy (key from a secret) or the secret-store config source (whole config from a
+    # secret) — because both are validated in a pre-flight AFTER the runtime guard (they boot Kitaru,
+    # and a disabled runtime must short-circuit first). For everything else (proxy off + secret-store
+    # off, and modal which is never proxied) this is the byte-identical settings-key/token guard.
+    if not _uses_credentials_proxy() and not secret_store_on:
+        config_error = _provider_config_error()
+        if config_error is not None:
+            logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
+            click.echo(config_error, err=True)
+            raise click.exceptions.Exit(1)
+
+    if not settings.runtime_enabled:
+        logger.debug("runtime disabled; refusing to run")
+        click.echo(_RUNTIME_DISABLED_MESSAGE, err=True)
+        raise click.exceptions.Exit(1)
+
+    # Secret-store config pre-flight (ADR-0008 §5, task 064): hydrate ``settings`` from the Kitaru
+    # secret and run the provider-config guard against THAT, so a key/model living only in the secret
+    # satisfies it (no false ``set GEMINI_API_KEY``) and a missing/malformed secret is one friendly
+    # line, not a deep traceback from inside the flow. Runs BEFORE the proxy pre-flight so that, with
+    # both flags on, the proxy then resolves its key from the now-hydrated secret config — one coherent
+    # path, never two conflicting lines. Boots Kitaru, hence after the runtime guard.
+    if secret_store_on:
+        secret_store_error = _secret_store_config_error()
+        if secret_store_error is not None:
+            click.echo(secret_store_error, err=True)
+            raise click.exceptions.Exit(1)
+
+    # Credentials-proxy pre-flight (ADR-0008 §5): validate the Kitaru secret resolves BEFORE building
+    # a flow, so a missing/incomplete secret exits with one friendly line (naming ``kitaru secrets
+    # set``) instead of a ~30-frame KitaruRuntimeError traceback from inside the flow body. Boots
+    # Kitaru, hence after the runtime guard. Applies to both the bypass and ``--hitl`` paths.
+    if _uses_credentials_proxy():
+        credential_error = _proxy_credential_error()
+        if credential_error is not None:
+            click.echo(credential_error, err=True)
+            raise click.exceptions.Exit(1)
+
+    # Lazy import: keep kitaru (and its heavy zenml/temporalio stack) off the REPL path entirely —
+    # only ``decode run`` pays the import cost. The flow runs on the local Kitaru stack, offline.
+    if hitl:
+        _run_hitl(task)
+        return
+
+    from decode.runtime import run_agent_task
+
+    logger.debug("decode run starting (task=%r)", task)
+    # ``flow.run(...).wait()`` returns the flow's terminal checkpoint — a pydantic-ai
+    # ``AgentRunResult`` — so surface its ``.output`` text (the flow's str return is not what Kitaru
+    # hands back). ``getattr`` keeps it robust if a future Kitaru version returns the str directly.
+    result = run_agent_task.run(task=task).wait()
+    click.echo(getattr(result, "output", result))
+
+
+def _run_hitl(task: str) -> None:
+    """Drive the HITL Durable Flow and print the result, or the pause + how to resolve it (ADR-0008 §3).
+
+    A finished run prints the agent's final text. A run that paused on an unresolved durable wait
+    prints the execution id and the ``kitaru executions`` commands an operator uses to inspect and
+    resolve it out-of-band, then resume — exit stays zero (a pause is a normal HITL outcome, not an
+    error).
+    """
+    from decode.runtime import run_hitl_agent_task
+
+    logger.debug("decode run --hitl starting (task=%r)", task)
+    result = run_hitl_agent_task(task)
+    if result.paused:
+        click.echo(
+            f"Decode: the task paused on a durable human-in-the-loop wait (execution "
+            f"{result.exec_id}). Resolve it out-of-band, then resume:",
+            err=True,
+        )
+        click.echo("  kitaru executions list", err=True)
+        click.echo(
+            f"  kitaru executions input {result.exec_id} --wait <name> --value '<answer>'", err=True
+        )
+        click.echo(f"  kitaru executions resume {result.exec_id}", err=True)
+        return
+    click.echo(result.output)
 
 
 if __name__ == "__main__":

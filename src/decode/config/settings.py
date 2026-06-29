@@ -6,11 +6,89 @@ Import the module-level ``settings`` singleton where you need configuration; nev
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic.fields import FieldInfo
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+# --- Kitaru secret-store config source: headless-only hydration flag (ADR-0008 §5, task 064) ---
+# A module-level switch the :class:`KitaruSecretSettingsSource` consults on every ``Settings()``
+# build. It is OFF for the import-time singleton (so the interactive REPL never imports kitaru) and
+# turned ON only for the span of a headless ``decode run`` flow by the ``runtime/flow.py`` context
+# manager, which rebuilds the singleton in place while it is active and restores it on exit. Kept a
+# plain module global (not a ContextVar): the flow body, the in-place rebuild, and the source all run
+# on the same thread, so the simplest thing that works is the right one here.
+_secret_hydration_active = False
+
+
+def set_secret_hydration_active(active: bool) -> None:
+    """Toggle the Kitaru secret-store config source on/off (headless-only; ADR-0008 §5).
+
+    Called only by the ``runtime/flow.py`` hydration context manager: ``True`` before it rebuilds the
+    ``settings`` singleton (so :class:`KitaruSecretSettingsSource` reads the secret), ``False`` in its
+    ``finally`` (so a later in-process ``Settings()`` build — the next test, or a subsequent flow —
+    sees an inert source and does not import kitaru).
+    """
+    global _secret_hydration_active
+    _secret_hydration_active = active
+
+
+def is_secret_hydration_active() -> bool:
+    """Whether the Kitaru secret-store config source is currently active (ADR-0008 §5)."""
+    return _secret_hydration_active
+
+
+class KitaruSecretSettingsSource(PydanticBaseSettingsSource):
+    """A pydantic-settings source that hydrates fields from a Kitaru secret (ADR-0008 §5, task 064).
+
+    Generalizes the task-061 single-key proxy into a whole-surface config source: when active it
+    reads the ``.env.example``-shaped key/value pairs out of the Kitaru secret named by
+    ``settings.runtime_secret_name`` and feeds the ones that map to a known field into ``Settings``.
+    Because ``config/settings.py`` already maps every ``.env.example`` var to a field, this covers the
+    entire config surface (provider/model/keys/tuning) with **no per-variable code**.
+
+    Two invariants make it safe to keep wired into every ``Settings`` build:
+
+    * **Inert unless activated.** :meth:`__call__` returns ``{}`` immediately — and crucially imports
+      **no kitaru** — unless :func:`is_secret_hydration_active` is ``True`` (only the headless flow
+      flips it). So the interactive REPL, which builds the singleton at import, never pulls in kitaru.
+    * **`Settings` object only — never `os.environ`.** It returns a value mapping pydantic validates
+      into the model; it writes nothing to the process env, so a model-chosen ``bash`` never inherits
+      a Kitaru-sourced secret. This is the line between this source and the deferred sandbox
+      Credential Proxy (mitmproxy header injection), which is out of scope here.
+    """
+
+    def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
+        """Unused: :meth:`__call__` is fully overridden, but the abstract base requires a body."""
+        raise NotImplementedError(
+            "KitaruSecretSettingsSource overrides __call__; get_field_value is never invoked."
+        )
+
+    def __call__(self) -> dict[str, Any]:
+        if not is_secret_hydration_active():
+            # Inert path: the REPL singleton and every default/interactive build land here, so kitaru
+            # is never imported off the headless flow (the REPL-safety invariant).
+            return {}
+        # Lazy import so this module stays kitaru-free until a headless flow actually activates the
+        # source. ``settings`` is the current (pre-rebuild) singleton, so the secret name comes from
+        # env/.env exactly as configured — it can never bootstrap itself out of the secret.
+        from kitaru import get_secret
+
+        values = get_secret(settings.runtime_secret_name).values
+        known = self.settings_cls.model_fields
+        hydrated = {key.lower(): value for key, value in values.items() if key.lower() in known}
+        logger.debug(
+            "hydrated %d field(s) from Kitaru secret %r: %s",
+            len(hydrated),
+            settings.runtime_secret_name,
+            sorted(hydrated),  # field NAMES only — never the values (they may be secrets)
+        )
+        return hydrated
 
 
 class Settings(BaseSettings):
@@ -119,5 +197,75 @@ class Settings(BaseSettings):
     # The lazy single spawn per root amortizes the cost. A non-positive value fails fast (Field gt=0).
     lsp_request_timeout_s: float = Field(10.0, gt=0)
 
+    # --- Kitaru durable runtime (ADR-0008) ---
+    # The Headless Runtime config surface (``decode run`` / ``runtime/``); settings only here — no
+    # readers yet (they land in tasks 058/059/061). ``runtime_enabled`` master-gates the WHOLE headless
+    # feature: ``False`` → ``decode run`` exits with a friendly line and never builds a Durable Flow.
+    runtime_enabled: bool = True
+    # ``KitaruAgent`` Checkpoint granularity: ``"turn"`` (one Checkpoint per agent turn — coarse, the
+    # simplest MVP default) or ``"calls"`` (per model/tool call). Task 058 passes it to ``KitaruAgent``.
+    runtime_checkpoint_strategy: Literal["turn", "calls"] = "turn"
+    # The durable Wait (HITL) poll timeout (seconds) in flow mode; matches Kitaru's local 600s default.
+    # A non-positive value fails fast (Field gt=0). Task 059 reads it.
+    runtime_wait_timeout_s: float = Field(600.0, gt=0)
+    # When ``True``, flow-mode model construction resolves the provider API key through the Kitaru
+    # Credentials Proxy (Kitaru secrets) instead of reading the ``SecretStr`` from settings — so a
+    # deployed flow payload carries handles, not raw keys. Default ``False``: the secrets-proxy surface
+    # is the least-exampled in Kitaru (ADR-0008 §5) and must be verified first (task 061 reads it).
+    runtime_credentials_proxy_enabled: bool = False
+    # The Kitaru secret name the Credentials Proxy reads the provider key from when enabled (task 061).
+    runtime_secret_name: str = "decode-llm-creds"
+    # When ``True``, a headless ``decode run`` flow hydrates the WHOLE ``Settings`` surface from the
+    # ``runtime_secret_name`` Kitaru secret (any ``.env.example`` var: LLM_PROVIDER, GEMINI_MODEL,
+    # OPENROUTER_*/MODAL_*, OPIK_API_KEY, tuning, …) via :class:`KitaruSecretSettingsSource`. Values
+    # land in this ``Settings`` object ONLY — never ``os.environ`` — and the real process env still
+    # overrides them. Default ``False`` and **headless-only**: the import-time singleton has the
+    # hydration flag off, so bare ``decode`` never imports kitaru (task 064 reads it). This is the
+    # secret-store config source, NOT the deferred sandbox Credential Proxy (header injection).
+    runtime_secret_store_config: bool = False
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Insert the Kitaru secret-store source below env, above .env (ADR-0008 §5, task 064).
+
+        Precedence is left-to-right (earlier = higher priority), so the Kitaru source sits between
+        ``env_settings`` and ``dotenv_settings``: a value in the **real process env wins over the
+        Kitaru secret**, and the **Kitaru secret wins over ``.env`` / field defaults**. The source is
+        inert (returns ``{}``, imports no kitaru) unless a headless flow has activated it, so this
+        ordering is a no-op for the interactive REPL and every default build.
+        """
+        return (
+            init_settings,
+            env_settings,
+            KitaruSecretSettingsSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
+
 
 settings = Settings()
+
+
+def reload_settings() -> Settings:
+    """Rebuild the module-level ``settings`` singleton **in place** from its sources (ADR-0008 §5).
+
+    The headless ``decode run`` flow calls this (through the ``runtime/flow.py`` hydration context
+    manager, with :func:`set_secret_hydration_active` on) so ``build_agent`` and every other reader
+    that did ``from decode.config.settings import settings`` sees the freshly hydrated config — the
+    rebuild mutates the existing object rather than rebinding the name, so those shared references
+    update too. A fresh :class:`Settings` is constructed (re-reading env, the Kitaru secret when the
+    source is active, ``.env``, and defaults), then its field values are copied into the singleton.
+    Verified to emit **zero warnings** under ``filterwarnings=["error"]`` on pydantic v2.
+    """
+    fresh = Settings()
+    settings.__dict__.update(fresh.__dict__)
+    settings.__pydantic_fields_set__.clear()
+    settings.__pydantic_fields_set__.update(fresh.__pydantic_fields_set__)
+    return settings

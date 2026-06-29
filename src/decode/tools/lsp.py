@@ -47,6 +47,7 @@ from decode.agent.deps import AgentDeps
 from decode.services import lsp as lsp_service
 from decode.services.lsp import UNAVAILABLE, Diagnostic, Location
 from decode.tools import files
+from decode.tools.approval import needs_approval
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ async def lsp(
     for a position op, an out-of-tree/missing ``path``, or the server being **unavailable**) becomes a
     :class:`pydantic_ai.ModelRetry` so the model can adapt instead of crashing the REPL.
     """
-    if not ctx.tool_call_approved:
+    if needs_approval(ctx):
         logger.debug("lsp requires approval (op=%r, path=%r)", op, path)
         raise ApprovalRequired
 

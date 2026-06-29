@@ -42,6 +42,7 @@ from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
 from decode.services import lsp as lsp_service
 from decode.services.lsp import Diagnostic
+from decode.tools.approval import needs_approval
 from decode.tools.truncate import truncate
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ def read(
     directory, an unreadable/undecodable file, or an ``offset`` past end-of-file returns a
     :class:`pydantic_ai.ModelRetry`.
     """
-    if not ctx.tool_call_approved:
+    if needs_approval(ctx):
         logger.debug("read requires approval (path=%r)", path)
         raise ApprovalRequired
 
@@ -195,7 +196,7 @@ def glob(ctx: RunContext[AgentDeps], pattern: str) -> str:
     resolve outside it — so no out-of-tree path is ever listed. Returns a
     :class:`pydantic_ai.ModelRetry` when the pattern escapes or nothing matches.
     """
-    if not ctx.tool_call_approved:
+    if needs_approval(ctx):
         logger.debug("glob requires approval (pattern=%r)", pattern)
         raise ApprovalRequired
 
@@ -220,7 +221,7 @@ def grep(
     (raises :class:`pydantic_ai.ApprovalRequired` until approved). Returns a
     :class:`pydantic_ai.ModelRetry` for an invalid regex, a missing ``path``, or no matches.
     """
-    if not ctx.tool_call_approved:
+    if needs_approval(ctx):
         logger.debug("grep requires approval (pattern=%r)", pattern)
         raise ApprovalRequired
 
@@ -289,7 +290,7 @@ def write(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
     approved — and crucially *before* the path is resolved or any byte is written, so a denied
     write leaves the target byte-for-byte untouched (it is never created, never truncated).
     """
-    if not ctx.tool_call_approved:
+    if needs_approval(ctx):
         logger.debug("write requires approval (path=%r)", path)
         raise ApprovalRequired
 
@@ -326,7 +327,7 @@ def edit(ctx: RunContext[AgentDeps], path: str, old_string: str, new_string: str
     Gated (ADR-0002 §3): raises :class:`pydantic_ai.ApprovalRequired` *before* the file is read
     or written, so a denied edit leaves it byte-for-byte untouched.
     """
-    if not ctx.tool_call_approved:
+    if needs_approval(ctx):
         logger.debug("edit requires approval (path=%r)", path)
         raise ApprovalRequired
 

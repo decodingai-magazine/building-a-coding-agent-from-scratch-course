@@ -41,7 +41,7 @@ The intended target tree. Most `src/` subpackages are created **when you reach t
     ├── sandbox/                   # Bash execution — local (Docker/Firecracker) + remote (Modal)
     ├── services/lsp/              # LSP Service — hand-rolled stdio client; FIRST concrete services/ entry (ADR-0007)
     ├── services/                  # services interface: LLM gateway, memory, MCP servers land here later
-    ├── runtime/                   # Kitaru: credentials proxy, durability, scheduling, HITL
+    ├── runtime/                   # Kitaru durable flow + `decode run` (ADR-0008); HITL/creds-proxy later
     ├── context/                   # context engineering: compaction + conversation log (JSONL)
     ├── memory/                    # AGENTS.md / MEMORY.md loading
     └── observability/             # Opik tracing
@@ -65,7 +65,7 @@ Single Python toolchain — `uv`, `ruff`, `pytest`. **Python 3.12+.**
 | Inference | `google-genai` (Gemini) · OpenRouter · Modal | Behind one **LLM Gateway**; OpenRouter is OpenAI-compatible. *added per step* |
 | Observability | `opik` | Tracing + eval harness. *added at its step* |
 | Sandbox / serving | `modal` (remote) · Docker/Firecracker (local) | *added at its step* |
-| Durability | Kitaru | Credentials proxy, durability, scheduling, HITL. *confirm package source* |
+| Durability | `kitaru[local,pydantic-ai,llm]` | Durable headless flow (`decode run`) wrapping `build_agent()` via the `KitaruAgent` PydanticAI adapter — checkpoints + replay, local stack, offline (ADR-0008). Needs pydantic-ai 1.x: depend on `pydantic-ai-slim[google,openai]`, not the meta package (ADR-0009). HITL / creds-proxy / scheduling are later steps. |
 | Datastore | SQLite | Conversation log is JSONL today; compaction landed on it (ADR-0006). SQLite remains a deferred durable-store option. |
 
 Per-step libraries are `uv add`-ed when you reach them (see the commented block in `pyproject.toml`) — the initial install stays light.
@@ -110,10 +110,11 @@ Access infra **CLI-only** (no web UIs) so runs are reproducible and the orchestr
 
 For each external-service slug below (wrapped in `<!-- stack:* -->` for find-and-delete), the one-liner + its CLI. Grep `<!-- stack:` to locate or remove one.
 
-- **Gemini** — primary LLM API via the `google-genai` SDK; one of three inference backends behind the LLM Gateway (with **OpenRouter**, OpenAI-compatible, and **Modal**-served open models). squid spec: `llm-gemini`.
-- **Modal** — remote sandbox + open-model serving; `modal run` / `modal deploy` / `modal token set`. squid spec: `model-serving-modal`.
-- **Opik** — LLM tracing + eval harness; `opik` CLI / `OPIK_API_KEY`. squid spec: `observability-opik`.
-- **Kitaru** — ...
+- **Gemini** — primary LLM API via the `google-genai` SDK; `GEMINI_API_KEY` (no dedicated CLI).
+- **OpenRouter** — OpenAI-compatible inference backend; `openrouter` CLI.
+- **Modal** — remote sandbox + open-model serving/inference backend; `modal run` / `modal deploy` / `modal token set`.
+- **Opik** — LLM tracing + eval harness; `opik` CLI.
+- **Kitaru** — runtime (durability, HITL); `kitaru` CLI. More within the `kitaru` skills and docs.
 
 - **Project MCP servers:** *AGENT: fill in any MCP server this project's code talks to and the config it needs.*
 
@@ -188,6 +189,8 @@ For each surface below: the thing to type, and what "working" looks like.
 | **web_fetch** | `fetch https://example.com and summarize it` | `permission? web_fetch …` → `y` → the page comes back as Markdown (HTML stripped) and the model summarizes it. |
 | **ask_user** | `deploy my app` (something underspecified) | the model calls `ask_user`; an `ask: …` question renders with a `type your answer:` cue; your next typed line **is** the answer and the turn resumes with it. |
 | **lsp (code intelligence)** | `where is build_agent defined?` | the model calls `lsp` (`definition`); it **auto-allows** (read-only — no prompt) and the answer cites the location (`src/decode/agent/factory.py:68:5`). Then ask it to `write a broken bad.py with a syntax error` → the approved write's result carries an appended `LSP diagnostics (ty) — fix these:` block and the model corrects it. |
+| **decode run (headless)** | `decode run "list the python files"` (a separate command, not in the REPL) | the agent tool-loops **headlessly** through a Kitaru durable flow — every tool runs inline under bypass with no prompt — and prints the result, exit `0`. The run is recorded as an inspectable checkpointed execution; a fresh re-run is a **new** execution (crash-resume replay of finished checkpoints is exercised in 059 / the capstone, not here). `RUNTIME_ENABLED=false` → one friendly stderr line, non-zero exit, no flow built (ADR-0008). |
+| **decode run --hitl (durable HITL)** | `decode run --hitl "create config.toml, then deploy"` in one terminal; resolve from a **second** terminal | the gating headless run: read-only tools run inline, but a `write`/`edit`/`bash` (or `ask_user`/`exit_plan_mode`) **pauses the whole execution on a durable Kitaru wait**. While it polls, run `kitaru executions list` to find the waiting `<exec_id>` and the wait `<name>`, then `kitaru executions input <exec_id> --wait <name> --value 'true'` (approve), `'false'` (deny → the run stops, the tool never ran), or `'"staging"'` (an `ask_user` answer). The run resumes from that point and prints the result. An unanswered wait eventually times out and the run pauses, printing the `<exec_id>` + the `kitaru executions input` hint, exit `0`. **The timeout differs by wait kind (a known limitation — decode does not fork the adapter):** the `ask_user`/`exit_plan_mode` answer waits decode drives itself honor `runtime_wait_timeout_s`; the native `write`/`edit`/`bash` **approval** waits the adapter raises use its fixed `600s` default and ignore the setting (ADR-0008 §3). |
 
 **Mid-turn interaction** (while a turn is streaming — ADR-0002 §4-5):
 

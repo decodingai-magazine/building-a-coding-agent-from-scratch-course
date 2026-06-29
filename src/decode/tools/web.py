@@ -48,6 +48,7 @@ from pydantic_ai import ApprovalRequired, ModelRetry, RunContext
 
 from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
+from decode.tools.approval import needs_approval
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ async def web_fetch(ctx: RunContext[AgentDeps], url: str) -> str:
     model-readable :class:`pydantic_ai.ModelRetry` for an empty URL, a non-2xx status, a timeout,
     a connection error, or non-text content, so the model can recover instead of crashing the REPL.
     """
-    if not ctx.tool_call_approved:
+    if needs_approval(ctx):
         logger.debug("web_fetch requires approval (url=%r)", url)
         raise ApprovalRequired
 
