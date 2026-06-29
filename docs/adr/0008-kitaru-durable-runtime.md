@@ -172,6 +172,47 @@ credentials-proxy surface is recorded as least-exampled (verify-first).
    **verifies the secrets API against the installed SDK first** and ships env-injection as the
    documented fallback; the path is opt-in (`runtime_credentials_proxy_enabled`, default off).
 
+   > **Amendment (2026-06-29, task 064 — credential architecture corrected against the official Kitaru
+   > credential-proxy doc (`agent-harness-platform/04-credential-proxy`) + the `agent_harness_platform`
+   > example, Stage 4).** This §5 conflated two *distinct* Kitaru features and mis-scoped the
+   > mechanism. Corrected, with the env-injection task that was drafted off the original §5 dropped:
+   >
+   > 1. **"Credentials Proxy" was a misnomer.** Kitaru's actual **Credential Proxy** is **HTTP header
+   >    injection via a separate proxy container** — `SandboxProxyRule` (per-host header templates) +
+   >    `build_credential_map` (host-side template resolver) + `DockerProxy` (a mitmproxy addon). The
+   >    worker's outbound traffic is routed through the proxy, which attaches the `Authorization`
+   >    header *after the request has left the worker*, so **"the worker never holds the secret."**
+   >    What task 061 shipped is **not** that — it is a **secret-store lookup** (`get_secret(...)`) for
+   >    the model API key at model construction. Both are legitimate but different; the model key is the
+   >    right case for a *store lookup* (the **harness** consumes it to call the LLM — it is not a
+   >    credential a model-chosen `bash` command uses). 061's "Credentials Proxy" label is renamed
+   >    **model-key secret resolution** to free the term for the real proxy. (This is a *conceptual /
+   >    docs* rename — the code identifiers `runtime_credentials_proxy_enabled` / `runtime_secret_name`
+   >    keep their names until a dedicated rename, a documented conceptual-vs-identifier divergence.)
+   > 2. **Env-injection is rejected as the secret mechanism.** §5 named env injection
+   >    (`ImageSettings(secret_environment_from=[...])`) as the fallback. The official doc argues
+   >    against it directly: *"if a token lives in the agent's environment, the agent can leak it."*
+   >    Putting secrets in the worker/process env is the exact leak vector the credential proxy exists
+   >    to remove, so decode does **not** use `secret_environment_from` for secrets. (`secret_environment_from`
+   >    is in any case a *transport/deployment* option — a no-op on the local in-process stack — so it
+   >    bought nothing locally either.)
+   > 3. **What task 064 ships instead — a secret-store *config source*.** Generalize 061's single-key
+   >    lookup into a pydantic-settings custom source (`KitaruSecretSettingsSource`) that, **headless
+   >    only** (`decode run`, gated by `runtime_secret_store_config`, default off), hydrates the whole
+   >    `.env.example` surface from one Kitaru secret into the **`Settings` object** — **never
+   >    `os.environ`, never a worker env** — so a model-chosen `bash` never inherits it. Precedence:
+   >    **real env > Kitaru secret > `.env` > default**. The singleton is rebuilt in place for the flow
+   >    span and **restored on exit** (the `_durable_sleeper` reset discipline); the REPL never imports
+   >    kitaru (the source no-ops *and* skips the import when inactive). The governing rule, one line:
+   >    **Kitaru secret → `Settings`, yes; → process/worker env, no.** (`get_secret`/`create_secret` is
+   >    Kitaru's; decode only adds the read-into-`Settings` integration. The glossary's "Credentials
+   >    Proxy" term splits the same way: *secret store* + *secret-store config source* now; *Credential
+   >    Proxy* reserved for the header-injection feature.)
+   > 4. **The real Credential Proxy is deferred to the sandbox milestone** — it needs an isolated
+   >    worker to sit in front of (today `bash` runs in-process via `LocalExecutor`). Its integration
+   >    design is fixed now in **"Future work — the Credential Proxy at the sandbox step"** below; it
+   >    will get its own implementation ADR when built.
+
 6. **Scheduling/cron is external — decode ships the deployable entrypoint, not a scheduler.** Because
    Kitaru has no native cron, recurring runs are: `kitaru deploy` the flow + an outside trigger. Step 7
    delivers the deployable flow entrypoint and documents the trigger; the **real recurring schedule
@@ -270,10 +311,13 @@ flowchart TB
 - **CI stays offline.** The Kitaru flow runs against a **local stack**; unit tests patch the runtime
   seam (no server, no network), mirroring how the LSP service is tested (ADR-0007). The capstone e2e
   swaps only the model boundary.
-- **Glossary + settings grow.** Six ubiquitous-language terms (Headless Runtime, Durable Flow,
-  Checkpoint, Replay, Wait (HITL), Credentials Proxy) go in `docs/glossary.md`, and five settings
-  (`runtime_enabled`, `runtime_checkpoint_strategy`, `runtime_wait_timeout_s`,
-  `runtime_credentials_proxy_enabled`, `runtime_secret_name`) in `config/settings.py` + `.env.example`
+- **Glossary + settings grow.** Ubiquitous-language terms go in `docs/glossary.md` (Headless Runtime,
+  Durable Flow, Checkpoint, Replay, Wait (HITL); plus — per the 2026-06-29 §5 amendment —
+  **Secret-Store Config** and a reserved **Credential Proxy**, which replace the original single
+  "Credentials Proxy" term), and the runtime settings (`runtime_enabled`,
+  `runtime_checkpoint_strategy`, `runtime_wait_timeout_s`, `runtime_credentials_proxy_enabled`,
+  `runtime_secret_name`, and `runtime_secret_store_config` added in task 064) in `config/settings.py`
+  + `.env.example`
   — the glossary applied at the plan gate, the settings landed in task 057 ahead of their readers (the
   LSP/compaction settings-first pattern). The Kitaru stack is selected by `kitaru init` / Kitaru's own
   config, not a decode setting.
@@ -281,3 +325,59 @@ flowchart TB
   Kitaru; native cron inside decode; a native durable key-value state API (use artifacts / external
   state); multi-flow orchestration; and remote stacks (deferred to step 12). The headless single-flow
   slice is the extension point if any is revisited.
+
+## Future work — the Credential Proxy at the sandbox step (how it will integrate)
+
+The §5 amendment renamed 061's model-key lookup and recorded that Kitaru's **real Credential Proxy**
+is deferred. It is deferred for a structural reason: the proxy is a process that sits **between an
+isolated worker and the network**, and decode has no isolated worker yet — `bash` runs in-process via
+`LocalExecutor`. In the canonical `agent_harness_platform` example the proxy is **Stage 4, strictly
+after Stage 2 (the Docker sandbox)**. So the proxy lands with **decode's sandbox milestone**, built the
+canonical way. The integration is fixed here now (it gets its own implementation ADR when built) so the
+secret-store work above slots into it without rework.
+
+**The credential-boundary principle (the whole point).** *The side that runs model-chosen commands
+holds no secret; the side that holds the secret runs no model-chosen command.* A prompt-injected agent
+can read anything in its environment — so **no token ever enters the worker's env**. The worker sends
+the request; a separate process attaches the credential *after the request has left the worker*.
+
+**The three pieces, and how each integrates with existing components:**
+
+- **`SandboxProxyRule` — a new config surface (integrates with the Profile/agent config).** Declares,
+  per host, which header to inject with a secret template, e.g.
+  `SandboxProxyRule(name="github-auth", hosts=["api.github.com"], headers={"Authorization": "Bearer {{ github-token.value }}"})`.
+  This is a *list of rules* on the agent/profile — distinct from, and additional to, the secret-store
+  **config source** (064). Config source = the harness's own settings; proxy rules = the tools'
+  outbound-call credentials.
+- **`build_credential_map(...)` — the integration with the secret store.** At flow start, on the host,
+  it resolves each `{{ name.key }}` template by calling **`kitaru.get_secret(name).values`** — i.e. the
+  proxy is *built on top of the same Kitaru secret store* that §5/064 already use. One store, multiple
+  consumers; no new secret backend. The resolved `{host: {header: value}}` map is handed **only to the
+  proxy container's environment — never the worker's.**
+- **`DockerProxy` — the injection (integrates with the sandbox `run` seam).** A mitmproxy addon running
+  alongside the `DockerSandbox`; the worker's `http_proxy`/`https_proxy` point at it and it trusts the
+  proxy's CA. The addon matches each request's host against the credential map and injects the header in
+  transit, so `curl https://api.github.com/...` from the worker succeeds though the worker never held a
+  token. `DockerProxy` + `SandboxProxyRule` are the two swap points if mitmproxy is replaced.
+
+**How it composes with the rest of decode:**
+
+- **Secret store (§5 / 061 / 064):** *one* store, *three* host-side consumers — (a) 061 model-key
+  resolution, (b) 064 secret-store config source (→ `Settings`), (c) `build_credential_map` (→ proxy
+  container). None of the three puts a *tool* secret in the worker.
+- **The sandbox `run` seam (AGENTS.md "the one real abstraction"):** the proxy requires the sandbox's
+  container + network isolation, which is exactly why it cannot precede the sandbox step. The
+  proxy-aware sandbox is wired at the `run` seam (local Docker/Firecracker, remote Modal), not above it.
+- **`bash` today vs then.** Today `LocalExecutor` `bash` inherits `os.environ`, which is *why* the 064
+  config source deliberately writes to `Settings` and **never** `os.environ`. Once `bash` runs in the
+  sandbox worker, the worker holds **no** credentials and authenticated calls go through the proxy —
+  closing the gap the "no `os.environ` write" rule protects in the interim.
+- **Typed services as a second credential path (example Stage 5).** For structured calls, a host-side
+  `exec_service` dispatch can hold credentials the worker never touches at all — bypassing both the
+  shell and the proxy. A candidate for decode's `services/` layer when the need arises.
+- **`modal`:** its dual proxy *tokens* (`MODAL_PROXY_TOKEN_ID`/`_SECRET`) are a request-header surface —
+  the same shape this proxy injects — which is why §5/061 deliberately left `modal` out of the
+  secret-store/model-key path. modal's credentials belong to this proxy step, not the model-key lookup.
+
+This section is **design intent, not a built feature.** It ships with the sandbox milestone and will be
+recorded in its own implementation ADR (mechanism, container teardown, tests) at that time.

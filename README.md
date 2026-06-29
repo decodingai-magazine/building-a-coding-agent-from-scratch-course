@@ -173,6 +173,28 @@ Then turn the proxy on in `.env`:
 
 With it on, a `decode run` flow constructs the model with the key fetched from the secret; the execution's serialized arguments carry only the task and the secret name. The settings key is no longer required (or consulted) for that provider — so a leftover `GEMINI_API_KEY` in `.env` is harmless. A missing secret (or one without the provider key) is caught by a **proxy-aware pre-flight** before any flow is built: `decode run` prints one friendly line naming the fix (`kitaru secrets set <name> --GEMINI_API_KEY=…`) and exits non-zero — never a traceback, and never a silent fallback to the settings key. (Modal's dual proxy-token auth is a separate sandbox-header surface and is not routed through this proxy.)
 
+### Secret-store config source (centralize the whole config in one Kitaru secret)
+
+The credentials proxy above resolves just the *model key*. You can go one step further and keep the **whole** `decode run` configuration — provider, model, every key, the compaction/LSP tuning — in the **same** Kitaru secret, so an operator manages one place instead of an `.env`. Because `decode`'s settings already map every `.env.example` variable to a field, this needs no per-variable wiring. Set the values on the secret named by `RUNTIME_SECRET_NAME` (default `decode-llm-creds`), keyed by their `.env.example` names:
+
+```bash
+kitaru secrets set decode-llm-creds --private \
+  --LLM_PROVIDER=gemini --GEMINI_MODEL=gemini-2.5-flash --GEMINI_API_KEY=…
+```
+
+Then turn the source on in `.env`:
+
+- `RUNTIME_SECRET_STORE_CONFIG=true` — a `decode run` flow hydrates its `Settings` from that secret. **Default `false`**, and **headless-only**: bare `decode` (the REPL) never reads the secret and never imports Kitaru.
+
+Two rules make it safe:
+
+- **The real process env wins.** Precedence is `env > Kitaru secret > .env > defaults`, so anything you actually export still overrides the secret (handy for a one-off `GEMINI_MODEL=… decode run …`); the secret overrides `.env` and the built-in defaults.
+- **Values land in `Settings`, never `os.environ`.** The hydrated config lives only in the in-process `Settings` object — it is **never** written to the process or worker environment, so a model-chosen `bash` command can never read a Kitaru-sourced secret out of its env. The singleton is restored when the flow exits, so a later in-process run is unaffected.
+
+With the source on, `decode run` runs a **secret-store pre-flight** before building the flow: it hydrates `Settings` from the secret up front and validates the result, so the provider *key* can live **only in the secret** (no `.env` entry and no credentials-proxy flag needed) and still satisfy the startup config guard. A missing secret, or a stored value that fails validation (e.g. a bogus `LLM_PROVIDER`), exits with one friendly line naming the fix (`kitaru secrets set <name> …`) and a non-zero code — never a traceback from inside the flow. (You can still keep the key in `.env` and let the secret carry only the model/tuning if you prefer.)
+
+This **secret-store config source** is distinct from the future **credential proxy** (mitmproxy header injection for a sandboxed worker's *tool* credentials), which is deferred to the sandbox milestone. With both this and the credentials proxy on, they compose: the model key resolves through the proxy and the rest of the surface hydrates from the same secret — a coherent run with no raw key in the flow payload.
+
 ## Context compaction
 
 A long conversation grows toward the model's context window. `decode` keeps it in budget with a **cheapest-first cascade** that runs automatically at the end of each turn — measured against how full the window is — plus a manual override. The wiring and trade-offs are recorded in [`docs/adr/0006-conversation-compaction.md`](docs/adr/0006-conversation-compaction.md).

@@ -52,7 +52,7 @@ from pydantic_ai import DeferredToolRequests
 
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
-from decode.config.settings import settings
+from decode.config.settings import reload_settings, set_secret_hydration_active, settings
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
@@ -109,6 +109,44 @@ _HITL_WAIT_TOOL_NAMES: frozenset[str] = frozenset(
         SLEEP_TOOL_NAME,
     }
 )
+
+
+@contextmanager
+def _config_from_secret_store() -> Iterator[None]:
+    """Hydrate ``settings`` from a Kitaru secret for the span of a flow, restore on exit (ADR-0008 §5).
+
+    When ``settings.runtime_secret_store_config`` is on, this turns the
+    :class:`~decode.config.settings.KitaruSecretSettingsSource` on, rebuilds the ``settings`` singleton
+    **in place** (so the ``build_agent`` call inside the flow reads the hydrated config — provider,
+    model, keys, tuning — sourced from the secret, with the real env still winning), yields, and in
+    ``finally`` **restores the original singleton and clears the flag**. The restore is load-bearing
+    and mirrors :func:`_durable_sleeper`: the singleton is a module-level global shared by every
+    ``from decode.config.settings import settings`` reader, so without it a later in-process
+    interactive ``Settings`` read (the REPL shares the process in tests) — or the next flow — would
+    inherit the hydrated config and the active source. The snapshot is the exact pre-flow field state,
+    so an error inside the flow still leaves the singleton byte-identical to before. When the setting
+    is off this is a pure no-op: it yields immediately, imports no kitaru, and touches no settings —
+    so the bypass/HITL flows stay byte-unchanged for the default and interactive paths.
+
+    Composes cleanly with :func:`_durable_sleeper`: the HITL flow nests the sleeper inside this
+    context (config first, sleeper innermost) so both seams install and tear down independently.
+    """
+    if not settings.runtime_secret_store_config:
+        yield
+        return
+    # Snapshot the exact pre-flow field state so the restore is byte-identical even on error.
+    snapshot = dict(settings.__dict__)
+    snapshot_fields_set = set(settings.__pydantic_fields_set__)
+    set_secret_hydration_active(True)
+    try:
+        reload_settings()  # rebuilds the singleton in place, pulling the secret through the source
+        yield
+    finally:
+        set_secret_hydration_active(False)
+        settings.__dict__.clear()
+        settings.__dict__.update(snapshot)
+        settings.__pydantic_fields_set__.clear()
+        settings.__pydantic_fields_set__.update(snapshot_fields_set)
 
 
 @contextmanager
@@ -202,10 +240,15 @@ def run_agent_task(task: str) -> str:
 
     Launched via ``run_agent_task.run(task=…)`` → a ``FlowHandle``; ``.wait()`` blocks for the
     terminal checkpoint (see :func:`decode.cli` for the text extraction).
+
+    When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
+    :func:`_config_from_secret_store`, so ``build_agent`` reads config hydrated from the Kitaru secret;
+    off (the default) it is a no-op and behaviour is byte-unchanged.
     """
-    durable_agent = _build_runtime_agent()
-    deps = _build_headless_deps()
-    result = durable_agent.run_sync(task, deps=deps)
+    with _config_from_secret_store():
+        durable_agent = _build_runtime_agent()
+        deps = _build_headless_deps()
+        result = durable_agent.run_sync(task, deps=deps)
     output = result.output
     if not isinstance(output, str):
         # Defensive: under BYPASS every tool runs inline, so a run never resolves to a deferred
@@ -336,20 +379,25 @@ def run_agent_task_hitl(task: str) -> str:
     the run finishes with :data:`_HITL_DENIED_MESSAGE` (the adapter raises rather than feeding the
     denial back to the model — ADR-0008 §3). The final text is stored via
     :func:`_capture_runtime_output`; use :func:`run_hitl_agent_task` to launch and read it back.
+
+    When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
+    :func:`_config_from_secret_store` (the sleeper nests inside it), so ``build_agent`` reads config
+    hydrated from the Kitaru secret; off (the default) it is a no-op and behaviour is byte-unchanged.
     """
-    durable_agent = _build_hitl_runtime_agent()
-    deps = _build_hitl_deps()
-    # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a
-    # ``sleep`` in this run pauses on a flow-scope ``kitaru.wait`` (ADR-0008 §4) while a later
-    # in-process interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).
-    with _durable_sleeper():
-        try:
-            result = durable_agent.run_sync(task, deps=deps)
-        except _ToolApprovalDenied:
-            # The operator rejected a tool approval. The adapter raises out of ``run_sync`` (it has no
-            # feed-back-to-model path), so the run stops here — the denied tool never acted.
-            logger.debug("HITL run stopped: an operator denied a tool approval")
-            return _capture_runtime_output(_HITL_DENIED_MESSAGE)
+    with _config_from_secret_store():
+        durable_agent = _build_hitl_runtime_agent()
+        deps = _build_hitl_deps()
+        # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a
+        # ``sleep`` in this run pauses on a flow-scope ``kitaru.wait`` (ADR-0008 §4) while a later
+        # in-process interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).
+        with _durable_sleeper():
+            try:
+                result = durable_agent.run_sync(task, deps=deps)
+            except _ToolApprovalDenied:
+                # The operator rejected a tool approval. The adapter raises out of ``run_sync`` (it
+                # has no feed-back-to-model path), so the run stops here — the denied tool never acted.
+                logger.debug("HITL run stopped: an operator denied a tool approval")
+                return _capture_runtime_output(_HITL_DENIED_MESSAGE)
     output = result.output
     if not isinstance(output, str):
         # A deferred request escaping ``run_sync`` means a wait-capable tool was not opted out (so

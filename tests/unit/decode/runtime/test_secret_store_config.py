@@ -1,0 +1,287 @@
+"""The Kitaru secret-store config source through the real runtime seam (ADR-0008 §5, task 064).
+
+These run on the **real** local Kitaru stack (offline, no server) so the secret round-trip is the
+genuine one: a secret is created with :func:`kitaru.create_secret`, the headless flow hydrates the
+``settings`` singleton from it (the ``KitaruSecretSettingsSource`` activated for the flow's span),
+and a seam captures the config ``build_agent`` would see *inside* the flow. The model boundary is a
+scripted ``FunctionModel`` (no network).
+
+The invariants under test (all task-064 ACs): headless hydration is seen by ``build_agent``; the
+real process env overrides the secret; ``os.environ`` is never written; the singleton is restored on
+both success and error (no leak into a later in-process ``Settings``); the flow payload carries only
+``{"task"}`` and never the secret value (nor does the log); and the secret-store source composes
+coherently with the task-061 Credentials Proxy when both are on.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+
+import pytest
+from kitaru import create_secret
+from kitaru.adapters.pydantic_ai import KitaruAgent
+from pydantic_ai.messages import ModelResponse, TextPart
+
+import decode.runtime.flow as flow_mod
+from decode.agent.factory import build_agent
+from decode.config.settings import (
+    Settings,
+    is_secret_hydration_active,
+    reload_settings,
+    set_secret_hydration_active,
+    settings,
+)
+from decode.runtime import run_agent_task
+from tests.unit.decode.runtime.conftest import make_scripted_agent
+
+# Booting the real Kitaru/ZenML stack emits two unrelated third-party deprecation warnings (see
+# test_flow.py); scope the ignores here so the strict ``filterwarnings=["error"]`` gate stays green.
+pytestmark = [
+    pytest.mark.filterwarnings("ignore:'crypt' is deprecated:DeprecationWarning"),
+    pytest.mark.filterwarnings("ignore:There is no current event loop:DeprecationWarning"),
+]
+
+_SECRET_NAME = (
+    "decode-llm-creds"  # the default ``runtime_secret_name`` (survives the in-flow reload)
+)
+# Vars cleared from the real env so the Kitaru secret is the authoritative source in the assertions.
+_CLEARED_PROVIDER_ENV = ("GEMINI_API_KEY", "GEMINI_MODEL", "LLM_PROVIDER")
+
+
+@pytest.fixture(autouse=True)
+def restore_settings_singleton():
+    """Snapshot + restore the ``settings`` singleton so a hydrating flow never leaks into the suite.
+
+    The hydration mutates the module-level singleton in place; its own ``finally`` restores it, but
+    this fixture is the belt-and-braces guarantee the *whole test file* leaves the singleton (and the
+    hydration flag) byte-identical for every other test — the highest-risk hermeticity concern.
+    """
+    snapshot = dict(settings.__dict__)
+    snapshot_fields_set = set(settings.__pydantic_fields_set__)
+    try:
+        yield
+    finally:
+        set_secret_hydration_active(False)
+        settings.__dict__.clear()
+        settings.__dict__.update(snapshot)
+        settings.__pydantic_fields_set__.clear()
+        settings.__pydantic_fields_set__.update(snapshot_fields_set)
+
+
+def _enable_secret_store(monkeypatch) -> None:
+    """Turn the secret-store source on via the env and sync the singleton (so context entry sees it).
+
+    ``RUNTIME_SECRET_STORE_CONFIG`` is set in the real env (so the in-flow ``reload_settings`` keeps
+    it on) and the singleton is reloaded once here so the flow's entry check reads it as ``True``.
+    The provider vars are cleared so a value present only in the secret is unambiguously from it.
+    """
+    monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
+    for var in _CLEARED_PROVIDER_ENV:
+        monkeypatch.delenv(var, raising=False)
+    reload_settings()
+
+
+def _scripted_durable(text: str = "ok") -> KitaruAgent:
+    """A scripted offline ``KitaruAgent`` returning ``text`` (the model boundary stays offline)."""
+    scripted, _counter = make_scripted_agent([ModelResponse(parts=[TextPart(content=text)])])
+    return KitaruAgent(scripted, name="decode-runtime", checkpoint_strategy="turn")
+
+
+def test_headless_flow_hydrates_settings_seen_by_build_agent(monkeypatch):
+    """``build_agent`` (the seam) sees provider/model/key hydrated from the secret, not the env."""
+    create_secret(
+        _SECRET_NAME,
+        {
+            "LLM_PROVIDER": "gemini",
+            "GEMINI_MODEL": "gemini-from-secret",
+            "GEMINI_API_KEY": "sk-secret-only",
+        },
+        private=True,
+    )
+    _enable_secret_store(monkeypatch)
+    seen: dict[str, str] = {}
+
+    def _seam() -> KitaruAgent:
+        # Stands in for ``_build_runtime_agent`` → ``build_agent``: record the hydrated config the
+        # real factory would read at this point, then run the turn on a scripted offline model.
+        seen["provider"] = settings.llm_provider
+        seen["model"] = settings.gemini_model
+        seen["key"] = settings.gemini_api_key.get_secret_value()
+        return _scripted_durable()
+
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _seam)
+
+    result = run_agent_task.run(task="hydrate me").wait()
+
+    assert getattr(result, "output", result) == "ok"
+    assert seen["provider"] == "gemini"
+    assert seen["model"] == "gemini-from-secret"  # not in the real env — only in the secret
+    assert seen["key"] == "sk-secret-only"
+
+
+def test_real_env_overrides_kitaru_secret_in_flow(monkeypatch):
+    """A var present in the real process env is NOT overridden by the Kitaru secret (precedence)."""
+    create_secret(_SECRET_NAME, {"GEMINI_MODEL": "gemini-from-secret"}, private=True)
+    monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-from-env")  # real env wins
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    reload_settings()
+    seen: dict[str, str] = {}
+
+    def _seam() -> KitaruAgent:
+        seen["model"] = settings.gemini_model
+        return _scripted_durable()
+
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _seam)
+
+    run_agent_task.run(task="env wins").wait()
+
+    assert seen["model"] == "gemini-from-env"
+
+
+def test_hydration_never_writes_os_environ(monkeypatch):
+    """The hydrated values live only in ``Settings`` — ``os.environ`` is byte-unchanged."""
+    create_secret(
+        _SECRET_NAME,
+        {"GEMINI_MODEL": "gemini-from-secret", "GEMINI_API_KEY": "sk-secret-not-in-env"},
+        private=True,
+    )
+    _enable_secret_store(monkeypatch)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _scripted_durable)
+    env_before = dict(os.environ)
+
+    run_agent_task.run(task="no env writes").wait()
+
+    assert dict(os.environ) == env_before  # nothing added/changed
+    assert "sk-secret-not-in-env" not in os.environ.values()
+
+
+def test_context_restores_settings_on_success(monkeypatch):
+    """After the hydration context returns, the singleton is back to its pre-flow values."""
+    create_secret(_SECRET_NAME, {"GEMINI_MODEL": "gemini-from-secret"}, private=True)
+    _enable_secret_store(monkeypatch)
+    before_model = settings.gemini_model  # the default — GEMINI_MODEL was cleared from the env
+
+    with flow_mod._config_from_secret_store():
+        assert settings.gemini_model == "gemini-from-secret"  # hydrated inside the context
+
+    assert settings.gemini_model == before_model  # restored on exit
+    assert is_secret_hydration_active() is False
+
+
+def test_context_restores_settings_on_error(monkeypatch):
+    """On an error inside the context the singleton is still restored and the flag cleared (no leak)."""
+    create_secret(_SECRET_NAME, {"GEMINI_MODEL": "gemini-from-secret"}, private=True)
+    _enable_secret_store(monkeypatch)
+    before_model = settings.gemini_model
+
+    with pytest.raises(RuntimeError, match="boom"), flow_mod._config_from_secret_store():
+        assert settings.gemini_model == "gemini-from-secret"
+        raise RuntimeError("boom")
+
+    assert settings.gemini_model == before_model
+    assert is_secret_hydration_active() is False
+    # A subsequent in-process ``Settings`` read sees the original config (the source is inert again).
+    fresh = Settings(_env_file=None)
+    assert fresh.gemini_model == before_model
+
+
+def test_context_is_a_noop_when_flag_off(monkeypatch):
+    """With the setting off the context touches no settings and never activates the source."""
+    monkeypatch.delenv("RUNTIME_SECRET_STORE_CONFIG", raising=False)
+    reload_settings()
+    assert settings.runtime_secret_store_config is False
+    snapshot = dict(settings.__dict__)
+
+    with flow_mod._config_from_secret_store():
+        assert settings.__dict__ == snapshot  # no hydration happened
+        assert is_secret_hydration_active() is False
+
+    assert settings.__dict__ == snapshot
+
+
+def test_hydration_logs_field_names_not_secret_values(monkeypatch, caplog):
+    """The hydration log line carries field NAMES only — never a secret value (payload/log invariant)."""
+    sentinel = "SENTINEL-SECRET-VALUE-9f3a"
+    create_secret(
+        _SECRET_NAME,
+        {"GEMINI_API_KEY": sentinel, "GEMINI_MODEL": "gemini-from-secret"},
+        private=True,
+    )
+    _enable_secret_store(monkeypatch)
+
+    with (
+        caplog.at_level(logging.DEBUG, logger="decode.config.settings"),
+        flow_mod._config_from_secret_store(),
+    ):
+        pass
+
+    assert sentinel not in caplog.text  # the raw value never reaches the logs
+    assert "gemini_api_key" in caplog.text  # but the field name is logged for observability
+
+
+def test_flow_payload_carries_only_the_task_not_the_secret_value(monkeypatch):
+    """The serialized flow arguments carry only the task — never a hydrated secret value."""
+    sentinel = "SENTINEL-SECRET-VALUE-payload-7c21"
+    create_secret(
+        _SECRET_NAME,
+        {"GEMINI_MODEL": "gemini-from-secret", "GEMINI_API_KEY": sentinel},
+        private=True,
+    )
+    _enable_secret_store(monkeypatch)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _scripted_durable)
+
+    handle = run_agent_task.run(task="summarize the repository")
+    assert getattr(handle.wait(), "output", None) == "ok"
+
+    from zenml.client import Client
+
+    run = Client().get_pipeline_run(handle.exec_id)
+    assert set(run.config.parameters) == {"task"}
+    assert run.config.parameters["task"] == "summarize the repository"
+    assert sentinel not in run.config.model_dump_json()
+
+
+def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(monkeypatch):
+    """Secret-store config + the 061 Credentials Proxy compose: model from secret, key via proxy, no leak."""
+    raw_key = "RAW-KITARU-GEMINI-KEY-both-flags-1a2b"
+    create_secret(
+        _SECRET_NAME,
+        {
+            "LLM_PROVIDER": "gemini",
+            "GEMINI_MODEL": "gemini-from-secret",
+            "GEMINI_API_KEY": raw_key,
+        },
+        private=True,
+    )
+    # Both flags via the env so the in-flow reload preserves them; provider vars cleared.
+    monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
+    monkeypatch.setenv("RUNTIME_CREDENTIALS_PROXY_ENABLED", "true")
+    for var in _CLEARED_PROVIDER_ENV:
+        monkeypatch.delenv(var, raising=False)
+    reload_settings()
+    observed: dict[str, str] = {}
+
+    def _seam() -> KitaruAgent:
+        # Real build_agent(flow_mode=True): secret-store hydrated the model id; the Credentials Proxy
+        # resolves the key from the SAME secret. Then run the turn on a scripted offline model.
+        agent = build_agent(flow_mode=True)
+        observed["model"] = settings.gemini_model
+        observed["resolved_key"] = agent.model._provider.client._api_client.api_key
+        return _scripted_durable()
+
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _seam)
+
+    handle = run_agent_task.run(task="both flags on")
+    assert getattr(handle.wait(), "output", None) == "ok"
+
+    assert observed["model"] == "gemini-from-secret"  # secret-store hydrated the model
+    assert observed["resolved_key"] == raw_key  # the proxy resolved the key from the same secret
+
+    from zenml.client import Client
+
+    run = Client().get_pipeline_run(handle.exec_id)
+    assert set(run.config.parameters) == {"task"}
+    assert raw_key not in run.config.model_dump_json()  # no raw key in the payload

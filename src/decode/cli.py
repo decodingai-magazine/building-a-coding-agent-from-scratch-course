@@ -14,6 +14,7 @@ import asyncio  # noqa: E402  (intentional post-logger import)
 import logging  # noqa: E402
 
 import click  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 from decode.agents.loader import load_agent  # noqa: E402
 from decode.config.settings import settings  # noqa: E402
@@ -147,6 +148,49 @@ def _proxy_credential_error() -> str | None:
     return None
 
 
+def _secret_store_config_error() -> str | None:
+    """Hydrate + validate the secret-store config before the flow; one friendly line if it fails (ADR-0008 §5).
+
+    The secret-store-config counterpart to :func:`_proxy_credential_error` for ``decode run`` (task
+    064). When ``settings.runtime_secret_store_config`` is on, the whole provider config (provider,
+    model, key, tuning) is hydrated from the Kitaru secret — but *inside the flow*, after this cli's
+    provider-config guard has already run. Without this, two symptoms follow: (1) a key living **only**
+    in the secret trips the misleading ``set GEMINI_API_KEY`` line because the guard saw the
+    un-hydrated settings; and (2) a missing/malformed secret blows up as a ~30-frame traceback from
+    inside the flow body. This reuses the flow's own
+    :func:`~decode.runtime.flow._config_from_secret_store` context to hydrate the ``settings``
+    singleton up front, runs the provider-config guard against THAT hydrated config (so a secret-only
+    key satisfies it), and converts a missing/malformed secret (``KitaruRuntimeError`` ⊂
+    ``RuntimeError``, or a pydantic ``ValidationError`` from a bad stored value) into one friendly
+    stderr line naming the real fix. The context restores the singleton on exit and the flow
+    re-hydrates idempotently in its own body. With the Credentials Proxy also on the settings-key guard
+    is skipped here (the key comes from the secret via the proxy, whose pre-flight names the right fix)
+    — so the two never emit conflicting lines. ``kitaru`` is reached only through that lazily-imported
+    context, so the REPL path never loads it.
+    """
+    from decode.runtime.flow import _config_from_secret_store
+
+    # Read the secret name from the pre-hydration singleton — that is the name the source fetches with,
+    # so the error line names the secret the operator must actually create/repair.
+    secret_name = settings.runtime_secret_name
+    try:
+        with _config_from_secret_store():
+            # Inside the context ``settings`` is hydrated from the Kitaru secret. Validate the hydrated
+            # provider config — but only when the proxy is off; with it on the key comes from the secret
+            # via the proxy pre-flight (which names the right fix), so defer to it rather than risk a
+            # misleading settings-key line here.
+            if _uses_credentials_proxy():
+                return None
+            return _provider_config_error()
+    except (RuntimeError, ValidationError) as exc:
+        logger.debug("secret-store config secret %r missing or invalid: %s", secret_name, exc)
+        return (
+            f"Decode: RUNTIME_SECRET_STORE_CONFIG is on but the Kitaru secret {secret_name!r} could "
+            f"not be loaded (it is missing, or a stored value is invalid) — create or repair it with "
+            f"`kitaru secrets set {secret_name} --LLM_PROVIDER=… --GEMINI_API_KEY=…` (see .env.example)."
+        )
+
+
 @click.group(invoke_without_command=True)
 @click.option(
     "--resume",
@@ -255,16 +299,23 @@ def run(task: str, hitl: bool) -> None:
 
     Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): the per-provider
     config guard (it builds a model) fires first, then ``RUNTIME_ENABLED`` — a disabled runtime never
-    builds a flow. When the **Credentials Proxy** is on (ADR-0008 §5) the model key comes from a Kitaru
-    secret, not settings, so the settings-key guard is replaced by a proxy-aware pre-flight that
-    validates the secret resolves before any flow is built — a missing/incomplete secret is one
-    friendly line, never a traceback. ``kitaru`` is imported lazily here so the REPL path never loads it.
+    builds a flow. Two kitaru-backed config sources (ADR-0008 §5) move that key guard to a pre-flight
+    after the runtime guard, because each boots Kitaru: when the **secret-store config source**
+    (``RUNTIME_SECRET_STORE_CONFIG``) is on the whole provider config is hydrated from a Kitaru secret
+    up front, so a key/model living only in the secret satisfies the guard and a missing/malformed
+    secret is one friendly line; when the **Credentials Proxy** is on the model key comes from a Kitaru
+    secret, validated by a proxy-aware pre-flight. With both on they compose (secret-store hydration
+    first, then the proxy resolves its key from the now-hydrated secret), never two conflicting lines.
+    ``kitaru`` is imported lazily here so the REPL path never loads it.
     """
-    # Per-provider config guard. Proxy-aware (ADR-0008 §5): for proxy-OFF and for modal (never
-    # proxied), this is the byte-identical settings-key/token guard. A proxied provider under the
-    # proxy validates the Kitaru secret instead — deferred to the pre-flight below, after the runtime
-    # guard, because that lookup boots Kitaru and a disabled runtime must short-circuit first.
-    if not _uses_credentials_proxy():
+    secret_store_on = settings.runtime_secret_store_config
+
+    # Per-provider config guard. Skipped here when a kitaru-backed source supplies the config — the
+    # Credentials Proxy (key from a secret) or the secret-store config source (whole config from a
+    # secret) — because both are validated in a pre-flight AFTER the runtime guard (they boot Kitaru,
+    # and a disabled runtime must short-circuit first). For everything else (proxy off + secret-store
+    # off, and modal which is never proxied) this is the byte-identical settings-key/token guard.
+    if not _uses_credentials_proxy() and not secret_store_on:
         config_error = _provider_config_error()
         if config_error is not None:
             logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
@@ -275,6 +326,18 @@ def run(task: str, hitl: bool) -> None:
         logger.debug("runtime disabled; refusing to run")
         click.echo(_RUNTIME_DISABLED_MESSAGE, err=True)
         raise click.exceptions.Exit(1)
+
+    # Secret-store config pre-flight (ADR-0008 §5, task 064): hydrate ``settings`` from the Kitaru
+    # secret and run the provider-config guard against THAT, so a key/model living only in the secret
+    # satisfies it (no false ``set GEMINI_API_KEY``) and a missing/malformed secret is one friendly
+    # line, not a deep traceback from inside the flow. Runs BEFORE the proxy pre-flight so that, with
+    # both flags on, the proxy then resolves its key from the now-hydrated secret config — one coherent
+    # path, never two conflicting lines. Boots Kitaru, hence after the runtime guard.
+    if secret_store_on:
+        secret_store_error = _secret_store_config_error()
+        if secret_store_error is not None:
+            click.echo(secret_store_error, err=True)
+            raise click.exceptions.Exit(1)
 
     # Credentials-proxy pre-flight (ADR-0008 §5): validate the Kitaru secret resolves BEFORE building
     # a flow, so a missing/incomplete secret exits with one friendly line (naming ``kitaru secrets

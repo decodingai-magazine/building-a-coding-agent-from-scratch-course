@@ -47,6 +47,7 @@ _RUNTIME_ENV_VARS = (
     "RUNTIME_WAIT_TIMEOUT_S",
     "RUNTIME_CREDENTIALS_PROXY_ENABLED",
     "RUNTIME_SECRET_NAME",
+    "RUNTIME_SECRET_STORE_CONFIG",
 )
 
 
@@ -329,6 +330,7 @@ def test_runtime_defaults(monkeypatch):
     assert s.runtime_wait_timeout_s == 600.0
     assert s.runtime_credentials_proxy_enabled is False
     assert s.runtime_secret_name == "decode-llm-creds"
+    assert s.runtime_secret_store_config is False
 
 
 def test_reads_runtime_vars_from_process_env(monkeypatch):
@@ -337,12 +339,14 @@ def test_reads_runtime_vars_from_process_env(monkeypatch):
     monkeypatch.setenv("RUNTIME_WAIT_TIMEOUT_S", "120.0")
     monkeypatch.setenv("RUNTIME_CREDENTIALS_PROXY_ENABLED", "true")
     monkeypatch.setenv("RUNTIME_SECRET_NAME", "my-creds")
+    monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
     s = Settings(_env_file=None)
     assert s.runtime_enabled is False
     assert s.runtime_checkpoint_strategy == "calls"
     assert s.runtime_wait_timeout_s == 120.0
     assert s.runtime_credentials_proxy_enabled is True
     assert s.runtime_secret_name == "my-creds"
+    assert s.runtime_secret_store_config is True
 
 
 def test_loads_runtime_vars_from_a_dotenv_file(tmp_path, monkeypatch):
@@ -355,6 +359,7 @@ def test_loads_runtime_vars_from_a_dotenv_file(tmp_path, monkeypatch):
         "RUNTIME_WAIT_TIMEOUT_S=300.0\n"
         "RUNTIME_CREDENTIALS_PROXY_ENABLED=true\n"
         "RUNTIME_SECRET_NAME=dotenv-creds\n"
+        "RUNTIME_SECRET_STORE_CONFIG=true\n"
     )
     s = Settings(_env_file=str(env))
     assert s.runtime_enabled is False
@@ -362,6 +367,7 @@ def test_loads_runtime_vars_from_a_dotenv_file(tmp_path, monkeypatch):
     assert s.runtime_wait_timeout_s == 300.0
     assert s.runtime_credentials_proxy_enabled is True
     assert s.runtime_secret_name == "dotenv-creds"
+    assert s.runtime_secret_store_config is True
 
 
 @pytest.mark.parametrize("strategy", ["turn", "calls"])
@@ -395,3 +401,150 @@ def test_env_example_lists_every_runtime_var():
     env_example = (Path(__file__).parents[4] / ".env.example").read_text()
     for var in _RUNTIME_ENV_VARS:
         assert var in env_example, f"{var} missing from .env.example"
+
+
+# --- Kitaru secret-store config source (ADR-0008 §5, task 064) ----------------------------------
+#
+# These exercise ``KitaruSecretSettingsSource`` and ``reload_settings`` at the pure-settings level: a
+# **fake** ``kitaru`` module is injected so no real Kitaru/ZenML stack boots (the round-trip against
+# the real local stack lives in tests/unit/decode/runtime/test_secret_store_config.py). The
+# REPL-safety invariant — the bare ``decode`` path never imports kitaru — is proven in a clean
+# subprocess so it is order-independent of any other test that may have imported kitaru.
+
+_CLEARED_FOR_SECRET_SOURCE = (
+    "GEMINI_API_KEY",
+    "GEMINI_MODEL",
+    *_PROVIDER_ENV_VARS,
+)
+
+
+@pytest.fixture
+def reset_hydration_flag():
+    """Always clear the module-level hydration flag after a test that activates the source."""
+    from decode.config.settings import set_secret_hydration_active
+
+    try:
+        yield
+    finally:
+        set_secret_hydration_active(False)
+
+
+def _install_fake_kitaru(monkeypatch, values: dict[str, str]) -> None:
+    """Inject a fake ``kitaru`` module whose ``get_secret(name).values`` is ``values`` (hermetic)."""
+    import sys
+    import types
+
+    fake = types.ModuleType("kitaru")
+
+    class _FakeSecret:
+        def __init__(self, vals: dict[str, str]) -> None:
+            self.values = vals
+
+    fake.get_secret = lambda name: _FakeSecret(values)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "kitaru", fake)
+
+
+def test_secret_store_source_is_inert_when_inactive():
+    """Inactive source returns ``{}`` and never reaches kitaru (the REPL-safety invariant)."""
+    from decode.config.settings import (
+        KitaruSecretSettingsSource,
+        is_secret_hydration_active,
+    )
+
+    assert is_secret_hydration_active() is False
+    source = KitaruSecretSettingsSource(Settings)
+    assert source() == {}
+
+
+def test_secret_store_source_hydrates_known_fields_when_active(monkeypatch, reset_hydration_flag):
+    """Active source maps env-var-named secret keys to fields and ignores unknown keys."""
+    from decode.config.settings import set_secret_hydration_active
+
+    _install_fake_kitaru(
+        monkeypatch,
+        {
+            "GEMINI_MODEL": "gemini-from-secret",
+            "LLM_PROVIDER": "openrouter",
+            "GEMINI_API_KEY": "sk-from-secret",
+            "NOT_A_DECODE_FIELD": "ignored",
+        },
+    )
+    for var in _CLEARED_FOR_SECRET_SOURCE:
+        monkeypatch.delenv(var, raising=False)
+    set_secret_hydration_active(True)
+
+    s = Settings(_env_file=None)
+
+    assert s.gemini_model == "gemini-from-secret"
+    assert s.llm_provider == "openrouter"
+    assert s.gemini_api_key.get_secret_value() == "sk-from-secret"
+
+
+def test_real_env_overrides_kitaru_secret(monkeypatch, reset_hydration_flag):
+    """Precedence: a var set in the real process env wins over the Kitaru secret."""
+    from decode.config.settings import set_secret_hydration_active
+
+    _install_fake_kitaru(monkeypatch, {"GEMINI_MODEL": "gemini-from-secret"})
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-from-env")
+    set_secret_hydration_active(True)
+
+    s = Settings(_env_file=None)
+
+    assert s.gemini_model == "gemini-from-env"
+
+
+def test_kitaru_secret_overrides_dotenv(tmp_path, monkeypatch, reset_hydration_flag):
+    """Precedence: the Kitaru secret wins over a value present only in ``.env``."""
+    from decode.config.settings import set_secret_hydration_active
+
+    _install_fake_kitaru(monkeypatch, {"GEMINI_MODEL": "gemini-from-secret"})
+    for var in _CLEARED_FOR_SECRET_SOURCE:
+        monkeypatch.delenv(var, raising=False)
+    env = tmp_path / ".env"
+    env.write_text("GEMINI_MODEL=gemini-from-dotenv\n")
+    set_secret_hydration_active(True)
+
+    s = Settings(_env_file=str(env))
+
+    assert s.gemini_model == "gemini-from-secret"
+
+
+def test_reload_settings_rebuilds_the_singleton_in_place(monkeypatch):
+    """``reload_settings`` mutates the existing singleton object (shared refs see the update)."""
+    from decode.config.settings import reload_settings
+
+    snapshot = dict(singleton.__dict__)
+    snapshot_fields_set = set(singleton.__pydantic_fields_set__)
+    try:
+        monkeypatch.setenv("GEMINI_MODEL", "reloaded-model")
+        returned = reload_settings()
+
+        assert returned is singleton  # same object, mutated in place — not rebound
+        assert singleton.gemini_model == "reloaded-model"
+    finally:
+        singleton.__dict__.clear()
+        singleton.__dict__.update(snapshot)
+        singleton.__pydantic_fields_set__.clear()
+        singleton.__pydantic_fields_set__.update(snapshot_fields_set)
+
+
+def test_bare_decode_path_does_not_import_kitaru():
+    """The bare ``decode`` REPL import path never pulls in kitaru (ADR-0008 §5, run in a clean proc)."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "import decode.cli\n"  # the REPL entrypoint module
+        "from decode.config.settings import Settings\n"
+        "Settings(_env_file=None)\n"  # build settings with the inert source (flag off)
+        "leaked = sorted(m for m in sys.modules if m == 'kitaru' or m.startswith('kitaru.'))\n"
+        "assert not leaked, leaked\n"
+        "print('NO_KITARU_OK')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "NO_KITARU_OK" in result.stdout
