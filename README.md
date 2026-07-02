@@ -170,6 +170,64 @@ kitaru status                # show the connection + whether the daemon is runni
 
 `kitaru status` shows which mode you're in (`Connection: local Kitaru server` vs `local database`) and whether the daemon is running. This only affects the interactive `kitaru` / `decode run` surface — the automated tests always use their own isolated store and are never affected by it.
 
+### Replay & what-if (checkpoint → replay → compare)
+
+Every `decode run` records a **checkpoint per model call and per tool call** (the default `"calls"` strategy), so you can re-run any recorded execution from any point with **one thing changed** — the model — and see what *would* have happened. `decode replay` is a thin wrapper over Kitaru's native flow replay: everything upstream of the anchor serves from the original run's cache; the anchor and everything downstream re-execute for real ([`docs/adr/0010-runtime-replay.md`](docs/adr/0010-runtime-replay.md)).
+
+**1. Record a run.** Give it something that exercises several tools, so the record has many anchors:
+
+```bash
+decode run "List the Python files in src/decode/agent, then read each one and write agent_overview.md with a one-sentence summary of every file."
+```
+
+The answer prints on **stdout**; `exec_id: <ID>` and a paste-ready replay hint print on **stderr**. Copy the `<ID>` (or find it later with `kitaru executions list --flow run_agent_task`).
+
+**2. Inspect the anchors.** `kitaru executions get <ID>` lists the checkpoints — one per model/tool call. The task above (glob + 4 reads + 2 writes = **7 tool calls**) records **16**:
+
+```
+decode_runtime_model_request     ← turn 1: decide to glob
+glob_tool                        ← list the .py files
+decode_runtime_model_request_2   ← turn 2
+read_tool                        ← read file 1
+decode_runtime_model_request_3
+read_tool_2                      ← read file 2
+… (a model request + read_tool per remaining file: read_tool_3, read_tool_4) …
+decode_runtime_model_request_6
+write_tool                       ← write agent_overview.md
+… (write_tool_2, decode_runtime_model_request_8 = final answer) …
+_capture_runtime_output          ← terminal output sink (NOT a replay anchor)
+```
+
+**3. Replay with a model swap.** Anchor **before** a model call so the swap actually bites:
+
+```bash
+# swap the model for the whole run (anchor at the first model call):
+decode replay <ID> --from decode_runtime_model_request --model gemini-2.5-pro
+
+# …or keep the early tool work from cache and re-execute from the 5th model call onward:
+decode replay <ID> --from decode_runtime_model_request_5 --model gemini-2.5-pro
+```
+
+The (possibly changed) answer prints on **stdout**; the new **Fork** `exec_id` + a compare hint print on **stderr**.
+
+**4. Compare the fork against the original** — cost, latency, per-checkpoint outputs, the final decision:
+
+```bash
+kitaru executions get <FORK_ID>
+kitaru executions get <ID>
+```
+
+For a side-by-side web view, `kitaru login` and open the dashboard.
+
+**Rules of the road:**
+
+- `--from` is **required** — Kitaru has no default anchor. Omitting it prints one friendly line, not a traceback.
+- Anchor at a `decode_runtime_model_request*` (or a tool checkpoint), **not** `_capture_runtime_output`: the sink is downstream of the model, so a model swap there changes nothing.
+- **A trustworthy what-if is three runs.** Do a **baseline rerun** with no `--model` first (`decode replay <ID> --from <cp>`) to prove replay reproduces the original, then diff your fork against *that*, not the raw original.
+- On the local stack, the fork's **stdout** may echo the cached baseline text for the anchored leg — the real delta is in the per-checkpoint outputs / cost / latency you compare in step 4.
+- `decode replay` is **bypass-only**; a `decode run --hitl` execution is refused with a pointer to `kitaru executions replay` (a HITL replay re-asks every wait).
+- Want cheap, coarse records instead? `RUNTIME_CHECKPOINT_STRATEGY=turn decode run "…"` records **one** checkpoint for the whole run — replayable only as a whole.
+
 ### Credentials proxy (keep the model key out of the flow payload)
 
 By default a headless run reads the model key from `.env` (e.g. `GEMINI_API_KEY`) exactly like the REPL. For a **deployed** flow you don't want the raw key serialized into the execution's arguments — so `decode` can instead resolve the key from a **Kitaru secret** at model construction, leaving only the secret *name* in the flow. The design is in [`docs/adr/0008-kitaru-durable-runtime.md`](docs/adr/0008-kitaru-durable-runtime.md) §5; it is **opt-in** and off by default.
