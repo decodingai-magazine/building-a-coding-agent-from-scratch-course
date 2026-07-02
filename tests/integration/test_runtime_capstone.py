@@ -332,7 +332,7 @@ def test_durability_runs_the_real_flow_to_completion(monkeypatch, mocker, tmp_pa
     durable = KitaruAgent(
         _scripted_agent(responses, counter), name=RUNTIME_AGENT_NAME, checkpoint_strategy="turn"
     )
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda: durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
     # The interactive path must NOT be used by the headless flow: spy on both its entry classes.
     runner_spy = mocker.patch("decode.harness.runner.Runner")
@@ -384,7 +384,7 @@ def test_replay_serves_a_finished_model_checkpoint_from_cache(monkeypatch):
     monkeypatch.setattr(
         flow_mod,
         "_build_hitl_runtime_agent",
-        lambda: _to_hitl_durable_agent(_echo_agent(read_call, counter)),
+        lambda model=None: _to_hitl_durable_agent(_echo_agent(read_call, counter)),
     )
 
     result = run_hitl_agent_task("read the note")
@@ -443,7 +443,9 @@ def test_hitl_pauses_on_named_waits_and_injected_answers_drive_the_tools(
     monkeypatch.setattr(
         flow_mod,
         "_build_hitl_runtime_agent",
-        lambda: _to_hitl_durable_agent(_real_agent(model_fn, name=HITL_RUNTIME_AGENT_NAME)),
+        lambda model=None: _to_hitl_durable_agent(
+            _real_agent(model_fn, name=HITL_RUNTIME_AGENT_NAME)
+        ),
     )
 
     result = run_hitl_agent_task("ask which environment, then deploy")
@@ -486,7 +488,7 @@ def test_replay_re_asks_a_wait_on_the_local_stack(monkeypatch):
     monkeypatch.setattr(
         flow_mod,
         "_build_hitl_runtime_agent",
-        lambda: _to_hitl_durable_agent(_echo_agent(ask_call, {"legs": 0})),
+        lambda model=None: _to_hitl_durable_agent(_echo_agent(ask_call, {"legs": 0})),
     )
 
     # Initial run: resolve the wait with "staging" so it completes and is recorded.
@@ -556,7 +558,7 @@ def test_durable_sleep_uses_the_capped_timer(monkeypatch, inline_wait_resolver):
     monkeypatch.setattr(
         flow_mod,
         "_build_hitl_runtime_agent",
-        lambda: _to_hitl_durable_agent(_echo_agent(sleep_call, {"legs": 0})),
+        lambda model=None: _to_hitl_durable_agent(_echo_agent(sleep_call, {"legs": 0})),
     )
 
     result = run_hitl_agent_task("back off then continue")
@@ -603,7 +605,7 @@ def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypa
     resolved: dict[str, str] = {}
     counter = {"legs": 0}
 
-    def seam() -> KitaruAgent:
+    def seam(model: str | None = None) -> KitaruAgent:
         # Build the REAL agent so the proxy resolves the key inside the flow body; capture the key the
         # model carries to prove it came from Kitaru, then run the turn on a scripted offline model.
         real_agent = build_agent(flow_mode=True)
@@ -623,8 +625,9 @@ def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypa
     from zenml.client import Client
 
     run = Client().get_pipeline_run(handle.exec_id)
-    # The only persisted flow argument is the task string — no credential rides in the payload/logs.
-    assert set(run.config.parameters) == {"task"}
+    # The persisted flow arguments are the task string + the Model Override input (``model=None``
+    # here) — no credential rides in the payload/logs; a model id is not a secret (ADR-0010 §2).
+    assert set(run.config.parameters) == {"task", "model"}
     assert run.config.parameters["task"] == "summarize the repository"
     assert _KITARU_RAW_KEY not in run.config.model_dump_json()
     assert _SETTINGS_RAW_KEY not in run.config.model_dump_json()
@@ -658,7 +661,7 @@ def test_real_local_stack_wire(monkeypatch, tmp_path):
     durable = KitaruAgent(
         _scripted_agent(responses, counter), name=RUNTIME_AGENT_NAME, checkpoint_strategy="turn"
     )
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda: durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
     handle = run_agent_task.run(task="read the real input")
     result = handle.wait()

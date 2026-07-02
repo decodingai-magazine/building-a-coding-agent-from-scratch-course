@@ -17,6 +17,8 @@ from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.google import GoogleProvider
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import _build_model, build_agent
@@ -487,3 +489,112 @@ def test_build_model_rejects_an_unsupported_provider(mocker):
 
     with pytest.raises(ValueError, match="unsupported llm_provider"):
         _build_model()
+
+
+# --- Model Override: the model id threaded as a flow parameter (ADR-0010 §2, task 067) -------
+#
+# ``_build_model`` / ``build_agent`` take ``model: str | None = None``. ``None`` reads
+# ``settings.<provider>_model`` (byte-unchanged — the interactive REPL path); a value overrides
+# ONLY the active provider's model id. The provider stays ``LLM_PROVIDER``-selected — the override
+# never changes the provider class or the auth/key path (permanent non-goal: no cross-provider
+# swap). Construction stays offline for every provider (building a model issues no model request).
+
+_OVERRIDE_MODEL_ID = "some-override-model-id"
+
+_PROVIDER_CASES = [
+    ("gemini", False),
+    ("openrouter", False),
+    ("modal", True),
+    ("modal", False),
+]
+_PROVIDER_CASE_IDS = ["gemini", "openrouter", "modal-authenticated", "modal-unauthenticated"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "modal_authenticated"), _PROVIDER_CASES, ids=_PROVIDER_CASE_IDS
+)
+def test_build_model_with_none_matches_the_settings_default(mocker, provider, modal_authenticated):
+    """``_build_model(model=None)`` builds the ``settings.<provider>_model`` id — byte-unchanged."""
+    _, expected_system, expected_model_name = _patch_provider(
+        mocker, provider, modal_authenticated=modal_authenticated
+    )
+
+    model = _build_model(model=None)
+
+    assert model.model_name == expected_model_name
+    assert model.system == expected_system
+
+
+@pytest.mark.parametrize(
+    ("provider", "modal_authenticated"), _PROVIDER_CASES, ids=_PROVIDER_CASE_IDS
+)
+def test_build_model_override_sets_only_the_model_id(mocker, provider, modal_authenticated):
+    """A ``model=`` override changes ONLY the id — the provider class + system stay LLM_PROVIDER's."""
+    expected_cls, expected_system, _ = _patch_provider(
+        mocker, provider, modal_authenticated=modal_authenticated
+    )
+
+    model = _build_model(model=_OVERRIDE_MODEL_ID)
+
+    assert model.model_name == _OVERRIDE_MODEL_ID  # only the id moved to the override
+    assert isinstance(model, expected_cls)  # ...the provider class is unchanged
+    assert model.system == expected_system  # ...and so is the provider system
+
+
+def test_gemini_override_keeps_the_google_provider_and_settings_key(mocker):
+    """gemini + override → still ``GoogleModel`` on ``GoogleProvider``; the auth key is untouched."""
+    _patch_provider(mocker, "gemini")
+
+    model = _build_model(model="gemini-2.5-pro")
+
+    assert model.model_name == "gemini-2.5-pro"
+    assert isinstance(model, GoogleModel)
+    assert isinstance(model._provider, GoogleProvider)
+    # The auth path is byte-identical: the provider still carries the settings-sourced key.
+    assert model._provider.client._api_client.api_key == "test-key"
+
+
+def test_openrouter_override_keeps_the_openrouter_provider_and_key(mocker):
+    """openrouter + override → still ``OpenAIChatModel`` on ``OpenRouterProvider`` (the AC3 headline)."""
+    _patch_provider(mocker, "openrouter")
+
+    model = _build_model(model="some-openrouter-id")
+
+    assert model.model_name == "some-openrouter-id"
+    assert isinstance(model, OpenAIChatModel)
+    assert isinstance(model._provider, OpenRouterProvider)
+    assert model._provider.client.api_key == "or-key"
+
+
+def test_modal_override_keeps_the_custom_client_and_proxy_headers(mocker):
+    """modal + override → still ``OpenAIChatModel`` on the custom ``AsyncOpenAI`` client (auth intact)."""
+    _patch_provider(mocker, "modal", modal_authenticated=True)
+
+    model = _build_model(model="some-modal-id")
+
+    assert model.model_name == "some-modal-id"
+    assert isinstance(model, OpenAIChatModel)
+    assert isinstance(model._provider, OpenAIProvider)
+    client = model._provider.client
+    assert str(client.base_url) == f"{_MODAL_URL}/v1/"
+    headers = dict(client.default_headers)
+    assert headers["Modal-Key"] == "wk-id"
+    assert headers["Modal-Secret"] == "ws-secret"
+
+
+def test_build_agent_threads_the_model_override_to_the_model(mocker):
+    """``build_agent(model=…)`` passes the override straight through to ``_build_model``."""
+    _patch_provider(mocker, "gemini")
+
+    agent = build_agent(model="gemini-2.5-pro")
+
+    assert agent.model.model_name == "gemini-2.5-pro"
+
+
+def test_build_agent_without_a_model_is_the_settings_default(mocker):
+    """``build_agent()`` (no ``model``) still builds the settings id — the interactive REPL path."""
+    _patch_provider(mocker, "gemini")
+
+    agent = build_agent()
+
+    assert agent.model.model_name == "gemini-2.5-flash"

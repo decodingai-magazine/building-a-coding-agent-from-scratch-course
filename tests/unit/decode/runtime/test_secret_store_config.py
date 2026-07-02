@@ -104,7 +104,7 @@ def test_headless_flow_hydrates_settings_seen_by_build_agent(monkeypatch, runtim
     _enable_secret_store(monkeypatch)
     seen: dict[str, str] = {}
 
-    def _seam() -> KitaruAgent:
+    def _seam(model: str | None = None) -> KitaruAgent:
         # Stands in for ``_build_runtime_agent`` → ``build_agent``: record the hydrated config the
         # real factory would read at this point, then run the turn on a scripted offline model.
         seen["provider"] = settings.llm_provider
@@ -132,7 +132,7 @@ def test_real_env_overrides_kitaru_secret_in_flow(monkeypatch, runtime_secret_na
     reload_settings()
     seen: dict[str, str] = {}
 
-    def _seam() -> KitaruAgent:
+    def _seam(model: str | None = None) -> KitaruAgent:
         seen["model"] = settings.gemini_model
         return _scripted_durable()
 
@@ -151,7 +151,7 @@ def test_hydration_never_writes_os_environ(monkeypatch, runtime_secret_name):
         private=True,
     )
     _enable_secret_store(monkeypatch)
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _scripted_durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: _scripted_durable())
     env_before = dict(os.environ)
 
     run_agent_task.run(task="no env writes").wait()
@@ -233,7 +233,7 @@ def test_flow_payload_carries_only_the_task_not_the_secret_value(monkeypatch, ru
         private=True,
     )
     _enable_secret_store(monkeypatch)
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _scripted_durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: _scripted_durable())
 
     handle = run_agent_task.run(task="summarize the repository")
     assert getattr(handle.wait(), "output", None) == "ok"
@@ -241,7 +241,8 @@ def test_flow_payload_carries_only_the_task_not_the_secret_value(monkeypatch, ru
     from zenml.client import Client
 
     run = Client().get_pipeline_run(handle.exec_id)
-    assert set(run.config.parameters) == {"task"}
+    # task + the Model Override input (``model=None`` here) now ride as flow params (ADR-0010 §2).
+    assert set(run.config.parameters) == {"task", "model"}
     assert run.config.parameters["task"] == "summarize the repository"
     assert sentinel not in run.config.model_dump_json()
 
@@ -268,7 +269,7 @@ def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
     reload_settings()
     observed: dict[str, str] = {}
 
-    def _seam() -> KitaruAgent:
+    def _seam(model: str | None = None) -> KitaruAgent:
         # Real build_agent(flow_mode=True): secret-store hydrated the model id; the Credentials Proxy
         # resolves the key from the SAME secret. Then run the turn on a scripted offline model.
         agent = build_agent(flow_mode=True)
@@ -287,5 +288,6 @@ def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
     from zenml.client import Client
 
     run = Client().get_pipeline_run(handle.exec_id)
-    assert set(run.config.parameters) == {"task"}
+    # task + the Model Override input (``model=None`` here) now ride as flow params (ADR-0010 §2).
+    assert set(run.config.parameters) == {"task", "model"}
     assert raw_key not in run.config.model_dump_json()  # no raw key in the payload

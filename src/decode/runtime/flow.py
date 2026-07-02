@@ -191,7 +191,9 @@ async def _deny_permission_resolver(request: PermissionRequest) -> PermissionDec
     return PermissionDecision.deny(reason="No interactive approver in the headless runtime.")
 
 
-def _build_runtime_agent() -> KitaruAgent[AgentDeps, str | DeferredToolRequests]:
+def _build_runtime_agent(
+    model: str | None = None,
+) -> KitaruAgent[AgentDeps, str | DeferredToolRequests]:
     """The patchable runtime seam: wrap ``build_agent()`` in ``KitaruAgent`` (ADR-0008 §2).
 
     Mirrors the bash ``_EXECUTOR`` / lsp ``_spawn_process`` seams: the one place a real
@@ -202,8 +204,12 @@ def _build_runtime_agent() -> KitaruAgent[AgentDeps, str | DeferredToolRequests]
     ``flow_mode=True`` engages the **Credentials Proxy** (ADR-0008 §5): when
     ``settings.runtime_credentials_proxy_enabled`` the provider key is resolved from a Kitaru secret
     here (inside the flow body), so a deployed flow payload carries the secret name, not the raw key.
+
+    ``model`` is the **Model Override** (ADR-0010 §2) threaded from :func:`run_agent_task`: ``None``
+    (the default) reads ``settings.<provider>_model``, byte-unchanged; a value overrides only the
+    active provider's model id, which is what lets Kitaru swap it on a what-if Replay.
     """
-    agent = build_agent(flow_mode=True)
+    agent = build_agent(flow_mode=True, model=model)
     return KitaruAgent(
         agent,
         name=RUNTIME_AGENT_NAME,
@@ -230,7 +236,7 @@ def _build_headless_deps() -> AgentDeps:
 
 
 @flow
-def run_agent_task(task: str) -> str:
+def run_agent_task(task: str, model: str | None = None) -> str:
     """Run ``task`` to completion through the durable agent and return its final text (ADR-0008 §1-2).
 
     Sync ``@flow``: build the durable agent (the patchable seam), construct the headless BYPASS
@@ -241,12 +247,17 @@ def run_agent_task(task: str) -> str:
     Launched via ``run_agent_task.run(task=…)`` → a ``FlowHandle``; ``.wait()`` blocks for the
     terminal checkpoint (see :func:`decode.cli` for the text extraction).
 
+    ``model`` is the **Model Override** (ADR-0010 §2), a keyword-defaulted flow input threaded to the
+    seam: ``None`` (the default) reads ``settings.<provider>_model`` — so ``run(task=…)`` without a
+    model is byte-unchanged — while a value overrides only the active provider's model id. Because it
+    is a flow input, Kitaru can swap it on a what-if Replay (``run_agent_task.replay(..., model=…)``).
+
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store`, so ``build_agent`` reads config hydrated from the Kitaru secret;
     off (the default) it is a no-op and behaviour is byte-unchanged.
     """
     with _config_from_secret_store():
-        durable_agent = _build_runtime_agent()
+        durable_agent = _build_runtime_agent(model)
         deps = _build_headless_deps()
         result = durable_agent.run_sync(task, deps=deps)
     output = result.output
@@ -320,14 +331,18 @@ def _to_hitl_durable_agent(agent: object) -> KitaruAgent[AgentDeps, str | Deferr
     )
 
 
-def _build_hitl_runtime_agent() -> KitaruAgent[AgentDeps, str | DeferredToolRequests]:
+def _build_hitl_runtime_agent(
+    model: str | None = None,
+) -> KitaruAgent[AgentDeps, str | DeferredToolRequests]:
     """The patchable HITL runtime seam: wrap ``build_agent()`` in the HITL ``KitaruAgent``.
 
     Mirrors :func:`_build_runtime_agent` (the bypass seam) so a test patches it to inject a
     scripted-model agent and drive the real ``@flow`` + adapter waits offline. ``flow_mode=True``
-    engages the Credentials Proxy on the same terms as the bypass seam (ADR-0008 §5).
+    engages the Credentials Proxy on the same terms as the bypass seam (ADR-0008 §5), and ``model``
+    threads the **Model Override** (ADR-0010 §2) through on the same terms too (``None`` → the
+    settings default).
     """
-    return _to_hitl_durable_agent(build_agent(flow_mode=True))
+    return _to_hitl_durable_agent(build_agent(flow_mode=True, model=model))
 
 
 def _build_hitl_deps() -> AgentDeps:
@@ -366,7 +381,7 @@ def _capture_runtime_output(output: str) -> str:
 
 
 @flow
-def run_agent_task_hitl(task: str) -> str:
+def run_agent_task_hitl(task: str, model: str | None = None) -> str:
     """Run ``task`` headlessly with **durable HITL** approvals + ``ask_user`` waits (ADR-0008 §3).
 
     The gating complement of :func:`run_agent_task`: same ``build_agent()``, but under a gating gate
@@ -380,12 +395,15 @@ def run_agent_task_hitl(task: str) -> str:
     denial back to the model — ADR-0008 §3). The final text is stored via
     :func:`_capture_runtime_output`; use :func:`run_hitl_agent_task` to launch and read it back.
 
+    ``model`` is the **Model Override** (ADR-0010 §2), threaded to the HITL seam on the same terms as
+    :func:`run_agent_task` (``None`` → ``settings.<provider>_model``, byte-unchanged).
+
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store` (the sleeper nests inside it), so ``build_agent`` reads config
     hydrated from the Kitaru secret; off (the default) it is a no-op and behaviour is byte-unchanged.
     """
     with _config_from_secret_store():
-        durable_agent = _build_hitl_runtime_agent()
+        durable_agent = _build_hitl_runtime_agent(model)
         deps = _build_hitl_deps()
         # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a
         # ``sleep`` in this run pauses on a flow-scope ``kitaru.wait`` (ADR-0008 §4) while a later

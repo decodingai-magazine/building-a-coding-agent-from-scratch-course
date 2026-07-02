@@ -66,7 +66,9 @@ _BASE_INSTRUCTIONS = (
 )
 
 
-def build_agent(*, flow_mode: bool = False) -> Agent[AgentDeps, str | DeferredToolRequests]:
+def build_agent(
+    *, flow_mode: bool = False, model: str | None = None
+) -> Agent[AgentDeps, str | DeferredToolRequests]:
     """Construct the agent on the configured LLM Provider + register the flat tools (ADR-0002 §1-3,7).
 
     Model construction is delegated to :func:`_build_model` — the Provider Seam that branches on
@@ -82,10 +84,16 @@ def build_agent(*, flow_mode: bool = False) -> Agent[AgentDeps, str | DeferredTo
     headless Kitaru flow (:mod:`decode.runtime.flow`) passes ``flow_mode=True`` so — *only* when
     ``settings.runtime_credentials_proxy_enabled`` — the provider key is resolved from a Kitaru
     secret instead, keeping the raw key out of a (later, deployed) flow payload.
+
+    ``model`` is the **Model Override** (ADR-0010 §2), passed straight to :func:`_build_model`: the
+    interactive TUI builds with the default ``model=None`` (the model id is read from settings,
+    byte-unchanged); the headless flow threads a value through so a run/replay overrides *only* the
+    active provider's model id (never the provider — ``settings.llm_provider`` still selects it).
+    Being a flow input is what lets Kitaru swap it on a what-if Replay (``flow.replay(..., model=…)``).
     """
-    model = _build_model(flow_mode=flow_mode)
+    built_model = _build_model(flow_mode=flow_mode, model=model)
     agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
-        model,
+        built_model,
         deps_type=AgentDeps,
         output_type=[str, DeferredToolRequests],
     )
@@ -95,8 +103,14 @@ def build_agent(*, flow_mode: bool = False) -> Agent[AgentDeps, str | DeferredTo
     return agent
 
 
-def _build_model(*, flow_mode: bool = False) -> Model:
+def _build_model(*, flow_mode: bool = False, model: str | None = None) -> Model:
     """Build the Pydantic AI model for ``settings.llm_provider`` — the Provider Seam (ADR-0005 §3-5).
+
+    ``model`` is the optional **Model Override** (ADR-0010 §2): each branch uses ``model or
+    settings.<provider>_model``, so ``None`` reads the settings default (byte-unchanged) while a value
+    overrides *only* the active provider's model id — never the provider branch (still keyed off
+    ``settings.llm_provider``) and never the auth/key path. This is what makes the model id a
+    replayable flow input for Kitaru's what-if Replay; no cross-provider swap (permanent non-goal).
 
     Three branches, each verified offline against the installed SDK (no model request is issued by
     constructing a model):
@@ -126,12 +140,12 @@ def _build_model(*, flow_mode: bool = False) -> Model:
     provider = settings.llm_provider
     if provider == "gemini":
         return GoogleModel(
-            settings.gemini_model,
+            model or settings.gemini_model,
             provider=GoogleProvider(api_key=_provider_api_key("gemini", flow_mode=flow_mode)),
         )
     if provider == "openrouter":
         return OpenAIChatModel(
-            settings.openrouter_model,
+            model or settings.openrouter_model,
             provider=OpenRouterProvider(
                 api_key=_provider_api_key("openrouter", flow_mode=flow_mode)
             ),
@@ -151,7 +165,7 @@ def _build_model(*, flow_mode: bool = False) -> Model:
             # --unauthenticated endpoint: no Modal headers; placeholder api_key (SDK needs non-empty).
             client = AsyncOpenAI(base_url=base_url, api_key="EMPTY")
         return OpenAIChatModel(
-            settings.modal_endpoint_model,
+            model or settings.modal_endpoint_model,
             provider=OpenAIProvider(openai_client=client),
         )
     raise ValueError(f"unsupported llm_provider: {provider!r}")

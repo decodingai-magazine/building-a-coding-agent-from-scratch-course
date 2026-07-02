@@ -41,7 +41,7 @@ def _patch_seam(monkeypatch, text):
 
     agent, counter = make_scripted_agent([ModelResponse(parts=[TextPart(content=text)])])
     durable = KitaruAgent(agent, name="decode-runtime", checkpoint_strategy="turn")
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda: durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
     return counter
 
 
@@ -60,7 +60,7 @@ def test_run_command_disabled_runtime_guard_does_not_build_a_flow(monkeypatch, _
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", False)
     built = {"seam": False}
 
-    def _tripwire():
+    def _tripwire(*_args, **_kwargs):
         built["seam"] = True
         raise AssertionError("the flow must not be built when the runtime is disabled")
 
@@ -80,7 +80,7 @@ def test_run_command_provider_guard_fires_without_a_key(monkeypatch):
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
 
-    def _tripwire():
+    def _tripwire(*_args, **_kwargs):
         raise AssertionError("the flow must not be built when the provider config is missing")
 
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", _tripwire)

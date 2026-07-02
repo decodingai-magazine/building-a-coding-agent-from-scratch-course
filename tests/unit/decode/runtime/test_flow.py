@@ -37,7 +37,7 @@ def _durable(responses, *, strategy="turn"):
 def test_flow_round_trips_a_task_and_returns_the_agents_text(monkeypatch):
     """A bare text turn round-trips through the real flow and ``.wait().output`` is the agent text."""
     durable, _counter = _durable([ModelResponse(parts=[TextPart(content="all done")])])
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda: durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
     result = run_agent_task.run(task="say all done").wait()
 
@@ -59,7 +59,7 @@ def test_flow_runs_a_gated_tool_inline_under_bypass(monkeypatch, tmp_path):
             ModelResponse(parts=[TextPart(content="wrote out.txt")]),
         ]
     )
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda: durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
     result = run_agent_task.run(task="write out.txt").wait()
 
@@ -77,7 +77,7 @@ def test_flow_records_a_durable_checkpointed_execution(monkeypatch):
     here we assert the durable record exists rather than drive a real crash.
     """
     durable, _counter = _durable([ModelResponse(parts=[TextPart(content="done")])])
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda: durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
     handle = run_agent_task.run(task="record me")
     output = handle.wait()
@@ -107,3 +107,45 @@ def test_build_runtime_agent_wraps_build_agent_in_a_named_kitaru_agent(monkeypat
 
     assert isinstance(durable, KitaruAgent)
     assert durable.name == flow_mod.RUNTIME_AGENT_NAME == "decode-runtime"
+
+
+def _seed_gemini(monkeypatch):
+    """Seed the gemini provider so ``build_agent`` constructs offline; return the settings default id."""
+    from pydantic import SecretStr
+
+    import decode.agent.factory as factory_mod
+
+    monkeypatch.setattr(factory_mod.settings, "gemini_api_key", SecretStr("test-key"))
+    monkeypatch.setattr(factory_mod.settings, "llm_provider", "gemini")
+    monkeypatch.setattr(factory_mod.settings, "gemini_model", "gemini-2.5-flash")
+    return "gemini-2.5-flash"
+
+
+def test_build_runtime_agent_threads_the_model_override_to_the_inner_agent(monkeypatch):
+    """The bypass seam forwards ``model=`` into ``build_agent``; the wrapped agent reports the override.
+
+    User Story 1 (the plumbing proof): ``_build_runtime_agent(model="gemini-2.5-pro")`` builds a
+    ``KitaruAgent`` whose inner pydantic-ai agent reports model id ``"gemini-2.5-pro"``, while the same
+    seam called with no argument reports ``settings.gemini_model`` — proving the override is forwarded
+    end to end. That is the single enabler for Kitaru model-swap Replay (ADR-0010 §2).
+    """
+    default_id = _seed_gemini(monkeypatch)
+
+    overridden = flow_mod._build_runtime_agent(model="gemini-2.5-pro")
+    default = flow_mod._build_runtime_agent()
+
+    assert isinstance(overridden, KitaruAgent)
+    assert overridden.model.model_name == "gemini-2.5-pro"  # the override reached the inner model
+    assert default.model.model_name == default_id  # no argument → the settings default
+
+
+def test_build_hitl_runtime_agent_threads_the_model_override_to_the_inner_agent(monkeypatch):
+    """The HITL seam forwards ``model=`` into ``build_agent`` too (parallels the bypass seam)."""
+    default_id = _seed_gemini(monkeypatch)
+
+    overridden = flow_mod._build_hitl_runtime_agent(model="gemini-2.5-pro")
+    default = flow_mod._build_hitl_runtime_agent()
+
+    assert isinstance(overridden, KitaruAgent)
+    assert overridden.model.model_name == "gemini-2.5-pro"
+    assert default.model.model_name == default_id

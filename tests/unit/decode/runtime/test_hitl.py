@@ -85,7 +85,7 @@ def _echo_agent(first_call: ModelResponse) -> Agent[AgentDeps, str | DeferredToo
 def _patch_hitl_seam(monkeypatch: pytest.MonkeyPatch, agent: Agent) -> None:
     """Point the HITL runtime seam at ``agent`` wrapped in the real HITL ``KitaruAgent`` config."""
     durable = _to_hitl_durable_agent(agent)
-    monkeypatch.setattr(flow_mod, "_build_hitl_runtime_agent", lambda: durable)
+    monkeypatch.setattr(flow_mod, "_build_hitl_runtime_agent", lambda model=None: durable)
 
 
 @pytest.fixture
