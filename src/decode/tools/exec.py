@@ -41,12 +41,20 @@ class ExecResult:
     signal N", mirroring :class:`asyncio.subprocess.Process`). ``timed_out`` is ``True`` when
     the executor had to terminate the process for exceeding its deadline — in which case
     ``stdout`` / ``stderr`` hold whatever partial output was captured before the kill.
+
+    ``note`` is an **optional** out-of-band message about the *execution*, not the command's own
+    output — appended to the model-facing reply by ``bash._render`` when non-empty (ADR-0011 §2).
+    :class:`LocalExecutor` (host subprocess, the ``none`` default) never sets it, so its default
+    ``""`` keeps ``none``-mode rendering **byte-identical** to before this field existed. The Docker
+    sandbox executor (M8) uses it to tell the model when a timeout killed and reset the persistent
+    shell (cwd/env cleared), which is state the command output alone would not reveal.
     """
 
     stdout: str
     stderr: str
     exit_code: int
     timed_out: bool
+    note: str = ""
 
 
 class CommandExecutor(Protocol):

@@ -103,7 +103,10 @@ def _render(result: ExecResult, *, timeout_s: float) -> str:
     A header line states the exit code (and flags a timeout); each non-empty stream is appended
     under a labelled section, truncated through :mod:`decode.tools.truncate` with an overflow
     notice pointing at the spill file. Empty streams are omitted so the model is not handed
-    blank sections.
+    blank sections. A non-empty ``result.note`` (an out-of-band execution notice — e.g. the Docker
+    sandbox reset its shell on timeout, ADR-0011 §2) is appended last; an empty ``note`` (every
+    ``none``-mode :class:`LocalExecutor` result) leaves the output **byte-identical** to before the
+    field existed.
     """
     if result.timed_out:
         header = (
@@ -120,6 +123,8 @@ def _render(result: ExecResult, *, timeout_s: float) -> str:
     stderr_section = _stream_section("stderr", result.stderr)
     if stderr_section:
         sections.append(stderr_section)
+    if result.note:
+        sections.append(result.note)
     return "\n\n".join(sections)
 
 

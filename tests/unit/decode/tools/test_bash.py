@@ -34,6 +34,7 @@ from decode.harness.runner import TurnContext
 from decode.permissions.gate import PermissionGate
 from decode.tools import bash as bash_module
 from decode.tools.askuser import deny_user_question_resolver
+from decode.tools.exec import ExecResult
 
 
 async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
@@ -228,6 +229,40 @@ async def test_bash_truncates_long_output_and_spills_to_a_temp_file(tmp_path: Pa
     assert spill.exists()
     full = spill.read_text(encoding="utf-8")
     assert "2499" in full  # the full stream is reachable, not just the truncated head
+
+
+# --- ExecResult.note rendering (ADR-0011 §2): sandbox executors append an out-of-band notice ------
+
+
+def test_render_is_byte_identical_when_note_is_empty():
+    """An empty ``note`` (every ``none``-mode LocalExecutor result) renders exactly as before the field.
+
+    Pins the byte-for-byte output so the sandbox ``note`` plumbing cannot regress the default path.
+    """
+    result = ExecResult(stdout="hi\n", stderr="", exit_code=0, timed_out=False)
+
+    assert bash_module._render(result, timeout_s=120.0) == "Exit code: 0.\n\nstdout:\nhi"
+
+
+def test_render_appends_a_non_empty_note_after_the_streams():
+    """A non-empty ``note`` (a Docker timeout shell-reset notice) is appended as the last section."""
+    result = ExecResult(
+        stdout="hi\n", stderr="", exit_code=0, timed_out=False, note="Note: the shell was reset."
+    )
+
+    rendered = bash_module._render(result, timeout_s=120.0)
+
+    assert rendered == "Exit code: 0.\n\nstdout:\nhi\n\nNote: the shell was reset."
+
+
+def test_render_includes_the_note_even_when_streams_are_empty():
+    """A timed-out sandbox command with no captured output still carries its reset note to the model."""
+    result = ExecResult(stdout="", stderr="", exit_code=-9, timed_out=True, note="Note: reset.")
+
+    rendered = bash_module._render(result, timeout_s=1.0)
+
+    assert "Note: reset." in rendered
+    assert rendered.endswith("Note: reset.")
 
 
 # --- through a real agent: forced bash call, approved -----------------------------------------

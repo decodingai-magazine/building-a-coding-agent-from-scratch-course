@@ -144,3 +144,31 @@ async def test_run_decodes_undecodable_bytes_without_crashing(tmp_path: Path):
 
     assert result.exit_code == 0
     assert "�" in result.stdout  # the Unicode replacement character
+
+
+# --- ExecResult.note (ADR-0011 §2): optional, backward-compatible, unused by LocalExecutor --------
+
+
+def test_exec_result_note_defaults_to_empty():
+    # The new field is optional; a construction without it leaves ``note`` empty (byte-identical path).
+    assert ExecResult(stdout="", stderr="", exit_code=0, timed_out=False).note == ""
+
+
+def test_exec_result_accepts_four_positional_args_for_backward_compat():
+    # Existing positional callers (pre-``note``) keep working — ``note`` is a trailing default.
+    result = ExecResult("out", "err", 1, True)
+
+    assert (result.stdout, result.stderr, result.exit_code, result.timed_out) == (
+        "out",
+        "err",
+        1,
+        True,
+    )
+    assert result.note == ""
+
+
+async def test_local_executor_never_sets_a_note(tmp_path: Path):
+    # ``none`` mode leaves ``note`` empty; only the sandbox executors populate it (on a timeout reset).
+    result = await LocalExecutor().run("echo hi", cwd=tmp_path, timeout_s=5.0)
+
+    assert result.note == ""
