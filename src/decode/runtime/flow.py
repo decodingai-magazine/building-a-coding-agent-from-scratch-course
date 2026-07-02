@@ -471,7 +471,7 @@ def _load_runtime_output(exec_id: str) -> str:
     )
 
 
-def run_hitl_agent_task(task: str) -> HitlRunResult:
+def run_hitl_agent_task(task: str, model: str | None = None) -> HitlRunResult:
     """Launch the HITL flow and return its result or its paused execution id (ADR-0008 §3).
 
     On the local Kitaru stack ``flow.run(...)`` runs the execution in-process and returns once it has
@@ -479,8 +479,12 @@ def run_hitl_agent_task(task: str) -> HitlRunResult:
     finished run's text is loaded from the output artifact (``.wait()`` cannot auto-extract it under
     the ``"calls"`` + opt-out shape). A paused run yields ``paused=True`` + the ``exec_id`` to resolve
     out-of-band — the caller surfaces the ``kitaru executions input`` instructions.
+
+    ``model`` is the **Model Override** (ADR-0010 §2), forwarded to the ``@flow`` as a flow input:
+    ``None`` (the default) reads ``settings.<provider>_model``, byte-unchanged; a value overrides only
+    the active provider's model id. It is exposed as ``decode run --hitl --model`` (ADR-0010 §4).
     """
-    handle = run_agent_task_hitl.run(task=task)
+    handle = run_agent_task_hitl.run(task=task, model=model)
     status = handle.status
     if status.is_finished and status.is_successful:
         return HitlRunResult(

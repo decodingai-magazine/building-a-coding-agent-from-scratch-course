@@ -280,7 +280,17 @@ def cli(ctx: click.Context, resume: str | None, agent: str, mode: str | None) ->
         "Kitaru waits resolved out-of-band (`kitaru executions input`), instead of bypassing them."
     ),
 )
-def run(task: str, hitl: bool) -> None:
+@click.option(
+    "--model",
+    "model",
+    default=None,
+    metavar="ID",
+    help=(
+        "Override the active provider's model id for this run (e.g. gemini-2.5-pro); defaults to the "
+        "provider's configured model. Does not change the provider (set LLM_PROVIDER for that)."
+    ),
+)
+def run(task: str, hitl: bool, model: str | None) -> None:
     """Run a single TASK headlessly through the durable runtime, then print the result (ADR-0008).
 
     The autonomous counterpart to the REPL: ``decode run "<task>"`` builds the same agent as the
@@ -296,6 +306,16 @@ def run(task: str, hitl: bool) -> None:
       by wait kind (a known limitation — decode does not fork the adapter): the ``ask_user`` /
       ``exit_plan_mode`` answer waits honor ``runtime_wait_timeout_s``; the native ``write`` /
       ``edit`` / ``bash`` **approval** waits use the adapter's fixed ``600s`` default (ADR-0008 §3).
+
+    ``--model ID`` overrides the active provider's model id for this run — the provider itself stays
+    selected by ``LLM_PROVIDER`` (no cross-provider swap). It rides through as a durable **flow input**,
+    so a later ``decode replay`` can swap it to ask what a different model would have done (ADR-0010
+    §2,4). Presence, not correctness: a model id wrong for the provider is not validated here (matching
+    the key guards) — it fails at the first model request.
+
+    After a bypass run the agent's answer prints on **stdout** while the durable ``exec_id`` and a
+    paste-ready ``decode replay`` hint print on **stderr** — so stdout stays clean for piping and the
+    checkpoint→replay loop is discoverable from the terminal (ADR-0010 §4).
 
     Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): the per-provider
     config guard (it builds a model) fires first, then ``RUNTIME_ENABLED`` — a disabled runtime never
@@ -352,35 +372,54 @@ def run(task: str, hitl: bool) -> None:
     # Lazy import: keep kitaru (and its heavy zenml/temporalio stack) off the REPL path entirely —
     # only ``decode run`` pays the import cost. The flow runs on the local Kitaru stack, offline.
     if hitl:
-        _run_hitl(task)
+        _run_hitl(task, model)
         return
 
     from decode.runtime import run_agent_task
     from decode.runtime.flow import _load_runtime_output
 
-    logger.debug("decode run starting (task=%r)", task)
+    logger.debug("decode run starting (task=%r, model=%r)", task, model)
     # Under the ``"calls"`` default (ADR-0010 §3) the bypass flow ends in several terminal per-call
     # checkpoints, so Kitaru's ``.wait()`` cannot auto-extract a single return value
     # (``_MultipleTerminalStepsOutputError`` — verified in task 068). The flow instead saves its final
     # text via the terminal ``_capture_runtime_output`` checkpoint; read it back by artifact name — the
     # same mechanism the HITL path uses. ``run(...)`` runs to completion in-process on the local stack
-    # (bypass never pauses), so the handle is finished here.
-    handle = run_agent_task.run(task=task)
-    click.echo(_load_runtime_output(handle.exec_id))
+    # (bypass never pauses), so the handle is finished here. ``model`` is the Model Override threaded as
+    # a flow input (ADR-0010 §2,4): ``None`` (no ``--model``) reads the provider's configured model.
+    handle = run_agent_task.run(task=task, model=model)
+    click.echo(
+        _load_runtime_output(handle.exec_id)
+    )  # stdout: only the clean agent answer (pipe-safe)
+    _echo_replay_anchor(handle.exec_id, model)  # stderr: exec_id + a paste-ready decode replay hint
 
 
-def _run_hitl(task: str) -> None:
+def _echo_replay_anchor(exec_id: str, model: str | None) -> None:
+    """Echo a finished bypass run's ``exec_id`` + a paste-ready ``decode replay`` hint to **stderr** (ADR-0010 §4).
+
+    Kept off stdout so a piped ``decode run`` stays exactly the agent's answer. The ``exec_id`` is the
+    durable execution the checkpoint→replay loop anchors on; the hint pre-fills a ``decode replay``
+    command (task 070) with the run's own model id when ``--model`` was given, else a ``<model-id>``
+    placeholder the operator fills in. Documentation, not a validated command — presence, not correctness.
+    """
+    model_hint = model if model else "<model-id>"
+    click.echo(f"exec_id: {exec_id}", err=True)
+    click.echo(f"replay it with a change:  decode replay {exec_id} --model {model_hint}", err=True)
+
+
+def _run_hitl(task: str, model: str | None) -> None:
     """Drive the HITL Durable Flow and print the result, or the pause + how to resolve it (ADR-0008 §3).
 
-    A finished run prints the agent's final text. A run that paused on an unresolved durable wait
-    prints the execution id and the ``kitaru executions`` commands an operator uses to inspect and
-    resolve it out-of-band, then resume — exit stays zero (a pause is a normal HITL outcome, not an
-    error).
+    A finished run prints the agent's final text on stdout, then echoes its ``exec_id`` + a note that
+    ``decode replay`` is bypass-only to stderr — a HITL run is replayed via ``kitaru executions
+    replay`` because it re-asks every wait on the local stack (ADR-0010 §5,7). A run that paused on an
+    unresolved durable wait prints the execution id and the ``kitaru executions`` commands an operator
+    uses to inspect and resolve it out-of-band, then resume — exit stays zero (a pause is a normal HITL
+    outcome, not an error). ``model`` is the Model Override, threaded to the HITL flow (ADR-0010 §2).
     """
     from decode.runtime import run_hitl_agent_task
 
-    logger.debug("decode run --hitl starting (task=%r)", task)
-    result = run_hitl_agent_task(task)
+    logger.debug("decode run --hitl starting (task=%r, model=%r)", task, model)
+    result = run_hitl_agent_task(task, model)
     if result.paused:
         click.echo(
             f"Decode: the task paused on a durable human-in-the-loop wait (execution "
@@ -393,7 +432,15 @@ def _run_hitl(task: str) -> None:
         )
         click.echo(f"  kitaru executions resume {result.exec_id}", err=True)
         return
-    click.echo(result.output)
+    click.echo(result.output)  # stdout: only the clean agent answer (pipe-safe)
+    # A completed HITL run is replayable too, but ``decode replay`` is bypass-only (a HITL replay
+    # re-asks every wait on the local stack — ADR-0010 §5,7), so point at the Kitaru operator surface.
+    click.echo(f"exec_id: {result.exec_id}", err=True)
+    click.echo(
+        f"  decode replay is bypass-only; replay this HITL run with "
+        f"`kitaru executions replay {result.exec_id}` (ADR-0010 §5).",
+        err=True,
+    )
 
 
 if __name__ == "__main__":

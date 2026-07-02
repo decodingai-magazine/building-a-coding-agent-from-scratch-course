@@ -50,6 +50,130 @@ def _patch_seam(monkeypatch, text):
     return counter
 
 
+def _recording_seam(monkeypatch, text):
+    """Point the bypass seam at a scripted agent, recording the ``model`` the flow forwards to it.
+
+    Returns a mutable ``captured`` dict whose ``"model"`` key holds the value the ``@flow`` passed to
+    :func:`_build_runtime_agent` — i.e. the Model Override the ``--model`` flag threads through as a
+    durable flow input (ADR-0010 §2,4). The scripted agent uses ``"calls"`` like :func:`_patch_seam`,
+    so the command drives the real artifact-read output path.
+    """
+    from kitaru.adapters.pydantic_ai import KitaruAgent
+
+    agent, _counter = make_scripted_agent([ModelResponse(parts=[TextPart(content=text)])])
+    durable = KitaruAgent(agent, name="decode-runtime", checkpoint_strategy="calls")
+    captured = {"model": "SENTINEL"}
+
+    def _seam(model=None):
+        captured["model"] = model
+        return durable
+
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _seam)
+    return captured
+
+
+# --- task 069: `decode run --model X` + surface the exec_id + paste-ready replay hint (ADR-0010 §4) --
+
+
+def test_run_help_documents_the_model_flag():
+    """``decode run --help`` documents ``--model`` and notes it overrides the provider's model id."""
+    result = CliRunner().invoke(cli, ["run", "--help"])
+
+    assert result.exit_code == 0
+    assert "--model" in result.output
+    assert "gemini-2.5-pro" in result.output  # the help's example model id
+    assert "LLM_PROVIDER" in result.output  # notes it does NOT change the provider
+
+
+def test_run_model_flag_threads_the_override_to_the_seam_and_prints_output(
+    monkeypatch, _provider_ok
+):
+    """``decode run --model X`` forwards ``model=X`` to the flow seam and prints the answer (AC1)."""
+    captured = _recording_seam(monkeypatch, "the overridden answer")
+
+    result = CliRunner().invoke(cli, ["run", "--model", "gemini-2.5-pro", "refactor the parser"])
+
+    assert result.exit_code == 0
+    assert captured["model"] == "gemini-2.5-pro"  # the flag reached the flow's model seam
+    assert "the overridden answer" in result.stdout
+
+
+def test_run_without_model_passes_none_to_the_seam(monkeypatch, _provider_ok):
+    """``decode run`` with no ``--model`` forwards ``model=None`` (the provider's configured model) (AC2)."""
+    captured = _recording_seam(monkeypatch, "the default answer")
+
+    result = CliRunner().invoke(cli, ["run", "list the files"])
+
+    assert result.exit_code == 0
+    assert captured["model"] is None  # no override → the settings default id is used downstream
+    assert "the default answer" in result.stdout
+
+
+def test_run_exec_id_and_replay_hint_go_to_stderr_not_stdout(monkeypatch, _provider_ok):
+    """The exec_id + ``decode replay`` hint land on stderr; stdout stays the clean answer (AC3).
+
+    The pipe-clean split: a piped ``decode run`` must yield exactly the agent's answer on stdout, so
+    the discoverability scaffolding (exec_id anchor + paste-ready replay hint) is echoed to stderr —
+    and the hint carries the run's own model id when ``--model`` was given.
+    """
+    _recording_seam(monkeypatch, "the piped answer")
+
+    result = CliRunner().invoke(cli, ["run", "--model", "gemini-2.5-pro", "summarize the module"])
+
+    assert result.exit_code == 0
+    # stdout is pipe-clean: the answer is there, none of the replay scaffolding is.
+    assert "the piped answer" in result.stdout
+    assert "exec_id:" not in result.stdout
+    assert "decode replay" not in result.stdout
+    # stderr carries the exec_id anchor + a paste-ready decode replay hint using the run's model id.
+    assert "exec_id:" in result.stderr
+    assert "decode replay" in result.stderr
+    assert "--model gemini-2.5-pro" in result.stderr
+
+
+def test_run_replay_hint_uses_a_placeholder_when_no_model_given(monkeypatch, _provider_ok):
+    """Without ``--model`` the stderr replay hint uses a ``<model-id>`` placeholder for the operator (AC3)."""
+    _recording_seam(monkeypatch, "answer")
+
+    result = CliRunner().invoke(cli, ["run", "do the thing"])
+
+    assert result.exit_code == 0
+    assert "decode replay" in result.stderr
+    assert "--model <model-id>" in result.stderr
+
+
+def test_run_model_does_not_bypass_the_disabled_runtime_guard(monkeypatch, _provider_ok):
+    """``--model`` never alters the guard chain: a disabled runtime still trips, no flow built (AC5)."""
+    monkeypatch.setattr(cli_mod.settings, "runtime_enabled", False)
+
+    def _tripwire(*_args, **_kwargs):
+        raise AssertionError("the flow must not be built when the runtime is disabled")
+
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _tripwire)
+
+    result = CliRunner().invoke(cli, ["run", "--model", "gemini-2.5-pro", "do it"])
+
+    assert result.exit_code != 0
+    assert "headless runtime is disabled" in result.stderr
+
+
+def test_run_model_does_not_bypass_the_provider_key_guard(monkeypatch):
+    """``--model`` present + a missing provider key → the same guard fires, no flow built (AC5)."""
+    monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
+    monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
+    monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
+
+    def _tripwire(*_args, **_kwargs):
+        raise AssertionError("the flow must not be built when the provider config is missing")
+
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _tripwire)
+
+    result = CliRunner().invoke(cli, ["run", "--model", "gemini-2.5-pro", "do it"])
+
+    assert result.exit_code != 0
+    assert "GEMINI_API_KEY" in result.stderr
+
+
 def test_run_command_prints_the_agents_output(monkeypatch, _provider_ok):
     """``decode run "<task>"`` runs the flow and prints the agent's final text, exiting zero."""
     _patch_seam(monkeypatch, "the headless answer")
@@ -328,6 +452,37 @@ def test_run_secret_store_malformed_secret_is_a_friendly_line_not_a_traceback(
     _no_flow_tripwires(monkeypatch)
 
     result = CliRunner().invoke(cli, ["run", "list the files"])
+
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, (RuntimeError, ValidationError))
+    assert "RUNTIME_SECRET_STORE_CONFIG" in result.stderr
+    assert runtime_secret_name in result.stderr
+
+
+# --- task 069 (AC5): `--model` never alters the proxy / secret-store guard chain, no flow built -----
+
+
+def test_run_model_does_not_bypass_the_proxy_secret_guard(
+    monkeypatch, _proxy_on, runtime_secret_name
+):
+    """``--model`` present + proxy on + a missing Kitaru secret → friendly line, no flow built (AC5)."""
+    monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
+    _no_flow_tripwires(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run", "--model", "gemini-2.5-pro", "list the files"])
+
+    assert result.exit_code != 0
+    assert runtime_secret_name in result.stderr
+    assert "kitaru secrets set" in result.stderr
+
+
+def test_run_model_does_not_bypass_the_secret_store_guard(
+    monkeypatch, _secret_store_on, runtime_secret_name
+):
+    """``--model`` present + secret-store on + a missing secret → friendly line, no flow built (AC5)."""
+    _no_flow_tripwires(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run", "--model", "gemini-2.5-pro", "list the files"])
 
     assert result.exit_code != 0
     assert not isinstance(result.exception, (RuntimeError, ValidationError))
