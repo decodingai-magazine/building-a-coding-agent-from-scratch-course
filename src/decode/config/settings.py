@@ -202,11 +202,13 @@ class Settings(BaseSettings):
     # readers yet (they land in tasks 058/059/061). ``runtime_enabled`` master-gates the WHOLE headless
     # feature: ``False`` → ``decode run`` exits with a friendly line and never builds a Durable Flow.
     runtime_enabled: bool = True
-    # ``KitaruAgent`` Checkpoint granularity. Default ``"calls"`` (per model/tool call): it makes every
-    # ``decode run`` **replay-ready** — a Replay can anchor before a specific model call (ADR-0010 §3),
-    # which the coarser ``"turn"`` (one Checkpoint per agent turn) cannot. ``"turn"`` stays selectable
-    # as an opt-out (fewer store writes). HITL always forces ``"calls"`` regardless (``flow.py``).
-    runtime_checkpoint_strategy: Literal["turn", "calls"] = "calls"
+    # ``KitaruAgent`` Checkpoint granularity. Default ``"turn"`` (one Checkpoint per agent turn): the
+    # whole run shares one ``asyncio.run`` event loop, so a reused provider HTTP client (google-genai's
+    # cached httpx ``AsyncClient``) stays valid across model calls. ``"calls"`` (per model/tool call)
+    # gives finer Replay anchors but runs each call in its OWN loop — a real multi-turn provider run then
+    # crashes with ``RuntimeError('Event loop is closed')`` on cross-loop client reuse, so it is opt-in
+    # for offline/scripted runs (ADR-0010 §3). HITL always forces ``"calls"`` regardless (``flow.py``).
+    runtime_checkpoint_strategy: Literal["turn", "calls"] = "turn"
     # The durable Wait (HITL) poll timeout (seconds) in flow mode; matches Kitaru's local 600s default.
     # A non-positive value fails fast (Field gt=0). Task 059 reads it.
     runtime_wait_timeout_s: float = Field(600.0, gt=0)

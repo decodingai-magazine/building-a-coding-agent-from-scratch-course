@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
-from pydantic_ai.messages import ModelRequest, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
@@ -177,6 +178,33 @@ async def test_memory_is_injected_into_the_first_request_instructions(tmp_path, 
     assert "decode" in first.instructions.lower()
     assert "PROJECT RULE: always run the tests" in first.instructions
     assert f"# From {tmp_path / 'AGENTS.md'}" in first.instructions
+
+
+async def test_build_agent_retries_empty_model_responses_before_giving_up(tmp_path, mocker):
+    """build_agent() raises the output-retry budget so a few empty/thinking-only turns don't abort.
+
+    Gemini 2.5 sometimes returns an empty (thinking-only) response after a tool call; pydantic-ai
+    re-requests on an empty turn, but its default output-retry budget is 1 — a *second* empty turn
+    aborts a real ``decode run`` with "Exceeded maximum output retries". Two empty turns then text must
+    succeed here, which only holds because ``build_agent`` sets ``output_retries`` above the default 1.
+    """
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    calls = {"n": 0}
+
+    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return ModelResponse(parts=[])  # empty / thinking-only, like Gemini 2.5 post-tool
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent = build_agent()
+    with agent.override(model=FunctionModel(model_fn)):
+        result = await agent.run("hi", deps=_deps(tmp_path))
+
+    assert result.output == "done"
+    assert calls["n"] == 3  # two empty turns tolerated, the third returns text
 
 
 async def test_memory_injection_is_evaluated_per_run(tmp_path, mocker):

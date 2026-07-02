@@ -69,12 +69,19 @@ REPL and its JSONL log are untouched (headless-only); `runtime/` stays the isola
    cross-provider swap** (permanent non-goal). Being a flow input is exactly what lets Kitaru swap it
    via `flow.replay(..., model=…)`.
 
-3. **Record every `decode run` under `"calls"` (task 068).** Flip
-   `settings.runtime_checkpoint_strategy` default `"turn" → "calls"` so every bypass run is
-   replay-ready (HITL already forces `"calls"`). Because `"calls"` can break the bypass `.wait()`
-   extraction, the task **verifies the bypass path first** and, if it breaks, applies the shipped HITL
-   fix (terminal `@checkpoint _capture_runtime_output` + `_load_runtime_output` reader, and the CLI
-   reads the artifact instead of `.wait().output`). `"turn"` stays selectable for a coarse run.
+3. **Default `checkpoint_strategy="turn"`; `"calls"` is opt-in (task 068, revised).** `"turn"` runs the
+   whole bypass run inside one `asyncio.run` event loop, so a reused provider HTTP client stays valid
+   across model calls. `"calls"` (per model/tool call) gives finer replay anchors but runs **each call
+   in its own loop**; Kitaru's adapter reuses one google-genai client across them, so a real multi-turn
+   run crashes with `RuntimeError('Event loop is closed')` (the cached httpx `AsyncClient` is bound to
+   the first, now-closed loop). So `"calls"` (`RUNTIME_CHECKPOINT_STRATEGY=calls`) is opt-in — practical
+   today only for offline/scripted runs — until that cross-loop reuse is fixed upstream (or decode
+   rebuilds the client per checkpoint). Task 068's independently-needed repair still lands: bypass
+   `.wait()` return-extraction breaks under `"calls"`, so the flow adopts the shipped HITL fix (terminal
+   `@checkpoint _capture_runtime_output` + `_load_runtime_output` reader; the CLI reads the artifact, not
+   `.wait().output`) — which HITL (always `"calls"`) and the opt-in bypass `"calls"` path both need.
+   *(This revises 068's `"turn" → "calls"` flip: the flip shipped, then a real multi-turn `decode run`
+   surfaced the event-loop crash, so the default returns to `"turn"`.)*
 
 4. **`decode run --model X` + surface the exec_id (task 069).** Expose the §2 parameter as a flag, and
    stop discarding the `FlowHandle` (today `cli.py:364`): print the answer on stdout, then `exec_id:
@@ -166,12 +173,13 @@ flowchart TB
 
 ## Consequences
 
-- **Small feature, big capability.** Four tiny enablers (a flow param, a settings default flip, a
-  flag, a thin wrapper) unlock Kitaru's replay/what-if loop and the operator workflows built on it
+- **Small feature, big capability.** Four tiny enablers (a flow param, the bypass output-capture repair,
+  a flag, a thin wrapper) unlock Kitaru's replay/what-if loop and the operator workflows built on it
   (diffing, checkpoint-overrides, the cohort example). Everything hard stays Kitaru's, not decode's.
-- **Every `decode run` costs more checkpoints.** `"calls"` records per model/tool call, not per turn —
-  more store writes per run, the price of replay-readiness. `RUNTIME_CHECKPOINT_STRATEGY=turn` remains
-  the coarse opt-out.
+- **Default `decode run` replays at turn granularity.** `"turn"` records one checkpoint per turn, so a
+  replay anchors at a turn boundary, not before a specific model call. Per-call anchoring needs
+  `RUNTIME_CHECKPOINT_STRATEGY=calls`, which is offline/scripted-only today (the event-loop limit in
+  Decision 3) — so out-of-the-box replay-readiness is coarser than task 068 first intended.
 - **A model swap can diverge the recorded call sequence.** A different model may tool-call differently
   downstream of `--from`; Kitaru may raise `KitaruDivergenceError`. `decode replay` surfaces it as a
   friendly line (that *is* the honest what-if outcome — the change diverged the run), never a

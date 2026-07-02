@@ -96,6 +96,10 @@ def build_agent(
         built_model,
         deps_type=AgentDeps,
         output_type=[str, DeferredToolRequests],
+        # Gemini 2.5 sometimes returns an empty / thinking-only response after a tool call; pydantic-ai
+        # re-requests on an empty turn, but its default output-retry budget is 1 — a second empty turn
+        # aborts a real multi-turn run with "Exceeded maximum output retries". Give it a few attempts.
+        output_retries=3,
     )
     register_tools(agent)
     _register_instructions(agent)

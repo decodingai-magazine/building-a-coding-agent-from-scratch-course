@@ -87,9 +87,9 @@ def _enable_secret_store(monkeypatch) -> None:
 def _scripted_durable(text: str = "ok") -> KitaruAgent:
     """A scripted offline ``KitaruAgent`` returning ``text`` (the model boundary stays offline).
 
-    Uses ``checkpoint_strategy="calls"`` — the settings default since task 068 — so these runs read
-    their output from the ``_capture_runtime_output`` artifact via :func:`flow_mod._load_runtime_output`
-    (``.wait()`` no longer extracts under ``"calls"``); see :func:`_run_and_read`.
+    Uses ``checkpoint_strategy="calls"`` (the opt-in strategy; the default is ``"turn"``) so these runs
+    read their output from the ``_capture_runtime_output`` artifact via :func:`flow_mod._load_runtime_output`
+    (``.wait()`` cannot extract under ``"calls"``); see :func:`_run_and_read`.
     """
     scripted, _counter = make_scripted_agent([ModelResponse(parts=[TextPart(content=text)])])
     return KitaruAgent(scripted, name="decode-runtime", checkpoint_strategy="calls")

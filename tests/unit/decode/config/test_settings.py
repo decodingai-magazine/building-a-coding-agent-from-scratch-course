@@ -326,9 +326,10 @@ def test_runtime_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     s = Settings(_env_file=None)
     assert s.runtime_enabled is True
-    # Default flipped to "calls" so every ``decode run`` is replay-ready (ADR-0010 §3, task 068);
-    # "turn" stays selectable as the coarse opt-out (asserted in the accepts-each-literal test).
-    assert s.runtime_checkpoint_strategy == "calls"
+    # Default is "turn": the whole run shares one event loop, so a real multi-turn provider run is safe.
+    # "calls" runs each call in its own loop and crashes real runs with "Event loop is closed"
+    # (ADR-0010 §3), so it stays opt-in (asserted in the accepts-each-literal test).
+    assert s.runtime_checkpoint_strategy == "turn"
     assert s.runtime_wait_timeout_s == 600.0
     assert s.runtime_credentials_proxy_enabled is False
     assert s.runtime_secret_name == "decode-llm-creds"

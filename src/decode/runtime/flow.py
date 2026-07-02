@@ -261,10 +261,11 @@ def run_agent_task(task: str, model: str | None = None) -> str:
 
     Launched via ``run_agent_task.run(task=…)`` → a ``FlowHandle``. The final text is stored via the
     terminal :func:`_capture_runtime_output` checkpoint and read back with :func:`_load_runtime_output`
-    — **not** ``.wait().output``: under the ``"calls"`` default (ADR-0010 §3) the run ends in several
-    terminal per-call checkpoints, so ``.wait()`` cannot auto-extract a single value (it raises
-    ``_MultipleTerminalStepsOutputError`` — verified in task 068). This is the same output-artifact
-    mechanism the HITL flow uses; see :func:`decode.cli` for the read-back.
+    — **not** ``.wait().output``: under the opt-in ``"calls"`` strategy (ADR-0010 §3) the run ends in
+    several terminal per-call checkpoints, so ``.wait()`` cannot auto-extract a single value (it raises
+    ``_MultipleTerminalStepsOutputError`` — verified in task 068). Using the sink unconditionally keeps
+    the read-back identical under the default ``"turn"`` (one terminal checkpoint) too. This is the same
+    output-artifact mechanism the HITL flow uses; see :func:`decode.cli` for the read-back.
 
     ``model`` is the **Model Override** (ADR-0010 §2), a keyword-defaulted flow input threaded to the
     seam: ``None`` (the default) reads ``settings.<provider>_model`` — so ``run(task=…)`` without a

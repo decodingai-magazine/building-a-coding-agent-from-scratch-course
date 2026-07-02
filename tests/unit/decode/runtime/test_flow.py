@@ -28,12 +28,13 @@ pytestmark = [
 ]
 
 
-def _durable(responses, *, strategy="calls"):
+def _durable(responses, *, strategy="turn"):
     """Wrap a scripted decode agent in a ``KitaruAgent`` for the ``_build_runtime_agent`` seam.
 
-    Defaults to ``"calls"`` — the settings default since task 068 (ADR-0010 §3) — so the round-trip
-    tests exercise the per-call checkpoint reality the real ``decode run`` now records (and the
-    output-artifact read-back the CLI now uses, since ``.wait()`` no longer extracts under ``"calls"``).
+    Defaults to ``"turn"`` — the settings default (ADR-0010 §3), the granularity a real ``decode run``
+    records — so the round-trip tests exercise the default path. Pass ``strategy="calls"`` for the
+    opt-in per-call granularity. Either way the CLI reads output back from the ``_capture_runtime_output``
+    artifact (the flow uses that sink uniformly).
     """
     agent, counter = make_scripted_agent(responses)
     return KitaruAgent(agent, name="decode-runtime", checkpoint_strategy=strategy), counter
@@ -42,10 +43,10 @@ def _durable(responses, *, strategy="calls"):
 def test_flow_round_trips_a_task_and_returns_the_agents_text(monkeypatch):
     """A bare text turn round-trips; the final text is read from the ``_capture_runtime_output`` artifact.
 
-    Under the ``"calls"`` default the flow ends in terminal per-call checkpoints, so ``.wait()`` cannot
-    auto-extract a value (``_MultipleTerminalStepsOutputError``, task 068). The flow saves its final
-    text via the terminal sink and :func:`_load_runtime_output` reads it back by name — exactly what
-    the ``decode run`` CLI now does.
+    Under the default ``"turn"`` strategy the flow ends in one terminal checkpoint. The flow saves its
+    final text via the terminal sink and :func:`_load_runtime_output` reads it back by name — what the
+    ``decode run`` CLI does. (The sink is used uniformly: the opt-in ``"calls"`` strategy *needs* it
+    because ``.wait()`` cannot extract from its several terminal checkpoints — task 068.)
     """
     durable, _counter = _durable([ModelResponse(parts=[TextPart(content="all done")])])
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
@@ -80,21 +81,22 @@ def test_flow_runs_a_gated_tool_inline_under_bypass(monkeypatch, tmp_path):
 
 
 def test_flow_records_per_call_checkpoints_not_a_single_turn_step(monkeypatch, tmp_path):
-    """The run persists a finished execution with PER-CALL checkpoints — the record a Replay anchors on.
+    """The opt-in ``"calls"`` strategy persists PER-CALL checkpoints — the record a fine Replay anchors on.
 
-    Under the ``"calls"`` default (ADR-0010 §3) each model/tool call is its own checkpoint, closed by
-    the terminal ``_capture_runtime_output`` sink — NOT the coarse single ``decode_runtime`` turn step.
-    A two-leg script (read a seeded file → final text) makes that granularity visible: the persisted
-    step set carries a per-call ``*_model_request`` + the ``read_tool`` checkpoint + the capture sink,
-    and no ``decode_runtime`` turn step. That fine-grained record is exactly what lets a Replay anchor
-    before a specific model call (User Story 1); here we assert the durable record's shape.
+    Under the opt-in ``"calls"`` strategy (ADR-0010 §3; the default is ``"turn"``) each model/tool call
+    is its own checkpoint, closed by the terminal ``_capture_runtime_output`` sink — NOT the coarse
+    single ``decode_runtime`` turn step. A two-leg script (read a seeded file → final text) makes that
+    granularity visible: the persisted step set carries a per-call ``*_model_request`` + the ``read_tool``
+    checkpoint + the capture sink, and no ``decode_runtime`` turn step. That fine-grained record is what
+    lets a Replay anchor before a specific model call (User Story 1) — the reason to opt into ``"calls"``.
     """
     (tmp_path / "spec.md").write_text("ship it", encoding="utf-8")
     durable, _counter = _durable(
         [
             ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": "spec.md"})]),
             ModelResponse(parts=[TextPart(content="done")]),
-        ]
+        ],
+        strategy="calls",
     )
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
@@ -116,7 +118,7 @@ def test_flow_records_per_call_checkpoints_not_a_single_turn_step(monkeypatch, t
     assert any(s.startswith("decode_runtime_model_request") for s in steps)  # per-model-call
 
 
-def test_flow_round_trips_a_multi_tool_task_under_the_calls_default(monkeypatch, tmp_path):
+def test_flow_round_trips_a_multi_tool_task_under_the_calls_strategy(monkeypatch, tmp_path):
     """A REAL bypass run round-trips a MULTI-TOOL task with ``"calls"`` sourced from settings (AC3).
 
     Read a seeded file → write a new file → final text: three model legs and two tool calls, so the
@@ -151,9 +153,9 @@ def test_flow_round_trips_a_multi_tool_task_under_the_calls_default(monkeypatch,
 def test_build_runtime_agent_wraps_build_agent_in_a_named_calls_kitaru_agent(monkeypatch):
     """The seam wraps ``build_agent()``'s Agent in a ``KitaruAgent`` with the stable name + ``"calls"``.
 
-    ``checkpoint_strategy`` comes from ``settings.runtime_checkpoint_strategy`` — flipped to ``"calls"``
-    by task 068 (ADR-0010 §3), the settings default asserted in ``test_settings.py``. Pinning it here
-    keeps the test hermetic and proves the real seam propagates the setting (it does not hardcode).
+    ``checkpoint_strategy`` comes from ``settings.runtime_checkpoint_strategy`` — monkeypatched here to
+    the opt-in ``"calls"`` (the default is ``"turn"``) so the assertion proves the real seam propagates
+    the *setting* rather than a hardcoded constant. Pinning it also keeps the test hermetic.
     """
     from pydantic import SecretStr
 
@@ -168,7 +170,9 @@ def test_build_runtime_agent_wraps_build_agent_in_a_named_calls_kitaru_agent(mon
 
     assert isinstance(durable, KitaruAgent)
     assert durable.name == flow_mod.RUNTIME_AGENT_NAME == "decode-runtime"
-    assert durable.checkpoint_strategy == "calls"  # reads the new settings default
+    assert (
+        durable.checkpoint_strategy == "calls"
+    )  # reads the monkeypatched setting (default is "turn")
 
 
 def _seed_gemini(monkeypatch):
