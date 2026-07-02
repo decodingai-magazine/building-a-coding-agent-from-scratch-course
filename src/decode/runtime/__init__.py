@@ -17,6 +17,9 @@ from __future__ import annotations
 from decode.runtime.flow import (
     RUNTIME_AGENT_NAME,
     HitlRunResult,
+    ReplayResult,
+    is_hitl_execution,
+    replay_agent_task,
     run_agent_task,
     run_agent_task_hitl,
     run_hitl_agent_task,
@@ -25,6 +28,9 @@ from decode.runtime.flow import (
 __all__ = [
     "RUNTIME_AGENT_NAME",
     "HitlRunResult",
+    "ReplayResult",
+    "is_hitl_execution",
+    "replay_agent_task",
     "run_agent_task",
     "run_agent_task_hitl",
     "run_hitl_agent_task",

@@ -191,19 +191,25 @@ async def _deny_permission_resolver(request: PermissionRequest) -> PermissionDec
     return PermissionDecision.deny(reason="No interactive approver in the headless runtime.")
 
 
-def _build_runtime_agent() -> KitaruAgent[AgentDeps, str | DeferredToolRequests]:
+def _build_runtime_agent(
+    model: str | None = None,
+) -> KitaruAgent[AgentDeps, str | DeferredToolRequests]:
     """The patchable runtime seam: wrap ``build_agent()`` in ``KitaruAgent`` (ADR-0008 §2).
 
     Mirrors the bash ``_EXECUTOR`` / lsp ``_spawn_process`` seams: the one place a real
     ``KitaruAgent`` is constructed, so a test can patch it to inject a scripted-model agent and
     exercise the real ``@flow`` + adapter offline. ``checkpoint_strategy`` comes from settings
-    (``"turn"`` — one checkpoint per turn — is the MVP default; ``"calls"`` is per model/tool call).
+    (``"calls"`` — per model/tool call — is the default; ``"turn"`` is one coarse checkpoint per run).
 
     ``flow_mode=True`` engages the **Credentials Proxy** (ADR-0008 §5): when
     ``settings.runtime_credentials_proxy_enabled`` the provider key is resolved from a Kitaru secret
     here (inside the flow body), so a deployed flow payload carries the secret name, not the raw key.
+
+    ``model`` is the **Model Override** (ADR-0010 §2) threaded from :func:`run_agent_task`: ``None``
+    (the default) reads ``settings.<provider>_model``, byte-unchanged; a value overrides only the
+    active provider's model id, which is what lets Kitaru swap it on a what-if Replay.
     """
-    agent = build_agent(flow_mode=True)
+    agent = build_agent(flow_mode=True, model=model)
     return KitaruAgent(
         agent,
         name=RUNTIME_AGENT_NAME,
@@ -229,24 +235,49 @@ def _build_headless_deps() -> AgentDeps:
     )
 
 
+@checkpoint
+def _capture_runtime_output(output: str) -> str:
+    """Persist a flow's final text as the :data:`RUNTIME_OUTPUT_ARTIFACT`, the single-sink terminal step.
+
+    Shared by **both** durable flows (:func:`run_agent_task` and :func:`run_agent_task_hitl`). Under
+    ``checkpoint_strategy="calls"`` a run ends in several terminal per-model/tool-call checkpoints, so
+    Kitaru cannot auto-extract a single return value via ``.wait()`` — it raises
+    ``_MultipleTerminalStepsOutputError`` (ADR-0008 §3 amendment 5; verified for the bypass path in task
+    068). This final checkpoint saves the agent's output under a stable artifact name so
+    :func:`_load_runtime_output` can load it back by name instead of relying on ``.wait()``.
+    """
+    save(RUNTIME_OUTPUT_ARTIFACT, output, type="output")
+    return output
+
+
 @flow
-def run_agent_task(task: str) -> str:
+def run_agent_task(task: str, model: str | None = None) -> str:
     """Run ``task`` to completion through the durable agent and return its final text (ADR-0008 §1-2).
 
     Sync ``@flow``: build the durable agent (the patchable seam), construct the headless BYPASS
-    deps, and call ``run_sync(task)`` — one or more checkpointed turns, every tool inline, no human
-    wait. Returns the agent's final text. A crash mid-run replays the finished turns from the Kitaru
-    cache on a re-run rather than re-executing them.
+    deps, and call ``run_sync(task)`` — one or more checkpointed model/tool calls, every tool inline,
+    no human wait. A crash mid-run replays the finished checkpoints from the Kitaru cache on a re-run
+    rather than re-executing them.
 
-    Launched via ``run_agent_task.run(task=…)`` → a ``FlowHandle``; ``.wait()`` blocks for the
-    terminal checkpoint (see :func:`decode.cli` for the text extraction).
+    Launched via ``run_agent_task.run(task=…)`` → a ``FlowHandle``. The final text is stored via the
+    terminal :func:`_capture_runtime_output` checkpoint and read back with :func:`_load_runtime_output`
+    — **not** ``.wait().output``: under the default ``"calls"`` strategy (ADR-0010 §3) the run ends in
+    several terminal per-call checkpoints, so ``.wait()`` cannot auto-extract a single value (it raises
+    ``_MultipleTerminalStepsOutputError`` — verified in task 068). Using the sink unconditionally keeps
+    the read-back identical under the ``"turn"`` opt-out (one terminal checkpoint) too. This is the same
+    output-artifact mechanism the HITL flow uses; see :func:`decode.cli` for the read-back.
+
+    ``model`` is the **Model Override** (ADR-0010 §2), a keyword-defaulted flow input threaded to the
+    seam: ``None`` (the default) reads ``settings.<provider>_model`` — so ``run(task=…)`` without a
+    model is byte-unchanged — while a value overrides only the active provider's model id. Because it
+    is a flow input, Kitaru can swap it on a what-if Replay (``run_agent_task.replay(..., model=…)``).
 
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store`, so ``build_agent`` reads config hydrated from the Kitaru secret;
     off (the default) it is a no-op and behaviour is byte-unchanged.
     """
     with _config_from_secret_store():
-        durable_agent = _build_runtime_agent()
+        durable_agent = _build_runtime_agent(model)
         deps = _build_headless_deps()
         result = durable_agent.run_sync(task, deps=deps)
     output = result.output
@@ -257,7 +288,7 @@ def run_agent_task(task: str) -> str:
             "headless runtime expected text output but the agent deferred a tool call; "
             "BYPASS mode must run every tool inline (ADR-0008 §2)."
         )
-    return output
+    return _capture_runtime_output(output)
 
 
 # ---------------------------------------------------------------------------
@@ -320,14 +351,18 @@ def _to_hitl_durable_agent(agent: object) -> KitaruAgent[AgentDeps, str | Deferr
     )
 
 
-def _build_hitl_runtime_agent() -> KitaruAgent[AgentDeps, str | DeferredToolRequests]:
+def _build_hitl_runtime_agent(
+    model: str | None = None,
+) -> KitaruAgent[AgentDeps, str | DeferredToolRequests]:
     """The patchable HITL runtime seam: wrap ``build_agent()`` in the HITL ``KitaruAgent``.
 
     Mirrors :func:`_build_runtime_agent` (the bypass seam) so a test patches it to inject a
     scripted-model agent and drive the real ``@flow`` + adapter waits offline. ``flow_mode=True``
-    engages the Credentials Proxy on the same terms as the bypass seam (ADR-0008 §5).
+    engages the Credentials Proxy on the same terms as the bypass seam (ADR-0008 §5), and ``model``
+    threads the **Model Override** (ADR-0010 §2) through on the same terms too (``None`` → the
+    settings default).
     """
-    return _to_hitl_durable_agent(build_agent(flow_mode=True))
+    return _to_hitl_durable_agent(build_agent(flow_mode=True, model=model))
 
 
 def _build_hitl_deps() -> AgentDeps:
@@ -353,20 +388,8 @@ def _build_hitl_deps() -> AgentDeps:
     )
 
 
-@checkpoint
-def _capture_runtime_output(output: str) -> str:
-    """Persist the HITL flow's final text as the :data:`RUNTIME_OUTPUT_ARTIFACT` (ADR-0008 §3).
-
-    A final checkpoint that records the agent's output under a stable artifact name, because the
-    ``"calls"`` + opt-out flow has several terminal model-request checkpoints that block Kitaru's
-    automatic ``.wait()`` return-value extraction. :func:`run_hitl_agent_task` loads it back by name.
-    """
-    save(RUNTIME_OUTPUT_ARTIFACT, output, type="output")
-    return output
-
-
 @flow
-def run_agent_task_hitl(task: str) -> str:
+def run_agent_task_hitl(task: str, model: str | None = None) -> str:
     """Run ``task`` headlessly with **durable HITL** approvals + ``ask_user`` waits (ADR-0008 §3).
 
     The gating complement of :func:`run_agent_task`: same ``build_agent()``, but under a gating gate
@@ -380,12 +403,15 @@ def run_agent_task_hitl(task: str) -> str:
     denial back to the model — ADR-0008 §3). The final text is stored via
     :func:`_capture_runtime_output`; use :func:`run_hitl_agent_task` to launch and read it back.
 
+    ``model`` is the **Model Override** (ADR-0010 §2), threaded to the HITL seam on the same terms as
+    :func:`run_agent_task` (``None`` → ``settings.<provider>_model``, byte-unchanged).
+
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store` (the sleeper nests inside it), so ``build_agent`` reads config
     hydrated from the Kitaru secret; off (the default) it is a no-op and behaviour is byte-unchanged.
     """
     with _config_from_secret_store():
-        durable_agent = _build_hitl_runtime_agent()
+        durable_agent = _build_hitl_runtime_agent(model)
         deps = _build_hitl_deps()
         # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a
         # ``sleep`` in this run pauses on a flow-scope ``kitaru.wait`` (ADR-0008 §4) while a later
@@ -428,7 +454,12 @@ class HitlRunResult:
 
 
 def _load_runtime_output(exec_id: str) -> str:
-    """Load a finished HITL run's final text from its :data:`RUNTIME_OUTPUT_ARTIFACT` (ADR-0008 §3)."""
+    """Load a finished run's final text from its :data:`RUNTIME_OUTPUT_ARTIFACT` (ADR-0008 §3).
+
+    Shared by both flows: the bypass ``decode run`` (task 068) and the HITL run read the terminal
+    :func:`_capture_runtime_output` artifact back by name here, instead of ``.wait().output`` (which
+    the ``"calls"`` per-call checkpoints break — ``_MultipleTerminalStepsOutputError``).
+    """
     from kitaru import KitaruClient
 
     client = KitaruClient()
@@ -441,7 +472,7 @@ def _load_runtime_output(exec_id: str) -> str:
     )
 
 
-def run_hitl_agent_task(task: str) -> HitlRunResult:
+def run_hitl_agent_task(task: str, model: str | None = None) -> HitlRunResult:
     """Launch the HITL flow and return its result or its paused execution id (ADR-0008 §3).
 
     On the local Kitaru stack ``flow.run(...)`` runs the execution in-process and returns once it has
@@ -449,8 +480,12 @@ def run_hitl_agent_task(task: str) -> HitlRunResult:
     finished run's text is loaded from the output artifact (``.wait()`` cannot auto-extract it under
     the ``"calls"`` + opt-out shape). A paused run yields ``paused=True`` + the ``exec_id`` to resolve
     out-of-band — the caller surfaces the ``kitaru executions input`` instructions.
+
+    ``model`` is the **Model Override** (ADR-0010 §2), forwarded to the ``@flow`` as a flow input:
+    ``None`` (the default) reads ``settings.<provider>_model``, byte-unchanged; a value overrides only
+    the active provider's model id. It is exposed as ``decode run --hitl --model`` (ADR-0010 §4).
     """
-    handle = run_agent_task_hitl.run(task=task)
+    handle = run_agent_task_hitl.run(task=task, model=model)
     status = handle.status
     if status.is_finished and status.is_successful:
         return HitlRunResult(
@@ -460,3 +495,80 @@ def run_hitl_agent_task(task: str) -> HitlRunResult:
         "HITL execution %s did not finish (status=%s) — paused on a wait", handle.exec_id, status
     )
     return HitlRunResult(exec_id=handle.exec_id, output=None, paused=True)
+
+
+# ---------------------------------------------------------------------------
+# Replay: a what-if re-run of a recorded BYPASS run with a swapped Model Override
+# (ADR-0010 §5-6, task 070). decode wraps Kitaru's native flow-object replay 1:1 and adds only the
+# enablers; diff / cohort / checkpoint-overrides stay on the Kitaru operator surface (documented in
+# AGENTS.md, not wrapped). Kitaru's ``.replay(exec_id, from_=…, model=…)`` re-executes a recorded run
+# from the ``from_`` checkpoint: everything upstream serves from cache, the anchor + its downstream
+# descendants re-execute for real — so a swapped ``model`` only bites the turns re-executed downstream.
+# ---------------------------------------------------------------------------
+
+# The ZenML pipeline (flow) name Kitaru records each ``@flow`` under is the flow function's own name —
+# Kitaru's ``build_pipeline_registration_name`` is an identity transform for these already-valid
+# identifiers. Verified on kitaru 0.18: ``KitaruClient().executions.get(exec_id).flow_name`` is exactly
+# the flow function's name. It is how :func:`is_hitl_execution` tells a replayable BYPASS run from a HITL
+# run ``decode replay`` must refuse (bypass-only — a HITL replay re-asks every wait on the local stack,
+# ADR-0010 §5,7). Derived from the flow object so the constant can never drift from the flow name.
+HITL_RUNTIME_PIPELINE_NAME = run_agent_task_hitl.__name__  # "run_agent_task_hitl" — the HITL flow
+
+
+def is_hitl_execution(exec_id: str) -> bool:
+    """True when ``exec_id`` was recorded by the HITL flow, not the bypass flow (ADR-0010 §5).
+
+    ``decode replay`` is **bypass-only**: a HITL replay re-asks every durable wait on the local stack
+    (Kitaru cannot pre-populate wait results — ADR-0010 §7, ``tasks/future/hitl-replay-answer-reuse.md``),
+    so the cli refuses a HITL exec_id with guidance instead of silently re-prompting. Detection reads the
+    recorded **flow name** from the Kitaru execution record —
+    ``KitaruClient().executions.get(exec_id).flow_name`` — and compares it to the HITL flow's name
+    (verified on kitaru 0.18). A missing/unloadable exec_id raises ``KitaruBackendError`` from
+    ``executions.get``; the caller turns that into one friendly "could not load" line (no traceback).
+    ``kitaru`` is imported lazily here so the REPL path (which never calls this) stays kitaru-free.
+    """
+    from kitaru import KitaruClient
+
+    return KitaruClient().executions.get(exec_id).flow_name == HITL_RUNTIME_PIPELINE_NAME
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayResult:
+    """The outcome of a successful bypass Replay: the Fork's id, the source id, and the (re)computed text.
+
+    ``exec_id`` is the **new** (Fork) execution Kitaru created; ``original_exec_id`` is the source run
+    the replay anchored on. The flow-object ``FlowHandle`` does not expose the source (only the SDK
+    ``client.executions.replay`` return carries ``original_exec_id`` — verified on kitaru 0.18), so decode
+    carries the input id forward. ``output`` is the possibly-changed final text, loaded from the terminal
+    :data:`RUNTIME_OUTPUT_ARTIFACT` — the same read-back the bypass ``decode run`` uses, because ``.wait()``
+    cannot auto-extract a single value under the ``"calls"`` terminal sink (ADR-0010 §3).
+    """
+
+    exec_id: str
+    original_exec_id: str
+    output: str
+
+
+def replay_agent_task(exec_id: str, *, from_: str, model: str | None) -> ReplayResult:
+    """Replay a recorded **bypass** run from ``from_`` with an optional Model Override (ADR-0010 §5).
+
+    A thin 1:1 wrapper over Kitaru's native flow-object replay: ``run_agent_task.replay(exec_id,
+    from_=…, model=…)``. ``from_`` maps straight to Kitaru's ``from_`` — decode invents no default anchor
+    (Kitaru *requires* it; the cli surfaces that requirement as a friendly line when ``--from`` is
+    omitted). ``model=None`` replays as-is (the run's recorded model); a value swaps only the active
+    provider's model id on the turns re-executed downstream of ``from_``.
+
+    On the local stack ``.replay(...)`` runs the Fork in-process and returns once finished, so the output
+    is read back here from the terminal :func:`_capture_runtime_output` artifact via
+    :func:`_load_runtime_output` (bypass never pauses). Kitaru's replay failures propagate to the cli,
+    which renders each as one friendly line: an ambiguous/invalid ``from_`` (``KitaruStateError``), a
+    swap that diverged the recorded call sequence (``KitaruDivergenceError``), and a missing/unloadable
+    ``exec_id`` (``KitaruBackendError``). ``kitaru`` is reached only through the flow object (which imports
+    it at this module's load time), so the REPL path — which never imports this module — never loads it.
+    """
+    handle = run_agent_task.replay(exec_id, from_=from_, model=model)
+    return ReplayResult(
+        exec_id=handle.exec_id,
+        original_exec_id=exec_id,
+        output=_load_runtime_output(handle.exec_id),
+    )

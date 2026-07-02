@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
+import httpx
 from openai import AsyncOpenAI
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.models import Model
@@ -66,7 +67,9 @@ _BASE_INSTRUCTIONS = (
 )
 
 
-def build_agent(*, flow_mode: bool = False) -> Agent[AgentDeps, str | DeferredToolRequests]:
+def build_agent(
+    *, flow_mode: bool = False, model: str | None = None
+) -> Agent[AgentDeps, str | DeferredToolRequests]:
     """Construct the agent on the configured LLM Provider + register the flat tools (ADR-0002 §1-3,7).
 
     Model construction is delegated to :func:`_build_model` — the Provider Seam that branches on
@@ -82,12 +85,22 @@ def build_agent(*, flow_mode: bool = False) -> Agent[AgentDeps, str | DeferredTo
     headless Kitaru flow (:mod:`decode.runtime.flow`) passes ``flow_mode=True`` so — *only* when
     ``settings.runtime_credentials_proxy_enabled`` — the provider key is resolved from a Kitaru
     secret instead, keeping the raw key out of a (later, deployed) flow payload.
+
+    ``model`` is the **Model Override** (ADR-0010 §2), passed straight to :func:`_build_model`: the
+    interactive TUI builds with the default ``model=None`` (the model id is read from settings,
+    byte-unchanged); the headless flow threads a value through so a run/replay overrides *only* the
+    active provider's model id (never the provider — ``settings.llm_provider`` still selects it).
+    Being a flow input is what lets Kitaru swap it on a what-if Replay (``flow.replay(..., model=…)``).
     """
-    model = _build_model(flow_mode=flow_mode)
+    built_model = _build_model(flow_mode=flow_mode, model=model)
     agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
-        model,
+        built_model,
         deps_type=AgentDeps,
         output_type=[str, DeferredToolRequests],
+        # Gemini 2.5 sometimes returns an empty / thinking-only response after a tool call; pydantic-ai
+        # re-requests on an empty turn, but its default output-retry budget is 1 — a second empty turn
+        # aborts a real multi-turn run with "Exceeded maximum output retries". Give it a few attempts.
+        output_retries=3,
     )
     register_tools(agent)
     _register_instructions(agent)
@@ -95,8 +108,31 @@ def build_agent(*, flow_mode: bool = False) -> Agent[AgentDeps, str | DeferredTo
     return agent
 
 
-def _build_model(*, flow_mode: bool = False) -> Model:
+def _flow_mode_http_client() -> httpx.AsyncClient:
+    """A keep-alive-free httpx client for flow-mode (headless ``decode run`` / replay) provider calls.
+
+    Under Kitaru's ``"calls"`` checkpoint strategy each model call runs in its own ``asyncio.run`` event
+    loop (in a worker thread). A pooled keep-alive connection opened on one loop and reused on the next
+    is torn down against the now-closed loop → ``RuntimeError('Event loop is closed')`` — which is what
+    made per-call checkpoints (the granular Replay anchors) unusable on a real provider. With keep-alive
+    off, every request opens and closes its own connection inside its own loop, so nothing survives to
+    be reused across loops. The explicit 120s timeout replaces httpx's 5s default, which google-genai
+    forwards as the request deadline — Gemini rejects deadlines under its 10s minimum (400).
+    ponytail: the client is not closed; the short-lived headless process reclaims it on exit.
+    """
+    return httpx.AsyncClient(
+        limits=httpx.Limits(max_keepalive_connections=0), timeout=httpx.Timeout(120.0)
+    )
+
+
+def _build_model(*, flow_mode: bool = False, model: str | None = None) -> Model:
     """Build the Pydantic AI model for ``settings.llm_provider`` — the Provider Seam (ADR-0005 §3-5).
+
+    ``model`` is the optional **Model Override** (ADR-0010 §2): each branch uses ``model or
+    settings.<provider>_model``, so ``None`` reads the settings default (byte-unchanged) while a value
+    overrides *only* the active provider's model id — never the provider branch (still keyed off
+    ``settings.llm_provider``) and never the auth/key path. This is what makes the model id a
+    replayable flow input for Kitaru's what-if Replay; no cross-provider swap (permanent non-goal).
 
     Three branches, each verified offline against the installed SDK (no model request is issued by
     constructing a model):
@@ -125,13 +161,19 @@ def _build_model(*, flow_mode: bool = False) -> Model:
     """
     provider = settings.llm_provider
     if provider == "gemini":
+        # In flow mode hand Gemini a keep-alive-free client so the ``"calls"`` strategy is loop-safe
+        # (see :func:`_flow_mode_http_client`). openrouter/modal share the same latent issue under
+        # ``"calls"``; wire the same client through their ``AsyncOpenAI`` when a real run needs it.
         return GoogleModel(
-            settings.gemini_model,
-            provider=GoogleProvider(api_key=_provider_api_key("gemini", flow_mode=flow_mode)),
+            model or settings.gemini_model,
+            provider=GoogleProvider(
+                api_key=_provider_api_key("gemini", flow_mode=flow_mode),
+                http_client=_flow_mode_http_client() if flow_mode else None,
+            ),
         )
     if provider == "openrouter":
         return OpenAIChatModel(
-            settings.openrouter_model,
+            model or settings.openrouter_model,
             provider=OpenRouterProvider(
                 api_key=_provider_api_key("openrouter", flow_mode=flow_mode)
             ),
@@ -151,7 +193,7 @@ def _build_model(*, flow_mode: bool = False) -> Model:
             # --unauthenticated endpoint: no Modal headers; placeholder api_key (SDK needs non-empty).
             client = AsyncOpenAI(base_url=base_url, api_key="EMPTY")
         return OpenAIChatModel(
-            settings.modal_endpoint_model,
+            model or settings.modal_endpoint_model,
             provider=OpenAIProvider(openai_client=client),
         )
     raise ValueError(f"unsupported llm_provider: {provider!r}")

@@ -21,8 +21,10 @@ process ``cwd`` is moved there too, so any file a tool writes stays in the sandb
 The four runtime sub-features, each asserted through the real flow:
 
 1. **Durability (058)** — :func:`test_durability_runs_the_real_flow_to_completion`: a multi-step task
-   runs to completion via ``run_agent_task.run(task).wait()`` and returns the scripted final text; the
-   durable, checkpointed execution is recorded; a fresh re-run is a *new* execution. It also proves the
+   runs to completion via ``run_agent_task.run(task)`` and returns the scripted final text (read back
+   from the ``_capture_runtime_output`` artifact — ``.wait()`` no longer auto-extracts under the
+   terminal sink, task 068); the durable, checkpointed execution is recorded; a fresh re-run is a *new*
+   execution. It also proves the
    **real** agent loop ran (the scripted tool sequence wrote a real file inline under BYPASS) and the
    interactive ``Runner`` / ``agent/loop.py`` path was **not** used (a spy asserts neither was built).
 2. **Replay (058, AC2)** — :func:`test_replay_serves_a_finished_model_checkpoint_from_cache`: a
@@ -332,17 +334,17 @@ def test_durability_runs_the_real_flow_to_completion(monkeypatch, mocker, tmp_pa
     durable = KitaruAgent(
         _scripted_agent(responses, counter), name=RUNTIME_AGENT_NAME, checkpoint_strategy="turn"
     )
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda: durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
     # The interactive path must NOT be used by the headless flow: spy on both its entry classes.
     runner_spy = mocker.patch("decode.harness.runner.Runner")
     handler_spy = mocker.patch("decode.agent.loop.AgentTurnHandler")
 
     handle = run_agent_task.run(task="read the spec then record the work")
-    result = handle.wait()
 
-    # The real flow returned the scripted final text.
-    assert getattr(result, "output", result) == "read the spec and wrote done.txt"
+    # The real flow returned the scripted final text, read back from the ``_capture_runtime_output``
+    # artifact — under that terminal sink ``.wait()`` no longer auto-extracts a value (task 068).
+    assert flow_mod._load_runtime_output(handle.exec_id) == "read the spec and wrote done.txt"
     # The real agent loop ran the scripted tools INLINE under BYPASS: the write actually hit disk, and
     # the model consumed >1 leg (a stub returning canned text would not write the file or tool-loop).
     assert (tmp_path / "done.txt").read_text(encoding="utf-8") == "shipped"
@@ -358,7 +360,7 @@ def test_durability_runs_the_real_flow_to_completion(monkeypatch, mocker, tmp_pa
 
     # A fresh re-run is a NEW execution (a new ``run`` is not a replay of the prior one).
     rerun = run_agent_task.run(task="read the spec then record the work")
-    rerun.wait()
+    assert flow_mod._load_runtime_output(rerun.exec_id) == "read the spec and wrote done.txt"
     assert rerun.exec_id != handle.exec_id
 
 
@@ -384,7 +386,7 @@ def test_replay_serves_a_finished_model_checkpoint_from_cache(monkeypatch):
     monkeypatch.setattr(
         flow_mod,
         "_build_hitl_runtime_agent",
-        lambda: _to_hitl_durable_agent(_echo_agent(read_call, counter)),
+        lambda model=None: _to_hitl_durable_agent(_echo_agent(read_call, counter)),
     )
 
     result = run_hitl_agent_task("read the note")
@@ -405,6 +407,89 @@ def test_replay_serves_a_finished_model_checkpoint_from_cache(monkeypatch):
     assert counter["legs"] == legs_after_run, (
         "a replay must serve the finished model checkpoints from cache — the model must NOT be re-called"
     )
+
+
+# ================================================================================================
+# 2b. Model-swap Replay (ADR-0010 §5, task 070) — the INVERSE of the cache proof above: a replay
+# with a swapped Model Override RE-EXECUTES the anchored turn with the NEW model.
+# ================================================================================================
+
+
+def test_model_swap_replay_re_executes_downstream_turns(monkeypatch, tmp_path):
+    """A model-swap ``replay`` re-executes the anchored turn under the NEW model (the what-if bite).
+
+    The real AC1/AC2 proof for ``decode replay`` (ADR-0010 §5), and the exact **inverse** of
+    :func:`test_replay_serves_a_finished_model_checkpoint_from_cache`: that test anchors at the terminal
+    so the model is served from cache (leg-counter frozen); this one anchors **at the first model call**
+    and swaps the model, so the swapped agent's model IS re-invoked downstream of ``--from``.
+
+    The seam returns **two different scripted agents keyed on ``model``** — a ``model-baseline`` agent and
+    a ``model-swapped`` agent, each with its own leg-counter — so which model re-executed is unambiguous.
+    After the baseline bypass run, replaying ``from_`` the first ``decode_runtime_model_request`` with
+    ``model="model-swapped"`` moves the **swapped** counter (the swapped model re-ran the anchored turn)
+    while the **baseline** counter stays frozen (the original model was not re-invoked), and the Fork gets
+    a new ``exec_id``.
+
+    Honesty note (verified on kitaru 0.18): under ``"calls"`` the per-call checkpoints are DAG-independent
+    siblings and the terminal ``_capture_runtime_output`` sink has no upstream edge, so anchoring at one
+    model call re-executes only that call — the cached terminal artifact still serves the *baseline* text.
+    So the faithful proof that the swap re-executed is the **leg-counter**, not the returned text (the
+    text-swap-through-the-sink path is structurally a deployed-stack concern). That is exactly the option
+    the task names ("its leg-counter moves"), and the clean mirror of the cache test's frozen counter.
+    """
+    (tmp_path / "note.txt").write_text("hello from note", encoding="utf-8")
+    base_counter = {"legs": 0}
+    swap_counter = {"legs": 0}
+    baseline_script = [
+        ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": "note.txt"})]),
+        ModelResponse(parts=[TextPart(content="baseline: read the note")]),
+    ]
+    swapped_script = [
+        ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": "note.txt"})]),
+        ModelResponse(parts=[TextPart(content="swapped: read the note")]),
+    ]
+    baseline = KitaruAgent(
+        _scripted_agent(baseline_script, base_counter),
+        name=RUNTIME_AGENT_NAME,
+        checkpoint_strategy="calls",
+    )
+    swapped = KitaruAgent(
+        _scripted_agent(swapped_script, swap_counter),
+        name=RUNTIME_AGENT_NAME,
+        checkpoint_strategy="calls",
+    )
+
+    def seam(model: str | None = None) -> KitaruAgent:
+        # Kitaru forwards the Model Override flow input to the seam on the initial run AND on replay, so
+        # the swapped agent is selected only when the replay passes ``model="model-swapped"``.
+        return swapped if model == "model-swapped" else baseline
+
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", seam)
+
+    # 1. Baseline run under ``model-baseline`` — the recorded run we will fork.
+    handle = run_agent_task.run(task="read the note", model="model-baseline")
+    assert flow_mod._load_runtime_output(handle.exec_id) == "baseline: read the note"
+    baseline_legs_after_run = base_counter["legs"]
+    assert baseline_legs_after_run >= 2, "the baseline agent drove the real model legs"
+    assert swap_counter["legs"] == 0, "the swapped agent has not run yet"
+
+    # 2. Pick the replay anchor EXPLICITLY: the first model-request checkpoint (at/before the first model
+    # call), so the swap re-executes that turn. ``decode replay`` requires the operator to pass this.
+    steps = _steps(handle.exec_id)
+    anchor = min(s for s in steps if s.startswith("decode_runtime_model_request"))
+
+    # 3. Replay from the anchor with the SWAPPED model — the what-if fork.
+    replay = run_agent_task.replay(handle.exec_id, from_=anchor, model="model-swapped")
+
+    assert replay.status.is_finished and replay.status.is_successful
+    # 4. The SWAPPED model re-executed the anchored turn; the BASELINE model was NOT re-invoked — the real
+    # proof the swap bit downstream of ``--from`` (the inverse of the cache test's frozen counter).
+    assert swap_counter["legs"] >= 1, "the swapped model re-executed the turn downstream of --from"
+    assert base_counter["legs"] == baseline_legs_after_run, (
+        "the baseline model must NOT be re-invoked on the swapped replay — the swap drove it"
+    )
+    # 5. A new, linked execution (the Fork), not an in-place mutation of the original.
+    assert replay.exec_id != handle.exec_id
 
 
 # ================================================================================================
@@ -443,7 +528,9 @@ def test_hitl_pauses_on_named_waits_and_injected_answers_drive_the_tools(
     monkeypatch.setattr(
         flow_mod,
         "_build_hitl_runtime_agent",
-        lambda: _to_hitl_durable_agent(_real_agent(model_fn, name=HITL_RUNTIME_AGENT_NAME)),
+        lambda model=None: _to_hitl_durable_agent(
+            _real_agent(model_fn, name=HITL_RUNTIME_AGENT_NAME)
+        ),
     )
 
     result = run_hitl_agent_task("ask which environment, then deploy")
@@ -486,7 +573,7 @@ def test_replay_re_asks_a_wait_on_the_local_stack(monkeypatch):
     monkeypatch.setattr(
         flow_mod,
         "_build_hitl_runtime_agent",
-        lambda: _to_hitl_durable_agent(_echo_agent(ask_call, {"legs": 0})),
+        lambda model=None: _to_hitl_durable_agent(_echo_agent(ask_call, {"legs": 0})),
     )
 
     # Initial run: resolve the wait with "staging" so it completes and is recorded.
@@ -556,7 +643,7 @@ def test_durable_sleep_uses_the_capped_timer(monkeypatch, inline_wait_resolver):
     monkeypatch.setattr(
         flow_mod,
         "_build_hitl_runtime_agent",
-        lambda: _to_hitl_durable_agent(_echo_agent(sleep_call, {"legs": 0})),
+        lambda model=None: _to_hitl_durable_agent(_echo_agent(sleep_call, {"legs": 0})),
     )
 
     result = run_hitl_agent_task("back off then continue")
@@ -603,7 +690,7 @@ def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypa
     resolved: dict[str, str] = {}
     counter = {"legs": 0}
 
-    def seam() -> KitaruAgent:
+    def seam(model: str | None = None) -> KitaruAgent:
         # Build the REAL agent so the proxy resolves the key inside the flow body; capture the key the
         # model carries to prove it came from Kitaru, then run the turn on a scripted offline model.
         real_agent = build_agent(flow_mode=True)
@@ -614,7 +701,7 @@ def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypa
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", seam)
 
     handle = run_agent_task.run(task="summarize the repository")
-    assert getattr(handle.wait(), "output", None) == "done"
+    assert flow_mod._load_runtime_output(handle.exec_id) == "done"
 
     # The model was built from the SECRET-sourced key, never the settings sentinel.
     assert resolved["api_key"] == _KITARU_RAW_KEY
@@ -623,8 +710,9 @@ def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypa
     from zenml.client import Client
 
     run = Client().get_pipeline_run(handle.exec_id)
-    # The only persisted flow argument is the task string — no credential rides in the payload/logs.
-    assert set(run.config.parameters) == {"task"}
+    # The persisted flow arguments are the task string + the Model Override input (``model=None``
+    # here) — no credential rides in the payload/logs; a model id is not a secret (ADR-0010 §2).
+    assert set(run.config.parameters) == {"task", "model"}
     assert run.config.parameters["task"] == "summarize the repository"
     assert _KITARU_RAW_KEY not in run.config.model_dump_json()
     assert _SETTINGS_RAW_KEY not in run.config.model_dump_json()
@@ -658,12 +746,11 @@ def test_real_local_stack_wire(monkeypatch, tmp_path):
     durable = KitaruAgent(
         _scripted_agent(responses, counter), name=RUNTIME_AGENT_NAME, checkpoint_strategy="turn"
     )
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda: durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
     handle = run_agent_task.run(task="read the real input")
-    result = handle.wait()
 
-    assert getattr(result, "output", result) == "read the real input"
+    assert flow_mod._load_runtime_output(handle.exec_id) == "read the real input"
     assert handle.status.is_finished and handle.status.is_successful
     assert "decode_runtime" in set(_steps(handle.exec_id))
     assert counter["legs"] >= 2, (

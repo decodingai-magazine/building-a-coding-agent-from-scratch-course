@@ -85,9 +85,26 @@ def _enable_secret_store(monkeypatch) -> None:
 
 
 def _scripted_durable(text: str = "ok") -> KitaruAgent:
-    """A scripted offline ``KitaruAgent`` returning ``text`` (the model boundary stays offline)."""
+    """A scripted offline ``KitaruAgent`` returning ``text`` (the model boundary stays offline).
+
+    Uses ``checkpoint_strategy="calls"`` (also the settings default) so these runs read their output from
+    the ``_capture_runtime_output`` artifact via :func:`flow_mod._load_runtime_output` (``.wait()`` cannot
+    extract under ``"calls"``); see :func:`_run_and_read`.
+    """
     scripted, _counter = make_scripted_agent([ModelResponse(parts=[TextPart(content=text)])])
-    return KitaruAgent(scripted, name="decode-runtime", checkpoint_strategy="turn")
+    return KitaruAgent(scripted, name="decode-runtime", checkpoint_strategy="calls")
+
+
+def _run_and_read(task: str) -> str:
+    """Run the bypass flow to completion and read its final text from the output artifact (task 068).
+
+    The bypass ``decode run`` no longer uses ``.wait().output`` — under the ``"calls"`` default the run
+    ends in several terminal per-call checkpoints Kitaru cannot auto-extract from, so the flow saves
+    its text via ``_capture_runtime_output`` and we read it back by artifact name (mirrors the CLI).
+    ``run(...)`` runs to completion in-process on the local stack (bypass never pauses).
+    """
+    handle = run_agent_task.run(task=task)
+    return flow_mod._load_runtime_output(handle.exec_id)
 
 
 def test_headless_flow_hydrates_settings_seen_by_build_agent(monkeypatch, runtime_secret_name):
@@ -104,7 +121,7 @@ def test_headless_flow_hydrates_settings_seen_by_build_agent(monkeypatch, runtim
     _enable_secret_store(monkeypatch)
     seen: dict[str, str] = {}
 
-    def _seam() -> KitaruAgent:
+    def _seam(model: str | None = None) -> KitaruAgent:
         # Stands in for ``_build_runtime_agent`` → ``build_agent``: record the hydrated config the
         # real factory would read at this point, then run the turn on a scripted offline model.
         seen["provider"] = settings.llm_provider
@@ -114,9 +131,7 @@ def test_headless_flow_hydrates_settings_seen_by_build_agent(monkeypatch, runtim
 
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", _seam)
 
-    result = run_agent_task.run(task="hydrate me").wait()
-
-    assert getattr(result, "output", result) == "ok"
+    assert _run_and_read("hydrate me") == "ok"
     assert seen["provider"] == "gemini"
     assert seen["model"] == "gemini-from-secret"  # not in the real env — only in the secret
     assert seen["key"] == "sk-secret-only"
@@ -132,13 +147,13 @@ def test_real_env_overrides_kitaru_secret_in_flow(monkeypatch, runtime_secret_na
     reload_settings()
     seen: dict[str, str] = {}
 
-    def _seam() -> KitaruAgent:
+    def _seam(model: str | None = None) -> KitaruAgent:
         seen["model"] = settings.gemini_model
         return _scripted_durable()
 
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", _seam)
 
-    run_agent_task.run(task="env wins").wait()
+    assert _run_and_read("env wins") == "ok"
 
     assert seen["model"] == "gemini-from-env"
 
@@ -151,10 +166,10 @@ def test_hydration_never_writes_os_environ(monkeypatch, runtime_secret_name):
         private=True,
     )
     _enable_secret_store(monkeypatch)
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _scripted_durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: _scripted_durable())
     env_before = dict(os.environ)
 
-    run_agent_task.run(task="no env writes").wait()
+    assert _run_and_read("no env writes") == "ok"
 
     assert dict(os.environ) == env_before  # nothing added/changed
     assert "sk-secret-not-in-env" not in os.environ.values()
@@ -233,15 +248,16 @@ def test_flow_payload_carries_only_the_task_not_the_secret_value(monkeypatch, ru
         private=True,
     )
     _enable_secret_store(monkeypatch)
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", _scripted_durable)
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: _scripted_durable())
 
     handle = run_agent_task.run(task="summarize the repository")
-    assert getattr(handle.wait(), "output", None) == "ok"
+    assert flow_mod._load_runtime_output(handle.exec_id) == "ok"
 
     from zenml.client import Client
 
     run = Client().get_pipeline_run(handle.exec_id)
-    assert set(run.config.parameters) == {"task"}
+    # task + the Model Override input (``model=None`` here) now ride as flow params (ADR-0010 §2).
+    assert set(run.config.parameters) == {"task", "model"}
     assert run.config.parameters["task"] == "summarize the repository"
     assert sentinel not in run.config.model_dump_json()
 
@@ -268,7 +284,7 @@ def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
     reload_settings()
     observed: dict[str, str] = {}
 
-    def _seam() -> KitaruAgent:
+    def _seam(model: str | None = None) -> KitaruAgent:
         # Real build_agent(flow_mode=True): secret-store hydrated the model id; the Credentials Proxy
         # resolves the key from the SAME secret. Then run the turn on a scripted offline model.
         agent = build_agent(flow_mode=True)
@@ -279,7 +295,7 @@ def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", _seam)
 
     handle = run_agent_task.run(task="both flags on")
-    assert getattr(handle.wait(), "output", None) == "ok"
+    assert flow_mod._load_runtime_output(handle.exec_id) == "ok"
 
     assert observed["model"] == "gemini-from-secret"  # secret-store hydrated the model
     assert observed["resolved_key"] == raw_key  # the proxy resolved the key from the same secret
@@ -287,5 +303,6 @@ def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
     from zenml.client import Client
 
     run = Client().get_pipeline_run(handle.exec_id)
-    assert set(run.config.parameters) == {"task"}
+    # task + the Model Override input (``model=None`` here) now ride as flow params (ADR-0010 §2).
+    assert set(run.config.parameters) == {"task", "model"}
     assert raw_key not in run.config.model_dump_json()  # no raw key in the payload

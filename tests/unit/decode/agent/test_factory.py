@@ -12,14 +12,17 @@ from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
-from pydantic_ai.messages import ModelRequest, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.google import GoogleProvider
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 from decode.agent.deps import AgentDeps
-from decode.agent.factory import _build_model, build_agent
+from decode.agent.factory import _build_model, _flow_mode_http_client, build_agent
 from decode.agents.loader import load_agent
 from decode.entities.agent_def import AgentDef
 from decode.entities.permissions import PermissionDecision, PermissionRequest
@@ -175,6 +178,69 @@ async def test_memory_is_injected_into_the_first_request_instructions(tmp_path, 
     assert "decode" in first.instructions.lower()
     assert "PROJECT RULE: always run the tests" in first.instructions
     assert f"# From {tmp_path / 'AGENTS.md'}" in first.instructions
+
+
+async def test_build_agent_retries_empty_model_responses_before_giving_up(tmp_path, mocker):
+    """build_agent() raises the output-retry budget so a few empty/thinking-only turns don't abort.
+
+    Gemini 2.5 sometimes returns an empty (thinking-only) response after a tool call; pydantic-ai
+    re-requests on an empty turn, but its default output-retry budget is 1 — a *second* empty turn
+    aborts a real ``decode run`` with "Exceeded maximum output retries". Two empty turns then text must
+    succeed here, which only holds because ``build_agent`` sets ``output_retries`` above the default 1.
+    """
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    calls = {"n": 0}
+
+    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return ModelResponse(parts=[])  # empty / thinking-only, like Gemini 2.5 post-tool
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent = build_agent()
+    with agent.override(model=FunctionModel(model_fn)):
+        result = await agent.run("hi", deps=_deps(tmp_path))
+
+    assert result.output == "done"
+    assert calls["n"] == 3  # two empty turns tolerated, the third returns text
+
+
+def test_flow_mode_http_client_is_loop_safe_with_a_valid_deadline():
+    """The flow-mode provider client disables keep-alive and sets a deadline ≥ Gemini's 10s minimum.
+
+    Both values are load-bearing and only fail on a real cross-loop run (so they can't be caught by a
+    scripted-model test) — guard them here. Keep-alive off stops Kitaru's per-call event loops from
+    reusing a connection across loops (``RuntimeError('Event loop is closed')``); the deadline (httpx's
+    read timeout, which google-genai forwards) must clear Gemini's 10s floor or the API returns 400.
+    """
+    client = _flow_mode_http_client()
+    # google-genai forwards httpx's read timeout as the request deadline; Gemini rejects < 10s.
+    assert client.timeout.read is not None and client.timeout.read >= 10
+    # No pooled keep-alive connection can outlive a checkpoint's event loop (deep httpx internals; pinned).
+    assert client._transport._pool._max_keepalive_connections == 0
+
+
+def test_gemini_flow_mode_wires_the_loop_safe_http_client(mocker):
+    """`_build_model(flow_mode=True)` for gemini reaches for the loop-safe client; the REPL path doesn't.
+
+    Complements the isolated ``_flow_mode_http_client`` test by proving the *wiring* — that flow mode
+    (Kitaru's per-call event loops) attaches the keep-alive-free client, while the one-loop interactive
+    path keeps httpx's default keep-alive. Spying on the helper avoids reaching into ``GoogleModel``
+    internals for the attached client.
+    """
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    mocker.patch("decode.agent.factory.settings.llm_provider", "gemini")
+    spy = mocker.patch("decode.agent.factory._flow_mode_http_client", wraps=_flow_mode_http_client)
+
+    _build_model(flow_mode=True)
+    assert spy.call_count == 1  # flow mode builds the keep-alive-free client
+
+    _build_model(flow_mode=False)
+    assert spy.call_count == 1  # interactive path does NOT (one event loop — keep-alive is fine)
 
 
 async def test_memory_injection_is_evaluated_per_run(tmp_path, mocker):
@@ -487,3 +553,112 @@ def test_build_model_rejects_an_unsupported_provider(mocker):
 
     with pytest.raises(ValueError, match="unsupported llm_provider"):
         _build_model()
+
+
+# --- Model Override: the model id threaded as a flow parameter (ADR-0010 §2, task 067) -------
+#
+# ``_build_model`` / ``build_agent`` take ``model: str | None = None``. ``None`` reads
+# ``settings.<provider>_model`` (byte-unchanged — the interactive REPL path); a value overrides
+# ONLY the active provider's model id. The provider stays ``LLM_PROVIDER``-selected — the override
+# never changes the provider class or the auth/key path (permanent non-goal: no cross-provider
+# swap). Construction stays offline for every provider (building a model issues no model request).
+
+_OVERRIDE_MODEL_ID = "some-override-model-id"
+
+_PROVIDER_CASES = [
+    ("gemini", False),
+    ("openrouter", False),
+    ("modal", True),
+    ("modal", False),
+]
+_PROVIDER_CASE_IDS = ["gemini", "openrouter", "modal-authenticated", "modal-unauthenticated"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "modal_authenticated"), _PROVIDER_CASES, ids=_PROVIDER_CASE_IDS
+)
+def test_build_model_with_none_matches_the_settings_default(mocker, provider, modal_authenticated):
+    """``_build_model(model=None)`` builds the ``settings.<provider>_model`` id — byte-unchanged."""
+    _, expected_system, expected_model_name = _patch_provider(
+        mocker, provider, modal_authenticated=modal_authenticated
+    )
+
+    model = _build_model(model=None)
+
+    assert model.model_name == expected_model_name
+    assert model.system == expected_system
+
+
+@pytest.mark.parametrize(
+    ("provider", "modal_authenticated"), _PROVIDER_CASES, ids=_PROVIDER_CASE_IDS
+)
+def test_build_model_override_sets_only_the_model_id(mocker, provider, modal_authenticated):
+    """A ``model=`` override changes ONLY the id — the provider class + system stay LLM_PROVIDER's."""
+    expected_cls, expected_system, _ = _patch_provider(
+        mocker, provider, modal_authenticated=modal_authenticated
+    )
+
+    model = _build_model(model=_OVERRIDE_MODEL_ID)
+
+    assert model.model_name == _OVERRIDE_MODEL_ID  # only the id moved to the override
+    assert isinstance(model, expected_cls)  # ...the provider class is unchanged
+    assert model.system == expected_system  # ...and so is the provider system
+
+
+def test_gemini_override_keeps_the_google_provider_and_settings_key(mocker):
+    """gemini + override → still ``GoogleModel`` on ``GoogleProvider``; the auth key is untouched."""
+    _patch_provider(mocker, "gemini")
+
+    model = _build_model(model="gemini-2.5-pro")
+
+    assert model.model_name == "gemini-2.5-pro"
+    assert isinstance(model, GoogleModel)
+    assert isinstance(model._provider, GoogleProvider)
+    # The auth path is byte-identical: the provider still carries the settings-sourced key.
+    assert model._provider.client._api_client.api_key == "test-key"
+
+
+def test_openrouter_override_keeps_the_openrouter_provider_and_key(mocker):
+    """openrouter + override → still ``OpenAIChatModel`` on ``OpenRouterProvider`` (the AC3 headline)."""
+    _patch_provider(mocker, "openrouter")
+
+    model = _build_model(model="some-openrouter-id")
+
+    assert model.model_name == "some-openrouter-id"
+    assert isinstance(model, OpenAIChatModel)
+    assert isinstance(model._provider, OpenRouterProvider)
+    assert model._provider.client.api_key == "or-key"
+
+
+def test_modal_override_keeps_the_custom_client_and_proxy_headers(mocker):
+    """modal + override → still ``OpenAIChatModel`` on the custom ``AsyncOpenAI`` client (auth intact)."""
+    _patch_provider(mocker, "modal", modal_authenticated=True)
+
+    model = _build_model(model="some-modal-id")
+
+    assert model.model_name == "some-modal-id"
+    assert isinstance(model, OpenAIChatModel)
+    assert isinstance(model._provider, OpenAIProvider)
+    client = model._provider.client
+    assert str(client.base_url) == f"{_MODAL_URL}/v1/"
+    headers = dict(client.default_headers)
+    assert headers["Modal-Key"] == "wk-id"
+    assert headers["Modal-Secret"] == "ws-secret"
+
+
+def test_build_agent_threads_the_model_override_to_the_model(mocker):
+    """``build_agent(model=…)`` passes the override straight through to ``_build_model``."""
+    _patch_provider(mocker, "gemini")
+
+    agent = build_agent(model="gemini-2.5-pro")
+
+    assert agent.model.model_name == "gemini-2.5-pro"
+
+
+def test_build_agent_without_a_model_is_the_settings_default(mocker):
+    """``build_agent()`` (no ``model``) still builds the settings id — the interactive REPL path."""
+    _patch_provider(mocker, "gemini")
+
+    agent = build_agent()
+
+    assert agent.model.model_name == "gemini-2.5-flash"

@@ -326,7 +326,9 @@ def test_runtime_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     s = Settings(_env_file=None)
     assert s.runtime_enabled is True
-    assert s.runtime_checkpoint_strategy == "turn"
+    # Default is "calls": every run is replay-ready (per-call checkpoints), loop-safe on gemini, the
+    # wired provider (ADR-0010 §3). "turn" is the cheaper coarse opt-out (asserted in the literal test).
+    assert s.runtime_checkpoint_strategy == "calls"
     assert s.runtime_wait_timeout_s == 600.0
     assert s.runtime_credentials_proxy_enabled is False
     assert s.runtime_secret_name == "decode-llm-creds"

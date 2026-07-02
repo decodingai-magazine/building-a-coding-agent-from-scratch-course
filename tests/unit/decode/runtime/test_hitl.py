@@ -85,7 +85,25 @@ def _echo_agent(first_call: ModelResponse) -> Agent[AgentDeps, str | DeferredToo
 def _patch_hitl_seam(monkeypatch: pytest.MonkeyPatch, agent: Agent) -> None:
     """Point the HITL runtime seam at ``agent`` wrapped in the real HITL ``KitaruAgent`` config."""
     durable = _to_hitl_durable_agent(agent)
-    monkeypatch.setattr(flow_mod, "_build_hitl_runtime_agent", lambda: durable)
+    monkeypatch.setattr(flow_mod, "_build_hitl_runtime_agent", lambda model=None: durable)
+
+
+def _patch_hitl_seam_recording(monkeypatch: pytest.MonkeyPatch, agent: Agent) -> dict:
+    """Like :func:`_patch_hitl_seam`, but record the ``model`` the flow forwards to the HITL seam.
+
+    Returns a mutable ``captured`` dict whose ``"model"`` holds the Model Override
+    :func:`run_hitl_agent_task` threaded into the ``@flow`` — i.e. the value ``decode run --hitl
+    --model X`` composes through end to end (ADR-0010 §2,4).
+    """
+    durable = _to_hitl_durable_agent(agent)
+    captured = {"model": "SENTINEL"}
+
+    def _seam(model=None):
+        captured["model"] = model
+        return durable
+
+    monkeypatch.setattr(flow_mod, "_build_hitl_runtime_agent", _seam)
+    return captured
 
 
 @pytest.fixture
@@ -454,3 +472,68 @@ def test_cli_run_hitl_reports_a_paused_write_approval(
     assert result.exit_code == 0
     assert "paused" in result.stderr.lower()
     assert "kitaru executions input" in result.stderr
+
+
+# --- task 069: `--model` composes with `--hitl`; a completed HITL run points at kitaru replay -------
+
+
+def test_run_hitl_threads_the_model_override_through_the_seam(
+    monkeypatch, inline_wait_resolver, _provider_ok
+):
+    """``decode run --hitl --model X`` forwards ``model=X`` into the HITL flow's seam (AC4).
+
+    Proves the ``--model`` flag composes with ``--hitl`` end to end: the CLI arg threads through
+    ``_run_hitl`` → ``run_hitl_agent_task`` → the ``@flow`` → the recorded ``_build_hitl_runtime_agent``.
+    """
+    from decode.cli import cli
+
+    inline_wait_resolver.answers = ["staging"]
+    captured = _patch_hitl_seam_recording(
+        monkeypatch,
+        _echo_agent(
+            ModelResponse(
+                parts=[ToolCallPart(tool_name="ask_user", args={"question": "which env?"})]
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli, ["run", "--hitl", "--model", "gemini-2.5-pro", "deploy my app"]
+    )
+
+    assert result.exit_code == 0
+    assert (
+        captured["model"] == "gemini-2.5-pro"
+    )  # --model composed with --hitl and reached the flow
+    assert "tool said: staging" in result.stdout
+
+
+def test_run_hitl_completed_run_points_at_kitaru_executions_replay(
+    monkeypatch, inline_wait_resolver, _provider_ok
+):
+    """A completed ``decode run --hitl`` echoes its exec_id + the bypass-only replay note on stderr (AC4).
+
+    ``decode replay`` is bypass-only (a HITL replay re-asks every wait on the local stack — ADR-0010
+    §5,7), so a finished HITL run surfaces its exec_id and points at ``kitaru executions replay``
+    rather than a ``decode replay`` hint. The answer still prints on stdout, pipe-clean.
+    """
+    from decode.cli import cli
+
+    inline_wait_resolver.answers = ["staging"]
+    _patch_hitl_seam(
+        monkeypatch,
+        _echo_agent(
+            ModelResponse(
+                parts=[ToolCallPart(tool_name="ask_user", args={"question": "which env?"})]
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(cli, ["run", "--hitl", "deploy my app"])
+
+    assert result.exit_code == 0
+    assert "tool said: staging" in result.stdout  # the answer stays on stdout
+    # decode replay is bypass-only; a completed HITL run points at the Kitaru operator surface.
+    assert "exec_id:" in result.stderr
+    assert "kitaru executions replay" in result.stderr
+    assert "bypass-only" in result.stderr
