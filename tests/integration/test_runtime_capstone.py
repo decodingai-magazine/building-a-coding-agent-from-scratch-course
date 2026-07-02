@@ -21,8 +21,10 @@ process ``cwd`` is moved there too, so any file a tool writes stays in the sandb
 The four runtime sub-features, each asserted through the real flow:
 
 1. **Durability (058)** — :func:`test_durability_runs_the_real_flow_to_completion`: a multi-step task
-   runs to completion via ``run_agent_task.run(task).wait()`` and returns the scripted final text; the
-   durable, checkpointed execution is recorded; a fresh re-run is a *new* execution. It also proves the
+   runs to completion via ``run_agent_task.run(task)`` and returns the scripted final text (read back
+   from the ``_capture_runtime_output`` artifact — ``.wait()`` no longer auto-extracts under the
+   terminal sink, task 068); the durable, checkpointed execution is recorded; a fresh re-run is a *new*
+   execution. It also proves the
    **real** agent loop ran (the scripted tool sequence wrote a real file inline under BYPASS) and the
    interactive ``Runner`` / ``agent/loop.py`` path was **not** used (a spy asserts neither was built).
 2. **Replay (058, AC2)** — :func:`test_replay_serves_a_finished_model_checkpoint_from_cache`: a
@@ -339,10 +341,10 @@ def test_durability_runs_the_real_flow_to_completion(monkeypatch, mocker, tmp_pa
     handler_spy = mocker.patch("decode.agent.loop.AgentTurnHandler")
 
     handle = run_agent_task.run(task="read the spec then record the work")
-    result = handle.wait()
 
-    # The real flow returned the scripted final text.
-    assert getattr(result, "output", result) == "read the spec and wrote done.txt"
+    # The real flow returned the scripted final text, read back from the ``_capture_runtime_output``
+    # artifact — under that terminal sink ``.wait()`` no longer auto-extracts a value (task 068).
+    assert flow_mod._load_runtime_output(handle.exec_id) == "read the spec and wrote done.txt"
     # The real agent loop ran the scripted tools INLINE under BYPASS: the write actually hit disk, and
     # the model consumed >1 leg (a stub returning canned text would not write the file or tool-loop).
     assert (tmp_path / "done.txt").read_text(encoding="utf-8") == "shipped"
@@ -358,7 +360,7 @@ def test_durability_runs_the_real_flow_to_completion(monkeypatch, mocker, tmp_pa
 
     # A fresh re-run is a NEW execution (a new ``run`` is not a replay of the prior one).
     rerun = run_agent_task.run(task="read the spec then record the work")
-    rerun.wait()
+    assert flow_mod._load_runtime_output(rerun.exec_id) == "read the spec and wrote done.txt"
     assert rerun.exec_id != handle.exec_id
 
 
@@ -616,7 +618,7 @@ def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypa
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", seam)
 
     handle = run_agent_task.run(task="summarize the repository")
-    assert getattr(handle.wait(), "output", None) == "done"
+    assert flow_mod._load_runtime_output(handle.exec_id) == "done"
 
     # The model was built from the SECRET-sourced key, never the settings sentinel.
     assert resolved["api_key"] == _KITARU_RAW_KEY
@@ -664,9 +666,8 @@ def test_real_local_stack_wire(monkeypatch, tmp_path):
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
     handle = run_agent_task.run(task="read the real input")
-    result = handle.wait()
 
-    assert getattr(result, "output", result) == "read the real input"
+    assert flow_mod._load_runtime_output(handle.exec_id) == "read the real input"
     assert handle.status.is_finished and handle.status.is_successful
     assert "decode_runtime" in set(_steps(handle.exec_id))
     assert counter["legs"] >= 2, (

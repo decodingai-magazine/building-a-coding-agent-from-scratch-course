@@ -28,20 +28,31 @@ pytestmark = [
 ]
 
 
-def _durable(responses, *, strategy="turn"):
-    """Wrap a scripted decode agent in a ``KitaruAgent`` for the ``_build_runtime_agent`` seam."""
+def _durable(responses, *, strategy="calls"):
+    """Wrap a scripted decode agent in a ``KitaruAgent`` for the ``_build_runtime_agent`` seam.
+
+    Defaults to ``"calls"`` — the settings default since task 068 (ADR-0010 §3) — so the round-trip
+    tests exercise the per-call checkpoint reality the real ``decode run`` now records (and the
+    output-artifact read-back the CLI now uses, since ``.wait()`` no longer extracts under ``"calls"``).
+    """
     agent, counter = make_scripted_agent(responses)
     return KitaruAgent(agent, name="decode-runtime", checkpoint_strategy=strategy), counter
 
 
 def test_flow_round_trips_a_task_and_returns_the_agents_text(monkeypatch):
-    """A bare text turn round-trips through the real flow and ``.wait().output`` is the agent text."""
+    """A bare text turn round-trips; the final text is read from the ``_capture_runtime_output`` artifact.
+
+    Under the ``"calls"`` default the flow ends in terminal per-call checkpoints, so ``.wait()`` cannot
+    auto-extract a value (``_MultipleTerminalStepsOutputError``, task 068). The flow saves its final
+    text via the terminal sink and :func:`_load_runtime_output` reads it back by name — exactly what
+    the ``decode run`` CLI now does.
+    """
     durable, _counter = _durable([ModelResponse(parts=[TextPart(content="all done")])])
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
-    result = run_agent_task.run(task="say all done").wait()
+    handle = run_agent_task.run(task="say all done")
 
-    assert getattr(result, "output", result) == "all done"
+    assert flow_mod._load_runtime_output(handle.exec_id) == "all done"
 
 
 def test_flow_runs_a_gated_tool_inline_under_bypass(monkeypatch, tmp_path):
@@ -61,28 +72,35 @@ def test_flow_runs_a_gated_tool_inline_under_bypass(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
-    result = run_agent_task.run(task="write out.txt").wait()
+    handle = run_agent_task.run(task="write out.txt")
 
-    assert getattr(result, "output", result) == "wrote out.txt"
+    assert flow_mod._load_runtime_output(handle.exec_id) == "wrote out.txt"
     # cwd is the isolated tmp_path (autouse fixture chdirs there); the tool actually wrote the file.
     assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "hi"
 
 
-def test_flow_records_a_durable_checkpointed_execution(monkeypatch):
-    """The run persists a finished, checkpointed execution — the durable record replay builds on.
+def test_flow_records_per_call_checkpoints_not_a_single_turn_step(monkeypatch, tmp_path):
+    """The run persists a finished execution with PER-CALL checkpoints — the record a Replay anchors on.
 
-    The turn is wrapped in a Kitaru checkpoint named after the agent (``decode_runtime``); the
-    execution is recorded in the local stack's store with a stable ``exec_id`` and a successful
-    status. That persisted checkpoint is exactly what a crash-resume replays from (User Story 2);
-    here we assert the durable record exists rather than drive a real crash.
+    Under the ``"calls"`` default (ADR-0010 §3) each model/tool call is its own checkpoint, closed by
+    the terminal ``_capture_runtime_output`` sink — NOT the coarse single ``decode_runtime`` turn step.
+    A two-leg script (read a seeded file → final text) makes that granularity visible: the persisted
+    step set carries a per-call ``*_model_request`` + the ``read_tool`` checkpoint + the capture sink,
+    and no ``decode_runtime`` turn step. That fine-grained record is exactly what lets a Replay anchor
+    before a specific model call (User Story 1); here we assert the durable record's shape.
     """
-    durable, _counter = _durable([ModelResponse(parts=[TextPart(content="done")])])
+    (tmp_path / "spec.md").write_text("ship it", encoding="utf-8")
+    durable, _counter = _durable(
+        [
+            ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": "spec.md"})]),
+            ModelResponse(parts=[TextPart(content="done")]),
+        ]
+    )
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
 
     handle = run_agent_task.run(task="record me")
-    output = handle.wait()
 
-    assert getattr(output, "output", output) == "done"
+    assert flow_mod._load_runtime_output(handle.exec_id) == "done"
     assert handle.status.is_finished and handle.status.is_successful
     assert isinstance(handle.exec_id, str) and handle.exec_id
 
@@ -90,11 +108,53 @@ def test_flow_records_a_durable_checkpointed_execution(monkeypatch):
 
     run = Client().get_pipeline_run(handle.exec_id)
     assert run.status.is_successful
-    assert "decode_runtime" in set(run.steps)  # the per-turn checkpoint was persisted
+    steps = set(run.steps)
+    # Per-call granularity, not the pre-068 single ``decode_runtime`` turn checkpoint.
+    assert "decode_runtime" not in steps
+    assert "_capture_runtime_output" in steps  # the terminal output sink
+    assert "read_tool" in steps  # the tool call got its own checkpoint
+    assert any(s.startswith("decode_runtime_model_request") for s in steps)  # per-model-call
 
 
-def test_build_runtime_agent_wraps_build_agent_in_a_named_kitaru_agent(monkeypatch):
-    """The seam wraps ``build_agent()``'s Agent in a ``KitaruAgent`` carrying the stable name."""
+def test_flow_round_trips_a_multi_tool_task_under_the_calls_default(monkeypatch, tmp_path):
+    """A REAL bypass run round-trips a MULTI-TOOL task with ``"calls"`` sourced from settings (AC3).
+
+    Read a seeded file → write a new file → final text: three model legs and two tool calls, so the
+    ``"calls"`` strategy records several terminal per-call checkpoints — precisely the shape that breaks
+    ``.wait()`` (``_MultipleTerminalStepsOutputError``, task 068). The strategy is not hardcoded here:
+    the FACTORY is patched (not the seam), so the **real** :func:`_build_runtime_agent` runs and reads
+    ``settings.runtime_checkpoint_strategy`` (``"calls"``) when it wraps the scripted agent. Proving the
+    flow still returns the correct final text — read from the ``_capture_runtime_output`` artifact — is
+    the core de-risk: output extraction survives ``"calls"`` end to end.
+    """
+    (tmp_path / "spec.md").write_text("ship the runtime", encoding="utf-8")
+    monkeypatch.setattr(flow_mod.settings, "runtime_checkpoint_strategy", "calls")
+    agent, counter = make_scripted_agent(
+        [
+            ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": "spec.md"})]),
+            ModelResponse(
+                parts=[ToolCallPart(tool_name="write", args={"path": "out.txt", "content": "go"})]
+            ),
+            ModelResponse(parts=[TextPart(content="read the spec and wrote out.txt")]),
+        ]
+    )
+    # Patch the factory so the real seam wraps this scripted agent under the settings strategy.
+    monkeypatch.setattr(flow_mod, "build_agent", lambda flow_mode=True, model=None: agent)
+
+    handle = run_agent_task.run(task="read the spec then write out.txt")
+
+    assert flow_mod._load_runtime_output(handle.exec_id) == "read the spec and wrote out.txt"
+    assert (tmp_path / "out.txt").read_text(encoding="utf-8") == "go"
+    assert counter["legs"] >= 3  # the real agent loop drove all three scripted legs
+
+
+def test_build_runtime_agent_wraps_build_agent_in_a_named_calls_kitaru_agent(monkeypatch):
+    """The seam wraps ``build_agent()``'s Agent in a ``KitaruAgent`` with the stable name + ``"calls"``.
+
+    ``checkpoint_strategy`` comes from ``settings.runtime_checkpoint_strategy`` — flipped to ``"calls"``
+    by task 068 (ADR-0010 §3), the settings default asserted in ``test_settings.py``. Pinning it here
+    keeps the test hermetic and proves the real seam propagates the setting (it does not hardcode).
+    """
     from pydantic import SecretStr
 
     import decode.agent.factory as factory_mod
@@ -102,11 +162,13 @@ def test_build_runtime_agent_wraps_build_agent_in_a_named_kitaru_agent(monkeypat
     # build_agent() constructs the gemini model; seed a dummy key so construction is offline.
     monkeypatch.setattr(factory_mod.settings, "gemini_api_key", SecretStr("test-key"))
     monkeypatch.setattr(factory_mod.settings, "llm_provider", "gemini")
+    monkeypatch.setattr(flow_mod.settings, "runtime_checkpoint_strategy", "calls")
 
     durable = flow_mod._build_runtime_agent()
 
     assert isinstance(durable, KitaruAgent)
     assert durable.name == flow_mod.RUNTIME_AGENT_NAME == "decode-runtime"
+    assert durable.checkpoint_strategy == "calls"  # reads the new settings default
 
 
 def _seed_gemini(monkeypatch):

@@ -356,13 +356,17 @@ def run(task: str, hitl: bool) -> None:
         return
 
     from decode.runtime import run_agent_task
+    from decode.runtime.flow import _load_runtime_output
 
     logger.debug("decode run starting (task=%r)", task)
-    # ``flow.run(...).wait()`` returns the flow's terminal checkpoint — a pydantic-ai
-    # ``AgentRunResult`` — so surface its ``.output`` text (the flow's str return is not what Kitaru
-    # hands back). ``getattr`` keeps it robust if a future Kitaru version returns the str directly.
-    result = run_agent_task.run(task=task).wait()
-    click.echo(getattr(result, "output", result))
+    # Under the ``"calls"`` default (ADR-0010 §3) the bypass flow ends in several terminal per-call
+    # checkpoints, so Kitaru's ``.wait()`` cannot auto-extract a single return value
+    # (``_MultipleTerminalStepsOutputError`` — verified in task 068). The flow instead saves its final
+    # text via the terminal ``_capture_runtime_output`` checkpoint; read it back by artifact name — the
+    # same mechanism the HITL path uses. ``run(...)`` runs to completion in-process on the local stack
+    # (bypass never pauses), so the handle is finished here.
+    handle = run_agent_task.run(task=task)
+    click.echo(_load_runtime_output(handle.exec_id))
 
 
 def _run_hitl(task: str) -> None:

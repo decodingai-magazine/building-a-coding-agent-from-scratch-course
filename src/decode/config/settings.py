@@ -202,9 +202,11 @@ class Settings(BaseSettings):
     # readers yet (they land in tasks 058/059/061). ``runtime_enabled`` master-gates the WHOLE headless
     # feature: ``False`` → ``decode run`` exits with a friendly line and never builds a Durable Flow.
     runtime_enabled: bool = True
-    # ``KitaruAgent`` Checkpoint granularity: ``"turn"`` (one Checkpoint per agent turn — coarse, the
-    # simplest MVP default) or ``"calls"`` (per model/tool call). Task 058 passes it to ``KitaruAgent``.
-    runtime_checkpoint_strategy: Literal["turn", "calls"] = "turn"
+    # ``KitaruAgent`` Checkpoint granularity. Default ``"calls"`` (per model/tool call): it makes every
+    # ``decode run`` **replay-ready** — a Replay can anchor before a specific model call (ADR-0010 §3),
+    # which the coarser ``"turn"`` (one Checkpoint per agent turn) cannot. ``"turn"`` stays selectable
+    # as an opt-out (fewer store writes). HITL always forces ``"calls"`` regardless (``flow.py``).
+    runtime_checkpoint_strategy: Literal["turn", "calls"] = "calls"
     # The durable Wait (HITL) poll timeout (seconds) in flow mode; matches Kitaru's local 600s default.
     # A non-positive value fails fast (Field gt=0). Task 059 reads it.
     runtime_wait_timeout_s: float = Field(600.0, gt=0)

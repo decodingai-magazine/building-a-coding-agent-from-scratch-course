@@ -101,15 +101,16 @@ def test_flow_payload_carries_only_the_task_not_the_raw_key(monkeypatch, runtime
 
     def _seam(model: str | None = None) -> KitaruAgent:
         # Resolve the real proxy key (it materializes in the discarded real agent), then run the
-        # turn on a scripted model so the flow stays offline (no network model call).
+        # turn on a scripted model so the flow stays offline (no network model call). ``"calls"`` is
+        # the settings default since task 068, so the output is read from the artifact below.
         build_agent(flow_mode=True)
         scripted, _counter = make_scripted_agent([ModelResponse(parts=[TextPart(content="done")])])
-        return KitaruAgent(scripted, name="decode-runtime", checkpoint_strategy="turn")
+        return KitaruAgent(scripted, name="decode-runtime", checkpoint_strategy="calls")
 
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", _seam)
 
     handle = run_agent_task.run(task="summarize the repository")
-    assert getattr(handle.wait(), "output", None) == "done"
+    assert flow_mod._load_runtime_output(handle.exec_id) == "done"
 
     from zenml.client import Client
 

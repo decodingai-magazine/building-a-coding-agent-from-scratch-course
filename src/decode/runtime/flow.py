@@ -235,17 +235,36 @@ def _build_headless_deps() -> AgentDeps:
     )
 
 
+@checkpoint
+def _capture_runtime_output(output: str) -> str:
+    """Persist a flow's final text as the :data:`RUNTIME_OUTPUT_ARTIFACT`, the single-sink terminal step.
+
+    Shared by **both** durable flows (:func:`run_agent_task` and :func:`run_agent_task_hitl`). Under
+    ``checkpoint_strategy="calls"`` a run ends in several terminal per-model/tool-call checkpoints, so
+    Kitaru cannot auto-extract a single return value via ``.wait()`` — it raises
+    ``_MultipleTerminalStepsOutputError`` (ADR-0008 §3 amendment 5; verified for the bypass path in task
+    068). This final checkpoint saves the agent's output under a stable artifact name so
+    :func:`_load_runtime_output` can load it back by name instead of relying on ``.wait()``.
+    """
+    save(RUNTIME_OUTPUT_ARTIFACT, output, type="output")
+    return output
+
+
 @flow
 def run_agent_task(task: str, model: str | None = None) -> str:
     """Run ``task`` to completion through the durable agent and return its final text (ADR-0008 §1-2).
 
     Sync ``@flow``: build the durable agent (the patchable seam), construct the headless BYPASS
-    deps, and call ``run_sync(task)`` — one or more checkpointed turns, every tool inline, no human
-    wait. Returns the agent's final text. A crash mid-run replays the finished turns from the Kitaru
-    cache on a re-run rather than re-executing them.
+    deps, and call ``run_sync(task)`` — one or more checkpointed model/tool calls, every tool inline,
+    no human wait. A crash mid-run replays the finished checkpoints from the Kitaru cache on a re-run
+    rather than re-executing them.
 
-    Launched via ``run_agent_task.run(task=…)`` → a ``FlowHandle``; ``.wait()`` blocks for the
-    terminal checkpoint (see :func:`decode.cli` for the text extraction).
+    Launched via ``run_agent_task.run(task=…)`` → a ``FlowHandle``. The final text is stored via the
+    terminal :func:`_capture_runtime_output` checkpoint and read back with :func:`_load_runtime_output`
+    — **not** ``.wait().output``: under the ``"calls"`` default (ADR-0010 §3) the run ends in several
+    terminal per-call checkpoints, so ``.wait()`` cannot auto-extract a single value (it raises
+    ``_MultipleTerminalStepsOutputError`` — verified in task 068). This is the same output-artifact
+    mechanism the HITL flow uses; see :func:`decode.cli` for the read-back.
 
     ``model`` is the **Model Override** (ADR-0010 §2), a keyword-defaulted flow input threaded to the
     seam: ``None`` (the default) reads ``settings.<provider>_model`` — so ``run(task=…)`` without a
@@ -268,7 +287,7 @@ def run_agent_task(task: str, model: str | None = None) -> str:
             "headless runtime expected text output but the agent deferred a tool call; "
             "BYPASS mode must run every tool inline (ADR-0008 §2)."
         )
-    return output
+    return _capture_runtime_output(output)
 
 
 # ---------------------------------------------------------------------------
@@ -368,18 +387,6 @@ def _build_hitl_deps() -> AgentDeps:
     )
 
 
-@checkpoint
-def _capture_runtime_output(output: str) -> str:
-    """Persist the HITL flow's final text as the :data:`RUNTIME_OUTPUT_ARTIFACT` (ADR-0008 §3).
-
-    A final checkpoint that records the agent's output under a stable artifact name, because the
-    ``"calls"`` + opt-out flow has several terminal model-request checkpoints that block Kitaru's
-    automatic ``.wait()`` return-value extraction. :func:`run_hitl_agent_task` loads it back by name.
-    """
-    save(RUNTIME_OUTPUT_ARTIFACT, output, type="output")
-    return output
-
-
 @flow
 def run_agent_task_hitl(task: str, model: str | None = None) -> str:
     """Run ``task`` headlessly with **durable HITL** approvals + ``ask_user`` waits (ADR-0008 §3).
@@ -446,7 +453,12 @@ class HitlRunResult:
 
 
 def _load_runtime_output(exec_id: str) -> str:
-    """Load a finished HITL run's final text from its :data:`RUNTIME_OUTPUT_ARTIFACT` (ADR-0008 §3)."""
+    """Load a finished run's final text from its :data:`RUNTIME_OUTPUT_ARTIFACT` (ADR-0008 §3).
+
+    Shared by both flows: the bypass ``decode run`` (task 068) and the HITL run read the terminal
+    :func:`_capture_runtime_output` artifact back by name here, instead of ``.wait().output`` (which
+    the ``"calls"`` per-call checkpoints break — ``_MultipleTerminalStepsOutputError``).
+    """
     from kitaru import KitaruClient
 
     client = KitaruClient()

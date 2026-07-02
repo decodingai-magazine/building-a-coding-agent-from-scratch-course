@@ -36,11 +36,16 @@ def _provider_ok(monkeypatch):
 
 
 def _patch_seam(monkeypatch, text):
-    """Point the runtime seam at a scripted agent returning ``text``; return its leg counter."""
+    """Point the runtime seam at a scripted agent returning ``text``; return its leg counter.
+
+    Uses ``checkpoint_strategy="calls"`` — the settings default since task 068 (ADR-0010 §3) — so the
+    command drives the real ``decode run`` path, which reads its output from the
+    ``_capture_runtime_output`` artifact (``.wait()`` no longer extracts under ``"calls"``).
+    """
     from kitaru.adapters.pydantic_ai import KitaruAgent
 
     agent, counter = make_scripted_agent([ModelResponse(parts=[TextPart(content=text)])])
-    durable = KitaruAgent(agent, name="decode-runtime", checkpoint_strategy="turn")
+    durable = KitaruAgent(agent, name="decode-runtime", checkpoint_strategy="calls")
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
     return counter
 
