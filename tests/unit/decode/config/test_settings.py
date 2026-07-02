@@ -326,9 +326,9 @@ def test_runtime_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     s = Settings(_env_file=None)
     assert s.runtime_enabled is True
-    # Default is "turn": the whole run shares one event loop, so a real multi-turn provider run is safe.
-    # "calls" runs each call in its own loop and crashes real runs with "Event loop is closed"
-    # (ADR-0010 §3), so it stays opt-in (asserted in the accepts-each-literal test).
+    # Default is "turn" (cheap: one checkpoint per run). "calls" records finer per-call Replay anchors at
+    # a higher checkpoint cost; both are loop-safe on a real provider (ADR-0010 §3). "turn" is the default
+    # for cost, not safety — opt into "calls" for granular replay (asserted in the accepts-each-literal test).
     assert s.runtime_checkpoint_strategy == "turn"
     assert s.runtime_wait_timeout_s == 600.0
     assert s.runtime_credentials_proxy_enabled is False

@@ -69,19 +69,21 @@ REPL and its JSONL log are untouched (headless-only); `runtime/` stays the isola
    cross-provider swap** (permanent non-goal). Being a flow input is exactly what lets Kitaru swap it
    via `flow.replay(..., model=…)`.
 
-3. **Default `checkpoint_strategy="turn"`; `"calls"` is opt-in (task 068, revised).** `"turn"` runs the
-   whole bypass run inside one `asyncio.run` event loop, so a reused provider HTTP client stays valid
-   across model calls. `"calls"` (per model/tool call) gives finer replay anchors but runs **each call
-   in its own loop**; Kitaru's adapter reuses one google-genai client across them, so a real multi-turn
-   run crashes with `RuntimeError('Event loop is closed')` (the cached httpx `AsyncClient` is bound to
-   the first, now-closed loop). So `"calls"` (`RUNTIME_CHECKPOINT_STRATEGY=calls`) is opt-in — practical
-   today only for offline/scripted runs — until that cross-loop reuse is fixed upstream (or decode
-   rebuilds the client per checkpoint). Task 068's independently-needed repair still lands: bypass
-   `.wait()` return-extraction breaks under `"calls"`, so the flow adopts the shipped HITL fix (terminal
-   `@checkpoint _capture_runtime_output` + `_load_runtime_output` reader; the CLI reads the artifact, not
+3. **Default `checkpoint_strategy="turn"`; `"calls"` is opt-in (task 068, revised).** `"turn"` records
+   one checkpoint per run (cheap); `"calls"` records one per model/tool call — the finer anchors a Replay
+   needs to start *before* a specific model call — at the cost of more checkpoints. Both are **loop-safe
+   on a real provider**: Kitaru runs each `"calls"` checkpoint in its own `asyncio.run` event loop, so
+   decode builds the flow-mode provider client with **HTTP keep-alive disabled** (`_flow_mode_http_client`)
+   — no pooled connection survives one checkpoint's loop to be torn down against it on the next
+   (`RuntimeError('Event loop is closed')`), and its timeout clears Gemini's 10s minimum deadline. The
+   default is `"turn"` for cost, not safety; opt into `"calls"` (`RUNTIME_CHECKPOINT_STRATEGY=calls`) for
+   granular replay. Task 068's independently-needed repair still lands: bypass `.wait()` return-extraction
+   breaks under `"calls"`, so the flow adopts the shipped HITL fix (terminal `@checkpoint
+   _capture_runtime_output` + `_load_runtime_output` reader; the CLI reads the artifact, not
    `.wait().output`) — which HITL (always `"calls"`) and the opt-in bypass `"calls"` path both need.
-   *(This revises 068's `"turn" → "calls"` flip: the flip shipped, then a real multi-turn `decode run`
-   surfaced the event-loop crash, so the default returns to `"turn"`.)*
+   *(This revises 068's `"turn" → "calls"` flip: the flip shipped, a real multi-turn `decode run` surfaced
+   the event-loop crash, so the default is `"turn"` and `"calls"` was made loop-safe via the keep-alive-
+   free flow client.)*
 
 4. **`decode run --model X` + surface the exec_id (task 069).** Expose the §2 parameter as a flag, and
    stop discarding the `FlowHandle` (today `cli.py:364`): print the answer on stdout, then `exec_id:
@@ -178,8 +180,9 @@ flowchart TB
   (diffing, checkpoint-overrides, the cohort example). Everything hard stays Kitaru's, not decode's.
 - **Default `decode run` replays at turn granularity.** `"turn"` records one checkpoint per turn, so a
   replay anchors at a turn boundary, not before a specific model call. Per-call anchoring needs
-  `RUNTIME_CHECKPOINT_STRATEGY=calls`, which is offline/scripted-only today (the event-loop limit in
-  Decision 3) — so out-of-the-box replay-readiness is coarser than task 068 first intended.
+  `RUNTIME_CHECKPOINT_STRATEGY=calls` (loop-safe on a real provider via the keep-alive-free flow client,
+  Decision 3) — opt in to anchor before a specific model call; the default stays `"turn"` for its lower
+  checkpoint cost.
 - **A model swap can diverge the recorded call sequence.** A different model may tool-call differently
   downstream of `--from`; Kitaru may raise `KitaruDivergenceError`. `decode replay` surfaces it as a
   friendly line (that *is* the honest what-if outcome — the change diverged the run), never a

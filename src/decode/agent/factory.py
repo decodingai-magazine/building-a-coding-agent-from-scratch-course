@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
+import httpx
 from openai import AsyncOpenAI
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.models import Model
@@ -107,6 +108,23 @@ def build_agent(
     return agent
 
 
+def _flow_mode_http_client() -> httpx.AsyncClient:
+    """A keep-alive-free httpx client for flow-mode (headless ``decode run`` / replay) provider calls.
+
+    Under Kitaru's ``"calls"`` checkpoint strategy each model call runs in its own ``asyncio.run`` event
+    loop (in a worker thread). A pooled keep-alive connection opened on one loop and reused on the next
+    is torn down against the now-closed loop → ``RuntimeError('Event loop is closed')`` — which is what
+    made per-call checkpoints (the granular Replay anchors) unusable on a real provider. With keep-alive
+    off, every request opens and closes its own connection inside its own loop, so nothing survives to
+    be reused across loops. The explicit 120s timeout replaces httpx's 5s default, which google-genai
+    forwards as the request deadline — Gemini rejects deadlines under its 10s minimum (400).
+    ponytail: the client is not closed; the short-lived headless process reclaims it on exit.
+    """
+    return httpx.AsyncClient(
+        limits=httpx.Limits(max_keepalive_connections=0), timeout=httpx.Timeout(120.0)
+    )
+
+
 def _build_model(*, flow_mode: bool = False, model: str | None = None) -> Model:
     """Build the Pydantic AI model for ``settings.llm_provider`` — the Provider Seam (ADR-0005 §3-5).
 
@@ -143,9 +161,15 @@ def _build_model(*, flow_mode: bool = False, model: str | None = None) -> Model:
     """
     provider = settings.llm_provider
     if provider == "gemini":
+        # In flow mode hand Gemini a keep-alive-free client so the ``"calls"`` strategy is loop-safe
+        # (see :func:`_flow_mode_http_client`). openrouter/modal share the same latent issue under
+        # ``"calls"``; wire the same client through their ``AsyncOpenAI`` when a real run needs it.
         return GoogleModel(
             model or settings.gemini_model,
-            provider=GoogleProvider(api_key=_provider_api_key("gemini", flow_mode=flow_mode)),
+            provider=GoogleProvider(
+                api_key=_provider_api_key("gemini", flow_mode=flow_mode),
+                http_client=_flow_mode_http_client() if flow_mode else None,
+            ),
         )
     if provider == "openrouter":
         return OpenAIChatModel(

@@ -22,7 +22,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 from decode.agent.deps import AgentDeps
-from decode.agent.factory import _build_model, build_agent
+from decode.agent.factory import _build_model, _flow_mode_http_client, build_agent
 from decode.agents.loader import load_agent
 from decode.entities.agent_def import AgentDef
 from decode.entities.permissions import PermissionDecision, PermissionRequest
@@ -205,6 +205,21 @@ async def test_build_agent_retries_empty_model_responses_before_giving_up(tmp_pa
 
     assert result.output == "done"
     assert calls["n"] == 3  # two empty turns tolerated, the third returns text
+
+
+def test_flow_mode_http_client_is_loop_safe_with_a_valid_deadline():
+    """The flow-mode provider client disables keep-alive and sets a deadline ≥ Gemini's 10s minimum.
+
+    Both values are load-bearing and only fail on a real cross-loop run (so they can't be caught by a
+    scripted-model test) — guard them here. Keep-alive off stops Kitaru's per-call event loops from
+    reusing a connection across loops (``RuntimeError('Event loop is closed')``); the deadline (httpx's
+    read timeout, which google-genai forwards) must clear Gemini's 10s floor or the API returns 400.
+    """
+    client = _flow_mode_http_client()
+    # google-genai forwards httpx's read timeout as the request deadline; Gemini rejects < 10s.
+    assert client.timeout.read is not None and client.timeout.read >= 10
+    # No pooled keep-alive connection can outlive a checkpoint's event loop (deep httpx internals; pinned).
+    assert client._transport._pool._max_keepalive_connections == 0
 
 
 async def test_memory_injection_is_evaluated_per_run(tmp_path, mocker):
