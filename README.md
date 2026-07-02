@@ -151,6 +151,25 @@ The agent tool-loops headlessly and prints the result; the process exits `0`. Ea
 - **Guards.** `decode run` needs the same provider config as the REPL (e.g. `GEMINI_API_KEY`); a missing key prints one friendly line and exits non-zero. Set `RUNTIME_ENABLED=false` to disable the subcommand entirely (it then exits with a friendly line and builds no flow).
 - **`sleep` is a durable timer in the durable run.** In a durable headless run (`decode run --hitl`), `sleep` becomes a Kitaru wait — the execution can pause and the process exit, then resume — instead of pinning a worker; in the TUI it stays a plain in-process `asyncio.sleep` (ADR-0008 §4).
 
+### Local Kitaru server & dashboard (optional) — and how to fix a hang
+
+`decode run` needs **no** server — it works against Kitaru's offline local store (see *Setup* above). Start a local server only when you want the **web dashboard** (execution timeline + per-checkpoint view) or the REST API:
+
+```bash
+kitaru login                 # start + connect to a local server → http://127.0.0.1:8383
+kitaru login --port 9000     # ...or on another port → http://127.0.0.1:9000
+kitaru status                # show the connection + whether the daemon is running
+```
+
+`kitaru login` with **no server argument** starts Kitaru's bundled dashboard and connects your client to it. Open **http://127.0.0.1:8383** to browse executions — and to eyeball a replay **fork** next to its original run.
+
+**Troubleshooting a hang / `Connection refused`.** If `decode run` (or any `kitaru …` command) hangs on retries against `127.0.0.1:8383` (`Connection refused`), the local server daemon has stopped but your client is still pointed at it. Recover either way:
+
+- **`kitaru login`** — restart the daemon at the same URL; or
+- **`kitaru logout`** — disconnect and fall back to the **direct local database** (server-less, so it *can't* hang). `decode run` and `kitaru executions …` keep working; you only lose the web UI until you `kitaru login` again.
+
+`kitaru status` shows which mode you're in (`Connection: local Kitaru server` vs `local database`) and whether the daemon is running. This only affects the interactive `kitaru` / `decode run` surface — the automated tests always use their own isolated store and are never affected by it.
+
 ### Credentials proxy (keep the model key out of the flow payload)
 
 By default a headless run reads the model key from `.env` (e.g. `GEMINI_API_KEY`) exactly like the REPL. For a **deployed** flow you don't want the raw key serialized into the execution's arguments — so `decode` can instead resolve the key from a **Kitaru secret** at model construction, leaving only the secret *name* in the flow. The design is in [`docs/adr/0008-kitaru-durable-runtime.md`](docs/adr/0008-kitaru-durable-runtime.md) §5; it is **opt-in** and off by default.
