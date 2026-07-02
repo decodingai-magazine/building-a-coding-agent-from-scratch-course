@@ -47,3 +47,20 @@ def _no_real_provider_key(monkeypatch):
     from decode.config.settings import settings
 
     monkeypatch.setattr(settings, "gemini_api_key", SecretStr(""), raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _default_sandbox_mode(monkeypatch):
+    """Hermeticity guard — pin ``SANDBOX_MODE=none`` on the singleton (ADR-0011, task 071).
+
+    The sandbox backend guard (:func:`decode.cli._sandbox_config_error`) is wired into both the REPL
+    startup chain and the headless ``decode run`` / ``decode replay`` pre-flight, and both read the
+    ``settings`` singleton's ``sandbox_mode``. A developer who exported ``SANDBOX_MODE=docker`` /
+    ``modal`` (or set it in ``.env``) would otherwise trip that guard in every test that drives the
+    cli, changing outcomes based on local env — exactly the leak :func:`_no_real_provider_key` guards
+    against for the provider key. Pin the default ``none`` here so the suite is hermetic; the task-071
+    tests that exercise the docker/modal guard override this with their own patch (which wins).
+    """
+    from decode.config.settings import settings
+
+    monkeypatch.setattr(settings, "sandbox_mode", "none", raising=False)

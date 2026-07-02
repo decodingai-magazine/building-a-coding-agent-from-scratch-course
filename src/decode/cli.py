@@ -12,6 +12,9 @@ init_logger()
 
 import asyncio  # noqa: E402  (intentional post-logger import)
 import logging  # noqa: E402
+import os  # noqa: E402
+import subprocess  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 import click  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
@@ -42,6 +45,26 @@ _MODAL_PROXY_TOKENS_MESSAGE = (
     "Decode: LLM_PROVIDER=modal proxy tokens are both-or-neither — set both MODAL_PROXY_TOKEN_ID "
     "and MODAL_PROXY_TOKEN_SECRET, or neither for an --unauthenticated endpoint (see .env.example)."
 )
+
+# The friendly line shown when ``SANDBOX_MODE=docker`` is selected but the Docker daemon is not
+# reachable (ADR-0011 §1). Like the provider guards this is presence/reachability only — a running
+# daemon is required, not a *correct* image — and it fires in both the REPL and the headless pre-flight.
+_SANDBOX_DOCKER_UNREACHABLE_MESSAGE = (
+    "Decode: SANDBOX_MODE=docker but the Docker daemon is not reachable — start Docker and retry "
+    "(see .env.example)."
+)
+
+# The friendly line shown when ``SANDBOX_MODE=modal`` is selected but Modal account credentials are
+# absent (ADR-0011 §1). Presence only — no network call, no ``modal`` import: a wrong token fails at
+# the first sandbox call, matching the provider-key guards.
+_SANDBOX_MODAL_NO_CREDENTIALS_MESSAGE = (
+    "Decode: SANDBOX_MODE=modal but Modal credentials are missing — run `modal token set …` "
+    "(see .env.example)."
+)
+
+# How long the ``docker info`` daemon-reachability probe may run before it is treated as unreachable.
+# Deliberately short — a healthy local daemon answers near-instantly, and startup must not hang on it.
+_DOCKER_PROBE_TIMEOUT_S = 5.0
 
 # The startup Agent persona when ``--agent`` is omitted (ADR-0003 §9): the full-tool build agent.
 _DEFAULT_AGENT = "build"
@@ -112,6 +135,67 @@ def _provider_config_error() -> str | None:
             return _MODAL_PROXY_TOKENS_MESSAGE
         return None
     return None  # defensive: the settings ``Literal`` blocks any other value upstream.
+
+
+def _docker_daemon_reachable() -> bool:
+    """True if the local Docker daemon answers a fast ``docker info`` probe (ADR-0011 §1).
+
+    Shells out to the standard ``docker`` CLI (dependency-free, mirroring the sandbox executors'
+    CLI-over-SDK choice) rather than importing the docker SDK. Reachability, not correctness: a
+    missing binary (:class:`FileNotFoundError`), a non-zero exit (daemon down), or a probe that
+    overruns :data:`_DOCKER_PROBE_TIMEOUT_S` (:class:`subprocess.TimeoutExpired`) all mean "not
+    reachable" — never a crash. No network beyond the local daemon socket; output is discarded.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=_DOCKER_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _modal_credentials_present() -> bool:
+    """True if Modal account credentials are present, WITHOUT a network call or a ``modal`` import (ADR-0011 §1).
+
+    Presence only, checked exactly the way the modal CLI itself resolves auth: the
+    ``MODAL_TOKEN_ID`` + ``MODAL_TOKEN_SECRET`` account-token pair in the environment (distinct from
+    the endpoint/proxy tokens in ``settings`` — these are read straight from ``os.environ`` because
+    they belong to the modal CLI, not to decode config), or a ``~/.modal.toml`` written by
+    ``modal token set``. Correctness is not checked here — a bad token fails at the first sandbox
+    call, matching the provider-key guards.
+    """
+    if os.environ.get("MODAL_TOKEN_ID") and os.environ.get("MODAL_TOKEN_SECRET"):
+        return True
+    return (Path.home() / ".modal.toml").exists()
+
+
+def _sandbox_config_error() -> str | None:
+    """Return one friendly line if the selected Sandbox Mode's backend is unavailable, else None (ADR-0011 §1).
+
+    The sandbox counterpart to :func:`_provider_config_error`, wired into both the REPL startup chain
+    and the headless ``decode run``/``replay`` pre-flight so an unavailable backend is refused the same
+    friendly way — one stderr line, non-zero exit, never a traceback. Presence/reachability only, never
+    correctness (matching the provider-key guards):
+
+    * ``none`` — always ``None``; the default ``LocalExecutor`` path is untouched and **no probe runs**.
+    * ``docker`` — a fast :func:`_docker_daemon_reachable` probe; unreachable → the friendly docker line.
+    * ``modal`` — :func:`_modal_credentials_present` (env token pair or ``~/.modal.toml``); absent → the
+      friendly modal line. No network call, no ``modal`` import.
+    """
+    mode = settings.sandbox_mode
+    if mode == "docker":
+        if not _docker_daemon_reachable():
+            return _SANDBOX_DOCKER_UNREACHABLE_MESSAGE
+        return None
+    if mode == "modal":
+        if not _modal_credentials_present():
+            return _SANDBOX_MODAL_NO_CREDENTIALS_MESSAGE
+        return None
+    return None  # ``none`` (default): no probe, byte-identical to today's LocalExecutor path.
 
 
 def _uses_credentials_proxy() -> bool:
@@ -207,8 +291,8 @@ def _runtime_config_preflight() -> str | None:
 
     Both headless entrypoints (``run`` builds a flow; ``replay`` re-executes downstream model calls, so
     it needs the same valid provider config) run this identical ordered chain before touching kitaru,
-    returning the **first** friendly error line — or ``None`` when all pass. Order is load-bearing and
-    unchanged from task 069's inline ``run`` chain:
+    returning the **first** friendly error line — or ``None`` when all pass. Order is load-bearing;
+    task 071 inserted the sandbox guard (step 3) into task 069's original chain:
 
     1. **Per-provider config guard** (it builds a model) — skipped when a kitaru-backed source supplies
        the config: the Credentials Proxy (key from a secret) or the secret-store config source (whole
@@ -216,10 +300,14 @@ def _runtime_config_preflight() -> str | None:
        boot Kitaru, and a disabled runtime must short-circuit first). For everything else it is the
        byte-identical settings-key/token guard.
     2. **``RUNTIME_ENABLED``** — a disabled runtime never builds/replays a flow.
-    3. **Secret-store config pre-flight** (``RUNTIME_SECRET_STORE_CONFIG``) — hydrate + validate the whole
+    3. **Sandbox backend guard** (``SANDBOX_MODE``, ADR-0011 §1) — when docker/modal, refuse if the
+       backend is unavailable (docker daemon down / modal creds absent). Presence/reachability only and
+       kitaru-free; ``none`` (the default) runs no probe. Placed after the runtime gate (a disabled
+       runtime still short-circuits first) and before the kitaru-backed pre-flights (it touches no secret).
+    4. **Secret-store config pre-flight** (``RUNTIME_SECRET_STORE_CONFIG``) — hydrate + validate the whole
        config from the Kitaru secret up front. Runs before the proxy pre-flight so, with both on, the
        proxy resolves its key from the now-hydrated secret — one coherent path, never two conflicting lines.
-    4. **Credentials-proxy pre-flight** — validate the Kitaru secret resolves before building a flow.
+    5. **Credentials-proxy pre-flight** — validate the Kitaru secret resolves before building a flow.
 
     The caller echoes the return value to stderr and exits non-zero when it is not ``None``. ``kitaru`` is
     reached only through the two pre-flights' lazily imported seams, so the REPL path never loads it.
@@ -235,6 +323,11 @@ def _runtime_config_preflight() -> str | None:
     if not settings.runtime_enabled:
         logger.debug("runtime disabled; refusing to run")
         return _RUNTIME_DISABLED_MESSAGE
+
+    sandbox_error = _sandbox_config_error()
+    if sandbox_error is not None:
+        logger.debug("sandbox backend %s unavailable; refusing to run", settings.sandbox_mode)
+        return sandbox_error
 
     if secret_store_on:
         secret_store_error = _secret_store_config_error()
@@ -296,6 +389,16 @@ def cli(ctx: click.Context, resume: str | None, agent: str, mode: str | None) ->
     if config_error is not None:
         logger.debug("provider %s misconfigured; refusing to start", settings.llm_provider)
         click.echo(config_error, err=True)
+        raise click.exceptions.Exit(1)
+
+    # Sandbox backend startup guard (ADR-0011 §1): when ``SANDBOX_MODE`` is docker/modal, refuse to
+    # start if the chosen backend is unavailable (docker daemon unreachable / modal creds absent) with
+    # one friendly line instead of failing later on the first ``bash`` call. Presence, not correctness;
+    # ``none`` (the default) runs no probe, so this is a no-op for every existing setup.
+    sandbox_error = _sandbox_config_error()
+    if sandbox_error is not None:
+        logger.debug("sandbox backend %s unavailable; refusing to start", settings.sandbox_mode)
+        click.echo(sandbox_error, err=True)
         raise click.exceptions.Exit(1)
 
     # Unknown-agent startup guard (ADR-0003 §9): validate ``--agent`` against the catalog *before*

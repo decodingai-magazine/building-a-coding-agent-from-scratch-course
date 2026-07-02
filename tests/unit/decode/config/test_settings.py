@@ -50,6 +50,16 @@ _RUNTIME_ENV_VARS = (
     "RUNTIME_SECRET_STORE_CONFIG",
 )
 
+# Sandboxing vars introduced by ADR-0011 (task 071). Cleared in default tests so a developer's real
+# environment cannot leak into the assertions.
+_SANDBOX_ENV_VARS = (
+    "SANDBOX_MODE",
+    "SANDBOX_IMAGE",
+    "SANDBOX_TIMEOUT_S",
+    "SANDBOX_CREDENTIAL_PROXY_ENABLED",
+    "SANDBOX_PROXY_IMAGE",
+)
+
 
 def test_defaults(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -402,6 +412,90 @@ def test_env_example_lists_every_runtime_var():
     """Drift guard: each runtime setting has a matching line in .env.example (AGENTS.md gate)."""
     env_example = (Path(__file__).parents[4] / ".env.example").read_text()
     for var in _RUNTIME_ENV_VARS:
+        assert var in env_example, f"{var} missing from .env.example"
+
+
+# --- Sandboxing (ADR-0011, task 071) --------------------------------------------------------
+#
+# Config surface only — the executors that READ these land in tasks 072-075. The default
+# ``sandbox_mode="none"`` keeps today's LocalExecutor, so every existing ``.env``/test is
+# byte-unchanged (asserted implicitly: no sandbox var is required to build ``Settings``).
+
+
+def test_sandbox_defaults(monkeypatch):
+    for var in _SANDBOX_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    assert s.sandbox_mode == "none"
+    assert s.sandbox_image == "python:3.12-slim"
+    assert s.sandbox_timeout_s == 600.0
+    assert s.sandbox_credential_proxy_enabled is False
+    assert s.sandbox_proxy_image == "mitmproxy/mitmproxy"
+
+
+def test_reads_sandbox_vars_from_process_env(monkeypatch):
+    monkeypatch.setenv("SANDBOX_MODE", "docker")
+    monkeypatch.setenv("SANDBOX_IMAGE", "python:3.13-slim")
+    monkeypatch.setenv("SANDBOX_TIMEOUT_S", "120.0")
+    monkeypatch.setenv("SANDBOX_CREDENTIAL_PROXY_ENABLED", "true")
+    monkeypatch.setenv("SANDBOX_PROXY_IMAGE", "mitmproxy/mitmproxy:latest")
+    s = Settings(_env_file=None)
+    assert s.sandbox_mode == "docker"
+    assert s.sandbox_image == "python:3.13-slim"
+    assert s.sandbox_timeout_s == 120.0
+    assert s.sandbox_credential_proxy_enabled is True
+    assert s.sandbox_proxy_image == "mitmproxy/mitmproxy:latest"
+
+
+def test_loads_sandbox_vars_from_a_dotenv_file(tmp_path, monkeypatch):
+    for var in _SANDBOX_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    env = tmp_path / ".env"
+    env.write_text(
+        "SANDBOX_MODE=modal\n"
+        "SANDBOX_IMAGE=python:3.11-slim\n"
+        "SANDBOX_TIMEOUT_S=300.0\n"
+        "SANDBOX_CREDENTIAL_PROXY_ENABLED=true\n"
+        "SANDBOX_PROXY_IMAGE=custom/mitmproxy\n"
+    )
+    s = Settings(_env_file=str(env))
+    assert s.sandbox_mode == "modal"
+    assert s.sandbox_image == "python:3.11-slim"
+    assert s.sandbox_timeout_s == 300.0
+    assert s.sandbox_credential_proxy_enabled is True
+    assert s.sandbox_proxy_image == "custom/mitmproxy"
+
+
+@pytest.mark.parametrize("mode", ["none", "docker", "modal"])
+def test_sandbox_mode_accepts_each_valid_literal(monkeypatch, mode):
+    monkeypatch.setenv("SANDBOX_MODE", mode)
+    s = Settings(_env_file=None)
+    assert s.sandbox_mode == mode
+
+
+def test_sandbox_mode_rejects_unknown_value(monkeypatch):
+    """A value outside {none, docker, modal} fails fast at load, not inside the seam (Literal)."""
+    for var in _SANDBOX_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("SANDBOX_MODE", "firecracker")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("bad", ["0", "-1.0"])
+def test_rejects_a_non_positive_sandbox_timeout(monkeypatch, bad):
+    """A sandbox timeout <= 0 fails fast at load, not deep in a remote sandbox (Field(gt=0))."""
+    for var in _SANDBOX_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("SANDBOX_TIMEOUT_S", bad)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_env_example_lists_every_sandbox_var():
+    """Drift guard: each sandbox setting has a matching line in .env.example (AGENTS.md gate)."""
+    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
+    for var in _SANDBOX_ENV_VARS:
         assert var in env_example, f"{var} missing from .env.example"
 
 
