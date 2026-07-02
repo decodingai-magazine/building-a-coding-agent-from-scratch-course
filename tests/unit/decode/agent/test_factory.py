@@ -222,6 +222,27 @@ def test_flow_mode_http_client_is_loop_safe_with_a_valid_deadline():
     assert client._transport._pool._max_keepalive_connections == 0
 
 
+def test_gemini_flow_mode_wires_the_loop_safe_http_client(mocker):
+    """`_build_model(flow_mode=True)` for gemini reaches for the loop-safe client; the REPL path doesn't.
+
+    Complements the isolated ``_flow_mode_http_client`` test by proving the *wiring* — that flow mode
+    (Kitaru's per-call event loops) attaches the keep-alive-free client, while the one-loop interactive
+    path keeps httpx's default keep-alive. Spying on the helper avoids reaching into ``GoogleModel``
+    internals for the attached client.
+    """
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    mocker.patch("decode.agent.factory.settings.llm_provider", "gemini")
+    spy = mocker.patch("decode.agent.factory._flow_mode_http_client", wraps=_flow_mode_http_client)
+
+    _build_model(flow_mode=True)
+    assert spy.call_count == 1  # flow mode builds the keep-alive-free client
+
+    _build_model(flow_mode=False)
+    assert spy.call_count == 1  # interactive path does NOT (one event loop — keep-alive is fine)
+
+
 async def test_memory_injection_is_evaluated_per_run(tmp_path, mocker):
     """Editing AGENTS.md takes effect on the next run without rebuilding the agent."""
     mocker.patch(

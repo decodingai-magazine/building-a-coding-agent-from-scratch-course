@@ -72,11 +72,12 @@ REPL and its JSONL log are untouched (headless-only); `runtime/` stays the isola
 3. **Default `checkpoint_strategy="calls"` (task 068), made loop-safe.** `"calls"` records one checkpoint
    per model/tool call, so every `decode run` is replay-ready — a Replay can anchor *before* a specific
    model call; `"turn"` (one coarse checkpoint per run) is a cheaper opt-out that can only be replayed
-   whole. `"calls"` is **loop-safe on a real provider**: Kitaru runs each checkpoint in its own
-   `asyncio.run` event loop, so decode builds the flow-mode provider client with **HTTP keep-alive
+   whole. `"calls"` is **loop-safe on gemini** (the wired provider): Kitaru runs each checkpoint in its
+   own `asyncio.run` event loop, so decode builds gemini's flow-mode client with **HTTP keep-alive
    disabled** (`_flow_mode_http_client`) — no pooled connection survives one checkpoint's loop to be torn
    down against it on the next (`RuntimeError('Event loop is closed')`), and its timeout clears Gemini's
-   10s minimum deadline. Task 068's `.wait()` repair still lands: bypass `.wait()` return-extraction breaks
+   10s minimum deadline. (openrouter/modal share the latent issue under `"calls"` and would need the same
+   client wired through their `AsyncOpenAI` — `factory.py`.) Task 068's `.wait()` repair still lands: bypass `.wait()` return-extraction breaks
    under `"calls"`, so the flow adopts the shipped HITL fix (terminal `@checkpoint _capture_runtime_output`
    + `_load_runtime_output` reader; the CLI reads the artifact, not `.wait().output`) — which HITL (always
    `"calls"`) and the bypass `"calls"` path both need. *(History: 068 flipped `"turn" → "calls"`; a real
@@ -177,9 +178,9 @@ flowchart TB
   a flag, a thin wrapper) unlock Kitaru's replay/what-if loop and the operator workflows built on it
   (diffing, checkpoint-overrides, the cohort example). Everything hard stays Kitaru's, not decode's.
 - **Default `decode run` is granularly replayable.** `"calls"` records one checkpoint per model/tool
-  call, so a replay can anchor before a specific model call — loop-safe on a real provider via the
-  keep-alive-free flow client (Decision 3). `RUNTIME_CHECKPOINT_STRATEGY=turn` is the cheaper opt-out
-  (one checkpoint per run), but a `"turn"` run can only be replayed whole.
+  call, so a replay can anchor before a specific model call — loop-safe on gemini via the keep-alive-free
+  flow client (Decision 3; openrouter/modal would need the same wiring). `RUNTIME_CHECKPOINT_STRATEGY=turn`
+  is the cheaper opt-out (one checkpoint per run), but a `"turn"` run can only be replayed whole.
 - **A model swap can diverge the recorded call sequence.** A different model may tool-call differently
   downstream of `--from`; Kitaru may raise `KitaruDivergenceError`. `decode replay` surfaces it as a
   friendly line (that *is* the honest what-if outcome — the change diverged the run), never a

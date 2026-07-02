@@ -204,9 +204,10 @@ class Settings(BaseSettings):
     runtime_enabled: bool = True
     # ``KitaruAgent`` Checkpoint granularity. Default ``"calls"`` (per model/tool call): every ``decode
     # run`` is **replay-ready** — a Replay can anchor before a specific model call, because each call is
-    # its own Checkpoint. Loop-safe on a real provider: flow mode builds a keep-alive-free HTTP client so
-    # Kitaru's per-call event loops never reuse a connection across loops (``_flow_mode_http_client``,
-    # ADR-0010 §3). ``"turn"`` (one coarse Checkpoint per run) stays selectable as a cheaper opt-out — but
+    # its own Checkpoint. Loop-safe on gemini (the wired provider): flow mode builds a keep-alive-free
+    # HTTP client so Kitaru's per-call event loops never reuse a connection across loops
+    # (``_flow_mode_http_client``, ADR-0010 §3; openrouter/modal would need the same wiring). ``"turn"``
+    # (one coarse Checkpoint per run) stays selectable as a cheaper opt-out — but
     # a ``"turn"`` run can only be replayed whole, not before a specific call. HITL always forces
     # ``"calls"`` regardless (``flow.py``).
     runtime_checkpoint_strategy: Literal["turn", "calls"] = "calls"

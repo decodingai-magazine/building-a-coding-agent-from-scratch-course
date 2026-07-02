@@ -509,10 +509,9 @@ def run_hitl_agent_task(task: str, model: str | None = None) -> HitlRunResult:
 # The ZenML pipeline (flow) name Kitaru records each ``@flow`` under is the flow function's own name —
 # Kitaru's ``build_pipeline_registration_name`` is an identity transform for these already-valid
 # identifiers. Verified on kitaru 0.18: ``KitaruClient().executions.get(exec_id).flow_name`` is exactly
-# one of these two names. It is how :func:`is_hitl_execution` tells a replayable BYPASS run from a HITL
+# the flow function's name. It is how :func:`is_hitl_execution` tells a replayable BYPASS run from a HITL
 # run ``decode replay`` must refuse (bypass-only — a HITL replay re-asks every wait on the local stack,
-# ADR-0010 §5,7). Derived from the flow objects so the constants can never drift from the flow names.
-RUNTIME_PIPELINE_NAME = run_agent_task.__name__  # "run_agent_task" — the bypass flow
+# ADR-0010 §5,7). Derived from the flow object so the constant can never drift from the flow name.
 HITL_RUNTIME_PIPELINE_NAME = run_agent_task_hitl.__name__  # "run_agent_task_hitl" — the HITL flow
 
 

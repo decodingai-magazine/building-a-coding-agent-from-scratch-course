@@ -38,10 +38,10 @@ def _provider_ok(monkeypatch):
 def _patch_seam(monkeypatch, text):
     """Point the runtime seam at a scripted agent returning ``text``; return its leg counter.
 
-    Uses ``checkpoint_strategy="calls"`` (the opt-in fine-grained strategy; the default is ``"turn"``)
-    so the command exercises the multi-terminal-checkpoint path — the real ``decode run`` reads its
-    output from the ``_capture_runtime_output`` artifact (``.wait()`` cannot extract under ``"calls"``);
-    the read-back is identical under ``"turn"``.
+    Uses ``checkpoint_strategy="calls"`` (also the settings default) so the command exercises the
+    multi-terminal-checkpoint path — the real ``decode run`` reads its output from the
+    ``_capture_runtime_output`` artifact (``.wait()`` cannot extract under ``"calls"``); the read-back is
+    identical under the ``"turn"`` opt-out.
     """
     from kitaru.adapters.pydantic_ai import KitaruAgent
 

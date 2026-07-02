@@ -213,3 +213,61 @@ Decode: the headless runtime is disabled — set RUNTIME_ENABLED=true ... (exit 
 - Faithfulness of the offline proof: sufficient. The real cross-process ZenML *server* round-trip is out of scope here and every prior runtime task (ADR-0010 §7 defers it to a deployed stack); the hermetic e2e exercises the real flow end-to-end minus only the network model + live server.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-02 20:15 — Acceptance Re-Review (feature `runtime-replay` follow-up fixes, PR #20)
+
+**VERDICT: ACCEPT**
+
+Feature was accepted once (task 070 log, PR #20); this session added post-acceptance commits that
+CHANGE user-facing behavior, so I re-reviewed those on their own merits — the real-provider bug fixes
+(`c380c87`, `018e087`), the restored `"calls"` default (`04244e2`), and the doc reconciliation
+(`12b11c1` + the settings/.env/ADR/glossary edits). Reviewed from the user's POV; did not exercise a
+live Gemini (the offline gate + code are the primary evidence, per the review charge).
+
+**1. A real multi-turn `decode run` now completes — both bugs fixed with genuine offline guards.**
+- Event-loop-closed under `"calls"`: `_flow_mode_http_client()` (`factory.py:111-125`) hands Gemini a
+  keep-alive-free httpx client (`max_keepalive_connections=0`) with an explicit 120s timeout that clears
+  Gemini's 10s deadline floor; wired in flow mode at `factory.py:171`. Guarded by
+  `test_flow_mode_http_client_is_loop_safe_with_a_valid_deadline` (`test_factory.py:210` — pins
+  keep-alive==0 + read deadline≥10s; both are load-bearing and only fail on a real cross-loop run).
+- `Exceeded maximum output retries`: `output_retries=3` (`factory.py:103`), guarded by
+  `test_build_agent_retries_empty_model_responses_before_giving_up` (`test_factory.py:183` — two empty
+  `ModelResponse`s then text must succeed with `calls==3`; would fail at the default budget of 1 —
+  non-vacuous). Maintainer proved both live (commit bodies). Ran the two guards on HEAD: 43 passed.
+- The DEFAULT config — `LLM_PROVIDER=gemini` (`settings.py:104`) + `"calls"` (`settings.py:212`) — is
+  exactly the wired/proven loop-safe path, so the out-of-the-box user works.
+
+**2. `"calls"` is the default again and every run is granularly replayable.** `settings.py:212`
+confirms `= "calls"`; the record → inspect-anchors → replay-with-swap → compare story holds and is
+now walkable via the README quickstart (a concrete 7-tool-call → 16-checkpoint anatomy, then
+`decode replay <id> --from decode_runtime_model_request --model gemini-2.5-pro`). `"turn"` stays a
+selectable opt-out; HITL still force-pins `"calls"` (`flow.py:348`); the `_capture_runtime_output` /
+`_load_runtime_output` extraction repair (068's crux) is intact.
+
+**3. Docs match behavior and are self-consistent — the flip-flop is reconciled, not left contradictory.**
+Swept README / AGENTS.md / docs/ / settings.py / .env.example for a stale "turn = default" or "MVP
+default" claim — **none** (the earlier PR-reviewer glossary nit #3 is fixed; `glossary.md:49` now reads
+"calls (the default)"). settings.py:205-212, .env.example:131-136, glossary.md:49, ADR-0010 §3 (72-84)
+all say "calls = default (granular, loop-safe), turn = opt-out" identically. The 068→018e087→04244e2
+history is explained honestly in ADR-0010 §3's History note. The README "Rules of the road" even folds
+in the local-stack stdout caveat the prior PA/PR review had only flagged as a nit — an improvement.
+
+**Full offline gate re-run on HEAD (not rubber-stamped):** `make ci` → **1074 passed, 0 warnings**
+(+2 = the two new regression tests), `uv lock --check`/format/lint clean.
+
+**Known limitations correctly NOT rejected for** (all documented): bypass-only replay
+(`tasks/future/hitl-replay-answer-reuse.md`); local-stack fork stdout echoes the cached baseline (README
+rules + ADR); `"calls"` loop-safety wired only for gemini (`factory.py:164-166`).
+
+**Non-blocking notes carried forward for the PR reviewer / a docs-polish pass (NOT reject reasons):**
+1. User-facing copy honesty on the provider scope: `settings.py:207` and `.env.example:132` say
+   "Loop-safe on a real provider" unqualified, but only gemini is wired with `_flow_mode_http_client`
+   (`factory.py:164-166` is honest in-code). Since gemini is the default provider the default path is
+   safe, but an `openrouter`/`modal` user who keeps the default `"calls"` could still hit the
+   event-loop crash. Tightening the phrase to "loop-safe on gemini (the wired/proven provider)" would
+   match factory.py's honesty. Polish; task charter designates this a known limitation.
+2. Cosmetic: `factory.py:121` `_flow_mode_http_client` docstring has a garbled word ("ponytail: the
+   client is not closed" — reads like a stray token for "Note:"). Internal docstring only.
+
+All acceptance criteria verified from the user's POV; the what-if journey holds end to end. Hand off to
+the PR Reviewer.
