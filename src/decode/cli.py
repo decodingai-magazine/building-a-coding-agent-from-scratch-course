@@ -54,6 +54,17 @@ _RUNTIME_DISABLED_MESSAGE = (
     "or .env to use `decode run` (see .env.example)."
 )
 
+# The friendly line shown when ``decode replay`` is invoked without ``--from``. Kitaru's replay
+# REQUIRES an anchor — ``from_`` is a required argument with no default (verified on kitaru 0.18:
+# omitting it is a ``TypeError``, ``from_=None`` an ``AttributeError``). decode mirrors that exactly and
+# invents **no** default anchor (ADR-0010 §5); it surfaces Kitaru's own requirement and points at how to
+# find a checkpoint to anchor on.
+_REPLAY_NO_FROM_MESSAGE = (
+    "Decode: `decode replay` needs --from <checkpoint> — Kitaru replay requires an explicit anchor "
+    "(it has no default). List a recorded run's checkpoints with `kitaru executions get <exec_id>` and "
+    "pass one as --from (e.g. an early `*_model_request` step to swap the model for the whole run)."
+)
+
 
 def _provider_config_error() -> str | None:
     """Return one friendly line if the selected LLM Provider's required config is missing, else None.
@@ -189,6 +200,53 @@ def _secret_store_config_error() -> str | None:
             f"not be loaded (it is missing, or a stored value is invalid) — create or repair it with "
             f"`kitaru secrets set {secret_name} --LLM_PROVIDER=… --GEMINI_API_KEY=…` (see .env.example)."
         )
+
+
+def _runtime_config_preflight() -> str | None:
+    """The shared headless guard chain for ``decode run`` / ``decode replay``; a friendly line or None.
+
+    Both headless entrypoints (``run`` builds a flow; ``replay`` re-executes downstream model calls, so
+    it needs the same valid provider config) run this identical ordered chain before touching kitaru,
+    returning the **first** friendly error line — or ``None`` when all pass. Order is load-bearing and
+    unchanged from task 069's inline ``run`` chain:
+
+    1. **Per-provider config guard** (it builds a model) — skipped when a kitaru-backed source supplies
+       the config: the Credentials Proxy (key from a secret) or the secret-store config source (whole
+       config from a secret), because both are validated in a pre-flight *after* the runtime guard (they
+       boot Kitaru, and a disabled runtime must short-circuit first). For everything else it is the
+       byte-identical settings-key/token guard.
+    2. **``RUNTIME_ENABLED``** — a disabled runtime never builds/replays a flow.
+    3. **Secret-store config pre-flight** (``RUNTIME_SECRET_STORE_CONFIG``) — hydrate + validate the whole
+       config from the Kitaru secret up front. Runs before the proxy pre-flight so, with both on, the
+       proxy resolves its key from the now-hydrated secret — one coherent path, never two conflicting lines.
+    4. **Credentials-proxy pre-flight** — validate the Kitaru secret resolves before building a flow.
+
+    The caller echoes the return value to stderr and exits non-zero when it is not ``None``. ``kitaru`` is
+    reached only through the two pre-flights' lazily imported seams, so the REPL path never loads it.
+    """
+    secret_store_on = settings.runtime_secret_store_config
+
+    if not _uses_credentials_proxy() and not secret_store_on:
+        config_error = _provider_config_error()
+        if config_error is not None:
+            logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
+            return config_error
+
+    if not settings.runtime_enabled:
+        logger.debug("runtime disabled; refusing to run")
+        return _RUNTIME_DISABLED_MESSAGE
+
+    if secret_store_on:
+        secret_store_error = _secret_store_config_error()
+        if secret_store_error is not None:
+            return secret_store_error
+
+    if _uses_credentials_proxy():
+        credential_error = _proxy_credential_error()
+        if credential_error is not None:
+            return credential_error
+
+    return None
 
 
 @click.group(invoke_without_command=True)
@@ -328,46 +386,14 @@ def run(task: str, hitl: bool, model: str | None) -> None:
     first, then the proxy resolves its key from the now-hydrated secret), never two conflicting lines.
     ``kitaru`` is imported lazily here so the REPL path never loads it.
     """
-    secret_store_on = settings.runtime_secret_store_config
-
-    # Per-provider config guard. Skipped here when a kitaru-backed source supplies the config — the
-    # Credentials Proxy (key from a secret) or the secret-store config source (whole config from a
-    # secret) — because both are validated in a pre-flight AFTER the runtime guard (they boot Kitaru,
-    # and a disabled runtime must short-circuit first). For everything else (proxy off + secret-store
-    # off, and modal which is never proxied) this is the byte-identical settings-key/token guard.
-    if not _uses_credentials_proxy() and not secret_store_on:
-        config_error = _provider_config_error()
-        if config_error is not None:
-            logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
-            click.echo(config_error, err=True)
-            raise click.exceptions.Exit(1)
-
-    if not settings.runtime_enabled:
-        logger.debug("runtime disabled; refusing to run")
-        click.echo(_RUNTIME_DISABLED_MESSAGE, err=True)
+    # The shared headless guard chain (provider-config / runtime / secret-store / proxy), byte-identical
+    # to ``decode replay`` — extracted into one helper so the two headless entrypoints cannot drift. It
+    # returns the first friendly line (or None); a disabled runtime / missing key / bad secret exits
+    # non-zero here, before any flow is built.
+    config_error = _runtime_config_preflight()
+    if config_error is not None:
+        click.echo(config_error, err=True)
         raise click.exceptions.Exit(1)
-
-    # Secret-store config pre-flight (ADR-0008 §5, task 064): hydrate ``settings`` from the Kitaru
-    # secret and run the provider-config guard against THAT, so a key/model living only in the secret
-    # satisfies it (no false ``set GEMINI_API_KEY``) and a missing/malformed secret is one friendly
-    # line, not a deep traceback from inside the flow. Runs BEFORE the proxy pre-flight so that, with
-    # both flags on, the proxy then resolves its key from the now-hydrated secret config — one coherent
-    # path, never two conflicting lines. Boots Kitaru, hence after the runtime guard.
-    if secret_store_on:
-        secret_store_error = _secret_store_config_error()
-        if secret_store_error is not None:
-            click.echo(secret_store_error, err=True)
-            raise click.exceptions.Exit(1)
-
-    # Credentials-proxy pre-flight (ADR-0008 §5): validate the Kitaru secret resolves BEFORE building
-    # a flow, so a missing/incomplete secret exits with one friendly line (naming ``kitaru secrets
-    # set``) instead of a ~30-frame KitaruRuntimeError traceback from inside the flow body. Boots
-    # Kitaru, hence after the runtime guard. Applies to both the bypass and ``--hitl`` paths.
-    if _uses_credentials_proxy():
-        credential_error = _proxy_credential_error()
-        if credential_error is not None:
-            click.echo(credential_error, err=True)
-            raise click.exceptions.Exit(1)
 
     # Lazy import: keep kitaru (and its heavy zenml/temporalio stack) off the REPL path entirely —
     # only ``decode run`` pays the import cost. The flow runs on the local Kitaru stack, offline.
@@ -439,6 +465,159 @@ def _run_hitl(task: str, model: str | None) -> None:
     click.echo(
         f"  decode replay is bypass-only; replay this HITL run with "
         f"`kitaru executions replay {result.exec_id}` (ADR-0010 §5).",
+        err=True,
+    )
+
+
+@cli.command("replay")
+@click.argument("exec_id")
+@click.option(
+    "--from",
+    "from_",
+    default=None,
+    metavar="CHECKPOINT",
+    help=(
+        "Replay anchor: a recorded checkpoint (name, invocation id, or call id). Turns before it serve "
+        "from cache; it and everything downstream re-execute. Required — Kitaru has no default anchor."
+    ),
+)
+@click.option(
+    "--model",
+    "model",
+    default=None,
+    metavar="ID",
+    help=(
+        "Swap the active provider's model id for the re-executed turns (the what-if change); defaults "
+        "to the run's recorded model. Does not change the provider (set LLM_PROVIDER for that)."
+    ),
+)
+def replay(exec_id: str, from_: str | None, model: str | None) -> None:
+    """Replay a recorded bypass ``decode run`` from a checkpoint with a swapped model (ADR-0010 §5-6).
+
+    The what-if counterpart to ``decode run``: it re-executes a durable execution ``EXEC_ID`` (the id a
+    prior ``decode run`` printed on stderr) from the ``--from`` checkpoint with one thing changed — the
+    model. Everything upstream of ``--from`` serves from the original run's cache; the anchor and its
+    downstream turns re-execute for real, so a ``--model`` swap only bites downstream of ``--from``. The
+    (possibly changed) answer prints on **stdout**; the new Fork ``exec_id``, the source id, and a diff
+    hint print on **stderr** — so stdout stays pipe-clean and the compare-the-two loop is discoverable.
+
+    \b
+    A thin, **bypass-only** wrapper over Kitaru's native flow-object replay:
+    * ``--from`` maps straight to Kitaru's ``from_`` — decode invents no default anchor. Kitaru *requires*
+      one, so omitting ``--from`` exits with one friendly line naming the requirement (not a traceback).
+    * ``--model`` maps to the Model Override flow input Kitaru swaps on replay (ADR-0010 §2); omitting it
+      replays as-is. Raw ``--args`` / ``--overrides`` are **not** exposed here — they stay on the
+      ``kitaru executions replay`` CLI (see the replay playbook in AGENTS.md).
+    * A **HITL** exec_id is refused with guidance: a HITL replay re-asks every durable wait on the local
+      stack (Kitaru cannot pre-populate wait results — ADR-0010 §5,7), so it points at
+      ``kitaru executions replay`` instead. HITL answer-reuse is deferred (``tasks/future/``).
+
+    Guards: the same headless chain as ``decode run`` (provider-config / ``RUNTIME_ENABLED`` / secret-store
+    / proxy) fires first — a replay re-executes downstream model calls, so it needs a valid provider
+    config. Kitaru's own replay failures each become one friendly stderr line, never a raw traceback: an
+    ambiguous/invalid ``--from`` (``KitaruStateError``), a swap that diverged the recorded call sequence
+    (``KitaruDivergenceError``), and a missing/unloadable ``EXEC_ID`` (``KitaruBackendError``). ``kitaru``
+    is imported lazily here so the REPL path never loads it.
+    """
+    config_error = _runtime_config_preflight()
+    if config_error is not None:
+        click.echo(config_error, err=True)
+        raise click.exceptions.Exit(1)
+
+    # Kitaru requires an explicit ``from_`` (no default); mirror that requirement rather than invent an
+    # anchor (ADR-0010 §5). Checked after the guard chain so a disabled runtime / missing key still wins.
+    if from_ is None:
+        click.echo(_REPLAY_NO_FROM_MESSAGE, err=True)
+        raise click.exceptions.Exit(1)
+
+    # Lazy imports: keep kitaru (and its heavy zenml/temporalio stack) off the REPL path — only
+    # ``decode replay`` pays the import cost, exactly like ``decode run``.
+    from kitaru.errors import KitaruDivergenceError, KitaruError, KitaruStateError
+
+    from decode.runtime import is_hitl_execution, replay_agent_task
+
+    logger.debug("decode replay starting (exec_id=%r, from_=%r, model=%r)", exec_id, from_, model)
+    try:
+        # Bypass-only: a HITL replay re-asks every wait on the local stack (ADR-0010 §5,7). Detection
+        # (and the replay below) can raise ``KitaruBackendError`` for a missing/unloadable id — caught
+        # below as one friendly line. ``is_hitl_execution`` reads the recorded flow name.
+        if is_hitl_execution(exec_id):
+            click.echo(_replay_hitl_message(exec_id), err=True)
+            raise click.exceptions.Exit(1)
+        result = replay_agent_task(exec_id, from_=from_, model=model)
+    except KitaruStateError as exc:
+        logger.debug("replay anchor rejected for %s: %s", exec_id, exc)
+        click.echo(_replay_bad_anchor_message(exc), err=True)
+        raise click.exceptions.Exit(1) from exc
+    except KitaruDivergenceError as exc:
+        logger.debug("replay diverged for %s: %s", exec_id, exc)
+        click.echo(_replay_diverged_message(exec_id), err=True)
+        raise click.exceptions.Exit(1) from exc
+    except KitaruError as exc:
+        # Catch-all for the remaining kitaru failures (``KitaruBackendError`` for a missing/unloadable
+        # id, and any other) so no raw traceback ever escapes — one friendly line instead.
+        logger.debug("replay could not load/execute %s: %s", exec_id, exc)
+        click.echo(_replay_load_failed_message(exec_id, exc), err=True)
+        raise click.exceptions.Exit(1) from exc
+
+    click.echo(result.output)  # stdout: only the (possibly changed) agent answer (pipe-safe)
+    _echo_replay_fork(
+        result.exec_id, result.original_exec_id
+    )  # stderr: fork id + source + diff hint
+
+
+def _replay_hitl_message(exec_id: str) -> str:
+    """The friendly line refusing a HITL exec_id — decode replay is bypass-only (ADR-0010 §5,7)."""
+    return (
+        f"Decode: `decode replay` is bypass-only — execution {exec_id} is a HITL run, and a HITL replay "
+        f"re-asks every durable wait on the local stack (ADR-0010 §5). Replay it on the Kitaru operator "
+        f"surface instead: `kitaru executions replay {exec_id} --from <checkpoint>`."
+    )
+
+
+def _replay_bad_anchor_message(exc: Exception) -> str:
+    """The friendly line for an ambiguous/invalid ``--from`` (``KitaruStateError``).
+
+    Kitaru's message already lists the available checkpoints (for an unknown selector) or says the
+    selector is ambiguous — surfaced verbatim so the operator can pick a valid anchor directly.
+    """
+    return (
+        f"Decode: replay could not use that --from anchor — {exc} "
+        "Pick one from `kitaru executions get <exec_id>` (a checkpoint name, invocation id, or call id)."
+    )
+
+
+def _replay_diverged_message(exec_id: str) -> str:
+    """The friendly line when the model swap diverged the recorded call sequence (``KitaruDivergenceError``)."""
+    return (
+        f"Decode: the model swap diverged the recorded call sequence of {exec_id} — the new model "
+        "tool-called differently downstream of --from, so Kitaru cannot replay it against the original "
+        "(that IS the honest what-if outcome: the change altered the run). Try anchoring --from later."
+    )
+
+
+def _replay_load_failed_message(exec_id: str, exc: Exception) -> str:
+    """The friendly line for a missing/unloadable ``EXEC_ID`` (``KitaruBackendError``) or other kitaru failure."""
+    return (
+        f"Decode: replay could not load or execute {exec_id} — {exc} "
+        "Check the id (from a `decode run` stderr `exec_id:` line, or `kitaru executions list`)."
+    )
+
+
+def _echo_replay_fork(new_exec_id: str, original_exec_id: str) -> None:
+    """Echo the Fork's new exec_id, the source exec_id, and a diff hint to **stderr** (ADR-0010 §4,6).
+
+    Kept off stdout so a piped ``decode replay`` stays exactly the (possibly changed) answer. The hint
+    points ONLY at Kitaru's CONFIRMED operator surface (verified on kitaru 0.18 — there is **no** ``kitaru
+    diff`` CLI and no ``.diff()`` SDK method): inspect and compare the two executions with
+    ``kitaru executions get``. The full checkpoint→replay→diff→decide playbook (the "three runs" rule,
+    ``--args`` / ``--overrides``, cohort scaling) lives in AGENTS.md under "Headless replay & what-if".
+    """
+    click.echo(f"exec_id: {new_exec_id}  (the fork — a new execution)", err=True)
+    click.echo(f"original: {original_exec_id}", err=True)
+    click.echo(
+        f"compare them:  kitaru executions get {new_exec_id}  "
+        f"vs  kitaru executions get {original_exec_id}",
         err=True,
     )
 

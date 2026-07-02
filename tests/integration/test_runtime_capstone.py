@@ -410,6 +410,89 @@ def test_replay_serves_a_finished_model_checkpoint_from_cache(monkeypatch):
 
 
 # ================================================================================================
+# 2b. Model-swap Replay (ADR-0010 §5, task 070) — the INVERSE of the cache proof above: a replay
+# with a swapped Model Override RE-EXECUTES the anchored turn with the NEW model.
+# ================================================================================================
+
+
+def test_model_swap_replay_re_executes_downstream_turns(monkeypatch, tmp_path):
+    """A model-swap ``replay`` re-executes the anchored turn under the NEW model (the what-if bite).
+
+    The real AC1/AC2 proof for ``decode replay`` (ADR-0010 §5), and the exact **inverse** of
+    :func:`test_replay_serves_a_finished_model_checkpoint_from_cache`: that test anchors at the terminal
+    so the model is served from cache (leg-counter frozen); this one anchors **at the first model call**
+    and swaps the model, so the swapped agent's model IS re-invoked downstream of ``--from``.
+
+    The seam returns **two different scripted agents keyed on ``model``** — a ``model-baseline`` agent and
+    a ``model-swapped`` agent, each with its own leg-counter — so which model re-executed is unambiguous.
+    After the baseline bypass run, replaying ``from_`` the first ``decode_runtime_model_request`` with
+    ``model="model-swapped"`` moves the **swapped** counter (the swapped model re-ran the anchored turn)
+    while the **baseline** counter stays frozen (the original model was not re-invoked), and the Fork gets
+    a new ``exec_id``.
+
+    Honesty note (verified on kitaru 0.18): under ``"calls"`` the per-call checkpoints are DAG-independent
+    siblings and the terminal ``_capture_runtime_output`` sink has no upstream edge, so anchoring at one
+    model call re-executes only that call — the cached terminal artifact still serves the *baseline* text.
+    So the faithful proof that the swap re-executed is the **leg-counter**, not the returned text (the
+    text-swap-through-the-sink path is structurally a deployed-stack concern). That is exactly the option
+    the task names ("its leg-counter moves"), and the clean mirror of the cache test's frozen counter.
+    """
+    (tmp_path / "note.txt").write_text("hello from note", encoding="utf-8")
+    base_counter = {"legs": 0}
+    swap_counter = {"legs": 0}
+    baseline_script = [
+        ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": "note.txt"})]),
+        ModelResponse(parts=[TextPart(content="baseline: read the note")]),
+    ]
+    swapped_script = [
+        ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": "note.txt"})]),
+        ModelResponse(parts=[TextPart(content="swapped: read the note")]),
+    ]
+    baseline = KitaruAgent(
+        _scripted_agent(baseline_script, base_counter),
+        name=RUNTIME_AGENT_NAME,
+        checkpoint_strategy="calls",
+    )
+    swapped = KitaruAgent(
+        _scripted_agent(swapped_script, swap_counter),
+        name=RUNTIME_AGENT_NAME,
+        checkpoint_strategy="calls",
+    )
+
+    def seam(model: str | None = None) -> KitaruAgent:
+        # Kitaru forwards the Model Override flow input to the seam on the initial run AND on replay, so
+        # the swapped agent is selected only when the replay passes ``model="model-swapped"``.
+        return swapped if model == "model-swapped" else baseline
+
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", seam)
+
+    # 1. Baseline run under ``model-baseline`` — the recorded run we will fork.
+    handle = run_agent_task.run(task="read the note", model="model-baseline")
+    assert flow_mod._load_runtime_output(handle.exec_id) == "baseline: read the note"
+    baseline_legs_after_run = base_counter["legs"]
+    assert baseline_legs_after_run >= 2, "the baseline agent drove the real model legs"
+    assert swap_counter["legs"] == 0, "the swapped agent has not run yet"
+
+    # 2. Pick the replay anchor EXPLICITLY: the first model-request checkpoint (at/before the first model
+    # call), so the swap re-executes that turn. ``decode replay`` requires the operator to pass this.
+    steps = _steps(handle.exec_id)
+    anchor = min(s for s in steps if s.startswith("decode_runtime_model_request"))
+
+    # 3. Replay from the anchor with the SWAPPED model — the what-if fork.
+    replay = run_agent_task.replay(handle.exec_id, from_=anchor, model="model-swapped")
+
+    assert replay.status.is_finished and replay.status.is_successful
+    # 4. The SWAPPED model re-executed the anchored turn; the BASELINE model was NOT re-invoked — the real
+    # proof the swap bit downstream of ``--from`` (the inverse of the cache test's frozen counter).
+    assert swap_counter["legs"] >= 1, "the swapped model re-executed the turn downstream of --from"
+    assert base_counter["legs"] == baseline_legs_after_run, (
+        "the baseline model must NOT be re-invoked on the swapped replay — the swap drove it"
+    )
+    # 5. A new, linked execution (the Fork), not an in-place mutation of the original.
+    assert replay.exec_id != handle.exec_id
+
+
+# ================================================================================================
 # 3. HITL (059) — ask_user + a gated write pause on NAMED durable waits; injected answers drive them.
 # ================================================================================================
 

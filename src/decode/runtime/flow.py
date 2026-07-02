@@ -494,3 +494,81 @@ def run_hitl_agent_task(task: str, model: str | None = None) -> HitlRunResult:
         "HITL execution %s did not finish (status=%s) — paused on a wait", handle.exec_id, status
     )
     return HitlRunResult(exec_id=handle.exec_id, output=None, paused=True)
+
+
+# ---------------------------------------------------------------------------
+# Replay: a what-if re-run of a recorded BYPASS run with a swapped Model Override
+# (ADR-0010 §5-6, task 070). decode wraps Kitaru's native flow-object replay 1:1 and adds only the
+# enablers; diff / cohort / checkpoint-overrides stay on the Kitaru operator surface (documented in
+# AGENTS.md, not wrapped). Kitaru's ``.replay(exec_id, from_=…, model=…)`` re-executes a recorded run
+# from the ``from_`` checkpoint: everything upstream serves from cache, the anchor + its downstream
+# descendants re-execute for real — so a swapped ``model`` only bites the turns re-executed downstream.
+# ---------------------------------------------------------------------------
+
+# The ZenML pipeline (flow) name Kitaru records each ``@flow`` under is the flow function's own name —
+# Kitaru's ``build_pipeline_registration_name`` is an identity transform for these already-valid
+# identifiers. Verified on kitaru 0.18: ``KitaruClient().executions.get(exec_id).flow_name`` is exactly
+# one of these two names. It is how :func:`is_hitl_execution` tells a replayable BYPASS run from a HITL
+# run ``decode replay`` must refuse (bypass-only — a HITL replay re-asks every wait on the local stack,
+# ADR-0010 §5,7). Derived from the flow objects so the constants can never drift from the flow names.
+RUNTIME_PIPELINE_NAME = run_agent_task.__name__  # "run_agent_task" — the bypass flow
+HITL_RUNTIME_PIPELINE_NAME = run_agent_task_hitl.__name__  # "run_agent_task_hitl" — the HITL flow
+
+
+def is_hitl_execution(exec_id: str) -> bool:
+    """True when ``exec_id`` was recorded by the HITL flow, not the bypass flow (ADR-0010 §5).
+
+    ``decode replay`` is **bypass-only**: a HITL replay re-asks every durable wait on the local stack
+    (Kitaru cannot pre-populate wait results — ADR-0010 §7, ``tasks/future/hitl-replay-answer-reuse.md``),
+    so the cli refuses a HITL exec_id with guidance instead of silently re-prompting. Detection reads the
+    recorded **flow name** from the Kitaru execution record —
+    ``KitaruClient().executions.get(exec_id).flow_name`` — and compares it to the HITL flow's name
+    (verified on kitaru 0.18). A missing/unloadable exec_id raises ``KitaruBackendError`` from
+    ``executions.get``; the caller turns that into one friendly "could not load" line (no traceback).
+    ``kitaru`` is imported lazily here so the REPL path (which never calls this) stays kitaru-free.
+    """
+    from kitaru import KitaruClient
+
+    return KitaruClient().executions.get(exec_id).flow_name == HITL_RUNTIME_PIPELINE_NAME
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayResult:
+    """The outcome of a successful bypass Replay: the Fork's id, the source id, and the (re)computed text.
+
+    ``exec_id`` is the **new** (Fork) execution Kitaru created; ``original_exec_id`` is the source run
+    the replay anchored on. The flow-object ``FlowHandle`` does not expose the source (only the SDK
+    ``client.executions.replay`` return carries ``original_exec_id`` — verified on kitaru 0.18), so decode
+    carries the input id forward. ``output`` is the possibly-changed final text, loaded from the terminal
+    :data:`RUNTIME_OUTPUT_ARTIFACT` — the same read-back the bypass ``decode run`` uses, because ``.wait()``
+    cannot auto-extract a single value under the ``"calls"`` terminal sink (ADR-0010 §3).
+    """
+
+    exec_id: str
+    original_exec_id: str
+    output: str
+
+
+def replay_agent_task(exec_id: str, *, from_: str, model: str | None) -> ReplayResult:
+    """Replay a recorded **bypass** run from ``from_`` with an optional Model Override (ADR-0010 §5).
+
+    A thin 1:1 wrapper over Kitaru's native flow-object replay: ``run_agent_task.replay(exec_id,
+    from_=…, model=…)``. ``from_`` maps straight to Kitaru's ``from_`` — decode invents no default anchor
+    (Kitaru *requires* it; the cli surfaces that requirement as a friendly line when ``--from`` is
+    omitted). ``model=None`` replays as-is (the run's recorded model); a value swaps only the active
+    provider's model id on the turns re-executed downstream of ``from_``.
+
+    On the local stack ``.replay(...)`` runs the Fork in-process and returns once finished, so the output
+    is read back here from the terminal :func:`_capture_runtime_output` artifact via
+    :func:`_load_runtime_output` (bypass never pauses). Kitaru's replay failures propagate to the cli,
+    which renders each as one friendly line: an ambiguous/invalid ``from_`` (``KitaruStateError``), a
+    swap that diverged the recorded call sequence (``KitaruDivergenceError``), and a missing/unloadable
+    ``exec_id`` (``KitaruBackendError``). ``kitaru`` is reached only through the flow object (which imports
+    it at this module's load time), so the REPL path — which never imports this module — never loads it.
+    """
+    handle = run_agent_task.replay(exec_id, from_=from_, model=model)
+    return ReplayResult(
+        exec_id=handle.exec_id,
+        original_exec_id=exec_id,
+        output=_load_runtime_output(handle.exec_id),
+    )

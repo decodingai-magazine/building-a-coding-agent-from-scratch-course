@@ -191,6 +191,8 @@ For each surface below: the thing to type, and what "working" looks like.
 | **lsp (code intelligence)** | `where is build_agent defined?` | the model calls `lsp` (`definition`); it **auto-allows** (read-only — no prompt) and the answer cites the location (`src/decode/agent/factory.py:68:5`). Then ask it to `write a broken bad.py with a syntax error` → the approved write's result carries an appended `LSP diagnostics (ty) — fix these:` block and the model corrects it. |
 | **decode run (headless)** | `decode run "list the python files"` (a separate command, not in the REPL) | the agent tool-loops **headlessly** through a Kitaru durable flow — every tool runs inline under bypass with no prompt — and prints the result, exit `0`. The run is recorded as an inspectable checkpointed execution; a fresh re-run is a **new** execution (crash-resume replay of finished checkpoints is exercised in 059 / the capstone, not here). `RUNTIME_ENABLED=false` → one friendly stderr line, non-zero exit, no flow built (ADR-0008). |
 | **decode run --hitl (durable HITL)** | `decode run --hitl "create config.toml, then deploy"` in one terminal; resolve from a **second** terminal | the gating headless run: read-only tools run inline, but a `write`/`edit`/`bash` (or `ask_user`/`exit_plan_mode`) **pauses the whole execution on a durable Kitaru wait**. While it polls, run `kitaru executions list` to find the waiting `<exec_id>` and the wait `<name>`, then `kitaru executions input <exec_id> --wait <name> --value 'true'` (approve), `'false'` (deny → the run stops, the tool never ran), or `'"staging"'` (an `ask_user` answer). The run resumes from that point and prints the result. An unanswered wait eventually times out and the run pauses, printing the `<exec_id>` + the `kitaru executions input` hint, exit `0`. **The timeout differs by wait kind (a known limitation — decode does not fork the adapter):** the `ask_user`/`exit_plan_mode` answer waits decode drives itself honor `runtime_wait_timeout_s`; the native `write`/`edit`/`bash` **approval** waits the adapter raises use its fixed `600s` default and ignore the setting (ADR-0008 §3). |
+| **decode run --model (model override)** | `decode run --model gemini-2.5-pro "list the python files"` | same headless bypass run as above, but the **Model Override** overrides only the active provider's model id for this run (the provider stays `LLM_PROVIDER`-selected — no cross-provider swap; ADR-0010 §2). The answer prints on **stdout** (pipe-clean); on **stderr** the durable `exec_id: <id>` + a paste-ready `replay it with a change:  decode replay <id> --model gemini-2.5-pro` hint. Presence, not correctness — a model id wrong for the provider is not validated here; it fails at the first model request. Because the model rides through as a durable **flow input**, a later `decode replay` can swap it (ADR-0010 §4). |
+| **decode replay --model (what-if replay)** | keep an `exec_id` from a `decode run` above, then `decode replay <exec_id> --from <checkpoint> --model gemini-2.5-pro` | re-executes that recorded **bypass** run from `--from` with the model swapped: turns before `--from` serve from the original run's **cache**, the anchor + downstream re-execute for real, so the swap only bites downstream (ADR-0010 §5). The (possibly changed) answer prints on **stdout**; the **new Fork** `exec_id:`, the `original:` id, and a `compare them:  kitaru executions get <new>  vs  kitaru executions get <original>` diff hint print on **stderr**. `--from` is **required** — Kitaru has no default anchor, so omitting it prints one friendly line (find checkpoints with `kitaru executions get <exec_id>`; `--model` omitted replays as-is). **Bypass-only:** a **HITL** exec_id is refused with one friendly line pointing at `kitaru executions replay <id>` (a HITL replay re-asks every wait on the local stack — ADR-0010 §5,7; answer-reuse is deferred, [`tasks/future/hitl-replay-answer-reuse.md`](tasks/future/hitl-replay-answer-reuse.md)). An ambiguous/invalid `--from` or a diverged swap each print one friendly line, non-zero exit, never a traceback. *Offline-provable scope:* the bypass model-swap re-executing downstream is proven hermetically by `tests/integration/test_runtime_capstone.py::test_model_swap_replay_re_executes_downstream_turns`; the deferred HITL answer-reuse needs a deployed stack. |
 
 **Mid-turn interaction** (while a turn is streaming — ADR-0002 §4-5):
 
@@ -208,6 +210,92 @@ For each surface below: the thing to type, and what "working" looks like.
 - On quit (`/quit` or `Ctrl-D`), one cheap Gemini call appends a dated one-line summary to
   `.decode/MEMORY.md`. Quit, `cat .decode/MEMORY.md` (a new `- YYYY-MM-DD: …` bullet), then relaunch —
   that line is injected back into the agent's instructions (it can recall what the last session did).
+
+## Headless replay & what-if (Kitaru operator surface — documented, not wrapped)
+
+`decode replay` wraps only the **bypass model-swap** common case, 1:1 over Kitaru's native flow-object
+replay (ADR-0010 §5). The full **checkpoint → replay → diff → decide** loop lives on Kitaru's own CLI /
+SDK — decode deliberately does **not** re-implement diff, cohort, or checkpoint-override machinery
+(ADR-0010 §6, non-goals). Everything below is that Kitaru operator surface, verified against the
+installed **kitaru 0.18** + docs.zenml.io ("Replay and Overrides", "Replay and improve"). Claims are
+scoped to what actually ships — where something is a pattern or a roadmap item, it says so.
+
+**Three runs, not two.** The trustworthy what-if is three runs, and the middle one is the point:
+
+| Run | What it is | Role |
+|---|---|---|
+| **Observed** | the original recorded run | what actually happened |
+| **Baseline Rerun** | `kitaru executions replay <id> --from <cp>` with **no** change | the *control* — proves replay reproduces faithfully |
+| **Fork** | same `--from`, **one** input changed (e.g. `--args '{"model":…}'`) | your change |
+
+You diff the **Fork against the Baseline Rerun**, not against the Observed run — the control isolates
+your one variable. If the Baseline Rerun does not reproduce the Observed run (a nondeterministic tool,
+external state, time-dependent output), the diff is untrustworthy; pin the nondeterminism first.
+
+**CLI replay with overrides** (the surface `decode replay --model` wraps a slice of):
+
+```bash
+kitaru executions replay <exec_id> --from <cp>                                   # Baseline Rerun (control)
+kitaru executions replay <exec_id> --from <cp> --args '{"model":"gemini-2.5-pro"}'   # Fork (flow-input swap)
+kitaru executions replay <exec_id> --from <cp> --overrides '{"checkpoint.<name>":<value>}'  # checkpoint-output swap
+```
+
+- `--args` = **flow-input** overrides (the CLI mirror of `flow.replay(..., model=…)`; `decode replay
+  --model` surfaces this common case). The **Model Override** rides here.
+- `--overrides checkpoint.<name>` = a **Checkpoint Override**: substitute a recorded checkpoint's single
+  output at its **direct consumers**, re-executing from those consumers forward. Keys **must** start with
+  `checkpoint.` (any other prefix raises `KitaruUsageError`) and the overridden checkpoint must expose a
+  single output.
+- **`--overrides checkpoint.X` is the tool-output mock stand-in.** Per-tool-call `output=` / `raise_=`
+  mocks (force one tool call to return a fake value or fail) are **Kitaru roadmap, not shipped** — the
+  ZenML guide flags this explicitly. Today, override the tool's recorded checkpoint output instead.
+
+**Diff = compare the two execution records.** There is **no `kitaru diff` CLI and no `.diff()` SDK
+method in kitaru 0.18** (verified — do not assume one). The diff is a manual comparison of the two
+records; the ZenML "Replay and improve" guide's own pattern:
+
+```bash
+kitaru executions get <fork_exec_id>        # decision, per-checkpoint outputs, cost, latency
+kitaru executions get <baseline_rerun_id>   # the control to compare against
+```
+
+SDK equivalent — `KitaruClient().executions.get(fork.exec_id)` vs `.get(rerun.exec_id)`, comparing their
+fields (cost/latency/decision). Because the Baseline Rerun reproduced the observed baseline, any
+difference is attributable to your one change. `decode replay` prints the same hint on stderr
+(`kitaru executions get <new> vs <original>`), pointing only at this confirmed surface.
+
+**Cohort: scale the winning change across recent runs** — an **example pattern on the SDK primitives,
+NOT a core Kitaru API.** The ZenML "Replay and improve" guide ships it as `run_cohort` (+ `cost` /
+`latency` / `quality_judge` metric callables) in the **kitaru examples repo**
+(`examples/end_to_end/pydantic_replay_fork`), and states outright it is *"not in the `kitaru` package —
+copy or adapt"* (`import kitaru_recipes` is **not** an installed module — verified):
+
+```python
+from cohort import run_cohort                 # from the EXAMPLE dir, not `import kitaru`
+from utils import cost, latency, quality_judge
+# exec_ids: recent runs, e.g. KitaruClient().executions.list(flow="run_agent_task")
+report = run_cohort(exec_ids, baseline_model="gemini-2.5-flash",
+                    variant_model="gemini-2.5-pro", metrics=[cost, latency, quality_judge])
+report.summary()      # per-metric baseline-vs-variant deltas + an is-it-better verdict
+report.regressions()  # the metrics / decisions that got worse
+```
+
+For each recent run it reproduces the baseline, replays the variant, and scores the pair — so you decide
+on a cohort, not a single lucky run.
+
+**Waits re-ask on replay.** A replayed run **re-asks** every `wait()` — Kitaru "does not support
+overriding or pre-populating wait results." That is exactly why `decode replay` is **bypass-only** (a
+bypass run has no waits to re-ask) and HITL answer-reuse is deferred to a deployed stack
+([`tasks/future/hitl-replay-answer-reuse.md`](tasks/future/hitl-replay-answer-reuse.md), ADR-0010 §7). A
+HITL exec_id passed to `decode replay` is refused with a friendly pointer to `kitaru executions replay`.
+Related honesty note: on a `decode run --hitl` **pause**, Kitaru itself prints a `Waiting for input…`
+line to **stdout** (framework behavior) — the pipe-clean guarantee is about the completed **bypass**
+answer, not the HITL pause path.
+
+**An agent can drive the whole loop.** Kitaru exposes this replay surface over an **MCP server**
+(`kitaru-mcp` console script), so a coding agent (Claude Code, Codex, Cursor) can pull a recent run,
+propose a change, replay it against the control, compare, and decide whether to widen to a cohort — the
+future automation hook (no decode work now).
 
 # Documentation Conventions
 

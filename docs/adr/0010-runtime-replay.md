@@ -42,8 +42,11 @@ Facts confirmed against `docs.zenml.io` (kitaru 0.18 line) + the installed SDK w
   A replayed HITL run re-asks every approval/question on the local stack (capstone
   `test_replay_re_asks_a_wait_on_the_local_stack`). True answer-reuse needs a deployed stack.
 - **Per-tool-call `output=`/`raise_=` mocks are Kitaru roadmap, not shipped.** `--overrides
-  checkpoint.X` is the current stand-in. **Cohort/recipes** (`kitaru_recipes.cohort/Recipe/experiment`)
-  are an *example pattern on the SDK primitives*, not a core API.
+  checkpoint.X` is the current stand-in. **Diff and cohort are not packaged APIs in 0.18 either**
+  (empirically verified while building task 070: no `kitaru diff` CLI, no `forked.diff()`/`.diff()`
+  SDK, no `kitaru_recipes` module). Diffing today is a manual comparison of two `kitaru executions get
+  <id>` outputs; a cohort is the `run_cohort` *example pattern* from Kitaru's examples repo (built on
+  `executions.replay`), explicitly not in the `kitaru` package.
 
 Project constraints honored: infrastructure is imported/called directly (no wrapper); the interactive
 REPL and its JSONL log are untouched (headless-only); `runtime/` stays the isolated module. This ADR
@@ -53,10 +56,11 @@ REPL and its JSONL log are untouched (headless-only); `runtime/` stays the isola
 ## Decision
 
 1. **Reuse Kitaru's native replay; decode builds only enablers.** `decode replay` is a thin wrapper
-   over `run_agent_task.replay(...)` whose anchor semantics mirror Kitaru 1:1. Diff, checkpoint-overrides,
-   and cohort/recipe experiments stay on the Kitaru operator surface (CLI + SDK + `kitaru_recipes`);
-   decode does not reimplement them (it documents them — §6). This keeps the feature small and rides
-   Kitaru's roadmap for free.
+   over `run_agent_task.replay(...)` whose anchor semantics mirror Kitaru 1:1. Diffing (a manual
+   two-`executions get` comparison today), checkpoint-overrides, and cohort experiments (the
+   `run_cohort` example pattern) stay on the Kitaru operator surface (CLI + SDK + examples); decode
+   does not reimplement them (it documents them — §6). This keeps the feature small and rides Kitaru's
+   roadmap for free.
 
 2. **Model as a replayable flow parameter (task 067).** Thread `model: str | None = None` through
    `_build_model → build_agent → _build_runtime_agent/_build_hitl_runtime_agent → run_agent_task/
@@ -89,8 +93,9 @@ REPL and its JSONL log are untouched (headless-only); `runtime/` stays the isola
 6. **The Kitaru operator surface stays on Kitaru; decode documents it (task 070).** AGENTS.md gets the
    checkpoint→replay→diff→decide playbook: the "three runs, not two" rule (Observed → **Baseline
    Rerun** control → **Fork**), `kitaru executions replay --args/--overrides`, `--overrides
-   checkpoint.X` as the tool-output mock stand-in (per-tool mocks are roadmap), `forked.diff(control)`,
-   and `kitaru_recipes` cohort experiments framed as an *example pattern, not a core API*.
+   checkpoint.X` as the tool-output mock stand-in (per-tool mocks are roadmap), diffing as a manual
+   two-`kitaru executions get` comparison (no `kitaru diff` CLI / `forked.diff()` in 0.18), and the
+   `run_cohort` *example pattern* (not in the `kitaru` package) for cohorts.
 
 7. **HITL replay with answer-reuse is deferred.** On the local in-process stack a replayed HITL run
    re-asks every approval/`ask_user` (Kitaru cannot pre-populate wait results; capstone-proven). Real
@@ -130,9 +135,9 @@ flowchart TB
 
     subgraph ops["KITARU OPERATOR SURFACE — documented, not wrapped (task 070)"]
         baseline["Baseline Rerun (control)<br/>kitaru executions replay kr-A --from cpK"]
-        diff["forked.diff(baseline) → decision · cost · latency Δ"]
+        diff["compare fork vs baseline (manual)<br/>kitaru executions get kr-B / kr-A → decision · cost · latency Δ"]
         over["--overrides 'checkpoint.X': … (tool-output stand-in)"]
-        cohort["kitaru_recipes: cohort(flow, last=N) + Recipe + experiment<br/>(example pattern, not core API)"]
+        cohort["run_cohort example (examples repo,<br/>not in the kitaru package)"]
         fork --> diff
         baseline --> diff
         diff --> decide{{"ship the change? keep / reject"}}
@@ -162,8 +167,8 @@ flowchart TB
 ## Consequences
 
 - **Small feature, big capability.** Four tiny enablers (a flow param, a settings default flip, a
-  flag, a thin wrapper) unlock Kitaru's full replay/what-if/cohort loop. Everything hard (diff,
-  overrides, cohort) is Kitaru's and stays Kitaru's.
+  flag, a thin wrapper) unlock Kitaru's replay/what-if loop and the operator workflows built on it
+  (diffing, checkpoint-overrides, the cohort example). Everything hard stays Kitaru's, not decode's.
 - **Every `decode run` costs more checkpoints.** `"calls"` records per model/tool call, not per turn —
   more store writes per run, the price of replay-readiness. `RUNTIME_CHECKPOINT_STRATEGY=turn` remains
   the coarse opt-out.
