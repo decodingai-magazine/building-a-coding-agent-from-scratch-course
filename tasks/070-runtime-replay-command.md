@@ -374,3 +374,85 @@ $ kitaru executions --help → cancel get input list logs replay resume retry st
 - Informational (documented, not a defect): under `checkpoint_strategy="calls"` the terminal `_capture_runtime_output` sink is DAG-independent, so a `decode replay` anchored at an early model call re-executes the swapped model (proven) but stdout still shows the **baseline** answer text served from cache on the local stack. AC2 explicitly accepts the leg-counter proof and AC1 says "possibly changed", so this is within spec; the SWE documents it transparently. PA may want to be aware of the user-visible nuance.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-02 19:10 — Acceptance Review (feature `runtime-replay`, tasks 067-070, PR #20)
+
+**VERDICT: ACCEPT**
+
+Feature-level user-POV review of the whole 067-070 sequence (`git diff` merge-base…HEAD). Walked every
+user-facing surface — did not re-run code (Tester already proved runtime correctness offline).
+
+**Doc honesty (the headline risk) — CLEAN across all three surfaces.** Grepped ADR-0010, AGENTS.md,
+and `docs/glossary.md` for the unshipped kitaru APIs: `kitaru diff` CLI, `forked.diff()`/`.diff()` SDK,
+and `kitaru_recipes` appear ONLY in negative, verified-absent framing (ADR-0010 §Context+§6, AGENTS.md
+lines 253/271); the glossary contains none of them. Diff is documented as a manual two-`kitaru
+executions get` comparison; cohort as the `run_cohort` example pattern ("not in the `kitaru` package —
+copy or adapt", `from cohort import run_cohort`, not `import kitaru_recipes`); per-tool `output=`/`raise_=`
+mocks flagged as Kitaru roadmap with `--overrides checkpoint.X` as the shipped stand-in. The CLI's
+`_echo_replay_fork` + `_replay_*_message` helpers point ONLY at confirmed surfaces (`kitaru executions
+get/replay/list/input`). The orchestrator's ADR-0010 reconciliation reads coherently and matches
+AGENTS.md + the code + the glossary — the Tester's escalated ADR-0010 concern is resolved.
+
+**What-if story holds.** `decode run --model X` prints the answer on stdout and a paste-ready replay
+anchor (`exec_id:` + `replay it with a change: decode replay <id> --model <id>`) on stderr; `decode
+replay <id> --from <cp> --model Y` re-executes downstream with the new model (proven offline by
+`test_model_swap_replay_re_executes_downstream_turns` via the swapped leg-counter, shown non-vacuous by
+the Tester's terminal-anchor mutation), emits the new Fork id + `original:` + a `kitaru executions get`
+diff hint on stderr, stdout pipe-clean. Friendly-error copy is exemplary (missing `--from`, HITL refusal,
+bad anchor, diverged swap, missing id — each names the cause AND the next action, never a traceback).
+
+**Deferred scope honest.** `tasks/future/hitl-replay-answer-reuse.md` (`status: future`) explains WHY
+(local stack re-asks waits; Kitaru can't pre-populate wait results; capstone-proven), and is linked from
+ADR-0010 §7, AGENTS.md, and the `decode replay` HITL-refusal message. Not a silent gap.
+
+**Non-blocking note carried forward for the PR reviewer / a future docs pass (NOT a reject):** the
+Tester-flagged user-visible nuance is real — on the local stack `decode replay --model Y` prints the
+CACHED BASELINE answer on stdout (the terminal `_capture_runtime_output` sink is a DAG-independent root
+served from cache), even though Y genuinely re-executes downstream. It is within accepted offline/local-
+stack scope (deployed stack deferred, ADR-0008/0010), the docs hedge with "possibly changed", and the
+documented what-if decision surface (`kitaru executions get <fork> vs <original>`, where Y's per-checkpoint
+outputs ARE visible) is exactly where the stderr diff hint routes the user. A one-line caveat in the
+AGENTS.md `decode replay` row (stdout = recorded baseline on the local stack; inspect the fork's
+checkpoints for the swapped outputs) would make it airtight — polish, not a merge blocker. Also cosmetic:
+`_RUNTIME_DISABLED_MESSAGE` says "to use `decode run`" even when tripped via `decode replay` (the actionable
+`RUNTIME_ENABLED=true` is correct for both).
+
+All acceptance criteria verified from the user's POV. Hand off to the PR Reviewer.
+
+### [PR Reviewer] 2026-07-02 16:51 — Review (feature `runtime-replay`, tasks 067-070, PR #20)
+
+**VERDICT: NO BLOCKERS**
+
+Reviewed the whole `4a50bdc...HEAD` diff (merge-base vs origin/main) — 23 files, ~2.7k lines, 5
+commits (grooming + 067-070). Walked all six dimensions (performance, clean code, tests, standards,
+docs, simplicity). Zero Blockers. No rollup task filed; the pipeline may advance to hand-off.
+
+- **Simplicity (the feature's whole premise) holds.** `decode replay` is a genuine 1:1 wrapper over
+  `run_agent_task.replay(...)`; `is_hitl_execution` is one line over `executions.get().flow_name`;
+  pipeline-name constants derive from `__name__` (no drift); diff/cohort/override machinery is
+  deferred to Kitaru and only documented (ADR-0010 §6). No decode-side reinvention, no speculative
+  abstraction. `_runtime_config_preflight` removes real run/replay duplication (earned, not
+  speculative). The five one-shot friendly-error helpers match the file's existing
+  `_*_config_error` pattern and aid readability — not flagged.
+- **Tests exhaustive.** 067 factory+seam threading (all 4 provider cases, provider/system/key
+  unchanged); 068 settings flip + per-call-checkpoint shape + `_load_runtime_output` read-back
+  everywhere; 069 run/hitl `--model` threading + stdout/stderr split + all-4-guard-not-bypassed;
+  070 full cli-contract file + the REAL hermetic model-swap replay proof
+  (`test_model_swap_replay_re_executes_downstream_turns`, leg-counter based).
+- **Security intact.** Payload tests re-assert `run.config.parameters == {"task","model"}` and
+  `raw_key not in model_dump_json()` — the new `model` flow input is not a secret; no leak. No
+  `os.environ` write (asserted), no naive datetime, no library `print()`, all defs annotated, no
+  stray files, no real secrets.
+
+5 Nits (non-blocking, appended to PR #20 description for the human merger):
+1. [Documentation] `_load_runtime_output` `RuntimeError` still says "HITL execution" though now
+   shared by the bypass flow (`flow.py:469`).
+2. [Documentation] `_RUNTIME_DISABLED_MESSAGE` says "to use `decode run`" but is now also reached
+   via `decode replay` (`cli.py:52`).
+3. [Documentation] `docs/glossary.md` Checkpoint row still calls `"turn"` "the MVP default" after
+   068 flipped the default to `"calls"` (`glossary.md:49`).
+4. [Documentation] AGENTS.md `decode replay --model` row would be airtight with PA's one-line
+   local-stack caveat (stdout = cached baseline; inspect the fork's checkpoints for swapped output).
+5. [Standards] `cli.py` imports the module-private `_load_runtime_output` from `runtime.flow`
+   (not in `runtime/__init__.__all__`); bypass `run` reaches past the package API while HITL/replay
+   return result objects with `.output` (`cli.py:405`).
