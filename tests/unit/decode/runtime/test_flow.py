@@ -28,13 +28,13 @@ pytestmark = [
 ]
 
 
-def _durable(responses, *, strategy="turn"):
+def _durable(responses, *, strategy="calls"):
     """Wrap a scripted decode agent in a ``KitaruAgent`` for the ``_build_runtime_agent`` seam.
 
-    Defaults to ``"turn"`` — the settings default (ADR-0010 §3), the granularity a real ``decode run``
-    records — so the round-trip tests exercise the default path. Pass ``strategy="calls"`` for the
-    opt-in per-call granularity. Either way the CLI reads output back from the ``_capture_runtime_output``
-    artifact (the flow uses that sink uniformly).
+    Defaults to ``"calls"`` — the settings default (ADR-0010 §3), the granularity a real ``decode run``
+    records — so the round-trip tests exercise the default path. Pass ``strategy="turn"`` for the coarse
+    opt-out. Either way the CLI reads output back from the ``_capture_runtime_output`` artifact (the flow
+    uses that sink uniformly).
     """
     agent, counter = make_scripted_agent(responses)
     return KitaruAgent(agent, name="decode-runtime", checkpoint_strategy=strategy), counter
@@ -43,10 +43,10 @@ def _durable(responses, *, strategy="turn"):
 def test_flow_round_trips_a_task_and_returns_the_agents_text(monkeypatch):
     """A bare text turn round-trips; the final text is read from the ``_capture_runtime_output`` artifact.
 
-    Under the default ``"turn"`` strategy the flow ends in one terminal checkpoint. The flow saves its
+    Under the default ``"calls"`` strategy the run ends in terminal per-call checkpoints, so ``.wait()``
+    cannot auto-extract a value (``_MultipleTerminalStepsOutputError``, task 068). The flow saves its
     final text via the terminal sink and :func:`_load_runtime_output` reads it back by name — what the
-    ``decode run`` CLI does. (The sink is used uniformly: the opt-in ``"calls"`` strategy *needs* it
-    because ``.wait()`` cannot extract from its several terminal checkpoints — task 068.)
+    ``decode run`` CLI does. (The sink is used uniformly; the ``"turn"`` opt-out has one terminal step.)
     """
     durable, _counter = _durable([ModelResponse(parts=[TextPart(content="all done")])])
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
@@ -81,14 +81,15 @@ def test_flow_runs_a_gated_tool_inline_under_bypass(monkeypatch, tmp_path):
 
 
 def test_flow_records_per_call_checkpoints_not_a_single_turn_step(monkeypatch, tmp_path):
-    """The opt-in ``"calls"`` strategy persists PER-CALL checkpoints — the record a fine Replay anchors on.
+    """The default ``"calls"`` strategy persists PER-CALL checkpoints — the record a fine Replay anchors on.
 
-    Under the opt-in ``"calls"`` strategy (ADR-0010 §3; the default is ``"turn"``) each model/tool call
-    is its own checkpoint, closed by the terminal ``_capture_runtime_output`` sink — NOT the coarse
-    single ``decode_runtime`` turn step. A two-leg script (read a seeded file → final text) makes that
-    granularity visible: the persisted step set carries a per-call ``*_model_request`` + the ``read_tool``
-    checkpoint + the capture sink, and no ``decode_runtime`` turn step. That fine-grained record is what
-    lets a Replay anchor before a specific model call (User Story 1) — the reason to opt into ``"calls"``.
+    Under ``"calls"`` (the default; ADR-0010 §3 — pinned explicitly below so this granularity assertion
+    is independent of the settings default) each model/tool call is its own checkpoint, closed by the
+    terminal ``_capture_runtime_output`` sink — NOT the coarse single ``decode_runtime`` turn step. A
+    two-leg script (read a seeded file → final text) makes that granularity visible: the persisted step
+    set carries a per-call ``*_model_request`` + the ``read_tool`` checkpoint + the capture sink, and no
+    ``decode_runtime`` turn step. That fine-grained record is what lets a Replay anchor before a specific
+    model call (User Story 1) — the payoff of the default.
     """
     (tmp_path / "spec.md").write_text("ship it", encoding="utf-8")
     durable, _counter = _durable(
@@ -153,9 +154,9 @@ def test_flow_round_trips_a_multi_tool_task_under_the_calls_strategy(monkeypatch
 def test_build_runtime_agent_wraps_build_agent_in_a_named_calls_kitaru_agent(monkeypatch):
     """The seam wraps ``build_agent()``'s Agent in a ``KitaruAgent`` with the stable name + ``"calls"``.
 
-    ``checkpoint_strategy`` comes from ``settings.runtime_checkpoint_strategy`` — monkeypatched here to
-    the opt-in ``"calls"`` (the default is ``"turn"``) so the assertion proves the real seam propagates
-    the *setting* rather than a hardcoded constant. Pinning it also keeps the test hermetic.
+    ``checkpoint_strategy`` comes from ``settings.runtime_checkpoint_strategy`` — pinned here to
+    ``"calls"`` (also the default) so the assertion proves the real seam propagates the *setting* rather
+    than a hardcoded constant, independent of the default. Pinning it also keeps the test hermetic.
     """
     from pydantic import SecretStr
 
@@ -172,7 +173,7 @@ def test_build_runtime_agent_wraps_build_agent_in_a_named_calls_kitaru_agent(mon
     assert durable.name == flow_mod.RUNTIME_AGENT_NAME == "decode-runtime"
     assert (
         durable.checkpoint_strategy == "calls"
-    )  # reads the monkeypatched setting (default is "turn")
+    )  # reads the pinned setting (here "calls", also the default)
 
 
 def _seed_gemini(monkeypatch):

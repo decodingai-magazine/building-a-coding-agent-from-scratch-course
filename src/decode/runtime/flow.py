@@ -199,7 +199,7 @@ def _build_runtime_agent(
     Mirrors the bash ``_EXECUTOR`` / lsp ``_spawn_process`` seams: the one place a real
     ``KitaruAgent`` is constructed, so a test can patch it to inject a scripted-model agent and
     exercise the real ``@flow`` + adapter offline. ``checkpoint_strategy`` comes from settings
-    (``"turn"`` — one checkpoint per turn — is the MVP default; ``"calls"`` is per model/tool call).
+    (``"calls"`` — per model/tool call — is the default; ``"turn"`` is one coarse checkpoint per run).
 
     ``flow_mode=True`` engages the **Credentials Proxy** (ADR-0008 §5): when
     ``settings.runtime_credentials_proxy_enabled`` the provider key is resolved from a Kitaru secret
@@ -261,10 +261,10 @@ def run_agent_task(task: str, model: str | None = None) -> str:
 
     Launched via ``run_agent_task.run(task=…)`` → a ``FlowHandle``. The final text is stored via the
     terminal :func:`_capture_runtime_output` checkpoint and read back with :func:`_load_runtime_output`
-    — **not** ``.wait().output``: under the opt-in ``"calls"`` strategy (ADR-0010 §3) the run ends in
+    — **not** ``.wait().output``: under the default ``"calls"`` strategy (ADR-0010 §3) the run ends in
     several terminal per-call checkpoints, so ``.wait()`` cannot auto-extract a single value (it raises
     ``_MultipleTerminalStepsOutputError`` — verified in task 068). Using the sink unconditionally keeps
-    the read-back identical under the default ``"turn"`` (one terminal checkpoint) too. This is the same
+    the read-back identical under the ``"turn"`` opt-out (one terminal checkpoint) too. This is the same
     output-artifact mechanism the HITL flow uses; see :func:`decode.cli` for the read-back.
 
     ``model`` is the **Model Override** (ADR-0010 §2), a keyword-defaulted flow input threaded to the

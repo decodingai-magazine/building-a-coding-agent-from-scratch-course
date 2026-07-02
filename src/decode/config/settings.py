@@ -202,14 +202,14 @@ class Settings(BaseSettings):
     # readers yet (they land in tasks 058/059/061). ``runtime_enabled`` master-gates the WHOLE headless
     # feature: ``False`` → ``decode run`` exits with a friendly line and never builds a Durable Flow.
     runtime_enabled: bool = True
-    # ``KitaruAgent`` Checkpoint granularity. Default ``"turn"`` (one Checkpoint per agent turn) — cheap.
-    # ``"calls"`` (per model/tool call) records finer Replay anchors — enough to anchor a Replay before a
-    # specific model call — at the cost of more Checkpoints per run. Both are loop-safe on a real
-    # provider: flow mode builds a keep-alive-free HTTP client so Kitaru's per-call event loops never
-    # reuse a connection across loops (``_flow_mode_http_client``, ADR-0010 §3). ``"turn"`` is the
-    # default for cost, not safety; opt into ``"calls"`` for granular replay. HITL always forces
+    # ``KitaruAgent`` Checkpoint granularity. Default ``"calls"`` (per model/tool call): every ``decode
+    # run`` is **replay-ready** — a Replay can anchor before a specific model call, because each call is
+    # its own Checkpoint. Loop-safe on a real provider: flow mode builds a keep-alive-free HTTP client so
+    # Kitaru's per-call event loops never reuse a connection across loops (``_flow_mode_http_client``,
+    # ADR-0010 §3). ``"turn"`` (one coarse Checkpoint per run) stays selectable as a cheaper opt-out — but
+    # a ``"turn"`` run can only be replayed whole, not before a specific call. HITL always forces
     # ``"calls"`` regardless (``flow.py``).
-    runtime_checkpoint_strategy: Literal["turn", "calls"] = "turn"
+    runtime_checkpoint_strategy: Literal["turn", "calls"] = "calls"
     # The durable Wait (HITL) poll timeout (seconds) in flow mode; matches Kitaru's local 600s default.
     # A non-positive value fails fast (Field gt=0). Task 059 reads it.
     runtime_wait_timeout_s: float = Field(600.0, gt=0)
