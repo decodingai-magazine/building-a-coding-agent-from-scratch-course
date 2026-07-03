@@ -62,7 +62,7 @@ dev = [
     "pytest-mock>=3.12",
     "ruff>=0.15.20",
     "pre-commit>=4.6.0",
-    "ty>=0.0.55",
+    "ty>=0.0.56",
 ]
 
 [tool.hatch.build.targets.wheel]
