@@ -37,7 +37,7 @@ dependencies = [
     # sheds ~40 transitive deps. Capped <1.96: 1.99+ re-breaks 51 agent-loop tests.
     "pydantic-ai-slim[google,openai]>=1.95,<1.96",
     "httpx>=0.28.1",
-    "markdownify>=1.2.2",
+    "markdownify>=1.2.3",
     "pyyaml>=6.0.3",
     "modal>=1.5.1",
     "anyio>=4.14.1",
