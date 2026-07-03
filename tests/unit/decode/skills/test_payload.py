@@ -3,11 +3,12 @@
 ``format_skill_payload(skill, cwd=…)`` is the single bridge from tier 2 (the body) to tier 3 (the
 bundled-resource files): it returns the skill's ``body`` **unchanged** when the skill ships no
 resources (``resource_dir is None`` — built-ins and resource-less project skills), and ``body`` +
-a short **resource trailer** when it does. The trailer names the resource directory as a
-``read``/``bash``-resolvable, **cwd-relative** path (directory only — it never enumerates contents)
-and tells the model how to load bundled files. Both invocation paths (the model's ``skill``
-dispatcher and the user's ``/<skill-name>`` TUI command) go through this one helper, so the payload
-can never diverge.
+a **resource manifest** when it does: every bundled file enumerated recursively with its exact,
+``read``/``bash``-resolvable **cwd-relative** path (revised from the directory-only trailer after a
+live failure — a ``glob <dir>/*`` cannot see into ``references/``/``scripts/`` subdirs, so the model
+guessed wrong paths). An empty walk degrades to the old directory-only line. Both invocation paths
+(the model's ``skill`` dispatcher and the user's ``/<skill-name>`` TUI command) go through this one
+helper, so the payload can never diverge.
 """
 
 from __future__ import annotations
@@ -60,9 +61,9 @@ def test_payload_appends_a_trailer_when_resource_dir_is_set(tmp_path):
 
 
 def test_trailer_names_the_cwd_relative_directory_only(tmp_path):
-    # The trailer names the directory cwd-relatively (``.decode/skills/deploy``), explains loading
-    # bundled files via ``read`` and running ``scripts/`` via ``bash``, and lists NO directory
-    # contents (directory only — the grilled decision).
+    # NO bundled files on disk (the dir does not even exist): the payload degrades to the
+    # directory-only fallback line — cwd-relative, explaining ``read`` + ``bash`` — rather than
+    # failing the dispatch or listing phantom contents.
     resource_dir = tmp_path / ".decode" / "skills" / "deploy"
     skill = _skill(resource_dir=resource_dir)
 
@@ -72,6 +73,44 @@ def test_trailer_names_the_cwd_relative_directory_only(tmp_path):
     assert ".decode/skills/deploy" in trailer  # cwd-relative, not the absolute path
     assert str(resource_dir) not in trailer  # never the absolute path
     assert "read" in trailer and "bash" in trailer  # how to load files / run scripts
+
+
+def test_trailer_enumerates_every_bundled_file_recursively(tmp_path):
+    # The manifest (the live-failure fix): every bundled file — INCLUDING subdir files a
+    # ``glob <dir>/*`` would miss — is listed with its exact cwd-relative path, sorted, with the
+    # skill's own SKILL.md excluded (its content IS the payload body).
+    resource_dir = tmp_path / ".decode" / "skills" / "deploy"
+    (resource_dir / "references").mkdir(parents=True)
+    (resource_dir / "scripts").mkdir()
+    (resource_dir / "SKILL.md").write_text("body source", encoding="utf-8")
+    (resource_dir / "references" / "template.md").write_text("t", encoding="utf-8")
+    (resource_dir / "scripts" / "fetch.py").write_text("print()", encoding="utf-8")
+    skill = _skill(resource_dir=resource_dir)
+
+    result = payload.format_skill_payload(skill, cwd=tmp_path)
+    trailer = result[len(skill.body) :]
+
+    assert "- .decode/skills/deploy/references/template.md" in trailer
+    assert "- .decode/skills/deploy/scripts/fetch.py" in trailer
+    assert "SKILL.md" not in trailer  # the body's own file is never listed
+    # Sorted, deterministic order: references/ before scripts/.
+    assert trailer.index("references/template.md") < trailer.index("scripts/fetch.py")
+
+
+def test_every_listed_path_resolves_via_the_read_containment_check(tmp_path):
+    # Each manifest line, typed verbatim by the model, must pass the ``read`` tool's containment
+    # check and land on the real on-disk file.
+    resource_dir = tmp_path / ".decode" / "skills" / "deploy"
+    (resource_dir / "references").mkdir(parents=True)
+    bundled = resource_dir / "references" / "template.md"
+    bundled.write_text("t", encoding="utf-8")
+    skill = _skill(resource_dir=resource_dir)
+
+    result = payload.format_skill_payload(skill, cwd=tmp_path)
+
+    listed = [line[2:] for line in result.splitlines() if line.startswith("- ")]
+    assert listed == [".decode/skills/deploy/references/template.md"]
+    assert _resolve_in_cwd(tmp_path, listed[0]) == bundled.resolve()
 
 
 def test_surfaced_path_resolves_under_cwd_via_the_read_containment_check(tmp_path):
