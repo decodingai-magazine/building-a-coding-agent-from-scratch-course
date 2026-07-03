@@ -68,14 +68,20 @@ _REQUEST_SCRIPT = (
 
 
 def _container_exists(name_or_id: str) -> bool:
-    result = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", f"name={name_or_id}", "--filter", f"id={name_or_id}"],
-        capture_output=True,
-        text=True,
-        timeout=10.0,
-        check=False,
-    )
-    return bool(result.stdout.strip())
+    # Two separate probes on purpose: docker ANDs distinct filter types, so a single call with BOTH
+    # ``name=`` and ``id=`` can never match (a container's auto-name never contains its id) — which
+    # silently made the gone-assertions vacuous. Probing each type alone restores the intended OR.
+    for key in ("id", "name"):
+        result = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"{key}={name_or_id}"],
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            check=False,
+        )
+        if result.stdout.strip():
+            return True
+    return False
 
 
 def _network_exists(name: str) -> bool:

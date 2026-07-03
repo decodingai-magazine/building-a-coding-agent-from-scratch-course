@@ -213,11 +213,16 @@ class _RecordingExecutor:
 
     Stands in for a real sandbox executor at the :func:`decode.sandbox.select_executor` seam, so the
     selection swap + the ``ExecResult`` render path are proven with **no** Docker / Modal touched.
+    ``start_calls`` records the eager REPL warm-up (``warm_executor`` → ``start(cwd)``).
     """
 
     def __init__(self, result: ExecResult) -> None:
         self._result = result
         self.calls: list[tuple[str, Path, float]] = []
+        self.start_calls: list[Path] = []
+
+    async def start(self, cwd: Path) -> None:
+        self.start_calls.append(cwd)
 
     async def run(self, command: str, *, cwd: Path, timeout_s: float) -> ExecResult:
         self.calls.append((command, cwd, timeout_s))
@@ -345,6 +350,31 @@ async def test_bash_routes_a_command_through_the_selected_executor(
     assert any("sandboxed-output" in r and "Exit code: 0" in r for r in returns)
 
 
+async def test_warm_executor_starts_the_selected_sandbox_and_the_turn_reuses_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The REPL warm-up chain: ``warm_executor`` starts the SAME executor the turn then runs through.
+
+    The eager-start slice of the interactive flow (ADR-0011 §4): ``warm_executor(cwd)`` must select
+    the executor once, await its ``start(cwd)``, and the later gated ``bash`` turn — driven through
+    the real agent + gate — must route through that SAME warmed instance. One selection, one start:
+    warm-then-reuse continuity, with no infra touched.
+    """
+    stub = _RecordingExecutor(
+        ExecResult(stdout="warmed-output", stderr="", exit_code=0, timed_out=False)
+    )
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: stub)
+    bash_mod.reset_executor()
+
+    await bash_mod.warm_executor(tmp_path)
+    returns, _ = await _drive_one_gated_bash_turn("echo hi", cwd=tmp_path)
+
+    assert stub.start_calls == [tmp_path]  # warmed exactly once, at launch time
+    assert len(stub.calls) == 1  # the turn ran through the SAME warmed instance
+    assert any("warmed-output" in r for r in returns)
+
+
 async def _bash_description_the_model_sees(mode: str, monkeypatch, cwd: Path) -> str:
     """Build a real agent in ``mode`` and return the ``bash`` description the model is actually handed."""
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", mode)
@@ -392,6 +422,7 @@ async def test_bash_description_adapts_per_mode(monkeypatch, tmp_path: Path) -> 
     # ... and each paragraph tells the model that mode's reality.
     assert "persistent bash shell" in docker_desc  # docker's cd/export-persist shell
     assert "remote Modal sandbox" in modal_desc and "NOT present" in modal_desc  # empty scratch
+    assert ".decode/skills" in modal_desc  # ...except the seeded skills dir (the model is told)
 
 
 # ================================================================================================
@@ -619,15 +650,24 @@ _MODAL_TIMEOUT_S = 120.0
 
 
 def _container_exists(name_or_id: str) -> bool:
-    """True while the daemon still lists a container matching ``name_or_id`` (used to prove teardown)."""
-    result = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", f"name={name_or_id}", "--filter", f"id={name_or_id}"],
-        capture_output=True,
-        text=True,
-        timeout=10.0,
-        check=False,
-    )
-    return bool(result.stdout.strip())
+    """True while the daemon still lists a container matching ``name_or_id`` by id OR by name.
+
+    Two separate ``docker ps`` probes on purpose: docker **ANDs** distinct filter types, so the old
+    single call (``--filter name=X --filter id=X``) could never match a full container id (an
+    auto-generated *name* never contains the hex id) — which made the id-keyed teardown asserts
+    vacuously true. Probing each filter type on its own restores the intended OR.
+    """
+    for key in ("id", "name"):
+        result = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", f"{key}={name_or_id}"],
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            check=False,
+        )
+        if result.stdout.strip():
+            return True
+    return False
 
 
 def _network_exists(name: str) -> bool:
@@ -668,6 +708,13 @@ async def test_real_docker_persistent_shell_contract(
     container_id: str | None = None
     try:
         with caplog.at_level(logging.DEBUG, logger="decode.sandbox.docker_executor"):
+            # 0. Eager warm-up (the REPL launch path): start() brings the container up BEFORE any
+            #    command — visible in ``docker ps`` from launch — and the first run() reuses it.
+            await executor.start(tmp_path)
+            warmed_id = executor._container_id
+            assert warmed_id is not None
+            assert _container_exists(warmed_id)
+
             # 1. Persistent shell: state written in one run() survives into the next.
             await executor.run("export CAP=persisted && cd /tmp", cwd=tmp_path, timeout_s=30.0)
             persisted = await executor.run("echo $CAP && pwd", cwd=tmp_path, timeout_s=30.0)
@@ -677,6 +724,7 @@ async def test_real_docker_persistent_shell_contract(
             assert persisted.note == ""  # a normal command carries no out-of-band note
             container_id = executor._container_id
             assert container_id is not None
+            assert container_id == warmed_id  # the warmed container, reused — not a second one
 
             # 2. Timeout kills + resets the shell and tells the model; env cleared, cwd back to /workspace.
             timed = await executor.run("sleep 100", cwd=tmp_path, timeout_s=1.0)
@@ -706,34 +754,49 @@ async def test_real_docker_persistent_shell_contract(
 async def test_real_modal_remote_scratch_contract(tmp_path: Path) -> None:
     """The real Modal sandbox contract against a live account — else SKIP (ADR-0011 §3).
 
-    One session-persistent remote empty-scratch ``modal.Sandbox``: (1) a file written in one ``run``
-    is readable in the next (fs persists across execs); (2) the empty scratch means a host file is
-    **absent** in the sandbox (no local-tree sync); (3) a timeout kills the exec but NOT the sandbox
-    (the fs survives, no ``note``); (4) ``aclose`` terminates the sandbox (no leaked remote sandbox).
-    Lean — a few cents of Modal compute — and reaps the sandbox in a ``finally``.
+    One session-persistent remote ``modal.Sandbox``: (1) a file written in one ``run`` is readable
+    in the next (fs persists across execs); (2) the project's ``.decode/skills/`` is **seeded** at
+    ``/workspace/.decode/skills`` (the live acceptance gate for ``add_local_dir`` on
+    ``Sandbox.create``) while everything else stays **absent** (no local-tree sync); (3) a timeout
+    kills the exec but NOT the sandbox (the fs survives, no ``note``); (4) ``aclose`` terminates
+    the sandbox (no leaked remote sandbox). Lean — a few cents of Modal compute — and reaps the
+    sandbox in a ``finally``.
     """
+    # A minimal project cwd whose .decode/skills/ must be seeded into the remote /workspace —
+    # and whose OTHER content (pyproject.toml) must NOT be.
+    project = tmp_path / "project"
+    (project / ".decode" / "skills" / "demo").mkdir(parents=True)
+    (project / ".decode" / "skills" / "demo" / "SKILL.md").write_text(
+        "# demo skill\n", encoding="utf-8"
+    )
+    (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
     executor = ModalExecutor()
     try:
         # 1. Filesystem persists across run()s (one sandbox).
-        await executor.run("echo data > /workspace/f.txt", cwd=tmp_path, timeout_s=_MODAL_TIMEOUT_S)
+        await executor.run("echo data > /workspace/f.txt", cwd=project, timeout_s=_MODAL_TIMEOUT_S)
         readback = await executor.run(
-            "cat /workspace/f.txt", cwd=tmp_path, timeout_s=_MODAL_TIMEOUT_S
+            "cat /workspace/f.txt", cwd=project, timeout_s=_MODAL_TIMEOUT_S
         )
         assert readback.stdout.strip() == "data"
         assert readback.exit_code == 0
 
-        # 2. Empty remote scratch: a host file (pyproject.toml) is NOT present — no local-tree sync.
-        host_file = await executor.run(
-            "ls pyproject.toml", cwd=tmp_path, timeout_s=_MODAL_TIMEOUT_S
+        # 2a. The skills seed made it: the cwd-relative skill path resolves inside /workspace.
+        seeded = await executor.run(
+            "cat .decode/skills/demo/SKILL.md", cwd=project, timeout_s=_MODAL_TIMEOUT_S
         )
+        assert seeded.exit_code == 0
+        assert "# demo skill" in seeded.stdout
+
+        # 2b. Everything else stays absent: a host file (pyproject.toml) is NOT present.
+        host_file = await executor.run("ls pyproject.toml", cwd=project, timeout_s=_MODAL_TIMEOUT_S)
         assert host_file.exit_code != 0
         assert host_file.timed_out is False
 
         # 3. A per-exec timeout kills the command but leaves the sandbox (and its fs) alive.
-        timed = await executor.run("sleep 100", cwd=tmp_path, timeout_s=1.0)
+        timed = await executor.run("sleep 100", cwd=project, timeout_s=1.0)
         assert timed.timed_out is True
         assert timed.note == ""  # unlike docker, no session reset — the sandbox persists
-        alive = await executor.run("echo alive", cwd=tmp_path, timeout_s=_MODAL_TIMEOUT_S)
+        alive = await executor.run("echo alive", cwd=project, timeout_s=_MODAL_TIMEOUT_S)
         assert alive.stdout.strip() == "alive"
         assert alive.exit_code == 0
     finally:

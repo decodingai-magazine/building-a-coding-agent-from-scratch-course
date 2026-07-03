@@ -183,7 +183,14 @@ already runs gVisor underneath. This is a direct dividend of the CLI-over-SDK ch
   daemon-config upgrades (§7).
 - **Modal local-tree sync — rejected.** The remote sandbox starts empty (`/workspace` scratch); no
   rsync/mount of the local tree. The model is told plainly (mode-specific description) and works with
-  code via git/fetch/generate. Empty remote scratch *is* the canonical shape.
+  code via git/fetch/generate. Empty remote scratch *is* the canonical shape. *Amended (post-review):*
+  one narrow carve-out — the project's `.decode/skills/` is seeded at `/workspace/.decode/skills` via
+  `Image.add_local_dir(copy=False)` so skill **scripts** are runnable remotely; sessions/MEMORY/logs
+  stay absent (the `.gitignore` boundary) and the tree is still never synced. Two REPL-side ripples
+  landed with it: the sandbox now **starts eagerly at launch** (a progress line + a `sandbox:<mode>`
+  banner segment — visible in `docker ps` before any `bash`) instead of invisibly mid-first-turn, and
+  a modal sandbox that outlives its `timeout` (a max *lifetime*) mid-session is transparently replaced
+  on the next `bash`, the result `note` telling the model its filesystem was reset.
 - **modal's dual proxy tokens as the credential path — out of scope here.** `MODAL_PROXY_TOKEN_*` are a
   request-header surface (the same shape this proxy injects); ADR-0008 §5 deliberately left `modal` off
   the model-key path for this reason. Unchanged.

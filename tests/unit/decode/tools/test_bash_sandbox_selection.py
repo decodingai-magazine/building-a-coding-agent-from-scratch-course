@@ -267,6 +267,7 @@ def test_bash_description_modal_appends_the_remote_scratch_paragraph(monkeypatch
     assert "remote Modal sandbox" in out
     assert "NOT present" in out  # the local tree is absent
     assert "do NOT carry over" in out  # cd/export reset per call
+    assert ".decode/skills" in out  # ...except the seeded skills dir (the model is told)
 
 
 # --- registry prepare: the description reaches the tool definition per mode --------------------

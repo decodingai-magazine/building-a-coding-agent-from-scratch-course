@@ -75,11 +75,14 @@ _DOCKER_DESCRIPTION_SUFFIX = (
 )
 _MODAL_DESCRIPTION_SUFFIX = (
     "Sandbox (SANDBOX_MODE=modal): commands run in a remote Modal sandbox, not on the local machine. "
-    "The local project tree is NOT present in the sandbox, so to work with code you must fetch it "
-    "yourself (e.g. `git clone` / `git fetch`) or generate it. Filesystem changes and installations "
-    "(e.g. `git clone`, `pip install`) persist across bash calls, but each command runs as a fresh "
-    "process, so shell `cd` and `export` do NOT carry over between calls — use absolute paths or chain "
-    "them in one call (e.g. `cd /workspace/app && <command>`). The sandbox starts empty at /workspace."
+    "The local project tree is NOT present in the sandbox — only the project's .decode/skills/ "
+    "directory (if it exists) is seeded at /workspace/.decode/skills, so skill scripts can be run "
+    "directly. To work with other code you must fetch it yourself (e.g. `git clone` / `git fetch`) "
+    "or generate it. Filesystem changes and installations (e.g. `git clone`, `pip install`) persist "
+    "across bash calls, but each command runs as a fresh process, so shell `cd` and `export` do NOT "
+    "carry over between calls — use absolute paths or chain them in one call (e.g. `cd "
+    "/workspace/app && <command>`). Apart from the seeded skills, the sandbox starts empty at "
+    "/workspace."
 )
 
 

@@ -86,15 +86,21 @@ class _FakeProc:
 
 
 class _FakeSandbox:
-    """A ``modal.Sandbox`` stand-in: records ``exec`` calls, returns a per-command proc, tracks terminate."""
+    """A ``modal.Sandbox`` stand-in: records ``exec`` calls, returns a per-command proc, tracks terminate.
+
+    ``poll_result`` mirrors modal's liveness probe: ``None`` while the sandbox runs (the default),
+    an exit code once it ended remotely — flip it mid-test to simulate a max-lifetime expiry.
+    """
 
     def __init__(self, object_id: str = "sb-fake", bash_proc: _FakeProc | None = None) -> None:
         self.object_id = object_id
         self.bash_proc = bash_proc or _FakeProc()
         self.exec_calls: list[tuple[tuple, dict]] = []
         self.terminate_count = 0
+        self.poll_result: int | None = None
         self.exec = _Aio(self._exec)
         self.terminate = _Aio(self._terminate)
+        self.poll = _Aio(self._poll)
 
     async def _exec(self, *args, **kwargs) -> _FakeProc:
         self.exec_calls.append((args, kwargs))
@@ -105,19 +111,44 @@ class _FakeSandbox:
     async def _terminate(self) -> None:
         self.terminate_count += 1
 
+    async def _poll(self) -> int | None:
+        return self.poll_result
+
     @property
     def bash_calls(self) -> list[tuple[tuple, dict]]:
         """Only the command execs (the ``mkdir`` bootstrap excluded) — what ``run`` issued."""
         return [c for c in self.exec_calls if c[0][:1] != ("mkdir",)]
 
 
-def _make_fake_modal(sandbox: _FakeSandbox) -> tuple[types.SimpleNamespace, dict]:
+class _FakeImage:
+    """An ``Image`` stand-in whose ``add_local_dir`` records the call and returns a NEW chained fake.
+
+    Mirrors modal's builder shape (each call returns a new ``Image``), so a test can assert that the
+    CHAINED image — not the base — is what reaches ``Sandbox.create``.
+    """
+
+    def __init__(self) -> None:
+        self.add_local_dir_calls: list[tuple[tuple, dict]] = []
+        self.chained: _FakeImage | None = None
+
+    def add_local_dir(self, *args, **kwargs) -> _FakeImage:
+        self.add_local_dir_calls.append((args, kwargs))
+        self.chained = _FakeImage()
+        return self.chained
+
+
+def _make_fake_modal(
+    sandbox: _FakeSandbox, *, image: object = "image-obj"
+) -> tuple[types.SimpleNamespace, dict]:
     """Build a fake ``modal`` module exposing exactly the surface the executor uses.
 
     Returns the module and a dict of the recording callables so a test can assert how it was called.
+    The default ``image`` is a plain string — it would raise on ``add_local_dir``, which is exactly
+    the pin that no-seed paths (``cwd=None`` / no skills dir) never touch it; seeding tests pass a
+    :class:`_FakeImage`.
     """
     lookup = _Recording(return_value="app-obj")
-    from_registry = _RecordingSync(return_value="image-obj")
+    from_registry = _RecordingSync(return_value=image)
     create = _Recording(return_value=sandbox)
     fake = types.SimpleNamespace(
         App=types.SimpleNamespace(lookup=lookup),
@@ -186,6 +217,99 @@ async def test_create_uses_the_configured_image_and_lifetime(fake_modal, sandbox
     assert create_kwargs["app"] == "app-obj"
     assert create_kwargs["image"] == "image-obj"
     assert create_kwargs["timeout"] == 600  # int(settings.sandbox_timeout_s) default
+
+
+# --- skills seeding: .decode/skills/ layered onto the image (ADR-0011 §3 amendment) -----------
+
+
+async def test_ensure_sandbox_seeds_the_skills_dir_when_present(mocker, sandbox, tmp_path):
+    # A project with .decode/skills/: the dir is layered onto the image at /workspace/.decode/skills
+    # (copy=False — mounted at container start) and the CHAINED image reaches Sandbox.create, so the
+    # cwd-relative skill-script paths the payloads hand the model resolve inside the remote workdir.
+    (tmp_path / ".decode" / "skills" / "demo").mkdir(parents=True)
+    base_image = _FakeImage()
+    fake, recorders = _make_fake_modal(sandbox, image=base_image)
+    mocker.patch("decode.sandbox.modal_executor._load_modal", return_value=fake)
+    executor = ModalExecutor()
+
+    await executor.run("echo hi", cwd=tmp_path, timeout_s=30.0)
+
+    assert base_image.add_local_dir_calls == [
+        ((tmp_path / ".decode/skills", "/workspace/.decode/skills"), {"copy": False})
+    ]
+    assert recorders["create"].calls[0][1]["image"] is base_image.chained
+
+
+async def test_ensure_sandbox_skips_seeding_without_a_skills_dir(mocker, sandbox, tmp_path):
+    # A cwd WITHOUT .decode/skills: no add_local_dir, the base image goes to create untouched.
+    base_image = _FakeImage()
+    fake, recorders = _make_fake_modal(sandbox, image=base_image)
+    mocker.patch("decode.sandbox.modal_executor._load_modal", return_value=fake)
+    executor = ModalExecutor()
+
+    await executor.run("echo hi", cwd=tmp_path, timeout_s=30.0)
+
+    assert base_image.add_local_dir_calls == []
+    assert recorders["create"].calls[0][1]["image"] is base_image
+
+
+async def test_ensure_sandbox_skips_seeding_with_no_cwd(fake_modal, sandbox):
+    # cwd=None (direct/test callers): seeding is skipped entirely — the default str image fake
+    # would raise on add_local_dir, so green here IS the pin.
+    executor = ModalExecutor()
+
+    await executor.run("echo hi", cwd=None, timeout_s=30.0)  # type: ignore[arg-type]
+
+    assert fake_modal["create"].calls[0][1]["image"] == "image-obj"
+
+
+# --- eager start + liveness: revive a remotely-ended sandbox (ADR-0011 §3) --------------------
+
+
+async def test_start_creates_the_sandbox_once_and_run_reuses_it(fake_modal, sandbox):
+    # The REPL warm-up: start() creates the sandbox eagerly; the first run() finds it live (poll
+    # None) and creates nothing new — one sandbox, warmed then reused.
+    executor = ModalExecutor()
+
+    await executor.start(None)  # type: ignore[arg-type]
+    await executor.start(None)  # type: ignore[arg-type]  # idempotent on a live sandbox
+    await executor.run("echo hi", cwd=None, timeout_s=30.0)  # type: ignore[arg-type]
+
+    assert len(fake_modal["create"].calls) == 1
+    assert len(sandbox.bash_calls) == 1
+
+
+async def test_run_recreates_a_remotely_ended_sandbox_and_notes_the_reset(mocker):
+    # The latent stale-handle bug (and the reason eager modal is safe): the modal ``timeout`` is a
+    # max LIFETIME, so a sandbox can end remotely mid-session. The next run must probe poll(),
+    # replace the dead sandbox, run the command on the fresh one, and surface the filesystem reset
+    # via the result note — once (not sticky).
+    first = _FakeSandbox(object_id="sb-first")
+    second = _FakeSandbox(object_id="sb-second")
+    sandboxes = iter([first, second])
+    created: list[object] = []
+
+    async def _create(*args, **kwargs):
+        created.append(kwargs)
+        return next(sandboxes)
+
+    fake, _ = _make_fake_modal(first)
+    fake.Sandbox = types.SimpleNamespace(create=_Aio(_create))
+    mocker.patch("decode.sandbox.modal_executor._load_modal", return_value=fake)
+    executor = ModalExecutor()
+
+    ok = await executor.run("echo one", cwd=None, timeout_s=30.0)  # type: ignore[arg-type]
+    first.poll_result = 137  # the sandbox hit its max lifetime between calls
+    revived = await executor.run("echo two", cwd=None, timeout_s=30.0)  # type: ignore[arg-type]
+    after = await executor.run("echo three", cwd=None, timeout_s=30.0)  # type: ignore[arg-type]
+
+    assert ok.note == ""
+    assert len(created) == 2  # one fresh create after the remote death
+    assert "filesystem was reset" in revived.note  # the reset reaches the model...
+    assert after.note == ""  # ...exactly once — the flag is one-shot
+    assert executor._sandbox is second
+    assert len(second.bash_calls) == 2  # 'echo two' and 'echo three' ran on the fresh sandbox
+    assert len(first.bash_calls) == 1  # nothing ran through the dead handle
 
 
 # --- exec shape + result mapping -------------------------------------------------------------
