@@ -11,8 +11,13 @@ persistent shell, state persistence, the timeout reset — lives in the ``@skipi
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
+
+import pytest
 
 from decode.sandbox.docker_executor import (
+    _DAEMON_LOST_EXIT,
     _SHELL_ENDED_EXIT,
     DockerExecutor,
     _build_payload,
@@ -233,3 +238,148 @@ def test_read_loop_survives_a_module_import_without_docker():
     # the hermetic split. A trivial guard that the symbols above imported and are callable.
     assert asyncio.iscoroutinefunction(DockerExecutor.run)
     assert asyncio.iscoroutinefunction(DockerExecutor.aclose)
+
+
+# --- loop-independent teardown (the headline reap bug), proven with a real subprocess, no docker ------
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while ``pid`` names a live process; False once it is gone (fully reaped, no zombie)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def _spawn_sleeper() -> asyncio.subprocess.Process:
+    """A real, loop-bound child that stands in for the docker-exec shell (own session → killpg reaches it).
+
+    Spawned with the same pipe + ``start_new_session`` shape ``_ensure_shell`` uses, so it exercises the
+    identical loop-bound transports + process-group teardown — the only difference is ``sleep`` instead of
+    ``docker exec`` (so the test needs no daemon).
+    """
+    return await asyncio.create_subprocess_exec(
+        "sleep",
+        "30",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+
+def test_aclose_reaps_a_loop_bound_shell_from_a_fresh_closed_loop():
+    # THE headline regression (task 074, ADR-0011 §4). The headless runtime reaps the executor on a FRESH
+    # event loop (``_reap_runtime_executor``) while the persistent shell subprocess was created on a kitaru
+    # per-call loop that has since CLOSED. The old aclose awaited the shell's loop-bound futures/transports
+    # there and raised ``RuntimeError: Event loop is closed`` — which escaped and left the container
+    # running (the leaked-container headline). This reproduces that exact two-loop bridge hermetically with
+    # a real ``sleep`` child (NO docker) and asserts aclose neither raises NOR leaves the process alive.
+    # A loop-agnostic ``AsyncMock`` (the round-1 spy) passes on the buggy code, so only a real loop-bound
+    # child guards this. ``_container_id`` stays None so only the loop-free shell teardown runs (no docker).
+    executor = DockerExecutor()
+
+    loop1 = asyncio.new_event_loop()
+    shell = loop1.run_until_complete(_spawn_sleeper())
+    pid = shell.pid
+    assert _pid_alive(pid)  # sanity: the child is running before teardown
+
+    executor._shell = shell
+    executor._shell_loop = loop1
+    executor._container_id = None  # exercise only the shell teardown path — no ``docker rm``
+    loop1.close()  # the per-call loop is gone: awaiting the shell's futures here would now raise
+
+    loop2 = asyncio.new_event_loop()
+    try:
+        loop2.run_until_complete(
+            executor.aclose()
+        )  # the buggy code raised "Event loop is closed" here
+    finally:
+        loop2.close()
+
+    assert not _pid_alive(pid)  # the child was killed loop-free — not leaked
+    assert executor._shell is None  # handles cleared so a double-close / later run is safe
+    assert executor._shell_loop is None
+
+
+async def test_aclose_cleanly_reaps_a_same_loop_shell():
+    # The interactive-exit branch (REPL path): when aclose runs on the SAME loop the shell was created on,
+    # it awaits a clean teardown (``_teardown_shell_clean`` — SIGTERM→SIGKILL, drain, close). Proven with a
+    # real child on the running pytest loop so both aclose branches (same-loop clean vs cross-loop
+    # loop-free) have a hermetic guard. ``_container_id`` stays None so no docker is needed.
+    executor = DockerExecutor()
+    shell = await _spawn_sleeper()
+    pid = shell.pid
+    assert _pid_alive(pid)
+
+    executor._shell = shell
+    executor._shell_loop = asyncio.get_running_loop()  # same loop aclose will run on
+    executor._container_id = None
+
+    await executor.aclose()
+
+    assert not _pid_alive(pid)  # cleanly killed + reaped, no leak
+    assert executor._shell is None
+    assert executor._shell_loop is None
+
+
+# --- daemon-death mid-session → a rendered failure, never a crash (the secondary bug) -----------------
+
+
+async def test_run_returns_a_rendered_failure_when_the_container_cannot_start(mocker):
+    # Regression (task 074 secondary): if the docker daemon goes away mid-session (Docker Desktop quit),
+    # ``docker run`` / ``docker exec`` fail and _ensure_container/_ensure_shell raise. run() must CATCH the
+    # known infra exceptions and return a rendered ExecResult (exit 125 + a daemon-lost note + the failure
+    # text on stderr) so the model reacts — never let the exception escape and crash the bash tool.
+    executor = DockerExecutor()
+    mocker.patch.object(
+        executor,
+        "_ensure_container",
+        side_effect=RuntimeError(
+            "docker run failed (exit 1): Cannot connect to the Docker daemon at "
+            "unix:///var/run/docker.sock. Is the docker daemon running?"
+        ),
+    )
+
+    result = await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+    assert (
+        result.exit_code == _DAEMON_LOST_EXIT
+    )  # 125 — docker's container-failed-to-run convention
+    assert result.timed_out is False
+    assert (
+        "Docker daemon became unreachable" in result.note
+    )  # the model is told the session was lost
+    assert (
+        "Cannot connect to the Docker daemon" in result.stderr
+    )  # the underlying failure is surfaced
+    assert (
+        executor._container_id is None
+    )  # the stale session is discarded so a later run re-attempts
+    assert executor._shell is None
+
+
+async def test_run_survives_a_missing_docker_binary(mocker):
+    # OSError / FileNotFoundError on spawn (the ``docker`` CLI itself is gone) is an infra failure too —
+    # caught on the same path and rendered, not raised. FileNotFoundError is an OSError subclass.
+    executor = DockerExecutor()
+    mocker.patch.object(executor, "_ensure_container", side_effect=FileNotFoundError("docker"))
+
+    result = await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+    assert result.exit_code == _DAEMON_LOST_EXIT
+    assert result.note  # the daemon-lost note is set (never an empty, silent failure)
+
+
+async def test_run_lets_an_unexpected_error_surface(mocker):
+    # The daemon-death catch is scoped to the KNOWN infra exceptions (RuntimeError / OSError) — a genuine
+    # bug (here a ValueError) must still surface as a crash, not be swallowed into a fake ExecResult that
+    # would hide the defect from the model and the logs.
+    executor = DockerExecutor()
+    mocker.patch.object(executor, "_ensure_container", side_effect=ValueError("a real bug"))
+
+    with pytest.raises(ValueError, match="a real bug"):
+        await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)

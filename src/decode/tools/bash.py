@@ -8,10 +8,13 @@ defers to the permission gate and a human approves *every* call. There is **no
 dangerous-command classifier in v1** — the human-in-the-loop approval *is* the safety gate (an
 OS sandbox + classifier are M8).
 
-**How it runs.** Execution goes through a :class:`~decode.tools.exec.CommandExecutor` (default
-:class:`~decode.tools.exec.LocalExecutor`) under ``ctx.deps.cwd`` — the same working-directory
-contract as the file tools. The seam is what M8 swaps for a Docker / Modal sandbox; ``bash``
-itself stays infra-agnostic.
+**How it runs.** Execution goes through a :class:`~decode.tools.exec.CommandExecutor` under
+``ctx.deps.cwd`` — the same working-directory contract as the file tools. Which executor is chosen
+is now **live** (ADR-0011 §4): the cached ``_get_executor()`` seam selects by ``SANDBOX_MODE`` on
+first use — ``none`` keeps the host :class:`~decode.tools.exec.LocalExecutor` (byte-identical to
+before), ``docker`` / ``modal`` lazily swap in the sandbox executor from :mod:`decode.sandbox`.
+``bash`` itself stays infra-agnostic; the model is told the active mode's semantics through the
+mode-specific tool **description** (:func:`bash_description`, wired via the registry ``prepare=``).
 
 **Timeout.** The wall-clock limit defaults to ``settings.bash_timeout_s`` and the model may
 request a shorter one via the optional ``timeout`` argument; a model-supplied value is
@@ -41,9 +44,117 @@ logger = logging.getLogger(__name__)
 
 BASH_TOOL_NAME = "bash"
 
-# The default executor: a local asyncio subprocess. M8 swaps a sandboxed executor in here
-# (Docker / Modal) behind the same CommandExecutor seam without touching this tool.
+# The cached executor ``bash`` runs commands through, behind the ADR-0002 ``CommandExecutor`` seam.
+# It starts as the ``none``-mode :class:`LocalExecutor` (a host subprocess — byte-identical to M1) and,
+# on the FIRST ``bash`` call, is *replaced* by ``select_executor(settings.sandbox_mode)`` when the mode
+# is ``docker`` / ``modal`` (ADR-0011 §4) — a lazy swap so ``none`` never imports the sandbox package.
+# The mode is read once and fixed for the session (ADR-0011 §1). ``_executor_selected`` is the memo
+# guard: it makes the mode-selection run at most once (so a docker/modal executor is not rebuilt — and
+# its container/sandbox not re-created — on every call). ``_EXECUTOR`` stays a live, patchable object at
+# all times so a test can ``mocker.patch("decode.tools.bash._EXECUTOR.run", ...)`` (and ``none`` mode
+# keeps the eager instance, never re-selecting it, so that patch survives the getter). ``reset_executor``
+# clears the memo; ``close_executor`` reaps a sandbox executor on teardown.
 _EXECUTOR: CommandExecutor = LocalExecutor()
+_executor_selected = False
+
+# The model-facing description paragraphs appended to the ``bash`` tool docstring per SANDBOX_MODE
+# (ADR-0011 §4). ``none`` appends nothing (byte-identical). ``docker`` / ``modal`` tell the model the
+# sandbox's live semantics so it is never surprised (docker's persistent shell + shared /workspace; the
+# empty remote scratch with no local tree). Composed onto the base description by :func:`bash_description`
+# and installed on the tool via the registry's ``prepare=`` callback.
+_DOCKER_DESCRIPTION_SUFFIX = (
+    "Sandbox (SANDBOX_MODE=docker): commands run in a persistent bash shell inside a local Docker "
+    "container, with your project directory bind-mounted at /workspace (the shell's working "
+    "directory). Because the shell persists across calls, `cd`, `export`, and installations "
+    "(e.g. `pip install`) carry over from one bash call to the next. If a command times out it is "
+    "killed and the shell is restarted, so its working directory resets to /workspace and its "
+    "environment is cleared — but files already written to /workspace survive (they live on the "
+    "mounted project directory). stdout and stderr are merged into a single stream in the command's "
+    "own order."
+)
+_MODAL_DESCRIPTION_SUFFIX = (
+    "Sandbox (SANDBOX_MODE=modal): commands run in a remote Modal sandbox, not on the local machine. "
+    "The local project tree is NOT present in the sandbox, so to work with code you must fetch it "
+    "yourself (e.g. `git clone` / `git fetch`) or generate it. Filesystem changes and installations "
+    "(e.g. `git clone`, `pip install`) persist across bash calls, but each command runs as a fresh "
+    "process, so shell `cd` and `export` do NOT carry over between calls — use absolute paths or chain "
+    "them in one call (e.g. `cd /workspace/app && <command>`). The sandbox starts empty at /workspace."
+)
+
+
+def _get_executor() -> CommandExecutor:
+    """Return the cached executor, selecting it by ``SANDBOX_MODE`` on first use (ADR-0011 §1,4).
+
+    On the first call it reads ``settings.sandbox_mode`` once, logs it, and — for ``docker`` / ``modal``
+    — lazily imports :func:`decode.sandbox.select_executor` and swaps the selected sandbox executor into
+    the ``_EXECUTOR`` memo. For ``none`` it keeps the eager :class:`LocalExecutor` untouched, so the
+    ``none`` path imports **no** sandbox module and a test's ``_EXECUTOR.run`` patch is preserved. Every
+    later call returns the memoized executor (so a docker/modal container/sandbox is created once, not
+    per command). Reset the memo with :func:`reset_executor`; reap it with :func:`close_executor`.
+    """
+    global _EXECUTOR, _executor_selected
+    if not _executor_selected:
+        _executor_selected = True
+        mode = settings.sandbox_mode
+        logger.info("[sandbox] mode=%s", mode)
+        if mode != "none":
+            # Lazy import: the ``none`` path never touches ``decode.sandbox`` (ADR-0011 §4).
+            from decode.sandbox import select_executor
+
+            _EXECUTOR = select_executor(mode)
+    return _EXECUTOR
+
+
+def reset_executor() -> None:
+    """Clear the executor selection memo (no teardown) — test hermeticity (ADR-0011 §4).
+
+    Restores the ``none``-mode :class:`LocalExecutor` default and re-arms selection so the next
+    :func:`_get_executor` re-reads ``settings.sandbox_mode``. Does **not** close a live sandbox
+    executor (use :func:`close_executor` for that); it only drops decode's reference to it.
+    """
+    global _EXECUTOR, _executor_selected
+    _EXECUTOR = LocalExecutor()
+    _executor_selected = False
+
+
+async def close_executor() -> None:
+    """Tear down the cached sandbox executor (best-effort) and reset the seam (ADR-0011 §4).
+
+    Called on the interactive exit path (``tui/app.py``) and at headless-flow completion
+    (``runtime/flow.py``) so a session's Docker container / Modal sandbox is reaped. The memo is reset
+    **first** (so the seam is clean even if teardown raises), then — if the cached executor exposes an
+    async :meth:`aclose` (the sandbox executors) or a sync ``close`` — it is awaited / called. A safe
+    **no-op** in ``none`` mode (:class:`LocalExecutor` has neither method) and when nothing was ever
+    selected. Idempotent: a second call finds the reset :class:`LocalExecutor` and no-ops. ``--rm``
+    (docker) / the modal ``timeout`` remain the crash backstops if this is ever skipped.
+    """
+    global _EXECUTOR, _executor_selected
+    executor = _EXECUTOR
+    _EXECUTOR = LocalExecutor()
+    _executor_selected = False
+    aclose = getattr(executor, "aclose", None)
+    if aclose is not None:
+        await aclose()
+        return
+    close = getattr(executor, "close", None)
+    if close is not None:
+        close()
+
+
+def bash_description(base: str) -> str:
+    """Compose the model-facing ``bash`` description for the active ``SANDBOX_MODE`` (ADR-0011 §4).
+
+    ``none`` returns ``base`` **unchanged** (byte-identical to before this task — the caller detects the
+    no-op and leaves the ``ToolDefinition`` untouched). ``docker`` / ``modal`` append the matching
+    sandbox-semantics paragraph so the model is told the live rules (docker's persistent shell + shared
+    ``/workspace``; the empty remote scratch with no local tree) instead of being surprised at runtime.
+    """
+    mode = settings.sandbox_mode
+    if mode == "docker":
+        return f"{base}\n\n{_DOCKER_DESCRIPTION_SUFFIX}"
+    if mode == "modal":
+        return f"{base}\n\n{_MODAL_DESCRIPTION_SUFFIX}"
+    return base
 
 
 async def bash(
@@ -73,7 +184,7 @@ async def bash(
         raise ModelRetry("command is empty; provide a shell command to run.")
     timeout_s = _resolve_timeout(timeout)
 
-    result = await _EXECUTOR.run(command, cwd=ctx.deps.cwd, timeout_s=timeout_s)
+    result = await _get_executor().run(command, cwd=ctx.deps.cwd, timeout_s=timeout_s)
     logger.debug(
         "bash ran (exit=%d, timed_out=%s, command=%r)",
         result.exit_code,

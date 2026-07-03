@@ -69,6 +69,7 @@ from decode.permissions.types import PermissionMode
 from decode.services.lsp.service import shutdown_all as shutdown_lsp_servers
 from decode.skills.loader import load_skills
 from decode.skills.payload import format_skill_payload
+from decode.tools.bash import close_executor
 from decode.tui import render
 
 logger = logging.getLogger(__name__)
@@ -950,5 +951,14 @@ async def run_app(
         await shutdown_lsp_servers()
     except Exception:
         logger.warning("lsp shutdown on exit failed; continuing shutdown", exc_info=True)
+
+    # On-exit sandbox teardown (ADR-0011 §4): reap the session's Docker container / Modal sandbox if
+    # ``SANDBOX_MODE`` selected one this session. A cheap no-op in ``none`` mode (``LocalExecutor`` has
+    # no teardown) and when no ``bash`` ran. Best-effort like the LSP + memory steps above: any failure
+    # is logged and swallowed so it can never block exit or mask the ``Decode - bye.`` line.
+    try:
+        await close_executor()
+    except Exception:
+        logger.warning("sandbox teardown on exit failed; continuing shutdown", exc_info=True)
 
     console.print(render.render_event(events.AssistantTextDelta(text="Decode - bye.")))

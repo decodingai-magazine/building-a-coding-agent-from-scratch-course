@@ -71,6 +71,7 @@ import logging
 import os
 import signal
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from decode.config.settings import settings
@@ -114,6 +115,11 @@ _SHELL_ENDED_NOTE = (
     "its working directory and environment were reset."
 )
 
+# The docker "container failed to run" exit-code convention, returned when the daemon becomes
+# unreachable mid-session so a ``bash`` call surfaces a rendered failure instead of crashing the tool.
+_DAEMON_LOST_EXIT = 125
+_DAEMON_LOST_NOTE = "Docker daemon became unreachable — the sandbox session was lost."
+
 
 class DockerExecutor:
     """Run commands in one session container over one persistent bash shell (ADR-0011 §2).
@@ -127,6 +133,12 @@ class DockerExecutor:
     def __init__(self) -> None:
         self._container_id: str | None = None
         self._shell: asyncio.subprocess.Process | None = None
+        # The event loop the persistent shell subprocess was created on. ``aclose`` compares it to the
+        # loop it runs on: on the interactive exit path they match (await the shell cleanly), but the
+        # headless flow reaps from a DIFFERENT (fresh) loop — the shell's per-call loop is closed, so
+        # its loop-bound futures/transports cannot be awaited ("Event loop is closed") and must be
+        # torn down loop-free instead (ADR-0011 §4). Paired with ``_shell``: set on spawn, cleared on reset.
+        self._shell_loop: asyncio.AbstractEventLoop | None = None
         # The cwd bind-mounted on first run(); the mount is fixed for the session (the shell owns its
         # own cwd thereafter — that is the whole point of the persistent shell).
         self._mounted_cwd: Path | None = None
@@ -140,9 +152,26 @@ class DockerExecutor:
         :class:`ExecResult` with ``timed_out=False`` and an empty ``note``. A timeout returns the
         partial output with ``timed_out=True`` and a shell-reset ``note`` (the shell is respawned on
         the next call, resetting cwd/env). Streams are merged, so ``stderr`` is always ``""``.
+
+        If the docker daemon is **unreachable** when starting the container / shell (e.g. Docker Desktop
+        quit mid-session; ``docker run`` / ``docker exec`` fail to launch), the known infra-failure
+        exceptions this code raises (its :class:`RuntimeError` wrapper, :class:`OSError` /
+        :class:`FileNotFoundError` on spawn) are caught and returned as a rendered failure
+        :class:`ExecResult` (``exit_code=125``, the failure text on ``stderr``, a daemon-lost ``note``)
+        so the model reacts instead of the tool crashing — the never-crash executor contract.
         """
-        container_id = await self._ensure_container(cwd)
-        shell = await self._ensure_shell(container_id)
+        try:
+            container_id = await self._ensure_container(cwd)
+            shell = await self._ensure_shell(container_id)
+        except (RuntimeError, OSError) as exc:
+            # The daemon went away (or docker CLI cannot spawn): surface a model-facing failure and drop
+            # the stale session so a later call re-attempts from scratch. Scoped to the KNOWN infra
+            # exceptions — not a blanket ``except`` — so real bugs still surface.
+            logger.warning("[sandbox] docker unavailable, sandbox session lost: %s", exc)
+            self._discard_session()
+            return ExecResult(
+                "", str(exc), _DAEMON_LOST_EXIT, timed_out=False, note=_DAEMON_LOST_NOTE
+            )
 
         marker = _make_marker()
         try:
@@ -196,15 +225,38 @@ class DockerExecutor:
         return ExecResult(stdout, "", exit_code, timed_out=False)
 
     async def aclose(self) -> None:
-        """Stop the shell and remove the session container — idempotent, best-effort (ADR-0011 §2).
+        """Reap the session container + shell — idempotent, best-effort, LOOP-INDEPENDENT (ADR-0011 §2,4).
 
-        Safe to call when nothing was ever started (a no-op) and safe to call twice (the second call
-        finds nothing to do). Failures are swallowed: teardown must never block the exit path, and
-        ``--rm`` is the crash backstop that removes the container even if this is skipped.
+        Safe to call when nothing was ever started (a no-op) and safe to call twice. Two teardown paths,
+        because the shell subprocess + pipe transports are bound to the loop they were created on:
+
+        * **Interactive exit (same loop)** — ``close_executor`` is awaited on the loop the shell was
+          created on, so we await it cleanly (drain+close the pipes, reap the host process), exactly as
+          before — no regression.
+        * **Headless reap (foreign/closed loop)** — a ``decode run`` reaps in a ``finally`` on a *fresh*
+          loop, while the shell was created on a kitaru per-call loop that is now closed. Awaiting its
+          loop-bound futures there raises ``RuntimeError: Event loop is closed`` / ``Future attached to a
+          different loop`` — which previously escaped and left the container **running** (the headline
+          074 defect). So there we tear the shell down **loop-free** (SIGKILL its process group + reap
+          the zombie via ``os.waitpid`` + best-effort transport close), never awaiting the dead loop.
+
+        Either way the container removal — ``docker rm -f <id>``, a *fresh* subprocess that needs no old
+        loop — **always runs** (it is the load-bearing reap and also kills the container-side shell).
+        Failures are swallowed; ``--rm`` is the crash backstop.
         """
-        await self._stop_shell()
+        shell, self._shell = self._shell, None
+        shell_loop, self._shell_loop = self._shell_loop, None
         container_id, self._container_id = self._container_id, None
         self._mounted_cwd = None
+
+        if shell is not None:
+            if shell_loop is not None and shell_loop is _running_loop():
+                # Same live loop the shell was created on (interactive exit): await it cleanly.
+                await self._teardown_shell_clean(shell)
+            else:
+                # Foreign / closed loop (headless reap): tear it down without touching the dead loop.
+                _kill_shell_loop_free(shell)
+
         if container_id is None:
             return
         logger.info("[sandbox] docker stop %s", container_id)
@@ -212,6 +264,19 @@ class DockerExecutor:
         # container the daemon may also auto-remove it, so a "no such container" race is expected and
         # ignored (best-effort) — either way the container is gone.
         await _run_docker_quiet("rm", "-f", container_id)
+
+    def _discard_session(self) -> None:
+        """Drop stale session state loop-free after a daemon loss so a later ``run`` re-attempts (§2).
+
+        Called from :meth:`run` when the daemon became unreachable while starting the container/shell:
+        the cached container id + shell handle are unusable, so null them (no await — the daemon is gone
+        and, on the first-container path, no shell exists yet). The next :meth:`run` re-runs ``docker
+        run`` from scratch.
+        """
+        self._container_id = None
+        self._shell = None
+        self._shell_loop = None
+        self._mounted_cwd = None
 
     async def _ensure_container(self, cwd: Path) -> str:
         """Start the keeper container on first use (bind-mounting ``cwd``); return its id (cached)."""
@@ -285,18 +350,35 @@ class DockerExecutor:
         shell.stdin.write(b"exec 2>&1\n")  # type: ignore[union-attr]
         await shell.stdin.drain()  # type: ignore[union-attr]
         self._shell = shell
+        # Record the loop the shell's subprocess + pipe transports are bound to, so ``aclose`` knows
+        # whether it can await them (same loop) or must tear them down loop-free (a foreign/closed loop).
+        self._shell_loop = asyncio.get_running_loop()
         return shell
 
     async def _stop_shell(self) -> None:
         """Kill the persistent shell's host process group and reap it; next run() respawns it.
 
         Setting ``self._shell = None`` first is the **state reset**: a fresh shell starts back at
-        ``/workspace`` with a cleared env. Drains stdout to EOF and closes stdin so no pipe transport
-        is left unclosed (``filterwarnings=error`` hermeticity). Best-effort and safe if never started.
+        ``/workspace`` with a cleared env. Called only from :meth:`run` (a timeout / shell-ended reset),
+        which always runs on the shell's own loop, so the clean same-loop teardown
+        (:meth:`_teardown_shell_clean`) is correct here. Best-effort and safe if never started.
         """
         shell, self._shell = self._shell, None
+        self._shell_loop = None
         if shell is None:
             return
+        await self._teardown_shell_clean(shell)
+
+    @staticmethod
+    async def _teardown_shell_clean(shell: asyncio.subprocess.Process) -> None:
+        """Await the shell's clean teardown — MUST run on the loop the shell was created on.
+
+        Kills the shell's host process group (SIGTERM → SIGKILL after :data:`_KILL_GRACE_S`), then drains
+        stdout to EOF and closes stdin so no pipe transport is left unclosed (``filterwarnings=error``
+        hermeticity). All the awaits touch the shell's loop-bound futures/transports, so this is only
+        valid on that loop (the ``run`` reset + the interactive ``aclose`` path); the headless
+        cross-loop path uses :func:`_kill_shell_loop_free` instead.
+        """
         if shell.returncode is None:
             _signal_group(shell, signal.SIGTERM)
             try:
@@ -304,8 +386,6 @@ class DockerExecutor:
             except TimeoutError:
                 _signal_group(shell, signal.SIGKILL)
                 await shell.wait()
-        # Close the pipe transports deterministically: drain stdout to EOF (the process is dead, so
-        # EOF is immediate) and close the stdin writer. Bounded + suppressed — teardown never blocks.
         if shell.stdout is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(shell.stdout.read(), timeout=_KILL_GRACE_S)
@@ -394,6 +474,90 @@ def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> N
         return
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, sig)
+
+
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    """The current running loop, or ``None`` if not inside one (never raises)."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _kill_shell_loop_free(shell: asyncio.subprocess.Process) -> None:
+    """Tear down the host ``docker exec`` shell WITHOUT touching its (foreign/closed) loop (ADR-0011 §4).
+
+    The headless reap path runs on a *different* loop than the one the shell's subprocess + pipe
+    transports were created on (a kitaru per-call loop, now closed), so awaiting or ``transport.close()``
+    would raise ``Event loop is closed``. Instead we tear the shell down through its **underlying
+    ``subprocess.Popen``** — whose ``kill`` / ``wait`` / file-``close`` are plain OS calls that need no
+    event loop. ``popen.wait`` sets ``popen.returncode``, so neither the ``Popen`` nor the asyncio
+    subprocess transport emits a stale-state ``ResourceWarning`` at GC, and closing ``popen``'s file
+    objects releases the pipe FDs. If the Popen handle is unreachable we fall back to killing by pid.
+    All best-effort — the container ``docker rm -f`` (aclose's next step) is what truly ends the session.
+    """
+    # 1. Kill the whole process group (loop-free) so the ``docker exec`` client + any host child die.
+    if shell.returncode is None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(shell.pid, signal.SIGKILL)
+
+    # 2. Reap the process, loop-free. Prefer the underlying ``Popen.wait`` (it sets ``popen.returncode``,
+    #    which silences the "subprocess still running" ``ResourceWarning``); else a bare ``os.waitpid``.
+    #    The asyncio child watcher may win the reap race → ``wait`` raises ``ChildProcessError``;
+    #    suppressed.
+    popen = _underlying_popen(shell)
+    if popen is not None:
+        with contextlib.suppress(Exception):
+            popen.wait(timeout=_KILL_GRACE_S)
+    else:
+        with contextlib.suppress(ChildProcessError, OSError):
+            os.waitpid(shell.pid, 0)
+
+    # 3. Release the pipe FDs + neutralize the orphaned asyncio transports (all loop-free, best-effort)
+    #    so no ``ResourceWarning`` fires at GC on the dead loop — the warnings print as
+    #    ``Exception ignored ... Traceback`` on stderr, so a real ``decode run`` must be clean of them.
+    _neutralize_shell_transports(shell)
+
+
+def _underlying_popen(shell: asyncio.subprocess.Process) -> Any:
+    """The raw ``subprocess.Popen`` behind an asyncio subprocess, or ``None`` (best-effort, private)."""
+    return getattr(getattr(shell, "_transport", None), "_proc", None)
+
+
+def _neutralize_shell_transports(shell: asyncio.subprocess.Process) -> None:
+    """Close the shell's pipe FDs + defuse the orphaned asyncio transports, loop-free (ADR-0011 §4).
+
+    The subprocess + pipe transports are bound to a closed per-call loop, so their own ``close()`` (which
+    schedules on that loop) raises. We reach each pipe transport's underlying OS pipe and close it
+    directly (a plain file ``close`` — loop-free, releases the fd), then defuse the objects' ``__del__``
+    finalizers so no ``ResourceWarning`` is emitted at GC: null the pipe transport's ``_pipe`` (silences
+    ``_Unix*PipeTransport.__del__``'s "unclosed transport"), mark it ``_closing`` (silences
+    ``StreamWriter.__del__``'s "loop is closed"), and mark the subprocess transport ``_closed`` (silences
+    ``BaseSubprocessTransport.__del__``'s "unclosed transport"). Every step is suppressed — this is pure
+    cleanliness (keeping ``decode run`` stderr + ``filterwarnings=error`` clean); it degrades to a
+    harmless GC warning if a future CPython renames an internal, and never affects the container reap.
+    """
+    transport = getattr(shell, "_transport", None)
+    if transport is None:
+        return
+    for fd in (0, 1, 2):
+        pipe_transport = None
+        with contextlib.suppress(Exception):
+            pipe_transport = transport.get_pipe_transport(fd)
+        if pipe_transport is None:
+            continue
+        with contextlib.suppress(Exception):
+            pipe = pipe_transport.get_extra_info("pipe")
+            if pipe is not None:
+                pipe.close()  # release the fd (plain file close — loop-free)
+        with contextlib.suppress(Exception):
+            pipe_transport._pipe = None  # _Unix*PipeTransport.__del__: nothing left to warn about
+        with contextlib.suppress(Exception):
+            pipe_transport._closing = (
+                True  # StreamWriter.__del__: is_closing() → skip "loop is closed"
+            )
+    with contextlib.suppress(Exception):
+        transport._closed = True  # BaseSubprocessTransport.__del__: skip "unclosed transport"
 
 
 async def _run_docker_quiet(*args: str) -> None:

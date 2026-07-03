@@ -22,8 +22,9 @@ the event loop).
 timeout=int(settings.sandbox_timeout_s))``, then a one-shot ``mkdir -p /workspace`` (the stock
 ``python:3.12-slim`` image has no ``/workspace``, so the per-command ``workdir`` needs it created
 once). Every later command reuses that one sandbox. :meth:`aclose` (task 074 calls it on the exit
-path) calls ``sandbox.terminate()`` — idempotent, best-effort; the modal ``timeout`` (the sandbox's
-max lifetime) is the crash backstop.
+path) calls ``sandbox.terminate()`` — idempotent, best-effort, and loop-independent for free
+(``synchronicity`` proxies it onto modal's own loop, unlike docker's loop-bound subprocess); the modal
+``timeout`` (the sandbox's max lifetime) is the crash backstop.
 
 **Per-command exec (empty scratch, no local tree).** Each command is a fresh
 ``sb.exec("bash", "-lc", command, workdir="/workspace")``: **filesystem changes persist** across calls
@@ -141,6 +142,15 @@ class ModalExecutor:
         Safe to call when nothing was ever created (a no-op that imports no modal) and safe to call
         twice (the second call finds nothing to do). A terminate failure is swallowed: teardown must
         never block the exit path, and the modal ``timeout`` (sandbox lifetime) is the crash backstop.
+
+        **Loop-independent for free (task 074).** The headless runtime reaps the executor on a *fresh*
+        event loop (kitaru's "calls" strategy runs each turn in its own ``asyncio.run`` loop that then
+        closes), so the cached ``sandbox`` handle was created on a now-dead loop. Unlike docker's raw
+        ``asyncio`` subprocess transports — which bind to their creating loop and genuinely break on a
+        cross-loop teardown (see :meth:`DockerExecutor.aclose`) — modal's ``synchronicity`` proxies
+        every ``.aio()`` call onto its **own** persistent background-thread loop, so ``terminate.aio()``
+        through the stale handle reaps correctly from any caller loop (verified against modal 1.5.1 via
+        ``Sandbox.list``: the sandbox drops off the live list whether terminated same-loop or cross-loop).
         """
         sandbox, self._sandbox = self._sandbox, None
         if sandbox is None:

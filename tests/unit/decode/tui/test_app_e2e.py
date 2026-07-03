@@ -969,3 +969,31 @@ async def test_run_app_mode_plan_denies_a_write_without_asking(monkeypatch):
     ]
     assert returns, "the denial must reach the model as a tool result"
     assert any("plan mode" in r.lower() for r in returns)
+
+
+async def test_run_app_reaps_the_sandbox_executor_on_exit(monkeypatch):
+    """On exit, ``run_app`` reaps the session's sandbox executor via ``close_executor`` (ADR-0011 §4).
+
+    A fake executor with an ``aclose`` spy is injected at the ``bash`` seam; after ``/quit`` the real
+    exit path must ``await`` its ``aclose`` (next to the LSP shutdown + memory write-back) and still
+    print the clean-exit line — proving the sandbox teardown is wired into the interactive shutdown.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from decode.tools import bash as bash_mod
+
+    aclose = AsyncMock()
+    monkeypatch.setattr(bash_mod, "_EXECUTOR", SimpleNamespace(aclose=aclose))
+    monkeypatch.setattr(bash_mod, "_executor_selected", True)
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("what can you do?")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    aclose.assert_awaited_once()  # the sandbox executor was reaped on the exit path
+    assert "Decode - bye." in output  # exit still completes cleanly

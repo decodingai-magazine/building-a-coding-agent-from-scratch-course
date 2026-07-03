@@ -64,3 +64,21 @@ def _default_sandbox_mode(monkeypatch):
     from decode.config.settings import settings
 
     monkeypatch.setattr(settings, "sandbox_mode", "none", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_sandbox_executor():
+    """Hermeticity guard — reset the ``bash`` executor selection memo around every test (ADR-0011 §4).
+
+    ``decode.tools.bash`` memoizes the ``CommandExecutor`` it selects by ``SANDBOX_MODE`` on the first
+    ``bash`` call and fixes it for the session. Without a reset a test that selected a docker/modal (or
+    fake) executor would leak that choice into the next test — e.g. a later plain ``bash`` test would
+    route into a real container and hang with no daemon. Resetting before AND after every test pins each
+    to the fresh ``none``-mode ``LocalExecutor`` default and leaves nothing behind. Registered at the
+    rootdir conftest (like :func:`_default_sandbox_mode`) so it applies in any collection order.
+    """
+    from decode.tools import bash
+
+    bash.reset_executor()
+    yield
+    bash.reset_executor()

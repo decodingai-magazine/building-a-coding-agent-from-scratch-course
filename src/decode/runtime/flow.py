@@ -38,6 +38,7 @@ imports kitaru — the ``run`` subcommand imports :mod:`decode.runtime` lazily.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from collections.abc import Iterator
@@ -58,7 +59,7 @@ from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
 from decode.tools.askuser import ASK_USER_TOOL_NAME, deny_user_question_resolver
-from decode.tools.bash import BASH_TOOL_NAME
+from decode.tools.bash import BASH_TOOL_NAME, close_executor
 from decode.tools.files import EDIT_TOOL_NAME, WRITE_TOOL_NAME
 from decode.tools.orchestration import EXIT_PLAN_MODE_TOOL_NAME
 from decode.tools.sleep import (
@@ -191,6 +192,28 @@ async def _deny_permission_resolver(request: PermissionRequest) -> PermissionDec
     return PermissionDecision.deny(reason="No interactive approver in the headless runtime.")
 
 
+def _reap_runtime_executor() -> None:
+    """Reap the session's sandbox executor at headless-flow completion — best-effort (ADR-0011 §4).
+
+    Called in a ``finally`` around each flow body (bypass + HITL) so a ``decode run`` tears down its
+    Docker container / Modal sandbox even when the flow errors or pauses. The ``@flow`` body is sync and
+    :func:`decode.tools.bash.close_executor` is async, so it runs to completion on a **dedicated**
+    short-lived event loop created and closed here — deliberately NOT :func:`asyncio.run`, which resets
+    the thread's current loop and orphans the one pydantic-ai's ``run_sync`` leaves set (an unclosed-loop
+    ``ResourceWarning`` under ``filterwarnings=error``); this loop sets nothing current, so it never
+    touches ``run_sync``'s loop. A teardown failure is logged, never raised, so it cannot mask the flow's
+    result; ``--rm`` (docker) / the modal ``timeout`` are the crash backstops. A no-op in ``none`` mode
+    (``LocalExecutor`` has no teardown) and when no ``bash`` ran this session.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(close_executor())
+    except Exception:
+        logger.warning("headless sandbox teardown failed; continuing", exc_info=True)
+    finally:
+        loop.close()
+
+
 def _build_runtime_agent(
     model: str | None = None,
 ) -> KitaruAgent[AgentDeps, str | DeferredToolRequests]:
@@ -275,20 +298,27 @@ def run_agent_task(task: str, model: str | None = None) -> str:
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store`, so ``build_agent`` reads config hydrated from the Kitaru secret;
     off (the default) it is a no-op and behaviour is byte-unchanged.
+
+    The whole body runs under a ``finally`` that reaps the sandbox executor
+    (:func:`_reap_runtime_executor`, ADR-0011 §4), so a ``decode run`` tears down its Docker container /
+    Modal sandbox on completion **and** on error. A no-op in ``none`` mode.
     """
-    with _config_from_secret_store():
-        durable_agent = _build_runtime_agent(model)
-        deps = _build_headless_deps()
-        result = durable_agent.run_sync(task, deps=deps)
-    output = result.output
-    if not isinstance(output, str):
-        # Defensive: under BYPASS every tool runs inline, so a run never resolves to a deferred
-        # request. Reaching here means a gated tool ignored bypass — a bug, not a user-facing path.
-        raise RuntimeError(
-            "headless runtime expected text output but the agent deferred a tool call; "
-            "BYPASS mode must run every tool inline (ADR-0008 §2)."
-        )
-    return _capture_runtime_output(output)
+    try:
+        with _config_from_secret_store():
+            durable_agent = _build_runtime_agent(model)
+            deps = _build_headless_deps()
+            result = durable_agent.run_sync(task, deps=deps)
+        output = result.output
+        if not isinstance(output, str):
+            # Defensive: under BYPASS every tool runs inline, so a run never resolves to a deferred
+            # request. Reaching here means a gated tool ignored bypass — a bug, not a user-facing path.
+            raise RuntimeError(
+                "headless runtime expected text output but the agent deferred a tool call; "
+                "BYPASS mode must run every tool inline (ADR-0008 §2)."
+            )
+        return _capture_runtime_output(output)
+    finally:
+        _reap_runtime_executor()
 
 
 # ---------------------------------------------------------------------------
@@ -409,30 +439,36 @@ def run_agent_task_hitl(task: str, model: str | None = None) -> str:
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store` (the sleeper nests inside it), so ``build_agent`` reads config
     hydrated from the Kitaru secret; off (the default) it is a no-op and behaviour is byte-unchanged.
+
+    Like the bypass flow, the whole body runs under a ``finally`` that reaps the sandbox executor
+    (:func:`_reap_runtime_executor`, ADR-0011 §4) on completion, error, or the deny-return path.
     """
-    with _config_from_secret_store():
-        durable_agent = _build_hitl_runtime_agent(model)
-        deps = _build_hitl_deps()
-        # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a
-        # ``sleep`` in this run pauses on a flow-scope ``kitaru.wait`` (ADR-0008 §4) while a later
-        # in-process interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).
-        with _durable_sleeper():
-            try:
-                result = durable_agent.run_sync(task, deps=deps)
-            except _ToolApprovalDenied:
-                # The operator rejected a tool approval. The adapter raises out of ``run_sync`` (it
-                # has no feed-back-to-model path), so the run stops here — the denied tool never acted.
-                logger.debug("HITL run stopped: an operator denied a tool approval")
-                return _capture_runtime_output(_HITL_DENIED_MESSAGE)
-    output = result.output
-    if not isinstance(output, str):
-        # A deferred request escaping ``run_sync`` means a wait-capable tool was not opted out (so
-        # the adapter could not hoist its wait) — a wiring bug, not a user-facing path.
-        raise RuntimeError(
-            "headless HITL runtime expected text output but the agent deferred a tool call; "
-            "every wait-capable tool must be opted out of its checkpoint (ADR-0008 §3)."
-        )
-    return _capture_runtime_output(output)
+    try:
+        with _config_from_secret_store():
+            durable_agent = _build_hitl_runtime_agent(model)
+            deps = _build_hitl_deps()
+            # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a
+            # ``sleep`` in this run pauses on a flow-scope ``kitaru.wait`` (ADR-0008 §4) while a later
+            # in-process interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).
+            with _durable_sleeper():
+                try:
+                    result = durable_agent.run_sync(task, deps=deps)
+                except _ToolApprovalDenied:
+                    # The operator rejected a tool approval. The adapter raises out of ``run_sync`` (it
+                    # has no feed-back-to-model path), so the run stops here — the denied tool never ran.
+                    logger.debug("HITL run stopped: an operator denied a tool approval")
+                    return _capture_runtime_output(_HITL_DENIED_MESSAGE)
+        output = result.output
+        if not isinstance(output, str):
+            # A deferred request escaping ``run_sync`` means a wait-capable tool was not opted out (so
+            # the adapter could not hoist its wait) — a wiring bug, not a user-facing path.
+            raise RuntimeError(
+                "headless HITL runtime expected text output but the agent deferred a tool call; "
+                "every wait-capable tool must be opted out of its checkpoint (ADR-0008 §3)."
+            )
+        return _capture_runtime_output(output)
+    finally:
+        _reap_runtime_executor()
 
 
 @dataclass(frozen=True, slots=True)
