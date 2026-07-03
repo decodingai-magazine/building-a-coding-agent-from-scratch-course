@@ -69,6 +69,7 @@ from decode.permissions.types import PermissionMode
 from decode.services.lsp.service import shutdown_all as shutdown_lsp_servers
 from decode.skills.loader import load_skills
 from decode.skills.payload import format_skill_payload
+from decode.tools.bash import close_executor, warm_executor
 from decode.tui import render
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,11 @@ _MODE_COMMAND = "/mode"
 # ``/quit`` and idle-only. Reserved among the slash commands (matched before ``parse_skill_command``)
 # so a project skill named ``compact`` can never shadow it.
 _COMPACT_COMMAND = "/compact"
+# The conversation-wipe command: compaction-to-zero, wired exactly like ``/compact`` (idle-only,
+# reserved before the skill branch). Summarize-then-wipe: the pre-clear history feeds the same
+# MEMORY.md write-back the quit path runs, THEN the handler resets and a clear marker rides the
+# session log so ``--resume`` replays to the post-clear state.
+_CLEAR_COMMAND = "/clear"
 # The order Shift+Tab cycles the gate mode through (ADR-0003 §9): default -> edit -> plan ->
 # bypass -> back to default. A tuple so :func:`next_mode` is a pure index step.
 _MODE_CYCLE: tuple[PermissionMode, ...] = (
@@ -143,6 +149,15 @@ def is_compact_command(line: str) -> bool:
     return line.strip() == _COMPACT_COMMAND
 
 
+def is_clear_command(line: str) -> bool:
+    """True when ``line`` is the ``/clear`` command (ignoring surrounding whitespace).
+
+    Pure (mirrors :func:`is_compact_command`): exact match after a strip — ``"/clear"`` and
+    ``"  /clear  "`` are the command; ``"/clearx"`` / ``"clear"`` / ``"/compact"`` are not.
+    """
+    return line.strip() == _CLEAR_COMMAND
+
+
 def footer_hint(agent: str, mode: str) -> str:
     """The bottom-toolbar hint: the live agent + mode, then the interaction keys (plain text).
 
@@ -153,8 +168,22 @@ def footer_hint(agent: str, mode: str) -> str:
     """
     return (
         f"agent:{agent} mode:{mode} | Enter steer | Alt+Enter follow-up | "
-        "Esc abort | Shift+Tab mode | /agent /mode /compact /quit"
+        "Esc abort | Shift+Tab mode | /agent /mode /compact /clear /quit"
     )
+
+
+def startup_banner(provider: str, model: str, sandbox_mode: str) -> str:
+    """The one-line startup banner: provider:model (+ the sandbox mode when one is active).
+
+    Pure and string-returning (mirrors :func:`footer_hint`) so it is unit-testable. ``none`` —
+    the plain REPL — renders **byte-identical** to before sandboxing existed; ``docker`` /
+    ``modal`` insert a ``sandbox:<mode>`` segment so the user can SEE the session's ``bash``
+    commands run in a sandbox (the mode is fixed per session — ADR-0011 §1 — so the banner, not
+    the live footer, is its home).
+    """
+    if sandbox_mode == "none":
+        return f"Decode - {provider}:{model} - type a line; /quit exits."
+    return f"Decode - {provider}:{model} - sandbox:{sandbox_mode} - type a line; /quit exits."
 
 
 def parse_agent_command(line: str) -> str | None:
@@ -231,6 +260,7 @@ class SlashCompleter(Completer):
             _AGENT_COMMAND: "switch the active agent (/agent <name>)",
             _MODE_COMMAND: "switch the permission mode (/mode <name>)",
             _COMPACT_COMMAND: "compact the conversation now",
+            _CLEAR_COMMAND: "clear the conversation (summarizes to memory first)",
             _QUIT_COMMAND: "exit decode",
         }
         self._meta.update(
@@ -368,6 +398,42 @@ async def _handle_compact_command(
         return
     if not await handler.compact():
         emit(_COMPACT_NOTHING)
+
+
+# The inline lines the ``/clear`` command renders (mirroring the ``/compact`` pair, plus a
+# confirmation — unlike ``/compact`` there is no event to render, so the command says what it did).
+_CLEAR_DONE = "Decode - conversation cleared."
+_CLEAR_NOTHING = "Decode - nothing to clear yet."
+_CLEAR_BUSY = "Decode - busy; try /clear again once the turn finishes."
+
+
+async def _handle_clear_command(
+    handler: AgentTurnHandler,
+    runner: Runner,
+    *,
+    cwd: Path,
+    emit: Callable[[str], None],
+) -> None:
+    """Wipe the conversation now — the ``/clear`` command (compaction-to-zero).
+
+    Idle-only, exactly like ``/compact`` (the handler owns the live ``message_history``; wiping
+    mid-turn would corrupt the leg mutating it): busy → one line, turn untouched. Idle with an
+    empty history → nothing to wipe, say so. Otherwise **summarize, then wipe**: the pre-clear
+    history first feeds the same non-fatal MEMORY.md write-back the quit path runs (``/clear`` is
+    a soft session boundary — every segment still contributes to cross-session memory; a missing
+    key / failure no-ops), then :meth:`~decode.agent.loop.AgentTurnHandler.clear` resets the
+    handler and rides a ``clear`` marker into the session log so ``--resume`` replays to the
+    post-clear state. One confirmation line renders.
+    """
+    if runner.phase is not Phase.IDLE:
+        emit(_CLEAR_BUSY)
+        return
+    if not handler.message_history:
+        emit(_CLEAR_NOTHING)
+        return
+    await extract_on_exit(handler.message_history, cwd)
+    handler.clear()
+    emit(_CLEAR_DONE)
 
 
 # The friendly inline line for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirrors the
@@ -848,6 +914,23 @@ async def run_app(
     )
     runner = Runner(handler, on_event=_on_event)
 
+    # Eager sandbox warm-up (ADR-0011 §4): bring the docker/modal sandbox up NOW — visibly —
+    # instead of invisibly mid-first-turn (the container shows in ``docker ps`` from launch and the
+    # first bash skips the start latency). The progress line prints BEFORE the await because a cold
+    # image pull is slow — a silent hang here would be the exact confusion this fixes. A failure
+    # degrades to the lazy path (the memo is kept, so the first ``bash`` retries and its rendered
+    # infra-failure result carries any persistent problem to the model); the config-level failures
+    # were already caught by the CLI preflight. ``none`` skips the whole block — byte-identical.
+    if settings.sandbox_mode != "none":
+        emit_line(f"Decode - starting {settings.sandbox_mode} sandbox ({settings.sandbox_image})…")
+        try:
+            await warm_executor(deps.cwd)
+        except Exception as exc:
+            logger.warning("sandbox warm-up failed; degrading to lazy start", exc_info=True)
+            emit_line(
+                f"Decode: sandbox startup failed ({exc}); will retry on the first bash command."
+            )
+
     # Which provider/model this session is talking to (the active model id lives in a per-provider
     # settings field — same mapping as factory._build_model's branches).
     active_model = {
@@ -858,7 +941,7 @@ async def run_app(
     console.print(
         render.render_event(
             events.AssistantTextDelta(
-                text=f"Decode - {settings.llm_provider}:{active_model} - type a line; /quit exits."
+                text=startup_banner(settings.llm_provider, active_model, settings.sandbox_mode)
             )
         )
     )
@@ -910,6 +993,13 @@ async def run_app(
                 await _handle_compact_command(handler, runner, emit=emit_line)
                 continue
 
+            # The conversation-wipe command, reserved like ``/compact`` (before the skill branch)
+            # so a ``clear`` skill can never shadow it: summarize-then-wipe when idle, a busy line
+            # mid-turn — never opening a second prompt.
+            if is_clear_command(text):
+                await _handle_clear_command(handler, runner, cwd=deps.cwd, emit=emit_line)
+                continue
+
             # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved
             # ``/agent`` / ``/mode`` checks so a same-named built-in command always wins. A
             # resolved skill injects its body as the turn input through the existing submit
@@ -950,5 +1040,14 @@ async def run_app(
         await shutdown_lsp_servers()
     except Exception:
         logger.warning("lsp shutdown on exit failed; continuing shutdown", exc_info=True)
+
+    # On-exit sandbox teardown (ADR-0011 §4): reap the session's Docker container / Modal sandbox if
+    # ``SANDBOX_MODE`` selected one this session. A cheap no-op in ``none`` mode (``LocalExecutor`` has
+    # no teardown) and when no ``bash`` ran. Best-effort like the LSP + memory steps above: any failure
+    # is logged and swallowed so it can never block exit or mask the ``Decode - bye.`` line.
+    try:
+        await close_executor()
+    except Exception:
+        logger.warning("sandbox teardown on exit failed; continuing shutdown", exc_info=True)
 
     console.print(render.render_event(events.AssistantTextDelta(text="Decode - bye.")))

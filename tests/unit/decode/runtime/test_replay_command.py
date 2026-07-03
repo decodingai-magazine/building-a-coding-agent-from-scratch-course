@@ -97,6 +97,29 @@ def test_replay_without_from_surfaces_kitarus_requirement(monkeypatch, _provider
     assert result.stdout == ""
 
 
+# --- task 071: the sandbox backend guard shares the `decode replay` pre-flight (ADR-0011 §1) --------
+
+
+def test_replay_sandbox_docker_unreachable_is_a_friendly_line_no_replay(monkeypatch, _provider_ok):
+    """SANDBOX_MODE=docker + daemon unreachable → friendly stderr line, non-zero, no replay attempted.
+
+    ``decode replay`` re-executes downstream model calls, so it shares ``decode run``'s pre-flight —
+    including the task-071 sandbox guard. The probe is PATCHED (no real docker daemon); the guard
+    fires before the ``--from`` requirement and before any kitaru boundary is touched.
+    """
+    monkeypatch.setattr(cli_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(cli_mod, "_docker_daemon_reachable", lambda: False)
+    calls = _patch_replay(monkeypatch, result=_ok_result())
+
+    result = CliRunner().invoke(cli, ["replay", "kr-abc123", "--from", "cp", "--model", "x"])
+
+    assert result.exit_code != 0
+    assert "SANDBOX_MODE=docker" in result.stderr
+    assert "Docker daemon" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert calls == {"detect": 0, "replay": 0}  # exited before touching kitaru
+
+
 # --- bypass-only: a HITL exec_id is refused with guidance -------------------------------------------
 
 

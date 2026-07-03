@@ -1,0 +1,616 @@
+"""Hermetic unit tests for the Docker sandbox executor (``decode.sandbox.docker_executor``).
+
+These exercise the parts of :class:`DockerExecutor` that need **no docker daemon** (ADR-0011 §2): the
+marker/command protocol helpers, the read-until-marker loop (driven by a fake stdout so the
+marker-spoof-resistance and EOF contracts are proven offline), and the construction/teardown laziness
+(no subprocess is spawned until the first ``run``). The real end-to-end contract — a live container, a
+persistent shell, state persistence, the timeout reset — lives in the ``@skipif``-guarded
+``tests/integration/test_docker_executor.py`` (it needs a real daemon and SKIPs cleanly without one).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from pathlib import Path
+
+import pytest
+
+from decode.config.settings import settings
+from decode.sandbox.docker_executor import (
+    _DAEMON_LOST_EXIT,
+    _SHELL_ENDED_EXIT,
+    _WORKER_CA_PATH,
+    DockerExecutor,
+    _build_payload,
+    _make_marker,
+    _parse_exit_code,
+    _read_until_marker,
+    _recover_stdout,
+)
+
+
+class _FakeReader:
+    """A minimal stdout stand-in: ``readline`` drains queued lines, then yields ``b""`` (EOF)."""
+
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = list(lines)
+
+    async def readline(self) -> bytes:
+        if self._lines:
+            return self._lines.pop(0)
+        return b""
+
+
+class _RaisingReader:
+    """A stdout stand-in whose ``readline`` raises — models an oversized-line buffer overrun."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def readline(self) -> bytes:
+        raise self._error
+
+
+class _FakeShell:
+    """A process stand-in exposing just the ``.stdout`` the read loop touches."""
+
+    def __init__(self, reader: _FakeReader | _RaisingReader) -> None:
+        self.stdout = reader
+        self.returncode: int | None = None
+
+
+# --- marker + payload helpers ----------------------------------------------------------------
+
+
+def test_make_marker_has_the_expected_shape():
+    marker = _make_marker()
+
+    assert marker.startswith("__DECODE_END_")
+    assert marker.endswith("__")
+
+
+def test_make_marker_is_unique_per_call():
+    # Uniqueness (a fresh uuid4 each call) is what makes the marker unspoofable by command output.
+    assert _make_marker() != _make_marker()
+
+
+def test_build_payload_wraps_the_command_in_a_stdin_starved_group():
+    payload = _build_payload("echo hi", "MARKER")
+
+    # The command runs in a brace group with stdin from /dev/null (so a stdin-reader sees EOF, not the
+    # marker printf), and the marker printf — inside the group, leading with \n so the marker lands on
+    # its own line even for no-trailing-newline output — emits `<marker> $?` after the command's output.
+    assert payload == b'{ echo hi\nprintf \'\\n%s %s\\n\' "MARKER" "$?"\n} </dev/null\n'
+
+
+def test_recover_stdout_strips_exactly_one_trailing_newline():
+    # The marker printf's leading \n means the collected bytes are always the real output plus one \n.
+    assert (
+        _recover_stdout(b"hi\n") == "hi"
+    )  # echo -n hi: no-trailing-newline output recovered exactly
+    assert (
+        _recover_stdout(b"hi\n\n") == "hi\n"
+    )  # echo hi: a real trailing newline is kept (no double)
+    assert _recover_stdout(b"\n") == ""  # empty output → empty string
+    assert _recover_stdout(b"") == ""  # nothing collected stays empty
+    assert _recover_stdout(b"hi") == "hi"  # defensive: no trailing \n → no-op, never over-strips
+    assert _recover_stdout(b"caf\xc3\xa9\n") == "café"  # valid UTF-8 preserved through the strip
+
+
+def test_parse_exit_code_reads_a_zero_status():
+    assert _parse_exit_code(b"MARKER 0\n", "MARKER") == 0
+
+
+def test_parse_exit_code_reads_a_non_zero_status():
+    assert _parse_exit_code(b"MARKER 127\n", "MARKER") == 127
+
+
+def test_parse_exit_code_falls_back_to_a_sentinel_when_malformed():
+    # A marker line without a trailing int should not crash the executor.
+    assert _parse_exit_code(b"MARKER notanint\n", "MARKER") == _SHELL_ENDED_EXIT
+
+
+# --- read-until-marker loop (the command protocol, proven without docker) ---------------------
+
+
+async def test_read_until_marker_collects_output_and_returns_exit_code():
+    marker = _make_marker()
+    shell = _FakeShell(_FakeReader([b"hello\n", b"world\n", f"{marker} 0\n".encode()]))
+    out: list[bytes] = []
+
+    exit_code = await _read_until_marker(shell, marker, out)  # type: ignore[arg-type]
+
+    assert exit_code == 0
+    assert out == [b"hello\n", b"world\n"]  # everything before the marker line, marker excluded
+
+
+async def test_read_until_marker_reports_a_non_zero_exit():
+    marker = _make_marker()
+    shell = _FakeShell(_FakeReader([f"{marker} 3\n".encode()]))
+    out: list[bytes] = []
+
+    assert await _read_until_marker(shell, marker, out) == 3  # type: ignore[arg-type]
+
+
+async def test_read_until_marker_ignores_marker_like_output_not_at_line_start():
+    # A command that PRINTS a marker-like token mid-line must not truncate the read: only a line that
+    # *starts* with our exact per-call marker ends it. This is the spoof-resistance contract, offline.
+    marker = _make_marker()
+    shell = _FakeShell(_FakeReader([b"echo __DECODE_END_fake__ here\n", f"{marker} 0\n".encode()]))
+    out: list[bytes] = []
+
+    exit_code = await _read_until_marker(shell, marker, out)  # type: ignore[arg-type]
+
+    assert exit_code == 0
+    assert out == [b"echo __DECODE_END_fake__ here\n"]
+
+
+async def test_read_until_marker_ignores_a_different_marker_at_line_start():
+    # Even a line that starts with a *different* __DECODE_END_ marker (not this call's uuid) is output,
+    # not the sentinel — the real exit code comes from our own marker line.
+    marker = _make_marker()
+    shell = _FakeShell(_FakeReader([b"__DECODE_END_other__ 7\n", f"{marker} 0\n".encode()]))
+    out: list[bytes] = []
+
+    exit_code = await _read_until_marker(shell, marker, out)  # type: ignore[arg-type]
+
+    assert exit_code == 0
+    assert out == [b"__DECODE_END_other__ 7\n"]
+
+
+async def test_no_newline_output_recovers_faithfully_via_the_marker_and_strip():
+    # Regression (blocker): `echo -n hi` output has NO trailing newline. With the marker printf's
+    # leading \n the shell emits `hi\n<marker> 0\n`, so readline sees ["hi\n", "<marker> 0\n"]: the
+    # marker is on its own line (detected), the read collects ["hi\n"], and the one-newline strip in
+    # _recover_stdout recovers "hi" exactly — no hang, no spurious timeout.
+    marker = _make_marker()
+    shell = _FakeShell(_FakeReader([b"hi\n", f"{marker} 0\n".encode()]))
+    out: list[bytes] = []
+
+    exit_code = await _read_until_marker(shell, marker, out)  # type: ignore[arg-type]
+
+    assert exit_code == 0
+    assert out == [b"hi\n"]  # the one line before the marker
+    assert (
+        _recover_stdout(b"".join(out)) == "hi"
+    )  # the trailing newline the printf added is stripped
+
+
+async def test_trailing_newline_output_is_not_double_stripped():
+    # `echo hi` output DOES end in \n: the shell emits `hi\n\n<marker> 0\n`, so readline sees
+    # ["hi\n", "\n", "<marker> 0\n"]. The single strip yields "hi\n" — byte-identical to before the
+    # fix, so commands with a real trailing newline (and the existing integration tests) stay green.
+    marker = _make_marker()
+    shell = _FakeShell(_FakeReader([b"hi\n", b"\n", f"{marker} 0\n".encode()]))
+    out: list[bytes] = []
+
+    exit_code = await _read_until_marker(shell, marker, out)  # type: ignore[arg-type]
+
+    assert exit_code == 0
+    assert _recover_stdout(b"".join(out)) == "hi\n"
+
+
+async def test_read_until_marker_returns_none_on_eof_before_marker():
+    # The shell closed before its marker (e.g. the command exited the shell): the caller resets it.
+    marker = _make_marker()
+    shell = _FakeShell(_FakeReader([b"partial\n"]))
+    out: list[bytes] = []
+
+    exit_code = await _read_until_marker(shell, marker, out)  # type: ignore[arg-type]
+
+    assert exit_code is None
+    assert out == [b"partial\n"]  # the partial output read before EOF is preserved
+
+
+async def test_read_until_marker_returns_none_on_an_oversized_line():
+    # A single line overrunning the stream buffer loses marker sync → None (caller resets the shell).
+    marker = _make_marker()
+    shell = _FakeShell(_RaisingReader(ValueError("Separator is not found, chunk exceed the limit")))
+    out: list[bytes] = []
+
+    assert await _read_until_marker(shell, marker, out) is None  # type: ignore[arg-type]
+
+
+# --- Credential-Proxy wiring: the docker run argv (byte-identical off the proxy path) ---------
+
+
+def test_docker_run_args_mount_only_the_scratch_without_proxy_wiring():
+    # The non-proxy caller must mount ONLY the project's .decode/sandbox scratch at /workspace —
+    # NEVER the project tree itself (ADR-0011 §2 amended) — with no --network, no -e, no CA mount,
+    # and a bare ``sleep infinity`` entry. (/repo has no .decode/skills, so no skills mount either.)
+    args = DockerExecutor()._docker_run_args(Path("/repo"))
+
+    assert args == [
+        "run",
+        "-d",
+        "--rm",
+        "-v",
+        f"/repo/.decode/sandbox:{_workspace()}",
+        "-w",
+        _workspace(),
+        settings.sandbox_image,
+        "sleep",
+        "infinity",
+    ]
+
+
+def test_docker_run_args_mount_the_skills_dir_read_only_when_present(tmp_path):
+    # A project shipping .decode/skills gets it mounted READ-ONLY at /workspace/.decode/skills —
+    # the same skills-only carve-out modal's add_local_dir seeding draws (payload script paths must
+    # resolve inside the sandbox; sessions/MEMORY/logs stay out).
+    (tmp_path / ".decode" / "skills" / "demo").mkdir(parents=True)
+
+    args = DockerExecutor()._docker_run_args(tmp_path)
+
+    assert f"{tmp_path / '.decode/sandbox'}:{_workspace()}" in args  # the scratch mount
+    assert f"{tmp_path / '.decode/skills'}:{_workspace()}/.decode/skills:ro" in args
+    assert f"{tmp_path}:{_workspace()}" not in args  # the project tree itself is NEVER mounted
+
+
+def _fake_proc(mocker, *, stdout=b"", returncode=0):
+    """A fake asyncio subprocess: awaitable ``communicate`` + a ``returncode`` (no real process)."""
+    proc = mocker.MagicMock()
+    proc.communicate = mocker.AsyncMock(return_value=(stdout, b""))
+    proc.returncode = returncode
+    proc.kill = mocker.MagicMock()
+    proc.wait = mocker.AsyncMock()
+    return proc
+
+
+async def test_start_ensures_the_container_and_is_idempotent(mocker, tmp_path):
+    # The eager REPL warm-up (ADR-0011 §4): ``start()`` brings the keeper container up exactly like
+    # the first run() would — the SAME pinned ``docker run`` argv — caches the id, and a second
+    # ``start()`` spawns nothing (idempotent; the first run() after it starts nothing new either).
+    run_proc = _fake_proc(mocker, stdout=b"container123\n")
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc])
+    )
+    executor = DockerExecutor()
+
+    await executor.start(tmp_path)
+    await executor.start(tmp_path)  # idempotent: the cached id short-circuits
+
+    assert executor._container_id == "container123"
+    assert spawn.await_count == 1  # exactly one docker run — no second container
+    argv = spawn.await_args_list[0].args
+    assert argv[0] == "docker"
+    assert list(argv[1:]) == executor._docker_run_args(tmp_path.resolve())
+    assert (tmp_path / ".decode" / "sandbox").is_dir()  # the scratch mount source was pre-created
+
+
+async def test_ensure_container_trusts_the_ca_synchronously_on_the_proxy_path(mocker, tmp_path):
+    # The CA-trust race fix: on the proxy path _ensure_container runs ``docker exec <id>
+    # update-ca-certificates`` and WAITS for it before returning, so the first command already trusts
+    # the CA (no daemon — the docker run + docker exec are faked).
+    run_proc = _fake_proc(mocker, stdout=b"container123\n")
+    exec_proc = _fake_proc(mocker, stdout=b"updated\n")
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc, exec_proc])
+    )
+    executor = DockerExecutor(ca_cert_host_path=Path("/host/mitmproxy-ca-cert.pem"))
+
+    cid = await executor._ensure_container(tmp_path)
+
+    assert cid == "container123"
+    assert spawn.await_count == 2  # docker run, THEN docker exec update-ca-certificates
+    exec_argv = spawn.await_args_list[1].args
+    assert exec_argv[:4] == ("docker", "exec", "container123", "update-ca-certificates")
+
+
+async def test_ensure_container_runs_no_ca_step_off_the_proxy_path(mocker, tmp_path):
+    # Byte-identical non-proxy path: ONLY the docker run — no update-ca-certificates docker exec.
+    run_proc = _fake_proc(mocker, stdout=b"cid\n")
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc])
+    )
+    executor = DockerExecutor()  # no proxy wiring
+
+    await executor._ensure_container(tmp_path)
+
+    assert spawn.await_count == 1  # the docker run only — no CA step on the non-proxy path
+
+
+async def test_trust_proxy_ca_reaps_the_worker_and_raises_on_failure(mocker):
+    # A non-zero update-ca-certificates reaps the just-created worker (no leak) and raises, so run()'s
+    # infra handler renders it for the model rather than silently continuing without a trusted CA.
+    exec_proc = _fake_proc(mocker, stdout=b"boom\n", returncode=1)
+    mocker.patch("asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[exec_proc]))
+    reap = mocker.patch("decode.sandbox.docker_executor._run_docker_quiet", new=mocker.AsyncMock())
+    executor = DockerExecutor(ca_cert_host_path=Path("/host/ca.pem"))
+
+    with pytest.raises(RuntimeError, match="update-ca-certificates failed"):
+        await executor._trust_proxy_ca("cid123")
+
+    reap.assert_awaited_once()  # the worker was reaped, not leaked
+
+
+def test_docker_run_args_add_network_env_and_ca_mount_when_wired():
+    executor = DockerExecutor(
+        network="decode-sandbox-net-abc",
+        proxy_env={"http_proxy": "http://decode-proxy-abc:8080", "no_proxy": "localhost"},
+        ca_cert_host_path=Path("/host/certs/mitmproxy-ca-cert.pem"),
+    )
+
+    args = executor._docker_run_args(Path("/repo"))
+
+    # The base (scratch-mount) prefix is unchanged; proxy flags are additive and in a stable order.
+    assert args[:7] == [
+        "run",
+        "-d",
+        "--rm",
+        "-v",
+        f"/repo/.decode/sandbox:{_workspace()}",
+        "-w",
+        _workspace(),
+    ]
+    assert "--network" in args and args[args.index("--network") + 1] == "decode-sandbox-net-abc"
+    assert "-e" in args
+    assert "http_proxy=http://decode-proxy-abc:8080" in args
+    assert "no_proxy=localhost" in args
+    # The CA is bind-mounted read-only at the worker trust path.
+    assert f"/host/certs/mitmproxy-ca-cert.pem:{_WORKER_CA_PATH}:ro" in args
+    # The entry command stays a bare ``sleep infinity`` (the CA is trusted by a synchronous docker exec
+    # after create, NOT a PID-1 entry step — the fix for the first-command CA-trust race).
+    assert args[-3:] == [settings.sandbox_image, "sleep", "infinity"]
+
+
+def test_proxy_wiring_defaults_to_none_so_construction_stays_inert():
+    # A default DockerExecutor carries no proxy wiring — the select_executor path is unchanged.
+    executor = DockerExecutor()
+
+    assert executor._network is None
+    assert executor._proxy_env is None
+    assert executor._ca_cert_host_path is None
+
+
+def _workspace() -> str:
+    """The container-side workspace path the argv uses (kept in one place for the assertions above)."""
+    from decode.sandbox.docker_executor import _WORKSPACE
+
+    return _WORKSPACE
+
+
+# --- construction / teardown laziness (no subprocess without a run) ---------------------------
+
+
+async def test_construction_starts_no_container_or_shell(mocker):
+    spawn = mocker.patch("asyncio.create_subprocess_exec")
+
+    executor = DockerExecutor()
+
+    assert executor._container_id is None
+    assert executor._shell is None
+    spawn.assert_not_called()  # nothing runs until the first run()
+
+
+async def test_aclose_is_a_safe_noop_when_never_started(mocker):
+    spawn = mocker.patch("asyncio.create_subprocess_exec")
+    executor = DockerExecutor()
+
+    await executor.aclose()
+    await executor.aclose()  # double aclose must not raise
+
+    spawn.assert_not_called()  # no container was started, so none is torn down
+
+
+def test_read_loop_survives_a_module_import_without_docker():
+    # Importing the executor module (and constructing it) must not require docker — the whole point of
+    # the hermetic split. A trivial guard that the symbols above imported and are callable.
+    assert asyncio.iscoroutinefunction(DockerExecutor.run)
+    assert asyncio.iscoroutinefunction(DockerExecutor.aclose)
+
+
+# --- loop-independent teardown (the headline reap bug), proven with a real subprocess, no docker ------
+
+
+def _pid_alive(pid: int) -> bool:
+    """True while ``pid`` names a live process; False once it is gone (fully reaped, no zombie)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def _spawn_sleeper() -> asyncio.subprocess.Process:
+    """A real, loop-bound child that stands in for the docker-exec shell (own session → killpg reaches it).
+
+    Spawned with the same pipe + ``start_new_session`` shape ``_ensure_shell`` uses, so it exercises the
+    identical loop-bound transports + process-group teardown — the only difference is ``sleep`` instead of
+    ``docker exec`` (so the test needs no daemon).
+    """
+    return await asyncio.create_subprocess_exec(
+        "sleep",
+        "30",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+
+def test_aclose_reaps_a_loop_bound_shell_from_a_fresh_closed_loop():
+    # THE headline regression (task 074, ADR-0011 §4). The headless runtime reaps the executor on a FRESH
+    # event loop (``_reap_runtime_executor``) while the persistent shell subprocess was created on a kitaru
+    # per-call loop that has since CLOSED. The old aclose awaited the shell's loop-bound futures/transports
+    # there and raised ``RuntimeError: Event loop is closed`` — which escaped and left the container
+    # running (the leaked-container headline). This reproduces that exact two-loop bridge hermetically with
+    # a real ``sleep`` child (NO docker) and asserts aclose neither raises NOR leaves the process alive.
+    # A loop-agnostic ``AsyncMock`` (the round-1 spy) passes on the buggy code, so only a real loop-bound
+    # child guards this. ``_container_id`` stays None so only the loop-free shell teardown runs (no docker).
+    executor = DockerExecutor()
+
+    loop1 = asyncio.new_event_loop()
+    shell = loop1.run_until_complete(_spawn_sleeper())
+    pid = shell.pid
+    assert _pid_alive(pid)  # sanity: the child is running before teardown
+
+    executor._shell = shell
+    executor._shell_loop = loop1
+    executor._container_id = None  # exercise only the shell teardown path — no ``docker rm``
+    loop1.close()  # the per-call loop is gone: awaiting the shell's futures here would now raise
+
+    loop2 = asyncio.new_event_loop()
+    try:
+        loop2.run_until_complete(
+            executor.aclose()
+        )  # the buggy code raised "Event loop is closed" here
+    finally:
+        loop2.close()
+
+    assert not _pid_alive(pid)  # the child was killed loop-free — not leaked
+    assert executor._shell is None  # handles cleared so a double-close / later run is safe
+    assert executor._shell_loop is None
+
+
+async def test_aclose_cleanly_reaps_a_same_loop_shell():
+    # The interactive-exit branch (REPL path): when aclose runs on the SAME loop the shell was created on,
+    # it awaits a clean teardown (``_teardown_shell_clean`` — SIGTERM→SIGKILL, drain, close). Proven with a
+    # real child on the running pytest loop so both aclose branches (same-loop clean vs cross-loop
+    # loop-free) have a hermetic guard. ``_container_id`` stays None so no docker is needed.
+    executor = DockerExecutor()
+    shell = await _spawn_sleeper()
+    pid = shell.pid
+    assert _pid_alive(pid)
+
+    executor._shell = shell
+    executor._shell_loop = asyncio.get_running_loop()  # same loop aclose will run on
+    executor._container_id = None
+
+    await executor.aclose()
+
+    assert not _pid_alive(pid)  # cleanly killed + reaped, no leak
+    assert executor._shell is None
+    assert executor._shell_loop is None
+
+
+# --- daemon-death mid-session → a rendered failure, never a crash (the secondary bug) -----------------
+
+
+async def test_run_returns_a_rendered_failure_when_the_container_cannot_start(mocker):
+    # Regression (task 074 secondary): if the docker daemon goes away mid-session (Docker Desktop quit),
+    # ``docker run`` / ``docker exec`` fail and _ensure_container/_ensure_shell raise. run() must CATCH the
+    # known infra exceptions and return a rendered ExecResult (exit 125 + a daemon-lost note + the failure
+    # text on stderr) so the model reacts — never let the exception escape and crash the bash tool.
+    executor = DockerExecutor()
+    mocker.patch.object(
+        executor,
+        "_ensure_container",
+        side_effect=RuntimeError(
+            "docker run failed (exit 1): Cannot connect to the Docker daemon at "
+            "unix:///var/run/docker.sock. Is the docker daemon running?"
+        ),
+    )
+
+    result = await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+    assert (
+        result.exit_code == _DAEMON_LOST_EXIT
+    )  # 125 — docker's container-failed-to-run convention
+    assert result.timed_out is False
+    assert (
+        "Docker daemon became unreachable" in result.note
+    )  # the model is told the session was lost
+    assert (
+        "Cannot connect to the Docker daemon" in result.stderr
+    )  # the underlying failure is surfaced
+    assert (
+        executor._container_id is None
+    )  # the stale session is discarded so a later run re-attempts
+    assert executor._shell is None
+
+
+async def test_run_survives_a_missing_docker_binary(mocker):
+    # OSError / FileNotFoundError on spawn (the ``docker`` CLI itself is gone) is an infra failure too —
+    # caught on the same path and rendered, not raised. FileNotFoundError is an OSError subclass.
+    executor = DockerExecutor()
+    mocker.patch.object(executor, "_ensure_container", side_effect=FileNotFoundError("docker"))
+
+    result = await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+    assert result.exit_code == _DAEMON_LOST_EXIT
+    assert result.note  # the daemon-lost note is set (never an empty, silent failure)
+
+
+async def test_run_lets_an_unexpected_error_surface(mocker):
+    # The daemon-death catch is scoped to the KNOWN infra exceptions (RuntimeError / OSError) — a genuine
+    # bug (here a ValueError) must still surface as a crash, not be swallowed into a fake ExecResult that
+    # would hide the defect from the model and the logs.
+    executor = DockerExecutor()
+    mocker.patch.object(executor, "_ensure_container", side_effect=ValueError("a real bug"))
+
+    with pytest.raises(ValueError, match="a real bug"):
+        await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+
+# --- container-leak safety: a failed shell startup still reaps the container -------------------------
+
+
+async def test_run_force_removes_the_container_when_shell_startup_fails(mocker, tmp_path):
+    # Regression (PR #21 nit): _ensure_container brings the keeper container up (``sleep infinity``), but
+    # _ensure_shell THEN raises an OSError-family error (e.g. BrokenPipeError draining the ``exec 2>&1``
+    # startup). The old except handler nulled _container_id via _discard_session WITHOUT a ``docker rm -f``,
+    # so ``--rm`` (which only reaps when the container stops, and ``sleep infinity`` never does) left the
+    # still-running container orphaned. run() must force-remove that already-captured container id —
+    # loop-free, via the SAME ``docker rm -f`` path aclose uses — before discarding the session.
+    executor = DockerExecutor()
+    # A real _ensure_container run (faked ``docker run``) so self._container_id is genuinely captured.
+    run_proc = _fake_proc(mocker, stdout=b"container123\n")
+    mocker.patch("asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc]))
+    mocker.patch.object(
+        executor, "_ensure_shell", side_effect=BrokenPipeError("exec 2>&1 drain broke")
+    )
+    reap = mocker.patch("decode.sandbox.docker_executor._run_docker_quiet", new=mocker.AsyncMock())
+
+    result = await executor.run("echo hi", cwd=tmp_path, timeout_s=30.0)
+
+    # The container that came up is force-removed — not orphaned — via aclose's loop-free ``docker rm -f``.
+    reap.assert_awaited_once_with("rm", "-f", "container123")
+    assert result.exit_code == _DAEMON_LOST_EXIT  # still a rendered failure, never a crash
+    assert executor._container_id is None  # the session is discarded AFTER the reap
+    assert executor._shell is None
+
+
+async def test_run_removes_nothing_when_no_container_was_created(mocker):
+    # Guard the already-fine common daemon-down path (task-074): _ensure_container raises BEFORE any
+    # container id is captured, so there is nothing to remove — the leak fix's ``if _container_id is not
+    # None`` guard must skip ``docker rm -f`` entirely and add no new error to the rendered failure.
+    executor = DockerExecutor()
+    mocker.patch.object(
+        executor,
+        "_ensure_container",
+        side_effect=RuntimeError("Cannot connect to the Docker daemon"),
+    )
+    reap = mocker.patch("decode.sandbox.docker_executor._run_docker_quiet", new=mocker.AsyncMock())
+
+    result = await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+    reap.assert_not_awaited()  # no container id → nothing to remove
+    assert result.exit_code == _DAEMON_LOST_EXIT  # still the rendered daemon-lost failure
+    assert executor._container_id is None
+
+
+async def test_run_does_not_remove_the_container_on_a_successful_command(mocker):
+    # Guard the happy path: a normal run() reuses the live session container and must NOT force-remove it —
+    # the leak fix's ``docker rm -f`` lives only on the shell-startup failure path, never on success.
+    executor = DockerExecutor()
+    executor._container_id = "cid-live"  # container already up (reused this session)
+    executor._mounted_cwd = Path("/repo").resolve()  # matches cwd → _ensure_container early-returns
+    marker = "__DECODE_END_fixed__"
+    mocker.patch("decode.sandbox.docker_executor._make_marker", return_value=marker)
+    # A fake persistent shell: stdin swallows the payload, stdout emits output then the marker+$? line.
+    shell = _FakeShell(_FakeReader([b"hi\n", f"{marker} 0\n".encode()]))
+    shell.stdin = mocker.MagicMock()
+    shell.stdin.drain = mocker.AsyncMock()
+    mocker.patch.object(executor, "_ensure_shell", return_value=shell)
+    reap = mocker.patch("decode.sandbox.docker_executor._run_docker_quiet", new=mocker.AsyncMock())
+
+    result = await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+    assert result.exit_code == 0
+    assert result.stdout == "hi"
+    reap.assert_not_awaited()  # the container is reused, not removed
+    assert executor._container_id == "cid-live"  # session preserved

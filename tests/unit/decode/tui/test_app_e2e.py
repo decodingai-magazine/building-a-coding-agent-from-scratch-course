@@ -969,3 +969,236 @@ async def test_run_app_mode_plan_denies_a_write_without_asking(monkeypatch):
     ]
     assert returns, "the denial must reach the model as a tool result"
     assert any("plan mode" in r.lower() for r in returns)
+
+
+async def test_run_app_reaps_the_sandbox_executor_on_exit(monkeypatch):
+    """On exit, ``run_app`` reaps the session's sandbox executor via ``close_executor`` (ADR-0011 §4).
+
+    A fake executor with an ``aclose`` spy is injected at the ``bash`` seam; after ``/quit`` the real
+    exit path must ``await`` its ``aclose`` (next to the LSP shutdown + memory write-back) and still
+    print the clean-exit line — proving the sandbox teardown is wired into the interactive shutdown.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from decode.tools import bash as bash_mod
+
+    aclose = AsyncMock()
+    monkeypatch.setattr(bash_mod, "_EXECUTOR", SimpleNamespace(aclose=aclose))
+    monkeypatch.setattr(bash_mod, "_executor_selected", True)
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("what can you do?")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    aclose.assert_awaited_once()  # the sandbox executor was reaped on the exit path
+    assert "Decode - bye." in output  # exit still completes cleanly
+
+
+def _build_bash_agent(*, final_text: str) -> Agent[AgentDeps, str | DeferredToolRequests]:
+    """A real agent on a streaming ``FunctionModel`` whose first leg calls the REAL ``bash`` tool.
+
+    Mirrors :func:`_build_gated_agent`, but registers :func:`decode.tools.bash.bash` itself so the
+    approved call routes through the live executor seam (``_get_executor``) — the interactive
+    docker-mode path the sandbox e2e tests below exercise.
+    """
+    from decode.tools import bash as bash_mod
+
+    state = {"calls": 0}
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        state["calls"] += 1
+        if state["calls"] == 1:
+            yield {0: DeltaToolCall(name="bash", json_args='{"command": "echo sandboxed"}')}
+        else:
+            yield final_text
+
+    agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
+        FunctionModel(stream_function=stream_function),
+        deps_type=AgentDeps,
+        output_type=[str, DeferredToolRequests],
+    )
+    agent.tool(bash_mod.bash)
+    return agent
+
+
+async def test_run_app_docker_mode_warms_the_sandbox_at_launch_and_routes_bash(monkeypatch):
+    """docker mode: ``run_app`` warms the sandbox at launch, then an approved ``bash`` reuses it.
+
+    Closes the untested interactive+docker gap: the REPL must (a) show the ``sandbox:docker``
+    banner, (b) await the selected executor's ``start`` BEFORE any turn runs (the eager warm-up —
+    the container is up from launch, not invisibly mid-first-turn), (c) route the approved ``bash``
+    through the SAME warmed executor instance, and (d) reap it on ``/quit``. The executor is a fake
+    at the ``select_executor`` seam — no real daemon.
+    """
+    from unittest.mock import AsyncMock
+
+    from decode.tools import bash as bash_mod
+    from decode.tools.exec import ExecResult
+
+    monkeypatch.setattr(app_mod.settings, "sandbox_mode", "docker")
+    start = AsyncMock()
+    aclose = AsyncMock()
+    ran: list[str] = []
+
+    class _FakeSandboxExecutor:
+        async def start(self, cwd: Path) -> None:
+            await start(cwd)
+
+        async def run(self, command: str, *, cwd: Path, timeout_s: float) -> ExecResult:
+            ran.append(command)
+            return ExecResult("sandboxed-echo-out", "", 0, timed_out=False)
+
+        async def aclose(self) -> None:
+            await aclose()
+
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: _FakeSandboxExecutor())
+    bash_mod.reset_executor()
+    agent = _build_bash_agent(final_text="BASH-TURN-DONE")
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        await _wait_for(buf, "sandbox:docker")  # the banner names the active sandbox
+        assert start.await_count == 1  # warmed at launch, BEFORE any turn ran
+        send("run echo for me")
+        await _wait_for(buf, "allow this tool call?")
+        send("y")
+        await _wait_for(buf, "BASH-TURN-DONE")
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "starting docker sandbox" in output  # the progress line printed before the warm await
+    assert ran == ["echo sandboxed"]  # the approved bash routed through the warmed executor
+    assert "sandboxed-echo-out" in output  # and its result rendered
+    aclose.assert_awaited_once()  # /quit reaped the session sandbox
+
+
+async def test_run_app_docker_mode_degrades_to_lazy_when_the_warm_up_fails(monkeypatch):
+    """A failed warm-up renders one friendly line and the session still works (lazy fallback).
+
+    The degrade path: ``start`` raising must NOT kill the launch or reset the executor memo — the
+    banner still shows, the friendly retry line renders, and the first approved ``bash`` routes
+    through the same memoized executor (whose ``run`` works), proving the lazy fallback is intact.
+    """
+    from decode.tools import bash as bash_mod
+    from decode.tools.exec import ExecResult
+
+    monkeypatch.setattr(app_mod.settings, "sandbox_mode", "docker")
+    ran: list[str] = []
+
+    class _FailingStartExecutor:
+        async def start(self, cwd: Path) -> None:
+            raise RuntimeError("image pull failed")
+
+        async def run(self, command: str, *, cwd: Path, timeout_s: float) -> ExecResult:
+            ran.append(command)
+            return ExecResult("late-but-fine", "", 0, timed_out=False)
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: _FailingStartExecutor())
+    bash_mod.reset_executor()
+    agent = _build_bash_agent(final_text="TURN-STILL-WORKS")
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        await _wait_for(buf, "sandbox startup failed")
+        await _wait_for(buf, "sandbox:docker")  # the banner still renders after the failure
+        send("run echo for me")
+        await _wait_for(buf, "allow this tool call?")
+        send("y")
+        await _wait_for(buf, "TURN-STILL-WORKS")
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "will retry on the first bash command" in output  # the friendly degrade line
+    assert ran == ["echo sandboxed"]  # the SAME memoized executor served the turn lazily
+
+
+async def test_run_app_clear_wipes_the_history_and_summarizes_first(monkeypatch, sessions_dir):
+    """``/clear`` mid-session: summarize-before-wipe, the next turn starts fresh, the marker persists.
+
+    The full interactive wiring in one pass: (a) the PRE-clear history feeds the same memory
+    write-back the quit path runs (captured — no network), (b) the confirmation line renders,
+    (c) the next turn's model request carries NOTHING from before the clear (the model genuinely
+    starts fresh), (d) the session log gained a ``clear`` marker so ``--resume`` replays to the
+    post-clear state, and (e) the ``/quit`` write-back then sees ONLY the post-clear segment
+    (the wiped turns are never double-summarized).
+    """
+    import json
+
+    extract_calls: list[list[ModelMessage]] = []
+
+    async def fake_extract(messages, cwd):
+        extract_calls.append(list(messages))
+
+    monkeypatch.setattr(app_mod, "extract_on_exit", fake_extract)
+
+    captured: list[list[ModelMessage]] = []
+    replies = iter(["FIRST-TURN-REPLY", "SECOND-TURN-REPLY"])
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        captured.append(list(messages))
+        yield next(replies)
+
+    agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
+        FunctionModel(stream_function=stream_function),
+        deps_type=AgentDeps,
+        output_type=[str, DeferredToolRequests],
+    )
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("pre-clear-secret-prompt")
+        await _wait_for(buf, "FIRST-TURN-REPLY")
+        send("/clear")
+        await _wait_for(buf, "conversation cleared")
+        send("post-clear prompt")
+        await _wait_for(buf, "SECOND-TURN-REPLY")
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "Decode - conversation cleared." in output  # (b)
+    # (c) the post-clear turn's model request carries nothing from before the clear.
+    second_leg = captured[-1]
+    texts = [str(part.content) for message in second_leg for part in getattr(message, "parts", [])]
+    assert not any("pre-clear-secret-prompt" in t for t in texts)
+    assert any("post-clear prompt" in t for t in texts)
+    # (a)+(e) summarize-before-wipe: /clear saw the pre-clear segment; /quit only the post-clear one.
+    assert len(extract_calls) == 2
+    assert any("pre-clear-secret-prompt" in str(m) for m in extract_calls[0])
+    assert not any("pre-clear-secret-prompt" in str(m) for m in extract_calls[1])
+    # (d) the clear marker rode the append-only session log (resume honesty).
+    session_file = next(sessions_dir.glob("*.jsonl"))
+    types = [
+        json.loads(line)["type"]
+        for line in session_file.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert "clear" in types
+
+
+async def test_run_app_clear_on_an_empty_session_is_a_friendly_line(monkeypatch):
+    """``/clear`` with nothing said yet: one friendly line, no crash, the session stays usable."""
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/clear")
+        await _wait_for(buf, "nothing to clear")
+        send("what can you do?")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "Decode - nothing to clear yet." in output
+    assert _CHAT_REPLY in output  # the REPL kept working after the no-op clear

@@ -230,6 +230,37 @@ class Settings(BaseSettings):
     # secret-store config source, NOT the deferred sandbox Credential Proxy (header injection).
     runtime_secret_store_config: bool = False
 
+    # --- Sandboxing (ADR-0011) ---
+    # The ``bash`` execution boundary; settings only here — no executor readers yet (they land in
+    # tasks 072-075). ``sandbox_mode`` selects the ``CommandExecutor`` the ``bash`` ``run`` seam uses
+    # for the whole process (chosen once at startup, fixed for the session). The default ``none`` keeps
+    # today's ``LocalExecutor`` (host subprocess), so every existing ``.env``/test is byte-unchanged.
+    # The cli startup guard (task 071) exits with a friendly line — in both the REPL and the headless
+    # ``decode run``/``replay`` pre-flight — when the chosen backend is unavailable (docker daemon down
+    # / modal creds missing): presence, not correctness (matching the provider-key guards).
+    sandbox_mode: Literal["none", "docker", "modal"] = "none"
+    # The worker image: ``docker`` pulls it directly; ``modal`` maps it via
+    # ``modal.Image.from_registry(...)``. Must include ``bash``. The default is astral's uv variant
+    # of python-slim — python 3.12 + ``uv`` preinstalled — so BOTH sandboxes come preconfigured to
+    # run python via ``uv`` (skill payloads say ``uv run .decode/skills/<name>/scripts/…``, and a
+    # per-session ``pip install uv`` bootstrap would cost seconds on every launch). Read by 072/073.
+    sandbox_image: str = "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
+    # The HOST directory bind-mounted at the docker Worker's ``/workspace`` — the sandbox's writable
+    # scratch, cwd-relative like every ``.decode`` path (created on first use). The project tree is
+    # deliberately NOT mounted: model-chosen ``bash`` can only touch this scratch (plus the read-only
+    # ``skills_dir`` mount), while the file tools keep working on the real tree host-side. Read by 072.
+    sandbox_workspace_dir: Path = Path(".decode/sandbox")
+    # Max lifetime (seconds) of a REMOTE (modal) sandbox before Modal reaps it; docker's session
+    # container has no lifetime cap (it runs ``sleep infinity``). A non-positive value fails fast
+    # (Field gt=0). Read by 073.
+    sandbox_timeout_s: float = Field(600.0, gt=0)
+    # Enable the headless + docker-only Credential Proxy (ADR-0011 §6): a mitmproxy addon container that
+    # injects tool credentials AFTER a request leaves the worker, so the worker never holds a secret.
+    # Default ``False`` (opt-in). Read by 075.
+    sandbox_credential_proxy_enabled: bool = False
+    # The mitmproxy addon container image the Credential Proxy runs. Read by 075.
+    sandbox_proxy_image: str = "mitmproxy/mitmproxy"
+
     @classmethod
     def settings_customise_sources(
         cls,

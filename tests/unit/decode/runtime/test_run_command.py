@@ -489,3 +489,61 @@ def test_run_model_does_not_bypass_the_secret_store_guard(
     assert not isinstance(result.exception, (RuntimeError, ValidationError))
     assert "RUNTIME_SECRET_STORE_CONFIG" in result.stderr
     assert runtime_secret_name in result.stderr
+
+
+# --- task 071: the sandbox backend guard shares the `decode run` pre-flight (ADR-0011 §1) -----------
+# The same ``_sandbox_config_error`` the REPL uses is wired into ``_runtime_config_preflight``, so
+# ``decode run`` refuses an unavailable sandbox backend the same friendly way — one stderr line,
+# non-zero exit, before any flow is built. The probes are PATCHED (no real docker daemon / modal
+# creds); ``sandbox_mode`` is pinned ``none`` suite-wide (rootdir conftest), overridden per test here.
+
+
+def test_run_sandbox_docker_unreachable_is_a_friendly_line_no_flow(monkeypatch, _provider_ok):
+    """SANDBOX_MODE=docker + daemon unreachable → friendly stderr line, non-zero, no flow built."""
+    monkeypatch.setattr(cli_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(cli_mod, "_docker_daemon_reachable", lambda: False)
+    _no_flow_tripwires(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run", "list the files"])
+
+    assert result.exit_code != 0
+    assert "SANDBOX_MODE=docker" in result.stderr
+    assert "Docker daemon" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_run_sandbox_modal_missing_creds_is_a_friendly_line_no_flow(monkeypatch, _provider_ok):
+    """SANDBOX_MODE=modal + no creds → friendly stderr line, non-zero, no flow built, no modal import."""
+    monkeypatch.setattr(cli_mod.settings, "sandbox_mode", "modal")
+    monkeypatch.setattr(cli_mod, "_modal_credentials_present", lambda: False)
+    _no_flow_tripwires(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run", "list the files"])
+
+    assert result.exit_code != 0
+    assert "SANDBOX_MODE=modal" in result.stderr
+    assert "modal token set" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_run_sandbox_none_default_runs_no_probe_and_runs_the_flow(monkeypatch, _provider_ok):
+    """SANDBOX_MODE=none (default) → no docker/modal probe fires and the flow runs as before."""
+    calls = {"docker": 0, "modal": 0}
+
+    def _docker() -> bool:
+        calls["docker"] += 1
+        return False
+
+    def _modal() -> bool:
+        calls["modal"] += 1
+        return False
+
+    monkeypatch.setattr(cli_mod, "_docker_daemon_reachable", _docker)
+    monkeypatch.setattr(cli_mod, "_modal_credentials_present", _modal)
+    _patch_seam(monkeypatch, "the headless answer")
+
+    result = CliRunner().invoke(cli, ["run", "summarize the module"])
+
+    assert result.exit_code == 0
+    assert "the headless answer" in result.output
+    assert calls == {"docker": 0, "modal": 0}  # none mode probes nothing

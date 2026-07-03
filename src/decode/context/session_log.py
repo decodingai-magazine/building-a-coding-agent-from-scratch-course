@@ -46,11 +46,12 @@ logger = logging.getLogger(__name__)
 # The current header schema version: bump if the on-disk line format changes (replay can then
 # branch on it). M1 only ever writes version 1.
 _HEADER_VERSION = 1
-# Typed-line discriminators: line 0 is the session header, every later line a turn's messages
-# or a full-compaction checkpoint (ADR-0006 §1).
+# Typed-line discriminators: line 0 is the session header, every later line a turn's messages,
+# a full-compaction checkpoint (ADR-0006 §1), or a ``/clear`` marker (compaction-to-zero).
 _HEADER_TYPE = "session"
 _MESSAGES_TYPE = "messages"
 _COMPACTION_TYPE = "compaction"
+_CLEAR_TYPE = "clear"
 # Session files are JSONL.
 _SUFFIX = ".jsonl"
 # The timestamp format embedded in the filename: compact, UTC, and lexically sortable so the
@@ -160,6 +161,22 @@ class SessionLog:
             handle.write(json.dumps(entry) + "\n")
         logger.debug("appended compaction checkpoint (tail=%d) to %s", len(tail), self.path)
 
+    def append_clear(self) -> None:
+        """Append one typed ``clear`` marker line (append-only) — the ``/clear`` checkpoint.
+
+        ``/clear`` is compaction-to-zero: on replay :func:`load` **discards** everything
+        accumulated before this line and restarts the history from ``[]`` (the same
+        discard-and-restart path a ``compaction`` checkpoint uses, with nothing kept), so a
+        ``--resume`` after a ``/clear`` continues the post-clear conversation instead of
+        resurrecting the wiped turns. The file stays append-only — the wiped turns remain on
+        disk above the marker (full-fidelity history, like the compaction checkpoint's
+        superseded prefix), they just no longer replay.
+        """
+        entry = {"type": _CLEAR_TYPE}
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+        logger.debug("appended clear marker to %s", self.path)
+
 
 def load(path: Path) -> list[ModelMessage]:
     """Replay a session file into a flat ``message_history`` list (ADR-0002 §9, ADR-0006 §1).
@@ -184,6 +201,9 @@ def load(path: Path) -> list[ModelMessage]:
 
     history: list[ModelMessage] = []
     for line in path.read_text(encoding="utf-8").splitlines():
+        if _is_clear_line(line):
+            history = []  # /clear marker: compaction-to-zero — discard prior, restart empty
+            continue
         compacted = _parse_compaction_line(line)
         if compacted is not None:
             history = compacted  # checkpoint: discard prior, restart from [summary, *tail]
@@ -266,6 +286,23 @@ def _parse_messages_line(line: str) -> list[ModelMessage] | None:
     except Exception:
         logger.debug("skipping malformed messages entry in session log", exc_info=True)
         return None
+
+
+def _is_clear_line(line: str) -> bool:
+    """True for a well-formed ``clear`` marker line (the ``/clear`` checkpoint-to-zero).
+
+    Mirrors the sibling parsers' tolerance: blank lines, unparseable JSON, and every other typed
+    line yield ``False`` so :func:`load` falls through to the compaction / messages parse — never
+    raises.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    try:
+        obj: Any = json.loads(stripped)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(obj, dict) and obj.get("type") == _CLEAR_TYPE
 
 
 def _parse_compaction_line(line: str) -> list[ModelMessage] | None:

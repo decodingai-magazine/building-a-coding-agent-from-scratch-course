@@ -29,8 +29,9 @@ channel ``ask_user`` uses for its plan-approval HITL.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
@@ -162,13 +163,48 @@ def register_tools(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:
     visible tool set on the next turn (spike-confirmed against pydantic-ai 1.107).
     """
     for spec in TOOL_SPECS:
-        agent.tool(spec.func, prepare=_restrict_to_active_agent(spec.name))
+        agent.tool(spec.func, prepare=_prepare_for(spec.name))
     logger.debug("registered %d tools: %s", len(TOOL_SPECS), [s.name for s in TOOL_SPECS])
+
+
+def _prepare_for(
+    tool_name: str,
+) -> Callable[[RunContext[AgentDeps], ToolDefinition], Awaitable[ToolDefinition | None]]:
+    """Build the ``prepare=`` callback for ``tool_name`` — active-agent restriction, plus bash's description.
+
+    Every tool gets :func:`_restrict_to_active_agent` (hide the tool when the active agent omits it).
+    ``bash`` additionally gets its **mode-specific description** (ADR-0011 §4): after the restriction
+    keeps it visible, the description is composed for the active ``SANDBOX_MODE`` via
+    :func:`decode.tools.bash.bash_description`. ``none`` mode is a no-op — ``bash_description`` returns
+    the base unchanged, so the original :class:`ToolDefinition` is returned untouched (byte-identical to
+    before this task). ``docker`` / ``modal`` return a :func:`dataclasses.replace` copy carrying the
+    appended sandbox-semantics paragraph. Verified on pydantic-ai-slim 1.95: a ``prepare`` callback that
+    returns a modified ``ToolDefinition`` takes effect on the model-facing schema, and the ``tool_def``
+    is rebuilt fresh per run (no cross-run accumulation), so composing from ``tool_def.description`` is
+    safe. ``replace`` (not in-place mutation) keeps the passed definition untouched.
+    """
+    restrict = _restrict_to_active_agent(tool_name)
+    if tool_name != bash_module.BASH_TOOL_NAME:
+        return restrict
+
+    async def prepare(
+        ctx: RunContext[AgentDeps], tool_def: ToolDefinition
+    ) -> ToolDefinition | None:
+        prepared = await restrict(ctx, tool_def)
+        if prepared is None:
+            return None
+        base = prepared.description or ""
+        described = bash_module.bash_description(base)
+        if described == base:
+            return prepared  # none mode: no change → byte-identical (untouched definition)
+        return dataclasses.replace(prepared, description=described)
+
+    return prepare
 
 
 def _restrict_to_active_agent(
     tool_name: str,
-) -> Callable[[RunContext[AgentDeps], ToolDefinition], object]:
+) -> Callable[[RunContext[AgentDeps], ToolDefinition], Awaitable[ToolDefinition | None]]:
     """Build the per-tool ``prepare=`` callback hiding ``tool_name`` when the agent disallows it.
 
     Pydantic AI 1.107's per-tool ``prepare`` is

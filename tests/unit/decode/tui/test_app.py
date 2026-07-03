@@ -167,6 +167,27 @@ def test_footer_hint_mentions_compact():
     assert "/compact" in hint
 
 
+def test_is_clear_command_matches_slash_clear():
+    assert app.is_clear_command("/clear") is True
+
+
+def test_is_clear_command_ignores_surrounding_whitespace():
+    assert app.is_clear_command("  /clear  ") is True
+
+
+def test_is_clear_command_is_false_for_other_input():
+    assert app.is_clear_command("/clearx") is False
+    assert app.is_clear_command("clear") is False
+    assert app.is_clear_command("/compact") is False
+    assert app.is_clear_command("") is False
+
+
+def test_footer_hint_mentions_clear():
+    hint = app.footer_hint("build", "default")
+
+    assert "/clear" in hint
+
+
 def test_footer_hint_includes_the_active_agent_and_mode():
     # ADR-0003 §9: the footer shows the live agent + mode so the user always knows the state.
     hint = app.footer_hint("plan", "edit")
@@ -181,6 +202,24 @@ def test_footer_hint_mentions_the_mode_cycle_and_slash_commands():
     assert "Shift+Tab" in hint
     assert "/agent" in hint
     assert "/mode" in hint
+
+
+def test_startup_banner_none_is_byte_identical_to_the_pre_sandbox_line():
+    # The plain REPL's banner must not change when sandboxing is off (ADR-0011 §1 opt-in promise).
+    banner = app.startup_banner("gemini", "gemini-2.5-flash", "none")
+
+    assert banner == "Decode - gemini:gemini-2.5-flash - type a line; /quit exits."
+    assert "sandbox" not in banner
+
+
+def test_startup_banner_names_an_active_sandbox_mode():
+    # docker/modal sessions surface the mode at launch — the "is the sandbox even on?" signal.
+    banner = app.startup_banner("gemini", "gemini-2.5-flash", "docker")
+
+    assert banner == (
+        "Decode - gemini:gemini-2.5-flash - sandbox:docker - type a line; /quit exits."
+    )
+    assert "sandbox:modal" in app.startup_banner("gemini", "g", "modal")
 
 
 def test_input_intent_enum_has_steer_followup_and_abort():
@@ -770,6 +809,75 @@ def test_compact_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path
 
     assert "compact" in load_skills(tmp_path)  # still reachable via the skill dispatcher
     assert app.is_compact_command("/compact") is True  # the loop's /compact branch matches first
+
+
+# --- the /clear command (compaction-to-zero; summarize-before-wipe) ---------------------------
+
+
+async def test_handle_clear_command_idle_summarizes_then_wipes_and_confirms(mocker, tmp_path):
+    # Idle + history: the PRE-clear history feeds the same MEMORY.md write-back the quit path
+    # runs, THEN handler.clear() wipes, THEN one confirmation line renders — in that order.
+    extract = mocker.patch.object(app, "extract_on_exit", mocker.AsyncMock())
+    handler = mocker.Mock()
+    history = [object()]
+    handler.message_history = history
+    runner = mocker.Mock()
+    runner.phase = app.Phase.IDLE
+    lines: list[str] = []
+
+    await app._handle_clear_command(handler, runner, cwd=tmp_path, emit=lines.append)
+
+    extract.assert_awaited_once_with(history, tmp_path)  # summarize-before-wipe, quit-path parity
+    handler.clear.assert_called_once_with()
+    assert lines == ["Decode - conversation cleared."]
+
+
+async def test_handle_clear_command_idle_empty_renders_nothing_to_clear(mocker, tmp_path):
+    extract = mocker.patch.object(app, "extract_on_exit", mocker.AsyncMock())
+    handler = mocker.Mock()
+    handler.message_history = []
+    runner = mocker.Mock()
+    runner.phase = app.Phase.IDLE
+    lines: list[str] = []
+
+    await app._handle_clear_command(handler, runner, cwd=tmp_path, emit=lines.append)
+
+    extract.assert_not_awaited()  # nothing to summarize
+    handler.clear.assert_not_called()  # nothing to wipe
+    assert lines == ["Decode - nothing to clear yet."]
+
+
+@pytest.mark.parametrize("phase", [app.Phase.DISPATCHING, app.Phase.RUNNING])
+async def test_handle_clear_command_busy_renders_busy_and_never_clears(mocker, tmp_path, phase):
+    # Never wipe mid-turn: the handler owns the live message_history the running leg mutates.
+    extract = mocker.patch.object(app, "extract_on_exit", mocker.AsyncMock())
+    handler = mocker.Mock()
+    runner = mocker.Mock()
+    runner.phase = phase
+    lines: list[str] = []
+
+    await app._handle_clear_command(handler, runner, cwd=tmp_path, emit=lines.append)
+
+    handler.clear.assert_not_called()
+    extract.assert_not_awaited()
+    assert lines == ["Decode - busy; try /clear again once the turn finishes."]
+
+
+def test_clear_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
+    # A project skill named `clear` stays reachable via the dispatcher, but `/clear` never reaches
+    # the skill branch — the loop matches is_clear_command first (precedence, like /compact).
+    from decode.skills.loader import load_skills
+
+    _write_skill(tmp_path / ".decode" / "skills", "clear")
+
+    assert "clear" in load_skills(tmp_path)  # still reachable via the skill dispatcher
+    assert app.is_clear_command("/clear") is True  # the loop's /clear branch matches first
+
+
+def test_slash_completer_includes_clear(tmp_path):
+    completer = app.SlashCompleter(tmp_path)
+
+    assert "/clear" in completer._meta  # /clear autocompletes alongside the other built-ins
 
 
 # --- the /<skill-name> resource trailer (ADR-0004 §1,§5; task 033) ----------------------------
