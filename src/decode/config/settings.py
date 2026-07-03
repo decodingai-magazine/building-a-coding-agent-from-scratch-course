@@ -240,8 +240,11 @@ class Settings(BaseSettings):
     # / modal creds missing): presence, not correctness (matching the provider-key guards).
     sandbox_mode: Literal["none", "docker", "modal"] = "none"
     # The worker image: ``docker`` pulls it directly; ``modal`` maps it via
-    # ``modal.Image.from_registry(...)``. Must include ``bash`` (the stock default does). Read by 072/073.
-    sandbox_image: str = "python:3.12-slim"
+    # ``modal.Image.from_registry(...)``. Must include ``bash``. The default is astral's uv variant
+    # of python-slim — python 3.12 + ``uv`` preinstalled — so BOTH sandboxes come preconfigured to
+    # run python via ``uv`` (skill payloads say ``uv run .decode/skills/<name>/scripts/…``, and a
+    # per-session ``pip install uv`` bootstrap would cost seconds on every launch). Read by 072/073.
+    sandbox_image: str = "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
     # The HOST directory bind-mounted at the docker Worker's ``/workspace`` — the sandbox's writable
     # scratch, cwd-relative like every ``.decode`` path (created on first use). The project tree is
     # deliberately NOT mounted: model-chosen ``bash`` can only touch this scratch (plus the read-only

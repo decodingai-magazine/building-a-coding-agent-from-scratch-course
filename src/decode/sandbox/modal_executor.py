@@ -21,7 +21,7 @@ the event loop).
 ``App.lookup("decode-sandbox", create_if_missing=True)`` →
 ``Sandbox.create(app=…, image=Image.from_registry(settings.sandbox_image),
 timeout=int(settings.sandbox_timeout_s))``, then a one-shot ``mkdir -p /workspace`` (the stock
-``python:3.12-slim`` image has no ``/workspace``, so the per-command ``workdir`` needs it created
+``ghcr.io/astral-sh/uv:python3.12-bookworm-slim`` image has no ``/workspace``, so the per-command ``workdir`` needs it created
 once). Every later command reuses that sandbox **while it is live**: the modal ``timeout`` is the
 sandbox's max *lifetime* from create, so a long session can outlive it — :meth:`_ensure_sandbox`
 probes ``poll()`` and transparently replaces a remotely-ended sandbox with a fresh one (re-seeded),
@@ -214,7 +214,7 @@ class ModalExecutor:
         payloads hand the model resolve inside the remote ``workdir``. ONLY the skills are seeded —
         sessions / MEMORY.md / logs stay absent (the ``.gitignore`` boundary; the local tree is
         still never synced, ADR-0011 §3). ``cwd=None`` (direct/test callers) and a missing skills
-        dir both skip seeding. The stock ``python:3.12-slim`` image has no ``/workspace``, so it is
+        dir both skip seeding. The stock ``ghcr.io/astral-sh/uv:python3.12-bookworm-slim`` image has no ``/workspace``, so it is
         created once before any command runs against it as its ``workdir``.
         """
         if self._sandbox is not None:
@@ -247,8 +247,11 @@ class ModalExecutor:
                 _WORKSPACE,
                 settings.skills_dir.as_posix(),
             )
+        # An explicit long-lived entrypoint (the docker keeper's exact shape): without it modal runs
+        # the image's own CMD, and an image whose CMD exits immediately — the default astral uv image
+        # ships ``Cmd=[uv]``, which prints help and quits — would take the whole sandbox down with it.
         sandbox = await modal.Sandbox.create.aio(
-            app=app, image=image, timeout=int(settings.sandbox_timeout_s)
+            "sleep", "infinity", app=app, image=image, timeout=int(settings.sandbox_timeout_s)
         )
         logger.info("[sandbox] modal create %s image=%s", sandbox.object_id, settings.sandbox_image)
         # Ensure the scratch workspace exists before any command uses it as ``workdir``.

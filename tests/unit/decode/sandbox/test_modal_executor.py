@@ -202,7 +202,7 @@ async def test_ensure_sandbox_bootstraps_the_workspace_directory(fake_modal, san
 
     await executor.run("echo hi", cwd=None, timeout_s=30.0)  # type: ignore[arg-type]
 
-    # python:3.12-slim has no /workspace; the executor mkdir -p's it once before any command.
+    # ghcr.io/astral-sh/uv:python3.12-bookworm-slim has no /workspace; the executor mkdir -p's it once before any command.
     assert sandbox.exec_calls[0][0] == ("mkdir", "-p", "/workspace")
 
 
@@ -212,8 +212,15 @@ async def test_create_uses_the_configured_image_and_lifetime(fake_modal, sandbox
     await executor.run("echo hi", cwd=None, timeout_s=30.0)  # type: ignore[arg-type]
 
     assert fake_modal["lookup"].calls[0] == (("decode-sandbox",), {"create_if_missing": True})
-    assert fake_modal["from_registry"].calls[0] == (("python:3.12-slim",), {})
-    _, create_kwargs = fake_modal["create"].calls[0]
+    assert fake_modal["from_registry"].calls[0] == (
+        ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim",),
+        {},
+    )
+    create_args, create_kwargs = fake_modal["create"].calls[0]
+    # The explicit long-lived entrypoint (the docker keeper's shape): without it modal runs the
+    # image's own CMD — the astral uv default (``Cmd=[uv]``) prints help and exits, killing the
+    # sandbox moments after create.
+    assert create_args == ("sleep", "infinity")
     assert create_kwargs["app"] == "app-obj"
     assert create_kwargs["image"] == "image-obj"
     assert create_kwargs["timeout"] == 600  # int(settings.sandbox_timeout_s) default
@@ -494,7 +501,7 @@ async def test_logs_create_command_and_terminate(fake_modal, sandbox, caplog):
 
     text = caplog.text
     assert f"[sandbox] modal create {sandbox.object_id}" in text  # id on create (INFO)
-    assert "image=python:3.12-slim" in text  # image on create
+    assert "image=ghcr.io/astral-sh/uv:python3.12-bookworm-slim" in text  # image on create
     assert "[sandbox] $ echo observ" in text  # the command (DEBUG)
     assert "exit=0" in text
     assert "bytes=" in text  # byte count, never the output itself

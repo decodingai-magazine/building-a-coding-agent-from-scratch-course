@@ -427,7 +427,7 @@ def test_sandbox_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     s = Settings(_env_file=None)
     assert s.sandbox_mode == "none"
-    assert s.sandbox_image == "python:3.12-slim"
+    assert s.sandbox_image == "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
     assert s.sandbox_timeout_s == 600.0
     assert s.sandbox_credential_proxy_enabled is False
     assert s.sandbox_proxy_image == "mitmproxy/mitmproxy"

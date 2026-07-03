@@ -97,9 +97,15 @@ def _close_lingering_event_loops() -> None:
 
 
 def _sandbox_container_ids() -> set[str]:
-    """The ids of every ``python:3.12-slim`` container the daemon lists (decode's worker image)."""
+    """The ids of every ``ghcr.io/astral-sh/uv:python3.12-bookworm-slim`` container the daemon lists (decode's worker image)."""
     result = subprocess.run(
-        ["docker", "ps", "-aq", "--filter", "ancestor=python:3.12-slim"],
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            "ancestor=ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
+        ],
         capture_output=True,
         text=True,
         timeout=10.0,

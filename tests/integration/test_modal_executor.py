@@ -72,7 +72,7 @@ async def test_run_echo_round_trips_and_logs_create_and_command(
     sandbox_id = executor._sandbox.object_id
     text = caplog.text
     assert f"[sandbox] modal create {sandbox_id}" in text  # id on create (INFO)
-    assert "image=python:3.12-slim" in text  # image on create
+    assert "image=ghcr.io/astral-sh/uv:python3.12-bookworm-slim" in text  # image on create
     assert "[sandbox] $ echo hi" in text  # the command (DEBUG)
     assert "exit=0" in text
     assert "bytes=" in text  # byte count, never the output itself

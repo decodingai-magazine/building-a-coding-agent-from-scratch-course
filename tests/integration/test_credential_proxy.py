@@ -49,7 +49,7 @@ _INJECTED_HEADER = "X-Decode-Proxy-Auth"
 _UPSTREAM_ALIAS = "upstream.local"
 
 # A stub upstream that echoes every request header back in the response body, so the worker can prove
-# which headers actually ARRIVED. Stdlib only (runs in ``python:3.12-slim``); binds port 80.
+# which headers actually ARRIVED. Stdlib only (runs in ``ghcr.io/astral-sh/uv:python3.12-bookworm-slim``); binds port 80.
 _UPSTREAM_SERVER = (
     "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
     "class H(BaseHTTPRequestHandler):\n"
@@ -127,7 +127,7 @@ def _start_upstream(network: str) -> str:
             network,
             "--network-alias",
             _UPSTREAM_ALIAS,
-            "python:3.12-slim",
+            "ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
             "python3",
             "-c",
             _UPSTREAM_SERVER,

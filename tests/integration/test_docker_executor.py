@@ -206,7 +206,7 @@ async def test_observability_logs_container_lifecycle_and_each_command(
     text = caplog.text
     # Container start: id + image at INFO.
     assert f"[sandbox] docker start {container_id}" in text
-    assert "image=python:3.12-slim" in text
+    assert "image=ghcr.io/astral-sh/uv:python3.12-bookworm-slim" in text
     # Per command: the command, its exit code, and the byte count at DEBUG (never the output itself).
     assert "[sandbox] $ echo observ" in text
     assert "exit=0" in text

@@ -740,6 +740,12 @@ async def test_real_docker_persistent_shell_contract(
             no_tree = await executor.run("ls pyproject.toml", cwd=tmp_path, timeout_s=30.0)
             assert no_tree.exit_code != 0  # the project tree is out of bash's reach
 
+            # 0c. Preconfigured tooling: the default image ships ``uv``, so skill scripts run via
+            #     ``uv run …`` with no per-session bootstrap.
+            uv_probe = await executor.run("uv --version", cwd=tmp_path, timeout_s=30.0)
+            assert uv_probe.exit_code == 0
+            assert uv_probe.stdout.startswith("uv ")
+
             # 1. Persistent shell: state written in one run() survives into the next.
             await executor.run("export CAP=persisted && cd /tmp", cwd=tmp_path, timeout_s=30.0)
             persisted = await executor.run("echo $CAP && pwd", cwd=tmp_path, timeout_s=30.0)
@@ -766,7 +772,7 @@ async def test_real_docker_persistent_shell_contract(
         # 4. Observability: container start (id + image) and each command's exit + byte count.
         text = caplog.text
         assert f"[sandbox] docker start {container_id}" in text
-        assert "image=python:3.12-slim" in text
+        assert "image=ghcr.io/astral-sh/uv:python3.12-bookworm-slim" in text
         assert "exit=0" in text
         assert "bytes=" in text
         assert f"[sandbox] docker stop {container_id}" in text
@@ -817,6 +823,12 @@ async def test_real_modal_remote_scratch_contract(tmp_path: Path) -> None:
         assert host_file.exit_code != 0
         assert host_file.timed_out is False
 
+        # 2c. Preconfigured tooling: the default image ships ``uv``, so skill scripts run via
+        #     ``uv run …`` remotely with no per-session bootstrap.
+        uv_probe = await executor.run("uv --version", cwd=project, timeout_s=_MODAL_TIMEOUT_S)
+        assert uv_probe.exit_code == 0
+        assert uv_probe.stdout.startswith("uv ")
+
         # 3. A per-exec timeout kills the command but leaves the sandbox (and its fs) alive.
         timed = await executor.run("sleep 100", cwd=project, timeout_s=1.0)
         assert timed.timed_out is True
@@ -838,7 +850,7 @@ _PROXY_HEADER = "X-Decode-Proxy-Auth"
 _PROXY_UPSTREAM_ALIAS = "upstream.local"
 
 # A stub upstream that echoes every request header back in the body, so the worker can prove which
-# headers actually ARRIVED. Stdlib only (runs in ``python:3.12-slim``); binds port 80.
+# headers actually ARRIVED. Stdlib only (runs in ``ghcr.io/astral-sh/uv:python3.12-bookworm-slim``); binds port 80.
 _UPSTREAM_SERVER = (
     "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
     "class H(BaseHTTPRequestHandler):\n"
@@ -888,7 +900,7 @@ def _start_upstream(network: str) -> str:
             network,
             "--network-alias",
             _PROXY_UPSTREAM_ALIAS,
-            "python:3.12-slim",
+            "ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
             "python3",
             "-c",
             _UPSTREAM_SERVER,

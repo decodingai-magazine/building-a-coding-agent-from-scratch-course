@@ -133,7 +133,7 @@ reach the model or the sandbox payload** (AGENTS.md). This ADR is groomed into t
    credential claim (worker never holds a token) holds regardless.
 
    - **Worker CA trust — stock image + CA-mount (task 075).** `SANDBOX_IMAGE` defaults to a stock
-     `python:3.12-slim` (ca-certificates present, runs as root), so the no-proxy case needs no custom
+     `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` (ca-certificates present, runs as root), so the no-proxy case needs no custom
      image. For the proxy path the worker must trust the mitmproxy CA: decode **mounts the proxy's
      generated CA into the worker and runs `update-ca-certificates` at container start** (rather than
      shipping an in-repo `sandbox.Dockerfile`). The outbound integration probe uses **python/urllib**,
@@ -203,10 +203,15 @@ already runs gVisor underneath. This is a direct dividend of the CLI-over-SDK ch
   the model-key path for this reason. Unchanged.
 - **stock image + CA-mount vs an in-repo `sandbox.Dockerfile` — chose stock + CA-mount.** The canonical
   example ships its own tiny image partly for CA trust + curl. decode keeps `SANDBOX_IMAGE` a stock
-  `python:3.12-slim` and, on the proxy path only, mounts the mitmproxy CA + runs
+  `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` and, on the proxy path only, mounts the mitmproxy CA + runs
   `update-ca-certificates` at container start (worker is root; slim has ca-certificates). Integration
   probe uses python/urllib (no curl in slim). An in-repo Dockerfile stays the escape hatch if the mount
-  approach proves brittle.
+  approach proves brittle. *Amended (post-review):* the default moved from `python:3.12-slim` to
+  astral's `uv` variant of the same slim base — python 3.12 + `uv` preinstalled — so BOTH sandboxes
+  come **preconfigured to run python via `uv`** (skill payloads instruct `uv run
+  .decode/skills/<name>/scripts/…` inside the sandbox); still a stock public image (docker pulls it,
+  modal `from_registry`s it), rejected alternative: a per-session `pip install uv` bootstrap (seconds
+  of latency on every launch, per backend).
 - **Auto-allow sandboxed bash — future work.** The sandbox is defense-in-depth *beneath* the unchanged
   permission gate; treating "in a sandbox" as auto-approval is deferred.
 - **Hard egress lockdown — future work.** Cooperative `http_proxy`/CA is the shipped ceiling

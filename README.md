@@ -332,7 +332,7 @@ Those account tokens (`modal token set`, i.e. `MODAL_TOKEN_ID` / `MODAL_TOKEN_SE
 Tune it in `.env` — every setting is optional with a safe default:
 
 - `SANDBOX_MODE` (default `none`) — `none` / `docker` / `modal`.
-- `SANDBOX_IMAGE` (default `python:3.12-slim`) — the **Worker** image (`docker` pulls it; `modal` maps it via `Image.from_registry`). Must include `bash`.
+- `SANDBOX_IMAGE` (default `ghcr.io/astral-sh/uv:python3.12-bookworm-slim`) — the **Worker** image (`docker` pulls it; `modal` maps it via `Image.from_registry`). Must include `bash`; the default is astral's `uv` variant of python-slim, so both sandboxes come **preconfigured with `uv`** and skill scripts run via `uv run` out of the box.
 - `SANDBOX_TIMEOUT_S` (default `600.0`) — max lifetime of a **remote** (modal) Sandbox before Modal reaps it (docker's session container has no lifetime cap).
 
 ### Isolation honesty
