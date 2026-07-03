@@ -250,6 +250,12 @@ class Settings(BaseSettings):
     # deliberately NOT mounted: model-chosen ``bash`` can only touch this scratch (plus the read-only
     # ``skills_dir`` mount), while the file tools keep working on the real tree host-side. Read by 072.
     sandbox_workspace_dir: Path = Path(".decode/sandbox")
+    # The repo host-side cloned into the Workspace at its committed HEAD on launch (ADR-0012 §3): a
+    # URL or a local path, using the user's ambient git creds; empty (the default) → an empty
+    # Workspace. The ``--repo`` CLI flag overrides it and ``--local`` picks a fast local clone (task
+    # 082). Consumed only in a sandbox mode — ``--repo``/``SANDBOX_REPO`` with ``SANDBOX_MODE=none`` is
+    # a friendly startup error (task 082). ``workspace.prepare_workspace`` does the clone; no reader yet.
+    sandbox_repo: str = ""
     # Max lifetime (seconds) of a REMOTE (modal) sandbox before Modal reaps it; docker's session
     # container has no lifetime cap (it runs ``sleep infinity``). A non-positive value fails fast
     # (Field gt=0). Read by 073.
