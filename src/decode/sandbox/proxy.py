@@ -13,9 +13,9 @@ them). It lets a sandboxed **Worker** make authenticated tool calls while holdin
 * :class:`DockerCredentialProxy` — the **topology**: a ``mitmproxy/mitmproxy`` container running the
   mounted :mod:`decode.sandbox.proxy_addon` on a per-run docker network, holding the credential map in
   its own env and writing its CA to a host-shared dir. The worker (a proxy-wired
-  :class:`~decode.sandbox.docker_executor.DockerExecutor`) is pointed at it via ``http_proxy`` /
-  ``https_proxy`` and trusts its CA, so the addon injects the matching host's headers **after** a
-  request leaves the token-free worker.
+  ``SandboxExecutor(DockerBackend(...))``) is pointed at it via ``http_proxy`` / ``https_proxy`` and
+  trusts its CA, so the addon injects the matching host's headers **after** a request leaves the
+  token-free worker.
 
 **Built only inside the headless flow.** :func:`decode.runtime.flow._sandbox_proxy` imports this
 module lazily, only when ``sandbox_mode == "docker"`` **and** ``sandbox_credential_proxy_enabled``, so
@@ -164,7 +164,7 @@ class DockerCredentialProxy:
 
     Uniquely-named per instance (a uuid suffix), so concurrent headless runs never collide on the
     network / container name. Access is CLI-only (no docker SDK), mirroring
-    :class:`~decode.sandbox.docker_executor.DockerExecutor`.
+    :class:`~decode.sandbox.docker_backend.DockerBackend`.
     """
 
     def __init__(self, credential_map: dict[str, dict[str, str]]) -> None:

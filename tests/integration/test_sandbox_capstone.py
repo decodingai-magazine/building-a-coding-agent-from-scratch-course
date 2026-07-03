@@ -14,8 +14,9 @@ change to ``bash``'s own logic:
 
 * ``none`` — the host :class:`~decode.tools.exec.LocalExecutor` (a subprocess), the default,
   **byte-identical** to M1;
-* ``docker`` — one session-persistent local container driving a persistent bash shell over the
-  bind-mounted cwd (:class:`~decode.sandbox.docker_executor.DockerExecutor`, ``cd`` / ``export`` persist);
+* ``docker`` — one session-persistent local container, a **fresh** ``docker exec`` per call over the
+  bind-mounted Workspace (``SandboxExecutor(DockerBackend())``, ADR-0012 §2 — ``cd`` / ``export`` do NOT
+  persist, but the filesystem does);
 * ``modal`` — one session-persistent **remote** empty-scratch ``modal.Sandbox``
   (:class:`~decode.sandbox.modal_executor.ModalExecutor`, no local tree).
 
@@ -45,9 +46,9 @@ Like the M1 capstone it swaps only the boundaries; everything structural is real
 
 **Part 2 — the skipif-guarded real-infra smokes.** Each SKIPS (never fails) when its infra is absent,
 using the **same** predicates as the executors' own integration tests (a ``docker info`` probe; the
-``modal`` credential presence check): a real :class:`~decode.sandbox.docker_executor.DockerExecutor`
-persistent-shell round-trip, a real :class:`~decode.sandbox.modal_executor.ModalExecutor` remote-scratch
-round-trip, and the real docker Credential-Proxy boundary (an authenticated outbound call arrives with the
+``modal`` credential presence check): a real ``SandboxExecutor(DockerBackend())`` fresh-exec round-trip,
+a real :class:`~decode.sandbox.modal_executor.ModalExecutor` remote-scratch round-trip, and the real
+docker Credential-Proxy boundary (an authenticated outbound call arrives with the
 injected header while the worker env holds no secret). Each tears its container / sandbox / network down
 in a ``finally`` so the suite is hermetic under ``filterwarnings=["error"]`` and leaves no infra litter.
 """
@@ -78,7 +79,8 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import TurnContext
 from decode.permissions.gate import PermissionGate
-from decode.sandbox.docker_executor import DockerExecutor
+from decode.sandbox.docker_backend import DockerBackend
+from decode.sandbox.executor import SandboxExecutor
 from decode.sandbox.modal_executor import ModalExecutor
 from decode.sandbox.proxy import (
     DEFAULT_PROXY_RULES,
@@ -257,16 +259,17 @@ async def test_none_mode_command_round_trips_the_run_seam_and_renders(tmp_path: 
 async def test_execresult_note_surfaces_through_bash_on_a_simulated_timeout(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A sandbox executor's out-of-band ``note`` (the docker timeout shell-reset) reaches the model.
+    """A sandbox executor's out-of-band ``note`` reaches the model through ``bash`` (ADR-0011 §2,3).
 
-    ``docker`` mode with a stubbed executor that returns ``timed_out=True`` + a shell-reset ``note`` (the
-    real :class:`~decode.sandbox.docker_executor.DockerExecutor` timeout contract, ADR-0011 §2, without a
-    daemon): the tool must flag the timeout AND append the note, so the model learns its shell state was
-    reset — state the command's own output would never reveal.
+    ``docker`` mode with a stubbed executor that returns ``timed_out=True`` + a ``note`` (the generic
+    note-plumbing every executor shares — e.g. modal's filesystem-reset notice, ADR-0011 §3, without a
+    daemon): the tool must flag the timeout AND append the note, so the model learns out-of-band state it
+    would never see from the command's own output. (Under ADR-0012 fresh-exec docker no longer sets a
+    reset note on timeout — only the command dies — but the plumbing this pins is backend-agnostic.)
     """
     reset_note = (
-        "Note: the command exceeded its timeout, so the sandbox shell was killed and restarted. Its "
-        "working directory and environment were reset."
+        "Note: the remote sandbox's lifetime expired and a fresh one was created — its filesystem was "
+        "reset, so files created by earlier calls are gone."
     )
     stub = _RecordingExecutor(
         ExecResult(stdout="partial", stderr="", exit_code=-9, timed_out=True, note=reset_note)
@@ -305,7 +308,7 @@ def test_sandbox_mode_selects_the_matching_executor_class(monkeypatch) -> None:
 
     Through the REAL :func:`decode.sandbox.select_executor` (not faked): ``none`` keeps the eager host
     :class:`~decode.tools.exec.LocalExecutor` (no sandbox module imported), ``docker`` yields a
-    :class:`~decode.sandbox.docker_executor.DockerExecutor`, and ``modal`` a
+    :class:`~decode.sandbox.executor.SandboxExecutor` (over a ``DockerBackend``), and ``modal`` a
     :class:`~decode.sandbox.modal_executor.ModalExecutor` — construction is inert for all three (no
     container started, no remote sandbox created, no ``modal`` SDK imported), so no daemon / account is
     needed to prove the mapping.
@@ -316,7 +319,9 @@ def test_sandbox_mode_selects_the_matching_executor_class(monkeypatch) -> None:
 
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
     bash_mod.reset_executor()
-    assert isinstance(bash_mod._get_executor(), DockerExecutor)
+    docker_executor = bash_mod._get_executor()
+    assert isinstance(docker_executor, SandboxExecutor)
+    assert isinstance(docker_executor._backend, DockerBackend)
 
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "modal")
     bash_mod.reset_executor()
@@ -328,8 +333,8 @@ async def test_bash_routes_a_command_through_the_selected_executor(
 ) -> None:
     """``docker`` mode: ``bash`` runs the command through the executor ``select_executor`` returns.
 
-    A recording stub stands in for :class:`~decode.sandbox.docker_executor.DockerExecutor` at the
-    selection seam (no daemon). The gated ``bash`` call — driven through the real agent + gate — must
+    A recording stub stands in for the docker ``SandboxExecutor`` at the selection seam (no daemon). The
+    gated ``bash`` call — driven through the real agent + gate — must
     route the command through that stub (proving the seam swap end to end) and render its canned
     :class:`~decode.tools.exec.ExecResult` back to the model.
     """
@@ -420,7 +425,9 @@ async def test_bash_description_adapts_per_mode(monkeypatch, tmp_path: Path) -> 
     assert docker_desc == f"{none_desc}\n\n{bash_mod._DOCKER_DESCRIPTION_SUFFIX}"
     assert modal_desc == f"{none_desc}\n\n{bash_mod._MODAL_DESCRIPTION_SUFFIX}"
     # ... and each paragraph tells the model that mode's reality.
-    assert "persistent bash shell" in docker_desc  # docker's cd/export-persist shell
+    assert (
+        "do NOT carry over" in docker_desc
+    )  # docker's fresh-exec: cd/export do not persist (ADR-0012)
     assert "remote Modal sandbox" in modal_desc and "NOT present" in modal_desc  # empty scratch
     assert ".decode/skills" in modal_desc  # ...except the seeded skills dir (the model is told)
 
@@ -457,7 +464,8 @@ def test_none_mode_agent_imports_no_sandbox_executor_module() -> None:
         "build_agent(); "
         "b._get_executor(); "  # selects the none-mode executor (must not import the sandbox pkg)
         "leaked = [m for m in "
-        "('decode.sandbox.docker_executor', 'decode.sandbox.modal_executor') if m in sys.modules]; "
+        "('decode.sandbox.docker_backend', 'decode.sandbox.executor', "
+        "'decode.sandbox.modal_executor') if m in sys.modules]; "
         "assert not leaked, leaked; "
         "print('OK')"
     )
@@ -693,83 +701,88 @@ def _wait_until_gone(name_or_id: str, timeout_s: float = 5.0) -> bool:
 
 
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="the docker daemon is not reachable")
-async def test_real_docker_persistent_shell_contract(
+async def test_real_docker_fresh_exec_contract(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The real Docker sandbox contract against a live daemon — else SKIP (ADR-0011 §2).
+    """The real Docker sandbox contract against a live daemon — else SKIP (ADR-0012 §2,4).
 
-    One session-persistent container + one persistent bash shell: (1) ``cd`` / ``export`` persist across
-    two ``run`` calls; (2) a timeout kills+resets the shell and SAYS so (the ``note``), clearing env and
-    resetting cwd to ``/workspace``; (3) ``aclose`` removes the container (no leak); (4) the ``[sandbox]``
-    observability lines are emitted. Reaps the container in a ``finally`` so the suite stays hermetic even
-    on failure.
+    One session container, **fresh-exec**: (1) warm-up starts the container (visible in ``docker ps``);
+    (2) skills are seeded host-side (replacing the ro-mount) and runnable, the project tree stays out of
+    reach; (3) the filesystem persists across ``run`` calls but ``cd`` / ``export`` do NOT (the
+    deleted-persistent-shell proof), and file ops + ``bash`` share one truthful tree via the mount; (4) a
+    timeout kills only the command — the container + fs survive with NO reset note; (5) ``aclose`` removes
+    the container; (6) the ``[sandbox]`` observability lines are emitted. Reaps in a ``finally`` so the
+    suite stays hermetic even on failure.
     """
-    # A minimal project cwd: its .decode/sandbox scratch backs /workspace and its .decode/skills
-    # must appear read-only in the container (the project tree itself must NOT be mounted).
+    from decode.sandbox.workspace import workspace_dir
+
+    # A minimal project cwd: its .decode/skills is seeded into /workspace; the project tree is NOT mounted.
     (tmp_path / ".decode" / "skills" / "demo").mkdir(parents=True)
     (tmp_path / ".decode" / "skills" / "demo" / "SKILL.md").write_text(
         "# demo skill\n", encoding="utf-8"
     )
     (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    executor = DockerExecutor()
+    workspace = workspace_dir(tmp_path)  # /workspace ≡ <cwd>/.decode/sandbox
+    executor = SandboxExecutor(DockerBackend())
     container_id: str | None = None
     try:
-        with caplog.at_level(logging.DEBUG, logger="decode.sandbox.docker_executor"):
+        with caplog.at_level(logging.DEBUG, logger="decode.sandbox.docker_backend"):
             # 0. Eager warm-up (the REPL launch path): start() brings the container up BEFORE any
-            #    command — visible in ``docker ps`` from launch — and the first run() reuses it.
-            await executor.start(tmp_path)
-            warmed_id = executor._container_id
+            #    command — visible in ``docker ps`` from launch — and seeds skills host-side.
+            await executor.start(workspace)
+            warmed_id = executor._backend._container_id
             assert warmed_id is not None
             assert _container_exists(warmed_id)
 
-            # 0b. Mount semantics (ADR-0011 §2 amended): /workspace IS the host scratch — a file
-            #     written in the container lands in <cwd>/.decode/sandbox on the host; the skills
-            #     mount is visible but read-only; the project tree itself is NOT in the container.
-            await executor.run("echo scratched > probe.txt", cwd=tmp_path, timeout_s=30.0)
-            host_probe = tmp_path / ".decode" / "sandbox" / "probe.txt"
-            assert host_probe.read_text(encoding="utf-8").strip() == "scratched"
+            # 0b. Skills are seeded (a host-side copy replacing the ADR-0011 ro-mount, ADR-0012 §5) and
+            #     runnable; the project tree itself is NOT reachable via bash (only the scratch is).
             seeded = await executor.run(
                 "cat .decode/skills/demo/SKILL.md", cwd=tmp_path, timeout_s=30.0
             )
             assert seeded.exit_code == 0
             assert "# demo skill" in seeded.stdout
-            read_only = await executor.run(
-                "touch .decode/skills/blocked 2>&1", cwd=tmp_path, timeout_s=30.0
-            )
-            assert read_only.exit_code != 0  # the skills mount is read-only
             no_tree = await executor.run("ls pyproject.toml", cwd=tmp_path, timeout_s=30.0)
             assert no_tree.exit_code != 0  # the project tree is out of bash's reach
 
-            # 0c. Preconfigured tooling: the default image ships ``uv``, so skill scripts run via
-            #     ``uv run …`` with no per-session bootstrap.
+            # 0c. Preconfigured tooling: the default image ships ``uv``.
             uv_probe = await executor.run("uv --version", cwd=tmp_path, timeout_s=30.0)
             assert uv_probe.exit_code == 0
             assert uv_probe.stdout.startswith("uv ")
 
-            # 1. Persistent shell: state written in one run() survives into the next.
-            await executor.run("export CAP=persisted && cd /tmp", cwd=tmp_path, timeout_s=30.0)
-            persisted = await executor.run("echo $CAP && pwd", cwd=tmp_path, timeout_s=30.0)
-            assert "persisted" in persisted.stdout
-            assert "/tmp" in persisted.stdout
-            assert persisted.exit_code == 0
-            assert persisted.note == ""  # a normal command carries no out-of-band note
-            container_id = executor._container_id
+            # 1. Mount = one truthful tree: a bash-written file lands on the host workspace AND is visible
+            #    via the backend's read_bytes (ADR-0012 §4).
+            await executor.run("echo scratched > probe.txt", cwd=tmp_path, timeout_s=30.0)
+            assert (workspace / "probe.txt").read_text(encoding="utf-8").strip() == "scratched"
+            assert (await executor._backend.read_bytes("probe.txt")).decode().strip() == "scratched"
+
+            # 2. The filesystem persists across run() calls, but cd/export do NOT (fresh-exec).
+            await executor.run(
+                "echo kept > f.txt && export CAP=persisted && cd /tmp", cwd=tmp_path, timeout_s=30.0
+            )
+            fresh = await executor.run("cat f.txt; echo [$CAP]; pwd", cwd=tmp_path, timeout_s=30.0)
+            assert "kept" in fresh.stdout  # the file survived — fs persists
+            assert "[]" in fresh.stdout  # CAP did NOT carry over (a fresh process each call)
+            assert "/workspace" in fresh.stdout  # cwd is /workspace again, NOT /tmp
+            assert fresh.exit_code == 0
+            assert fresh.note == ""  # a normal command carries no out-of-band note
+            container_id = executor._backend._container_id
             assert container_id is not None
             assert container_id == warmed_id  # the warmed container, reused — not a second one
 
-            # 2. Timeout kills + resets the shell and tells the model; env cleared, cwd back to /workspace.
+            # 3. Timeout kills only the command; the container + fs survive, and NO reset note is set.
             timed = await executor.run("sleep 100", cwd=tmp_path, timeout_s=1.0)
             assert timed.timed_out is True
-            assert "reset" in timed.note.lower()
-            after = await executor.run("echo [$CAP] && pwd", cwd=tmp_path, timeout_s=30.0)
-            assert "[]" in after.stdout  # CAP is gone — the respawned shell cleared the env
-            assert "/workspace" in after.stdout  # cwd reset to the container workdir
+            assert (
+                timed.note == ""
+            )  # fresh-exec: only the command died, nothing session-level was lost
+            after = await executor.run("cat f.txt", cwd=tmp_path, timeout_s=30.0)
+            assert "kept" in after.stdout  # the fs survived the timeout
             assert after.timed_out is False
 
-            # 3. aclose stops + removes the session container (captured, so the stop line is asserted).
+            # 4. aclose stops + removes the session container (captured, so the stop line is asserted).
             await executor.aclose()
 
-        # 4. Observability: container start (id + image) and each command's exit + byte count.
+        # 5. Observability: container start (id + image) and each command's exit + byte count.
         text = caplog.text
         assert f"[sandbox] docker start {container_id}" in text
         assert "image=ghcr.io/astral-sh/uv:python3.12-bookworm-slim" in text
@@ -924,11 +937,11 @@ async def test_real_docker_credential_proxy_boundary(monkeypatch, tmp_path: Path
 
     A lean slice of the 075 topology: a rule injects ``X-Decode-Proxy-Auth: <secret>`` on requests to the
     stub upstream, resolved host-side from a **patched** Kitaru secret. A token-free proxy-wired
-    :class:`~decode.sandbox.docker_executor.DockerExecutor` worker makes a urllib request through the
-    ``mitmproxy`` addon container; the upstream echoes the headers it received — proving the header
-    **ARRIVED** — while a scan of the worker container's own env proves the secret is **absent** there (it
-    lives only in the proxy container). Everything is torn down in a ``finally`` and asserted gone, so the
-    suite leaves no docker litter even on failure.
+    ``SandboxExecutor(DockerBackend(...))`` worker makes a urllib request through the ``mitmproxy`` addon
+    container; the upstream echoes the headers it received — proving the header **ARRIVED** — while a scan
+    of the worker container's own env proves the secret is **absent** there (it lives only in the proxy
+    container). Everything is torn down in a ``finally`` and asserted gone, so the suite leaves no docker
+    litter even on failure.
     """
     monkeypatch.setattr(
         "kitaru.get_secret", lambda name: SimpleNamespace(values={"token": _PROXY_SECRET})
@@ -943,25 +956,27 @@ async def test_real_docker_credential_proxy_boundary(monkeypatch, tmp_path: Path
         ]
     )
     proxy = DockerCredentialProxy(credential_map)
-    executor: DockerExecutor | None = None
+    executor: SandboxExecutor | None = None
     upstream: str | None = None
     worker_id: str | None = None
     try:
         proxy.start()
         upstream = _start_upstream(proxy.network)
-        # The worker's /workspace is the project's .decode/sandbox scratch (ADR-0011 §2 amended),
-        # NOT the cwd itself — drop the probe script where the container will actually see it.
+        # The worker's /workspace is the project's .decode/sandbox Workspace (ADR-0012 §3), NOT the cwd
+        # itself — drop the probe script where the container will actually see it.
         scratch = tmp_path / ".decode" / "sandbox"
         scratch.mkdir(parents=True, exist_ok=True)
         (scratch / "req.py").write_text(_REQUEST_SCRIPT, encoding="utf-8")
-        executor = DockerExecutor(
-            network=proxy.network,
-            proxy_env=proxy.worker_proxy_env,
-            ca_cert_host_path=proxy.ca_cert_host_path,
+        executor = SandboxExecutor(
+            DockerBackend(
+                network=proxy.network,
+                proxy_env=proxy.worker_proxy_env,
+                ca_cert_host_path=proxy.ca_cert_host_path,
+            )
         )
 
         result = await executor.run("python3 /workspace/req.py", cwd=tmp_path, timeout_s=30.0)
-        worker_id = executor._container_id
+        worker_id = executor._backend._container_id
 
         # The upstream echoed the header the proxy injected — it ARRIVED, though the worker never held it.
         assert result.exit_code == 0, result.stdout

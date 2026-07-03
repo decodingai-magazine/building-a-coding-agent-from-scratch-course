@@ -59,23 +59,22 @@ _EXECUTOR: CommandExecutor = LocalExecutor()
 _executor_selected = False
 
 # The model-facing description paragraphs appended to the ``bash`` tool docstring per SANDBOX_MODE
-# (ADR-0011 §4). ``none`` appends nothing (byte-identical). ``docker`` / ``modal`` tell the model the
-# sandbox's live semantics so it is never surprised (docker's persistent shell + shared /workspace; the
-# empty remote scratch with no local tree). Composed onto the base description by :func:`bash_description`
-# and installed on the tool via the registry's ``prepare=`` callback.
+# (ADR-0011 §4; ADR-0012 §2 fresh-exec). ``none`` appends nothing (byte-identical). ``docker`` /
+# ``modal`` tell the model the sandbox's live semantics so it is never surprised (docker's fresh-exec
+# container + shared /workspace; the empty remote scratch with no local tree). Composed onto the base
+# description by :func:`bash_description` and installed on the tool via the registry's ``prepare=``.
 _DOCKER_DESCRIPTION_SUFFIX = (
-    "Sandbox (SANDBOX_MODE=docker): commands run in a persistent bash shell inside a local Docker "
-    "container. The shell's working directory /workspace is a scratch area backed by the project's "
-    ".decode/sandbox/ directory on the host — the project tree itself is NOT mounted, so repo files "
-    "are reachable only through the read/write/edit tools (which run on the host), never through "
-    "bash; to work with code inside the sandbox, fetch it (e.g. `git clone`) or generate it under "
-    "/workspace. The project's .decode/skills/ directory (if it exists) is mounted read-only at "
-    "/workspace/.decode/skills, so skill scripts can be run directly. Because the shell persists "
-    "across calls, `cd`, `export`, and installations (e.g. `pip install`) carry over from one bash "
-    "call to the next. If a command times out it is killed and the shell is restarted, so its "
-    "working directory resets to /workspace and its environment is cleared — but files already "
-    "written to /workspace survive (they live in .decode/sandbox/ on the host). stdout and stderr "
-    "are merged into a single stream in the command's own order."
+    "Sandbox (SANDBOX_MODE=docker): commands run inside a local Docker container. The working "
+    "directory /workspace is a scratch area backed by the project's .decode/sandbox/ directory on the "
+    "host — the project tree itself is NOT mounted, so repo files are reachable only through the "
+    "read/write/edit tools (which run on the host), never through bash; to work with code inside the "
+    "sandbox, fetch it (e.g. `git clone`) or generate it under /workspace. The project's "
+    ".decode/skills/ directory (if it exists) is seeded at /workspace/.decode/skills, so skill scripts "
+    "can be run directly. Filesystem changes and installations (e.g. `git clone`, `pip install`) "
+    "persist across bash calls (one container per session), but each command runs as a fresh shell, so "
+    "`cd` and `export` do NOT carry over between calls — use absolute paths or chain them in one call "
+    "(e.g. `cd /workspace/app && <command>`). If a command times out, only that command is killed; the "
+    "container and its filesystem survive. stdout and stderr are captured as separate streams."
 )
 _MODAL_DESCRIPTION_SUFFIX = (
     "Sandbox (SANDBOX_MODE=modal): commands run in a remote Modal sandbox, not on the local machine. "
@@ -117,8 +116,8 @@ def install_executor(executor: CommandExecutor) -> None:
     """Install ``executor`` as the cached ``bash`` executor for a flow span (ADR-0011 §6).
 
     The one hook the headless Credential Proxy uses: :func:`decode.runtime.flow._sandbox_proxy` builds
-    a proxy-wired :class:`~decode.sandbox.docker_executor.DockerExecutor` host-side and installs it here
-    so every sandboxed ``bash`` in that flow routes through the proxy instead of the plain executor
+    a proxy-wired ``SandboxExecutor(DockerBackend(...))`` host-side and installs it here so every
+    sandboxed ``bash`` in that flow routes through the proxy instead of the plain executor
     :func:`_get_executor` would lazily select. Mirrors
     :func:`decode.tools.sleep.install_durable_sleeper`: it sets the module seam **and** marks selection
     done (so ``_get_executor`` returns this instance, not a freshly-selected one). Paired with
@@ -129,28 +128,28 @@ def install_executor(executor: CommandExecutor) -> None:
     _executor_selected = True
 
 
-async def warm_executor(cwd: Path) -> None:
-    """Eagerly start the selected sandbox backend at REPL launch (ADR-0011 §4).
+async def warm_executor(workspace: Path) -> None:
+    """Eagerly start the selected sandbox backend at REPL launch (ADR-0011 §4; ADR-0012 §2).
 
-    The interactive warm-up: ``tui/app.py`` calls this once right after startup so a ``docker`` /
-    ``modal`` session's sandbox is live (and visible — ``docker ps``) from launch instead of
-    materializing invisibly mid-first-turn. A **no-op in ``none`` mode** — it returns before
-    touching the executor memo, so the plain REPL stays byte-identical (no selection, no
-    ``[sandbox]`` log line, no sandbox import). Otherwise it runs the same lazy selection the
-    first ``bash`` call would (sharing the ``_EXECUTOR`` memo, so the warmed instance IS the one
-    ``bash`` uses) and awaits the executor's ``start(cwd)`` if it defines one — duck-typed like
-    :func:`close_executor`'s ``aclose``/``close`` probe, so the :class:`CommandExecutor` Protocol
-    stays run-only and a start-less executor warms as a no-op. Failures propagate with the memo
-    **kept**: the call site renders one friendly line and the next ``bash`` simply retries from
-    scratch (the executor caches nothing on a failed start). REPL-only: the headless flow installs
-    its own executor (:func:`install_executor`) and must not be warmed.
+    The interactive warm-up: ``tui/app.py`` calls this once right after startup — passing the resolved
+    Workspace directory (``workspace_dir(cwd)``, ADR-0012 §3) — so a ``docker`` / ``modal`` session's
+    sandbox is live (and visible — ``docker ps``) from launch instead of materializing invisibly
+    mid-first-turn. A **no-op in ``none`` mode** — it returns before touching the executor memo, so the
+    plain REPL stays byte-identical (no selection, no ``[sandbox]`` log line, no sandbox import).
+    Otherwise it runs the same lazy selection the first ``bash`` call would (sharing the ``_EXECUTOR``
+    memo, so the warmed instance IS the one ``bash`` uses) and awaits the executor's ``start(workspace)``
+    if it defines one — duck-typed like :func:`close_executor`'s ``aclose``/``close`` probe, so the
+    :class:`CommandExecutor` Protocol stays run-only and a start-less executor warms as a no-op. Failures
+    propagate with the memo **kept**: the call site renders one friendly line and the next ``bash``
+    simply retries from scratch (the executor caches nothing on a failed start). REPL-only: the headless
+    flow installs its own executor (:func:`install_executor`) and must not be warmed.
     """
     if settings.sandbox_mode == "none":
         return
     executor = _get_executor()
     start = getattr(executor, "start", None)
     if start is not None:
-        await start(cwd)
+        await start(workspace)
 
 
 def reset_executor() -> None:
@@ -194,8 +193,8 @@ def bash_description(base: str) -> str:
 
     ``none`` returns ``base`` **unchanged** (byte-identical to before this task — the caller detects the
     no-op and leaves the ``ToolDefinition`` untouched). ``docker`` / ``modal`` append the matching
-    sandbox-semantics paragraph so the model is told the live rules (docker's persistent shell + shared
-    ``/workspace``; the empty remote scratch with no local tree) instead of being surprised at runtime.
+    sandbox-semantics paragraph so the model is told the live rules (docker's fresh-exec container +
+    shared ``/workspace``; the empty remote scratch with no local tree) instead of being surprised.
     """
     mode = settings.sandbox_mode
     if mode == "docker":

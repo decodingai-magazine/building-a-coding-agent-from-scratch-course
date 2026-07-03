@@ -11,10 +11,8 @@ the reap a no-op — so this proves the wiring, not the executors.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
-import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -26,7 +24,6 @@ from support.runtime_agents import make_scripted_agent
 import decode.runtime.flow as flow_mod
 import decode.tools.bash as bash_mod
 from decode.runtime import run_agent_task, run_hitl_agent_task
-from decode.sandbox.docker_executor import DockerExecutor
 
 # The real flow boots the Kitaru/ZenML stack; scope its two third-party deprecation warnings (see
 # test_flow.py) so the strict ``filterwarnings=["error"]`` gate stays green here too.
@@ -92,55 +89,40 @@ def test_hitl_flow_reaps_the_executor_on_completion(monkeypatch):
     aclose.assert_awaited_once()  # the HITL flow's finally reaped the sandbox executor too
 
 
-def _pid_alive(pid: int) -> bool:
-    """True while ``pid`` names a live process; False once it is gone (fully reaped, no zombie)."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+def test_reap_runtime_executor_reaps_a_sandbox_executor_cross_loop(monkeypatch, caplog):
+    # Loop-independence under ADR-0012 fresh-exec: the headless reaper runs ``_reap_runtime_executor``
+    # (→ ``close_executor`` → ``SandboxExecutor.aclose`` → ``backend.export`` + ``backend.destroy``) on a
+    # FRESH loop, distinct from the per-call loop the sandbox was created on. Fresh-exec holds no
+    # loop-bound subprocess (unlike the retired persistent shell), so the reap is trivially clean — the
+    # backend's ``export``/``destroy`` run and no teardown-failed warning is logged. A recording backend
+    # stands in (no docker), and the executor is marked created so aclose actually reaps.
+    from decode.sandbox.executor import SandboxExecutor
 
+    class _RecordingBackend:
+        def __init__(self) -> None:
+            self.events: list[str] = []
 
-def test_reap_runtime_executor_reaps_a_loop_bound_executor_cross_loop(monkeypatch, caplog):
-    # THE regression that closes the Tester's test-quality gap. The wiring specs above inject a
-    # loop-AGNOSTIC ``AsyncMock``, so they pass even on the buggy cross-loop teardown. This drives the
-    # REAL ``_reap_runtime_executor`` against a REAL loop-bound ``DockerExecutor`` whose shell was created
-    # on a now-CLOSED loop — the exact headless condition (kitaru's per-call loop is gone by teardown).
-    # The old teardown raised "Event loop is closed" inside the reap, which ``_reap_runtime_executor``
-    # then LOGGED ("headless sandbox teardown failed") and swallowed while the container LEAKED (exit
-    # stayed 0, masking the leak). So we assert the reap is CLEAN (no such warning) AND the loop-bound
-    # child is actually killed. Hermetic: a real ``sleep`` child stands in for the docker-exec shell and
-    # ``_container_id`` is None, so no daemon is touched.
-    loop1 = asyncio.new_event_loop()
+        async def create(self, workspace):  # pragma: no cover - not exercised here
+            self.events.append("create")
 
-    async def _spawn() -> asyncio.subprocess.Process:
-        return await asyncio.create_subprocess_exec(
-            "sleep",
-            "30",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True,
-        )
+        async def exec(self, *args, timeout_s):  # pragma: no cover - not exercised here
+            raise AssertionError("exec must not run during teardown")
 
-    shell = loop1.run_until_complete(_spawn())
-    pid = shell.pid
-    executor = DockerExecutor()
-    executor._shell = shell
-    executor._shell_loop = loop1
-    executor._container_id = None  # only the loop-free shell teardown runs — no ``docker rm``
-    loop1.close()  # the per-call loop is gone: the buggy reap raised "Event loop is closed" here
+        async def export(self) -> None:
+            self.events.append("export")
 
+        async def destroy(self) -> None:
+            self.events.append("destroy")
+
+    backend = _RecordingBackend()
+    executor = SandboxExecutor(backend)
+    executor._created = True  # a live session so aclose exports + destroys
     monkeypatch.setattr(bash_mod, "_EXECUTOR", executor)
     monkeypatch.setattr(bash_mod, "_executor_selected", True)
 
     with caplog.at_level(logging.WARNING, logger="decode.runtime.flow"):
         flow_mod._reap_runtime_executor()  # sync; the finally's reap — must stay clean
 
-    assert (
-        "headless sandbox teardown failed" not in caplog.text
-    )  # the buggy path logged this + leaked
-    assert not _pid_alive(pid)  # the loop-bound child was actually reaped, not leaked
+    assert "headless sandbox teardown failed" not in caplog.text  # no cross-loop breakage
+    assert backend.events == ["export", "destroy"]  # aclose swept then tore down, cross-loop
     assert bash_mod._executor_selected is False  # close_executor reset the seam memo

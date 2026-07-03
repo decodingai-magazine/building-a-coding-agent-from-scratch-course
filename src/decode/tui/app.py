@@ -922,9 +922,14 @@ async def run_app(
     # infra-failure result carries any persistent problem to the model); the config-level failures
     # were already caught by the CLI preflight. ``none`` skips the whole block — byte-identical.
     if settings.sandbox_mode != "none":
+        # Lazy import so the ``none`` path imports no sandbox module (ADR-0012 §9). Warm the executor
+        # against the resolved Workspace (``workspace_dir(cwd)`` — the sandbox's ``/workspace``);
+        # ``deps.cwd`` stays the launch cwd this task (file tools move into the Workspace in 081).
+        from decode.sandbox.workspace import workspace_dir
+
         emit_line(f"Decode - starting {settings.sandbox_mode} sandbox ({settings.sandbox_image})…")
         try:
-            await warm_executor(deps.cwd)
+            await warm_executor(workspace_dir(deps.cwd))
         except Exception as exc:
             logger.warning("sandbox warm-up failed; degrading to lazy start", exc_info=True)
             emit_line(

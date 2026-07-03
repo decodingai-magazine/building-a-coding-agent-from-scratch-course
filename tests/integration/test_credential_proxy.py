@@ -2,7 +2,7 @@
 
 The living proof that the credential-injection topology holds against a **real docker daemon**: a
 ``mitmproxy/mitmproxy`` addon container on a per-run network, a proxy-wired
-:class:`~decode.sandbox.docker_executor.DockerExecutor` worker pointed at it, and a stub upstream —
+``SandboxExecutor(DockerBackend(...))`` worker pointed at it, and a stub upstream —
 so a request the token-free worker makes **arrives at the upstream with the injected header**, while
 the worker's own env holds **no** secret. It also drives the real
 :func:`decode.runtime.flow._sandbox_proxy` context manager to prove it tears the proxy container +
@@ -26,7 +26,8 @@ import pytest
 
 import decode.runtime.flow as flow_mod
 import decode.tools.bash as bash_mod
-from decode.sandbox.docker_executor import DockerExecutor
+from decode.sandbox.docker_backend import DockerBackend
+from decode.sandbox.executor import SandboxExecutor
 from decode.sandbox.proxy import DockerCredentialProxy, SandboxProxyRule, build_credential_map
 from decode.tools.exec import LocalExecutor
 
@@ -169,7 +170,7 @@ async def test_worker_request_arrives_with_injected_header_but_worker_holds_no_s
         ]
     )
     proxy = DockerCredentialProxy(credential_map)
-    executor: DockerExecutor | None = None
+    executor: SandboxExecutor | None = None
     upstream: str | None = None
     worker_id: str | None = None
     try:
@@ -180,14 +181,16 @@ async def test_worker_request_arrives_with_injected_header_but_worker_holds_no_s
         scratch = tmp_path / ".decode" / "sandbox"
         scratch.mkdir(parents=True, exist_ok=True)
         (scratch / "req.py").write_text(_REQUEST_SCRIPT, encoding="utf-8")
-        executor = DockerExecutor(
-            network=proxy.network,
-            proxy_env=proxy.worker_proxy_env,
-            ca_cert_host_path=proxy.ca_cert_host_path,
+        executor = SandboxExecutor(
+            DockerBackend(
+                network=proxy.network,
+                proxy_env=proxy.worker_proxy_env,
+                ca_cert_host_path=proxy.ca_cert_host_path,
+            )
         )
 
         result = await executor.run("python3 /workspace/req.py", cwd=tmp_path, timeout_s=30.0)
-        worker_id = executor._container_id
+        worker_id = executor._backend._container_id
 
         # The upstream echoed the header the proxy injected — it ARRIVED, though the worker never held it.
         assert result.exit_code == 0, result.stdout
@@ -246,13 +249,15 @@ async def test_worker_trusts_the_proxy_ca_on_its_very_first_command(monkeypatch,
         ]
     )
     proxy = DockerCredentialProxy(credential_map)
-    executor: DockerExecutor | None = None
+    executor: SandboxExecutor | None = None
     try:
         proxy.start()
-        executor = DockerExecutor(
-            network=proxy.network,
-            proxy_env=proxy.worker_proxy_env,
-            ca_cert_host_path=proxy.ca_cert_host_path,
+        executor = SandboxExecutor(
+            DockerBackend(
+                network=proxy.network,
+                proxy_env=proxy.worker_proxy_env,
+                ca_cert_host_path=proxy.ca_cert_host_path,
+            )
         )
 
         # THE FIRST command through the freshly-wired worker — it must already trust the proxy CA.
@@ -273,8 +278,11 @@ async def test_worker_trusts_the_proxy_ca_on_its_very_first_command(monkeypatch,
     assert not _network_exists(proxy.network)
 
 
-def _engage_proxy(monkeypatch) -> None:
+def _engage_proxy(monkeypatch, tmp_path) -> None:
     """Flip settings so ``_sandbox_proxy`` engages, with an empty (passthrough) rule set + fake secret."""
+    # ``_sandbox_proxy`` now eagerly starts the worker against ``prepare_workspace(Path.cwd())`` (ADR-0012
+    # §2), so chdir into tmp: the worker's ``.decode/sandbox`` Workspace lands there, never in the repo.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
     monkeypatch.setattr(flow_mod.settings, "sandbox_credential_proxy_enabled", True)
     # A passthrough map is enough to prove the topology + teardown; no upstream request is made here.
@@ -284,49 +292,57 @@ def _engage_proxy(monkeypatch) -> None:
     monkeypatch.setattr(bash_mod, "_executor_selected", False)
 
 
-def test_sandbox_proxy_context_installs_the_seam_then_tears_it_all_down(monkeypatch):
-    """The real ``_sandbox_proxy()`` installs a proxy-wired worker, then reaps everything on exit."""
-    _engage_proxy(monkeypatch)
+def test_sandbox_proxy_context_installs_the_seam_then_tears_it_all_down(monkeypatch, tmp_path):
+    """The real ``_sandbox_proxy()`` installs + starts a proxy-wired worker, then reaps everything."""
+    _engage_proxy(monkeypatch, tmp_path)
     captured: dict[str, object] = {}
 
     with flow_mod._sandbox_proxy():
-        # Inside the span the bash seam is a proxy-wired DockerExecutor (not the LocalExecutor default).
-        assert isinstance(bash_mod._EXECUTOR, DockerExecutor)
-        assert bash_mod._EXECUTOR._network is not None
+        # Inside the span the bash seam is a proxy-wired SandboxExecutor over a DockerBackend, eagerly
+        # started so its worker container is up (proxy CA trusted) before the first bash.
+        assert isinstance(bash_mod._EXECUTOR, SandboxExecutor)
+        assert isinstance(bash_mod._EXECUTOR._backend, DockerBackend)
+        assert bash_mod._EXECUTOR._backend._network is not None
         assert bash_mod._executor_selected is True
         captured["container_name"] = _proxy_container_name()
-        captured["network"] = bash_mod._EXECUTOR._network
+        captured["network"] = bash_mod._EXECUTOR._backend._network
+        captured["worker_id"] = bash_mod._EXECUTOR._backend._container_id
 
-    # On exit: the bash seam is restored to the none-mode default, and the proxy container + its network
-    # are gone (the worker was never started — no bash ran — so only the proxy needs reaping).
+    # On exit: the bash seam is restored to the none-mode default, and the worker container + the proxy
+    # container + its network are all gone (the flow's finally reaps the worker before the proxy stops).
     assert isinstance(bash_mod._EXECUTOR, LocalExecutor)
     assert bash_mod._executor_selected is False
+    worker_id = captured["worker_id"]
+    assert worker_id is None or not _container_exists(str(worker_id))
     assert not _container_exists(str(captured["container_name"]))
     assert not _network_exists(str(captured["network"]))
 
 
-def test_sandbox_proxy_context_tears_down_even_when_the_body_raises(monkeypatch):
-    """AC (teardown incl. on error): a raising flow body still reaps the proxy container + network."""
-    _engage_proxy(monkeypatch)
+def test_sandbox_proxy_context_tears_down_even_when_the_body_raises(monkeypatch, tmp_path):
+    """AC (teardown incl. on error): a raising flow body still reaps the worker + proxy + network."""
+    _engage_proxy(monkeypatch, tmp_path)
     seen: dict[str, object] = {}
 
     with pytest.raises(RuntimeError, match="boom"), flow_mod._sandbox_proxy():
         seen["container_name"] = _proxy_container_name()
-        seen["network"] = bash_mod._EXECUTOR._network  # type: ignore[attr-defined]
+        seen["network"] = bash_mod._EXECUTOR._backend._network  # type: ignore[attr-defined]
+        seen["worker_id"] = bash_mod._EXECUTOR._backend._container_id  # type: ignore[attr-defined]
         raise RuntimeError("boom in the flow body")
 
     assert isinstance(bash_mod._EXECUTOR, LocalExecutor)  # seam restored despite the error
     assert bash_mod._executor_selected is False
+    worker_id = seen["worker_id"]
+    assert worker_id is None or not _container_exists(str(worker_id))
     assert not _container_exists(str(seen["container_name"]))
     assert not _network_exists(str(seen["network"]))
 
 
 def _proxy_container_name() -> str:
-    """The proxy container name currently wired into the bash seam's DockerExecutor network.
+    """The proxy container name currently wired into the bash seam's DockerBackend network.
 
-    The DockerExecutor holds the network name (``decode-sandbox-net-<suffix>``); the proxy container is
+    The DockerBackend holds the network name (``decode-sandbox-net-<suffix>``); the proxy container is
     ``decode-proxy-<suffix>`` — the same suffix — so we can name it without threading the proxy handle.
     """
-    network = bash_mod._EXECUTOR._network  # type: ignore[attr-defined]
+    network = bash_mod._EXECUTOR._backend._network  # type: ignore[attr-defined]
     assert isinstance(network, str)
     return network.replace("decode-sandbox-net-", "decode-proxy-")

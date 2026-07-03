@@ -1,11 +1,11 @@
-"""Real-docker integration: the headless flow reaps the sandbox container on exit (ADR-0011 §4, task 074).
+"""Real-docker integration: the headless flow reaps the sandbox container on exit (ADR-0012 §2; ADR-0011 §4).
 
-The regression the round-1 unit spy missed: it used a loop-agnostic ``AsyncMock``, so it passed while
-the REAL headless teardown leaked the container (``DockerExecutor``'s shell subprocess is bound to
-``run_sync``'s now-closed per-call loop, so ``aclose`` awaiting it from the flow's fresh reap loop raised
-``Event loop is closed`` before ``docker rm -f`` could run). This drives the **real** bypass ``@flow`` +
-``KitaruAgent`` on the local Kitaru stack with a **real** ``DockerExecutor`` (one bash call), then
-asserts the session container is gone and the reap did not raise. Skips without a docker daemon.
+Drives the **real** bypass ``@flow`` + ``KitaruAgent`` on the local Kitaru stack with a **real**
+``SandboxExecutor(DockerBackend())`` (one bash call), then asserts the session container is gone and the
+reap did not raise. The reap runs on a *fresh* loop, distinct from the per-call loop the container was
+created on; under ADR-0012 fresh-exec this is trivially clean — there is no loop-bound persistent shell
+to reap (``docker rm -f`` is a fresh subprocess), which retires the ADR-0011 §4 leaked-container
+regression that the retired persistent-shell executor hit. Skips without a docker daemon.
 """
 
 from __future__ import annotations
@@ -77,10 +77,10 @@ def isolated_kitaru_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> It
 def _close_lingering_event_loops() -> None:
     """Close any event loop the durable flow left open, so its leak never trips a *later* test.
 
-    A docker-mode headless run spawns the ``docker exec`` shell on a per-call event loop; the
-    ThreadedChildWatcher's ``call_soon_threadsafe`` leaves a pending ``Handle`` on that loop, which keeps
-    it alive **unclosed** past the flow (the shell is reaped loop-free, so the loop's own subprocess
-    cleanup never runs). Harmless in production — a real ``decode run`` exits right after the flow — but
+    A docker-mode headless run spawns a fresh ``docker exec`` per bash call on a per-call event loop; the
+    ThreadedChildWatcher's ``call_soon_threadsafe`` can leave a pending ``Handle`` on that loop, which
+    keeps it alive **unclosed** past the flow. Harmless in production — a real ``decode run`` exits right
+    after the flow — but
     pytest keeps the process alive, so that unclosed loop is later GC'd inside an unrelated test and
     raises a ``PytestUnraisableExceptionWarning`` (``unclosed event loop`` + its self-pipe sockets) that
     the strict ``filterwarnings=error`` gate turns into a failure. Closing it here (guarded on
@@ -139,7 +139,7 @@ def test_headless_bypass_flow_reaps_the_real_container_on_exit(monkeypatch, capl
     """A real ``decode run`` (docker mode, one bash call) leaves NO container and does not raise on reap.
 
     The proof for AC5 against real infra: after the bypass flow runs a bash command in a real container,
-    the flow's ``finally`` reap (``close_executor`` → ``DockerExecutor.aclose``) removes the container —
+    the flow's ``finally`` reap (``close_executor`` → ``SandboxExecutor.aclose``) removes the container —
     even though it runs on a *different* loop than the shell was created on — and never logs the
     teardown-failed warning (``Event loop is closed`` no longer escapes).
     """

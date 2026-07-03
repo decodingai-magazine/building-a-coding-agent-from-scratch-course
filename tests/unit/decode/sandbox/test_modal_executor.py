@@ -396,7 +396,7 @@ async def test_sandbox_survives_a_timeout_and_the_next_run_reuses_it(mocker, san
 
 async def test_run_replaces_undecodable_bytes_on_both_streams(mocker, sandbox):
     # Regression (blocking): binary / non-UTF-8 output must NOT crash run(). The ExecResult contract
-    # (tools/exec.py) says undecodable bytes are replaced, never crash — LocalExecutor / DockerExecutor
+    # (tools/exec.py) says undecodable bytes are replaced, never crash — LocalExecutor / DockerBackend
     # both honor it. modal's text=True reader decodes STRICT UTF-8 and raised UnicodeDecodeError on the
     # first invalid byte (e.g. `head -c 16 /dev/urandom`); text=False + errors="replace" fixes it.
     sandbox.bash_proc = _FakeProc(stdout=b"\xff\xfehi", stderr=b"\xff", exit_code=0)

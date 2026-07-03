@@ -85,7 +85,7 @@ _APP_NAME = "decode-sandbox"
 # modal signals a per-exec timeout by returning ``-1`` from ``ContainerProcess.wait()`` (an internal
 # ``ExecTimeoutError`` mapped to ``-1``; verified against modal 1.5.1). We detect that sentinel and
 # normalize it to :data:`_TIMEOUT_EXIT` so ``bash`` sees the same killed-by-signal convention every
-# executor uses (``LocalExecutor`` / ``DockerExecutor`` both use ``-signal.SIGKILL`` on timeout).
+# executor uses (``LocalExecutor`` / ``DockerBackend`` both use ``-signal.SIGKILL`` on timeout).
 _MODAL_TIMEOUT_RETURNCODE = -1
 _TIMEOUT_EXIT = -signal.SIGKILL
 
@@ -184,12 +184,13 @@ class ModalExecutor:
 
         **Loop-independent for free (task 074).** The headless runtime reaps the executor on a *fresh*
         event loop (kitaru's "calls" strategy runs each turn in its own ``asyncio.run`` loop that then
-        closes), so the cached ``sandbox`` handle was created on a now-dead loop. Unlike docker's raw
-        ``asyncio`` subprocess transports — which bind to their creating loop and genuinely break on a
-        cross-loop teardown (see :meth:`DockerExecutor.aclose`) — modal's ``synchronicity`` proxies
-        every ``.aio()`` call onto its **own** persistent background-thread loop, so ``terminate.aio()``
-        through the stale handle reaps correctly from any caller loop (verified against modal 1.5.1 via
-        ``Sandbox.list``: the sandbox drops off the live list whether terminated same-loop or cross-loop).
+        closes), so the cached ``sandbox`` handle was created on a now-dead loop. modal's
+        ``synchronicity`` proxies every ``.aio()`` call onto its **own** persistent background-thread
+        loop, so ``terminate.aio()`` through the stale handle reaps correctly from any caller loop
+        (verified against modal 1.5.1 via ``Sandbox.list``: the sandbox drops off the live list whether
+        terminated same-loop or cross-loop). The retired ADR-0011 docker executor bound its persistent
+        shell to its creating loop and needed loop-free teardown; ADR-0012 fresh-exec holds no such
+        handle, so :class:`~decode.sandbox.docker_backend.DockerBackend` is loop-independent too.
         """
         sandbox, self._sandbox = self._sandbox, None
         if sandbox is None:

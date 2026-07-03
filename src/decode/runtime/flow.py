@@ -215,6 +215,28 @@ def _reap_runtime_executor() -> None:
         loop.close()
 
 
+def _start_runtime_executor(executor: Any, workspace: Path) -> None:
+    """Eagerly start the installed sandbox ``executor`` against ``workspace`` — best-effort (ADR-0012 §2).
+
+    The headless mirror of :func:`decode.tools.bash.warm_executor`: the docker Credential-Proxy flow
+    brings the worker up before the first ``bash`` so its CA is trusted. The ``@flow`` body is sync and
+    ``start`` is async, so it runs on a **dedicated** short-lived loop (like :func:`_reap_runtime_executor`
+    — never :func:`asyncio.run`, which would reset the thread's current loop and orphan ``run_sync``'s).
+    Fresh-exec makes this loop-agnostic: only the container id is captured here, and every later ``exec``
+    / ``docker rm -f`` spawns its own subprocess. A warm-up failure is logged, never raised — the first
+    ``bash`` retries the create lazily and renders any persistent failure to the model.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(executor.start(workspace))
+    except Exception:
+        logger.warning(
+            "[sandbox] headless sandbox warm-up failed; degrading to lazy start", exc_info=True
+        )
+    finally:
+        loop.close()
+
+
 @contextmanager
 def _sandbox_proxy() -> Iterator[None]:
     """Run the docker Credential Proxy for a headless flow span, tear it down on exit (ADR-0011 §6).
@@ -225,11 +247,13 @@ def _sandbox_proxy() -> Iterator[None]:
     stays byte-unchanged and the REPL never imports :mod:`decode.sandbox.proxy` or kitaru. When engaged
     it (1) resolves the credential map host-side from :data:`~decode.sandbox.proxy.DEFAULT_PROXY_RULES`,
     (2) starts a ``mitmproxy`` addon container on a per-run docker network, (3) installs a proxy-wired
-    :class:`~decode.sandbox.docker_executor.DockerExecutor` as ``bash``'s executor for the flow span
-    (the task-074 seam via :func:`decode.tools.bash.install_executor`), and (4) tears it all down.
+    ``SandboxExecutor(DockerBackend(...))`` as ``bash``'s executor for the flow span (the seam via
+    :func:`decode.tools.bash.install_executor`) and eagerly starts it against the Workspace
+    (``prepare_workspace`` — no repo this task, ADR-0012 §3), and (4) tears it all down.
 
-    Teardown order is load-bearing and loop-independent (ADR-0011 §4): reap the **worker** first
-    (:func:`_reap_runtime_executor` — ``docker rm -f`` + reset the bash seam), THEN
+    Teardown order is load-bearing and loop-independent (ADR-0011 §4; trivial under ADR-0012 fresh-exec):
+    reap the **worker** first (:func:`_reap_runtime_executor` — ``docker rm -f`` + reset the bash seam),
+    THEN
     :meth:`~decode.sandbox.proxy.DockerCredentialProxy.stop` the proxy container + remove the network
     (``docker network rm`` fails while the worker is still attached). ``proxy.stop()`` runs even if
     ``proxy.start()`` raised partway, so a half-built proxy still cleans up. Mirrors
@@ -241,24 +265,32 @@ def _sandbox_proxy() -> Iterator[None]:
         yield
         return
     # Lazy imports: only an enabled docker headless flow pulls in the sandbox proxy (REPL stays clean).
-    from decode.sandbox.docker_executor import DockerExecutor
+    from decode.sandbox.docker_backend import DockerBackend
+    from decode.sandbox.executor import SandboxExecutor
     from decode.sandbox.proxy import (
         DEFAULT_PROXY_RULES,
         DockerCredentialProxy,
         build_credential_map,
     )
+    from decode.sandbox.workspace import prepare_workspace
     from decode.tools.bash import install_executor
 
     proxy = DockerCredentialProxy(build_credential_map(DEFAULT_PROXY_RULES))
     try:
         proxy.start()
-        install_executor(
-            DockerExecutor(
+        executor = SandboxExecutor(
+            DockerBackend(
                 network=proxy.network,
                 proxy_env=proxy.worker_proxy_env,
                 ca_cert_host_path=proxy.ca_cert_host_path,
             )
         )
+        install_executor(executor)
+        # Eagerly bring the worker up against the Workspace so its CA is trusted before the first bash
+        # (no repo this task — 082 wires --repo/SANDBOX_REPO). Run on a fresh loop: the sync flow body
+        # cannot ``await``, and fresh-exec means the container id is loop-agnostic (later ``exec`` /
+        # ``docker rm -f`` spawn their own subprocesses), so warming here is safe.
+        _start_runtime_executor(executor, prepare_workspace(Path.cwd()))
         try:
             yield
         finally:

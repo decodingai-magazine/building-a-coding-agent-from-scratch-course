@@ -99,15 +99,15 @@ def test_get_executor_docker_selects_via_the_seam_and_memoizes(monkeypatch):
     assert calls["n"] == 1  # select_executor ran exactly once
 
 
-def test_get_executor_docker_returns_a_real_docker_executor(monkeypatch):
-    # Through the REAL select_executor (not faked): docker mode yields a DockerExecutor. Construction
-    # is inert, so no daemon is needed here.
-    from decode.sandbox.docker_executor import DockerExecutor
+def test_get_executor_docker_returns_a_real_sandbox_executor(monkeypatch):
+    # Through the REAL select_executor (not faked): docker mode yields a SandboxExecutor (over a
+    # DockerBackend). Construction is inert, so no daemon is needed here (ADR-0012 §2).
+    from decode.sandbox.executor import SandboxExecutor
 
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
     bash_mod.reset_executor()
 
-    assert isinstance(bash_mod._get_executor(), DockerExecutor)
+    assert isinstance(bash_mod._get_executor(), SandboxExecutor)
 
 
 def test_get_executor_modal_returns_a_real_modal_executor(monkeypatch):
@@ -247,15 +247,17 @@ def test_bash_description_none_is_identity(monkeypatch):
     assert bash_mod.bash_description("BASE") == "BASE"
 
 
-def test_bash_description_docker_appends_the_persistent_shell_paragraph(monkeypatch):
+def test_bash_description_docker_appends_the_fresh_exec_paragraph(monkeypatch):
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
 
     out = bash_mod.bash_description("BASE")
 
     assert out.startswith("BASE\n\n")
     assert "/workspace" in out
-    assert "persistent bash shell" in out
-    assert "merged into a single stream" in out  # 072 chose merged stdout/stderr
+    assert (
+        "do NOT carry over" in out
+    )  # fresh-exec: cd/export do not persist across calls (ADR-0012)
+    assert "separate streams" in out  # docker exec keeps stdout/stderr split (no merge)
     assert ".decode/sandbox" in out  # /workspace is the scratch — the model is told
     assert "NOT mounted" in out  # ...and that the project tree is out of reach via bash
 
@@ -378,7 +380,7 @@ async def test_agent_bash_description_modal_is_none_plus_the_paragraph(monkeypat
 async def test_bash_routes_through_the_selected_docker_executor(monkeypatch, tmp_path):
     """docker mode: ``bash`` runs through the executor ``select_executor`` returns, and renders it.
 
-    A fake stands in for :class:`DockerExecutor` at the ``select_executor`` seam (no real daemon). The
+    A fake stands in for the docker ``SandboxExecutor`` at the ``select_executor`` seam (no real daemon). The
     fake records the ``run`` call and returns a canned :class:`ExecResult`; the tool must route the
     command through it and render that result — proving the executor swap end to end.
     """
@@ -402,22 +404,23 @@ async def test_bash_routes_through_the_selected_docker_executor(monkeypatch, tmp
 
 
 async def test_bash_renders_a_daemon_loss_without_raising(monkeypatch, tmp_path):
-    """docker mode, daemon dies mid-session: ``bash`` returns a rendered failure, never lets it escape.
+    """docker mode, daemon down: ``bash`` returns a rendered failure, never lets it escape.
 
-    The secondary task-074 defect (the tool-boundary half): when the docker daemon becomes unreachable
-    mid-session, :meth:`DockerExecutor.run` catches the infra failure and returns a rendered
-    :class:`ExecResult` (exit 125 + note). This proves the whole boundary stays intact — ``bash`` renders
-    that result to text (so the model reacts) rather than a ``RuntimeError`` crashing the turn. A real
-    ``DockerExecutor`` is used with only its ``_ensure_container`` seam patched to raise (as a dead daemon
-    would make ``docker run`` fail), so no daemon is needed.
+    The tool-boundary never-crash contract: when the docker backend cannot be created (daemon down),
+    :meth:`SandboxExecutor.run` catches the infra failure and returns a rendered :class:`ExecResult`
+    (exit 125 + a session-lost note + the cause on stderr). This proves the whole boundary stays intact —
+    ``bash`` renders that result to text (so the model reacts) rather than a ``RuntimeError`` crashing the
+    turn. A real ``SandboxExecutor(DockerBackend())`` is used with only the backend's ``create`` patched
+    to raise (as a dead daemon makes ``docker run`` fail), so no daemon is needed.
     """
-    from decode.sandbox.docker_executor import DockerExecutor
+    from decode.sandbox.docker_backend import DockerBackend
+    from decode.sandbox.executor import SandboxExecutor
 
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
-    executor = DockerExecutor()
+    backend = DockerBackend()
     monkeypatch.setattr(
-        executor,
-        "_ensure_container",
+        backend,
+        "create",
         AsyncMock(
             side_effect=RuntimeError(
                 "docker run failed (exit 1): Cannot connect to the Docker daemon at "
@@ -425,13 +428,13 @@ async def test_bash_renders_a_daemon_loss_without_raising(monkeypatch, tmp_path)
             )
         ),
     )
-    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: executor)
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: SandboxExecutor(backend))
     bash_mod.reset_executor()
 
     out = await bash_mod.bash(_ctx(tmp_path), command="echo hi")  # must NOT raise
 
     assert "Exit code: 125" in out  # docker's container-failed convention, rendered for the model
-    assert "Docker daemon became unreachable" in out  # the daemon-lost note reaches the model
+    assert "unreachable" in out  # the session-lost note reaches the model
     assert "Cannot connect to the Docker daemon" in out  # the underlying failure text is surfaced
 
 
@@ -459,7 +462,8 @@ def test_none_mode_agent_imports_no_sandbox_executor_module():
         "build_agent(); "
         "b._get_executor(); "  # selects the none-mode executor (must not import the sandbox pkg)
         "leaked = [m for m in "
-        "('decode.sandbox.docker_executor', 'decode.sandbox.modal_executor') if m in sys.modules]; "
+        "('decode.sandbox.docker_backend', 'decode.sandbox.executor', "
+        "'decode.sandbox.modal_executor') if m in sys.modules]; "
         "assert not leaked, leaked; "
         "print('OK')"
     )
@@ -475,7 +479,7 @@ def test_docker_mode_repl_agent_imports_no_kitaru_or_modal():
         "import decode.tools.bash as b; "
         "from decode.agent.factory import build_agent; "
         "build_agent(); "
-        "b._get_executor(); "  # selects docker → constructs DockerExecutor (inert, no daemon)
+        "b._get_executor(); "  # selects docker → SandboxExecutor(DockerBackend()) (inert, no daemon)
         "leaked = sorted(m for m in sys.modules "
         "if m == 'kitaru' or m.startswith('kitaru.') or m == 'modal' or m.startswith('modal.')); "
         "assert not leaked, leaked; "
