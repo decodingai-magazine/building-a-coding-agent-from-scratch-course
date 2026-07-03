@@ -1186,6 +1186,42 @@ async def test_no_repersist_after_full_compaction(agent, tmp_path, mocker):
     assert "OLDEST-TURN-MARKER" not in last_line_raw  # the compacted prefix is not re-persisted
 
 
+async def test_clear_wipes_history_writes_the_marker_and_resets_the_cursor(agent, tmp_path):
+    """The ``/clear`` body: history → ``[]``, cursor/gauge → 0, one marker line, resume replays empty."""
+    import json
+
+    from decode.context import session_log as session_log_mod
+
+    log = _fresh_log(tmp_path, "05")
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        session_log=log,
+        message_history=[_user_msg("wiped-prompt"), _assistant_msg("wiped answer")],
+    )
+    handler._last_input_tokens = 1234  # a prior leg's measurement — the footer gauge source
+
+    handler.clear()
+
+    assert handler.message_history == []
+    assert handler._persisted_count == 0
+    assert handler.last_input_tokens == 0  # the footer gauge resets with the history
+    lines = [ln for ln in log.path.read_text(encoding="utf-8").splitlines() if ln]
+    assert json.loads(lines[-1])["type"] == "clear"  # the marker rode the append-only log
+    assert session_log_mod.load(log.path) == []  # --resume replays to the post-clear state
+
+
+async def test_clear_without_a_session_log_still_resets(agent):
+    # The log is optional (headless/test handlers): clear() must reset without one, no raise.
+    handler = AgentTurnHandler(agent, deps=_deps(lambda _e: None), message_history=[_user_msg("x")])
+
+    handler.clear()
+
+    assert handler.message_history == []
+    assert handler._persisted_count == 0
+
+
 async def test_below_both_tiers_is_a_no_op(agent, tmp_path, mocker):
     """AC: usage below both levels compacts neither tier (history unchanged, no event)."""
     mocker.patch.object(loop.settings, "compaction_context_window_tokens", 200)  # below both

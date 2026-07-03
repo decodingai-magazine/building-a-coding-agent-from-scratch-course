@@ -89,6 +89,11 @@ _MODE_COMMAND = "/mode"
 # ``/quit`` and idle-only. Reserved among the slash commands (matched before ``parse_skill_command``)
 # so a project skill named ``compact`` can never shadow it.
 _COMPACT_COMMAND = "/compact"
+# The conversation-wipe command: compaction-to-zero, wired exactly like ``/compact`` (idle-only,
+# reserved before the skill branch). Summarize-then-wipe: the pre-clear history feeds the same
+# MEMORY.md write-back the quit path runs, THEN the handler resets and a clear marker rides the
+# session log so ``--resume`` replays to the post-clear state.
+_CLEAR_COMMAND = "/clear"
 # The order Shift+Tab cycles the gate mode through (ADR-0003 §9): default -> edit -> plan ->
 # bypass -> back to default. A tuple so :func:`next_mode` is a pure index step.
 _MODE_CYCLE: tuple[PermissionMode, ...] = (
@@ -144,6 +149,15 @@ def is_compact_command(line: str) -> bool:
     return line.strip() == _COMPACT_COMMAND
 
 
+def is_clear_command(line: str) -> bool:
+    """True when ``line`` is the ``/clear`` command (ignoring surrounding whitespace).
+
+    Pure (mirrors :func:`is_compact_command`): exact match after a strip — ``"/clear"`` and
+    ``"  /clear  "`` are the command; ``"/clearx"`` / ``"clear"`` / ``"/compact"`` are not.
+    """
+    return line.strip() == _CLEAR_COMMAND
+
+
 def footer_hint(agent: str, mode: str) -> str:
     """The bottom-toolbar hint: the live agent + mode, then the interaction keys (plain text).
 
@@ -154,7 +168,7 @@ def footer_hint(agent: str, mode: str) -> str:
     """
     return (
         f"agent:{agent} mode:{mode} | Enter steer | Alt+Enter follow-up | "
-        "Esc abort | Shift+Tab mode | /agent /mode /compact /quit"
+        "Esc abort | Shift+Tab mode | /agent /mode /compact /clear /quit"
     )
 
 
@@ -246,6 +260,7 @@ class SlashCompleter(Completer):
             _AGENT_COMMAND: "switch the active agent (/agent <name>)",
             _MODE_COMMAND: "switch the permission mode (/mode <name>)",
             _COMPACT_COMMAND: "compact the conversation now",
+            _CLEAR_COMMAND: "clear the conversation (summarizes to memory first)",
             _QUIT_COMMAND: "exit decode",
         }
         self._meta.update(
@@ -383,6 +398,42 @@ async def _handle_compact_command(
         return
     if not await handler.compact():
         emit(_COMPACT_NOTHING)
+
+
+# The inline lines the ``/clear`` command renders (mirroring the ``/compact`` pair, plus a
+# confirmation — unlike ``/compact`` there is no event to render, so the command says what it did).
+_CLEAR_DONE = "Decode - conversation cleared."
+_CLEAR_NOTHING = "Decode - nothing to clear yet."
+_CLEAR_BUSY = "Decode - busy; try /clear again once the turn finishes."
+
+
+async def _handle_clear_command(
+    handler: AgentTurnHandler,
+    runner: Runner,
+    *,
+    cwd: Path,
+    emit: Callable[[str], None],
+) -> None:
+    """Wipe the conversation now — the ``/clear`` command (compaction-to-zero).
+
+    Idle-only, exactly like ``/compact`` (the handler owns the live ``message_history``; wiping
+    mid-turn would corrupt the leg mutating it): busy → one line, turn untouched. Idle with an
+    empty history → nothing to wipe, say so. Otherwise **summarize, then wipe**: the pre-clear
+    history first feeds the same non-fatal MEMORY.md write-back the quit path runs (``/clear`` is
+    a soft session boundary — every segment still contributes to cross-session memory; a missing
+    key / failure no-ops), then :meth:`~decode.agent.loop.AgentTurnHandler.clear` resets the
+    handler and rides a ``clear`` marker into the session log so ``--resume`` replays to the
+    post-clear state. One confirmation line renders.
+    """
+    if runner.phase is not Phase.IDLE:
+        emit(_CLEAR_BUSY)
+        return
+    if not handler.message_history:
+        emit(_CLEAR_NOTHING)
+        return
+    await extract_on_exit(handler.message_history, cwd)
+    handler.clear()
+    emit(_CLEAR_DONE)
 
 
 # The friendly inline line for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirrors the
@@ -940,6 +991,13 @@ async def run_app(
             # compaction now when idle, or reports busy mid-turn — never opening a second prompt.
             if is_compact_command(text):
                 await _handle_compact_command(handler, runner, emit=emit_line)
+                continue
+
+            # The conversation-wipe command, reserved like ``/compact`` (before the skill branch)
+            # so a ``clear`` skill can never shadow it: summarize-then-wipe when idle, a busy line
+            # mid-turn — never opening a second prompt.
+            if is_clear_command(text):
+                await _handle_clear_command(handler, runner, cwd=deps.cwd, emit=emit_line)
                 continue
 
             # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved

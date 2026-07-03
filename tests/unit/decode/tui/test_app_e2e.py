@@ -1120,3 +1120,85 @@ async def test_run_app_docker_mode_degrades_to_lazy_when_the_warm_up_fails(monke
 
     assert "will retry on the first bash command" in output  # the friendly degrade line
     assert ran == ["echo sandboxed"]  # the SAME memoized executor served the turn lazily
+
+
+async def test_run_app_clear_wipes_the_history_and_summarizes_first(monkeypatch, sessions_dir):
+    """``/clear`` mid-session: summarize-before-wipe, the next turn starts fresh, the marker persists.
+
+    The full interactive wiring in one pass: (a) the PRE-clear history feeds the same memory
+    write-back the quit path runs (captured — no network), (b) the confirmation line renders,
+    (c) the next turn's model request carries NOTHING from before the clear (the model genuinely
+    starts fresh), (d) the session log gained a ``clear`` marker so ``--resume`` replays to the
+    post-clear state, and (e) the ``/quit`` write-back then sees ONLY the post-clear segment
+    (the wiped turns are never double-summarized).
+    """
+    import json
+
+    extract_calls: list[list[ModelMessage]] = []
+
+    async def fake_extract(messages, cwd):
+        extract_calls.append(list(messages))
+
+    monkeypatch.setattr(app_mod, "extract_on_exit", fake_extract)
+
+    captured: list[list[ModelMessage]] = []
+    replies = iter(["FIRST-TURN-REPLY", "SECOND-TURN-REPLY"])
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        captured.append(list(messages))
+        yield next(replies)
+
+    agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
+        FunctionModel(stream_function=stream_function),
+        deps_type=AgentDeps,
+        output_type=[str, DeferredToolRequests],
+    )
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("pre-clear-secret-prompt")
+        await _wait_for(buf, "FIRST-TURN-REPLY")
+        send("/clear")
+        await _wait_for(buf, "conversation cleared")
+        send("post-clear prompt")
+        await _wait_for(buf, "SECOND-TURN-REPLY")
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "Decode - conversation cleared." in output  # (b)
+    # (c) the post-clear turn's model request carries nothing from before the clear.
+    second_leg = captured[-1]
+    texts = [str(part.content) for message in second_leg for part in getattr(message, "parts", [])]
+    assert not any("pre-clear-secret-prompt" in t for t in texts)
+    assert any("post-clear prompt" in t for t in texts)
+    # (a)+(e) summarize-before-wipe: /clear saw the pre-clear segment; /quit only the post-clear one.
+    assert len(extract_calls) == 2
+    assert any("pre-clear-secret-prompt" in str(m) for m in extract_calls[0])
+    assert not any("pre-clear-secret-prompt" in str(m) for m in extract_calls[1])
+    # (d) the clear marker rode the append-only session log (resume honesty).
+    session_file = next(sessions_dir.glob("*.jsonl"))
+    types = [
+        json.loads(line)["type"]
+        for line in session_file.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert "clear" in types
+
+
+async def test_run_app_clear_on_an_empty_session_is_a_friendly_line(monkeypatch):
+    """``/clear`` with nothing said yet: one friendly line, no crash, the session stays usable."""
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/clear")
+        await _wait_for(buf, "nothing to clear")
+        send("what can you do?")
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script)
+
+    assert "Decode - nothing to clear yet." in output
+    assert _CHAT_REPLY in output  # the REPL kept working after the no-op clear

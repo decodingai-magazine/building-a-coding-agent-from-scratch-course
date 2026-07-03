@@ -232,6 +232,43 @@ def test_compact_then_resume_replays_the_compacted_history(tmp_path: Path):
     assert replayed == [summary, *turn3]
 
 
+def test_append_clear_then_load_replays_empty(tmp_path: Path):
+    # header -> turn1 -> turn2 -> clear replays to [] — compaction-to-zero (the /clear marker).
+    import json
+
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    log.append_turn(_conversation("q1", "a1"))
+    log.append_turn(_conversation("q2", "a2"))
+
+    log.append_clear()
+
+    lines = [ln for ln in log.path.read_text(encoding="utf-8").splitlines() if ln]
+    assert json.loads(lines[-1]) == {"type": "clear"}  # one typed marker line, nothing else
+    assert session_log.load(log.path) == []
+
+
+def test_turns_after_a_clear_replay_from_empty(tmp_path: Path):
+    # ... -> clear -> turn3 replays to [*turn3]: only the post-clear conversation resumes.
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    log.append_turn(_conversation("q1", "a1"))
+    log.append_clear()
+    turn3 = _conversation("q3", "a3")
+    log.append_turn(turn3)
+
+    assert session_log.load(log.path) == turn3
+
+
+def test_clear_discards_an_earlier_compaction_checkpoint(tmp_path: Path):
+    # compaction -> clear: file order wins — the clear replays to [], not [summary, *tail].
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+    tail = _conversation("q1", "a1")
+    log.append_turn(tail)
+    log.append_compaction(_summary_message(), tail)
+    log.append_clear()
+
+    assert session_log.load(log.path) == []
+
+
 def test_turns_after_a_compaction_continue_the_compacted_history(tmp_path: Path):
     # ... -> compaction(summary, tail) -> turn4 replays to [summary, *tail, *turn4].
     log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)

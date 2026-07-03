@@ -329,6 +329,28 @@ class AgentTurnHandler:
         )
         return True
 
+    def clear(self) -> None:
+        """Reset the conversation to empty — the body of ``/clear`` (compaction-to-zero).
+
+        Wipes the cross-turn ``message_history`` (the model starts fresh on the next turn), zeroes
+        the persisted-count cursor and the footer-gauge token read, and drops the announced-tool-
+        call dedup set. When a session log is wired, one ``clear`` marker line is appended FIRST so
+        a later ``--resume`` replays to the post-clear state instead of resurrecting the wiped
+        turns (the same discard-and-restart replay path a compaction checkpoint uses, restarting
+        from ``[]`` — the file stays append-only). Persistence never breaks the command: an
+        ``OSError`` is logged and swallowed, like :meth:`_persist_turn`. The summarize-before-wipe
+        memory write-back lives at the call site (``tui/app.py``), which owns exit-path parity.
+        """
+        if self._session_log is not None:
+            try:
+                self._session_log.append_clear()
+            except OSError:
+                logger.warning("failed to persist the clear marker", exc_info=True)
+        self.message_history = []
+        self._persisted_count = 0
+        self._last_input_tokens = 0
+        self._announced_tool_calls.clear()
+
     def _microcompact(self) -> None:
         """Microcompaction: blank old tool-output bodies, **in memory only** (ADR-0006 §3a).
 
