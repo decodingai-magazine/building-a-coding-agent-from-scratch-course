@@ -105,6 +105,22 @@ def _get_executor() -> CommandExecutor:
     return _EXECUTOR
 
 
+def install_executor(executor: CommandExecutor) -> None:
+    """Install ``executor`` as the cached ``bash`` executor for a flow span (ADR-0011 §6).
+
+    The one hook the headless Credential Proxy uses: :func:`decode.runtime.flow._sandbox_proxy` builds
+    a proxy-wired :class:`~decode.sandbox.docker_executor.DockerExecutor` host-side and installs it here
+    so every sandboxed ``bash`` in that flow routes through the proxy instead of the plain executor
+    :func:`_get_executor` would lazily select. Mirrors
+    :func:`decode.tools.sleep.install_durable_sleeper`: it sets the module seam **and** marks selection
+    done (so ``_get_executor`` returns this instance, not a freshly-selected one). Paired with
+    :func:`close_executor`, which reaps it and resets the seam on flow exit.
+    """
+    global _EXECUTOR, _executor_selected
+    _EXECUTOR = executor
+    _executor_selected = True
+
+
 def reset_executor() -> None:
     """Clear the executor selection memo (no teardown) — test hermeticity (ADR-0011 §4).
 

@@ -45,6 +45,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from kitaru import checkpoint, flow, save
 from kitaru.adapters.pydantic_ai import KitaruAgent, wait_for_input
@@ -214,6 +215,61 @@ def _reap_runtime_executor() -> None:
         loop.close()
 
 
+@contextmanager
+def _sandbox_proxy() -> Iterator[None]:
+    """Run the docker Credential Proxy for a headless flow span, tear it down on exit (ADR-0011 §6).
+
+    Engaged **only** when ``settings.sandbox_mode == "docker"`` **and**
+    ``settings.sandbox_credential_proxy_enabled`` — otherwise a pure no-op that yields immediately,
+    imports nothing, and touches no seam, so every ``none`` / ``modal`` / proxy-disabled headless flow
+    stays byte-unchanged and the REPL never imports :mod:`decode.sandbox.proxy` or kitaru. When engaged
+    it (1) resolves the credential map host-side from :data:`~decode.sandbox.proxy.DEFAULT_PROXY_RULES`,
+    (2) starts a ``mitmproxy`` addon container on a per-run docker network, (3) installs a proxy-wired
+    :class:`~decode.sandbox.docker_executor.DockerExecutor` as ``bash``'s executor for the flow span
+    (the task-074 seam via :func:`decode.tools.bash.install_executor`), and (4) tears it all down.
+
+    Teardown order is load-bearing and loop-independent (ADR-0011 §4): reap the **worker** first
+    (:func:`_reap_runtime_executor` — ``docker rm -f`` + reset the bash seam), THEN
+    :meth:`~decode.sandbox.proxy.DockerCredentialProxy.stop` the proxy container + remove the network
+    (``docker network rm`` fails while the worker is still attached). ``proxy.stop()`` runs even if
+    ``proxy.start()`` raised partway, so a half-built proxy still cleans up. Mirrors
+    :func:`_config_from_secret_store` / :func:`_durable_sleeper` (install a flow-span seam, restore it
+    on exit) and nests **inside** ``_config_from_secret_store`` so a proxy rule reads config already
+    hydrated from the Kitaru secret.
+    """
+    if not (settings.sandbox_mode == "docker" and settings.sandbox_credential_proxy_enabled):
+        yield
+        return
+    # Lazy imports: only an enabled docker headless flow pulls in the sandbox proxy (REPL stays clean).
+    from decode.sandbox.docker_executor import DockerExecutor
+    from decode.sandbox.proxy import (
+        DEFAULT_PROXY_RULES,
+        DockerCredentialProxy,
+        build_credential_map,
+    )
+    from decode.tools.bash import install_executor
+
+    proxy = DockerCredentialProxy(build_credential_map(DEFAULT_PROXY_RULES))
+    try:
+        proxy.start()
+        install_executor(
+            DockerExecutor(
+                network=proxy.network,
+                proxy_env=proxy.worker_proxy_env,
+                ca_cert_host_path=proxy.ca_cert_host_path,
+            )
+        )
+        try:
+            yield
+        finally:
+            # Reap the worker BEFORE the proxy: ``_reap_runtime_executor`` does ``docker rm -f`` on the
+            # worker (detaching it from the network) and resets the bash seam. The outer flow ``finally``
+            # calls it again — harmless (idempotent: it finds the reset LocalExecutor and no-ops).
+            _reap_runtime_executor()
+    finally:
+        proxy.stop()
+
+
 def _build_runtime_agent(
     model: str | None = None,
 ) -> KitaruAgent[AgentDeps, str | DeferredToolRequests]:
@@ -231,12 +287,26 @@ def _build_runtime_agent(
     ``model`` is the **Model Override** (ADR-0010 §2) threaded from :func:`run_agent_task`: ``None``
     (the default) reads ``settings.<provider>_model``, byte-unchanged; a value overrides only the
     active provider's model id, which is what lets Kitaru swap it on a what-if Replay.
+
+    **Replay-safety for sandbox bash (ADR-0011 §5).** A sandbox ``bash`` has real shell side effects,
+    so a cached checkpoint would serve a stale, side-effect-free result on a ``decode replay`` (which
+    is bypass-only). When ``settings.sandbox_mode != "none"`` this configures ``bash`` to
+    **re-execute on replay** instead — ``checkpoint_strategy="calls"`` (the default) plus
+    ``tool_checkpoint_config_by_name={BASH_TOOL_NAME: {"cache": False}}``, which keeps the per-call
+    checkpoint but disables its cache. Verified on kitaru 0.18: ``CheckpointConfig`` is a
+    ``TypedDict(total=False)``, so ``{"cache": False}`` is a valid per-tool config that KEEPS the
+    checkpoint — a bare ``False`` would DROP it (the HITL waiter opt-out) and lose replay-readiness. In
+    ``none`` mode no such kwarg is passed, so the ``KitaruAgent`` build is byte-identical to task 070.
     """
     agent = build_agent(flow_mode=True, model=model)
+    replay_safety: dict[str, Any] = {}
+    if settings.sandbox_mode != "none":
+        replay_safety["tool_checkpoint_config_by_name"] = {BASH_TOOL_NAME: {"cache": False}}
     return KitaruAgent(
         agent,
         name=RUNTIME_AGENT_NAME,
         checkpoint_strategy=settings.runtime_checkpoint_strategy,
+        **replay_safety,
     )
 
 
@@ -297,14 +367,17 @@ def run_agent_task(task: str, model: str | None = None) -> str:
 
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store`, so ``build_agent`` reads config hydrated from the Kitaru secret;
-    off (the default) it is a no-op and behaviour is byte-unchanged.
+    off (the default) it is a no-op and behaviour is byte-unchanged. It nests
+    :func:`_sandbox_proxy` (ADR-0011 §6): with ``sandbox_mode == "docker"`` and the Credential Proxy
+    enabled, the run's sandboxed ``bash`` routes through a mitmproxy container so the token-free worker
+    makes authenticated tool calls; off/non-docker it is a no-op and the flow is byte-unchanged.
 
     The whole body runs under a ``finally`` that reaps the sandbox executor
     (:func:`_reap_runtime_executor`, ADR-0011 §4), so a ``decode run`` tears down its Docker container /
     Modal sandbox on completion **and** on error. A no-op in ``none`` mode.
     """
     try:
-        with _config_from_secret_store():
+        with _config_from_secret_store(), _sandbox_proxy():
             durable_agent = _build_runtime_agent(model)
             deps = _build_headless_deps()
             result = durable_agent.run_sync(task, deps=deps)
@@ -444,7 +517,7 @@ def run_agent_task_hitl(task: str, model: str | None = None) -> str:
     (:func:`_reap_runtime_executor`, ADR-0011 §4) on completion, error, or the deny-return path.
     """
     try:
-        with _config_from_secret_store():
+        with _config_from_secret_store(), _sandbox_proxy():
             durable_agent = _build_hitl_runtime_agent(model)
             deps = _build_hitl_deps()
             # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a

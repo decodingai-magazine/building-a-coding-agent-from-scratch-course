@@ -16,9 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from decode.config.settings import settings
 from decode.sandbox.docker_executor import (
     _DAEMON_LOST_EXIT,
     _SHELL_ENDED_EXIT,
+    _WORKER_CA_PATH,
     DockerExecutor,
     _build_payload,
     _make_marker,
@@ -208,6 +210,122 @@ async def test_read_until_marker_returns_none_on_an_oversized_line():
     out: list[bytes] = []
 
     assert await _read_until_marker(shell, marker, out) is None  # type: ignore[arg-type]
+
+
+# --- Credential-Proxy wiring: the docker run argv (byte-identical off the proxy path) ---------
+
+
+def test_docker_run_args_are_byte_identical_without_proxy_wiring():
+    # The non-proxy caller (select_executor, every 072/074 test) must produce the EXACT task-072
+    # command: no --network, no -e, no CA mount, and a bare ``sleep infinity`` entry.
+    args = DockerExecutor()._docker_run_args(Path("/repo"))
+
+    assert args == [
+        "run",
+        "-d",
+        "--rm",
+        "-v",
+        f"/repo:{_workspace()}",
+        "-w",
+        _workspace(),
+        settings.sandbox_image,
+        "sleep",
+        "infinity",
+    ]
+
+
+def _fake_proc(mocker, *, stdout=b"", returncode=0):
+    """A fake asyncio subprocess: awaitable ``communicate`` + a ``returncode`` (no real process)."""
+    proc = mocker.MagicMock()
+    proc.communicate = mocker.AsyncMock(return_value=(stdout, b""))
+    proc.returncode = returncode
+    proc.kill = mocker.MagicMock()
+    proc.wait = mocker.AsyncMock()
+    return proc
+
+
+async def test_ensure_container_trusts_the_ca_synchronously_on_the_proxy_path(mocker):
+    # The CA-trust race fix: on the proxy path _ensure_container runs ``docker exec <id>
+    # update-ca-certificates`` and WAITS for it before returning, so the first command already trusts
+    # the CA (no daemon — the docker run + docker exec are faked).
+    run_proc = _fake_proc(mocker, stdout=b"container123\n")
+    exec_proc = _fake_proc(mocker, stdout=b"updated\n")
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc, exec_proc])
+    )
+    executor = DockerExecutor(ca_cert_host_path=Path("/host/mitmproxy-ca-cert.pem"))
+
+    cid = await executor._ensure_container(Path("/repo"))
+
+    assert cid == "container123"
+    assert spawn.await_count == 2  # docker run, THEN docker exec update-ca-certificates
+    exec_argv = spawn.await_args_list[1].args
+    assert exec_argv[:4] == ("docker", "exec", "container123", "update-ca-certificates")
+
+
+async def test_ensure_container_runs_no_ca_step_off_the_proxy_path(mocker):
+    # Byte-identical non-proxy path: ONLY the docker run — no update-ca-certificates docker exec.
+    run_proc = _fake_proc(mocker, stdout=b"cid\n")
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc])
+    )
+    executor = DockerExecutor()  # no proxy wiring
+
+    await executor._ensure_container(Path("/repo"))
+
+    assert spawn.await_count == 1  # the docker run only — no CA step on the non-proxy path
+
+
+async def test_trust_proxy_ca_reaps_the_worker_and_raises_on_failure(mocker):
+    # A non-zero update-ca-certificates reaps the just-created worker (no leak) and raises, so run()'s
+    # infra handler renders it for the model rather than silently continuing without a trusted CA.
+    exec_proc = _fake_proc(mocker, stdout=b"boom\n", returncode=1)
+    mocker.patch("asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[exec_proc]))
+    reap = mocker.patch("decode.sandbox.docker_executor._run_docker_quiet", new=mocker.AsyncMock())
+    executor = DockerExecutor(ca_cert_host_path=Path("/host/ca.pem"))
+
+    with pytest.raises(RuntimeError, match="update-ca-certificates failed"):
+        await executor._trust_proxy_ca("cid123")
+
+    reap.assert_awaited_once()  # the worker was reaped, not leaked
+
+
+def test_docker_run_args_add_network_env_and_ca_mount_when_wired():
+    executor = DockerExecutor(
+        network="decode-sandbox-net-abc",
+        proxy_env={"http_proxy": "http://decode-proxy-abc:8080", "no_proxy": "localhost"},
+        ca_cert_host_path=Path("/host/certs/mitmproxy-ca-cert.pem"),
+    )
+
+    args = executor._docker_run_args(Path("/repo"))
+
+    # The non-proxy prefix is unchanged; proxy flags are additive and in a stable order.
+    assert args[:7] == ["run", "-d", "--rm", "-v", f"/repo:{_workspace()}", "-w", _workspace()]
+    assert "--network" in args and args[args.index("--network") + 1] == "decode-sandbox-net-abc"
+    assert "-e" in args
+    assert "http_proxy=http://decode-proxy-abc:8080" in args
+    assert "no_proxy=localhost" in args
+    # The CA is bind-mounted read-only at the worker trust path.
+    assert f"/host/certs/mitmproxy-ca-cert.pem:{_WORKER_CA_PATH}:ro" in args
+    # The entry command stays a bare ``sleep infinity`` (the CA is trusted by a synchronous docker exec
+    # after create, NOT a PID-1 entry step — the fix for the first-command CA-trust race).
+    assert args[-3:] == [settings.sandbox_image, "sleep", "infinity"]
+
+
+def test_proxy_wiring_defaults_to_none_so_construction_stays_inert():
+    # A default DockerExecutor carries no proxy wiring — the select_executor path is unchanged.
+    executor = DockerExecutor()
+
+    assert executor._network is None
+    assert executor._proxy_env is None
+    assert executor._ca_cert_host_path is None
+
+
+def _workspace() -> str:
+    """The container-side workspace path the argv uses (kept in one place for the assertions above)."""
+    from decode.sandbox.docker_executor import _WORKSPACE
+
+    return _WORKSPACE
 
 
 # --- construction / teardown laziness (no subprocess without a run) ---------------------------

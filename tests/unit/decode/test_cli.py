@@ -111,6 +111,29 @@ def test_importing_the_cli_does_not_import_kitaru():
     assert proc.returncode == 0, proc.stderr
 
 
+def test_importing_the_cli_does_not_import_the_sandbox_credential_proxy():
+    """The REPL never builds the Credential Proxy: it is headless + docker only (ADR-0011 §6).
+
+    ``decode.sandbox.proxy`` is imported **lazily**, only inside the headless flow's ``_sandbox_proxy``
+    when docker mode + the proxy are enabled — so importing ``decode.cli`` (the REPL path) must never
+    pull it in. A fresh interpreter keeps the check honest regardless of the rest of the suite.
+    """
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import decode.cli, sys; assert 'decode.sandbox.proxy' not in sys.modules",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_cli_accepts_resume_flag():
     result = CliRunner().invoke(cli, ["--resume"])
     assert result.exit_code == 0

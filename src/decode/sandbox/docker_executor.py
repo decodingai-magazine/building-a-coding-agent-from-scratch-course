@@ -4,7 +4,8 @@
 Protocol) that runs model-chosen commands inside **one session-persistent Docker container**,
 driving a **single long-lived bash shell** so ``cd`` / ``export`` / ``pip install`` persist across
 ``bash`` calls within a session — the canonical DockerSandbox shape. It is a directly-tested class
-here; wiring it into ``bash``'s selection seam is task 074, and the Credential Proxy is task 075.
+here; wiring it into ``bash``'s selection seam is task 074, and its optional Credential-Proxy wiring
+(``network`` / ``proxy_env`` / ``ca_cert_host_path``) is task 075 (ADR-0011 §6).
 
 **Docker CLI, not the SDK (ADR-0011 Alternatives).** Every docker interaction is the standard
 ``docker`` CLI shelled out with :mod:`asyncio` subprocesses — dependency-free (the docker Python SDK
@@ -82,6 +83,18 @@ logger = logging.getLogger(__name__)
 # The container-side workspace: the bind-mount target and the shell's initial (post-reset) cwd.
 _WORKSPACE = "/workspace"
 
+# Where the Credential Proxy's mitmproxy CA is bind-mounted inside the worker (ADR-0011 §6). A
+# ``.crt`` under ``/usr/local/share/ca-certificates`` is exactly what ``update-ca-certificates`` folds
+# into the system trust store, so an outbound HTTPS request through the proxy validates. Only used on
+# the proxy path (``ca_cert_host_path`` set); the non-proxy ``docker run`` never references it.
+_WORKER_CA_PATH = "/usr/local/share/ca-certificates/mitmproxy-ca-cert.crt"
+
+# Bound (seconds) for the synchronous ``docker exec update-ca-certificates`` that folds the proxy CA
+# into the worker's trust store before the first command (ADR-0011 §6). The op itself is sub-second;
+# this is a safety net against a wedged ``docker exec`` (no ``sandbox_startup_timeout_s`` setting
+# exists — a fixed internal bound, not user-tunable). Proxy path only.
+_CA_TRUST_TIMEOUT_S = 60.0
+
 # Grace between SIGTERM and the SIGKILL escalation when the shell's process group ignores the polite
 # signal — deliberately short (mirrors ``LocalExecutor._KILL_GRACE_S``; a timed-out shell is already
 # over its deadline). Bounds the drain/reap of a torn-down or timed-out shell.
@@ -128,9 +141,31 @@ class DockerExecutor:
     started lazily on the first :meth:`run`. Not safe for concurrent :meth:`run` calls on one
     instance (one shell, read one command at a time) — decode drives ``bash`` one call at a time.
     Call :meth:`aclose` to tear the container down (task 074 wires it into the exit path).
+
+    **Optional Credential-Proxy wiring (ADR-0011 §6, task 075).** This is :class:`DockerExecutor`'s
+    second caller. When the headless flow runs the Credential Proxy it constructs the worker with
+    plain-typed proxy params — a docker ``network`` to join, ``proxy_env`` (``http_proxy`` /
+    ``https_proxy`` → the proxy container), and ``ca_cert_host_path`` (the host path to the proxy's
+    mitmproxy CA, bind-mounted into the worker). On the first :meth:`run` the CA is folded into the
+    worker's trust store by a **synchronous** ``docker exec update-ca-certificates`` inside
+    :meth:`_ensure_container` — *before* it returns the container as ready — so the very first ``bash``
+    (a lazily-created worker) already trusts the CA and an HTTPS tool call validates, with **no race**
+    against a still-booting step. **No proxy type leaks in** — they are ``str`` / ``dict`` / ``Path``.
+    With all three at their ``None`` defaults (every non-proxy caller — ``select_executor``, the tests)
+    the ``docker run`` is **byte-identical** to before this task and no CA step runs.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        network: str | None = None,
+        proxy_env: dict[str, str] | None = None,
+        ca_cert_host_path: Path | None = None,
+    ) -> None:
+        # Optional Credential-Proxy wiring (all ``None`` off the proxy path → byte-identical run).
+        self._network = network
+        self._proxy_env = proxy_env
+        self._ca_cert_host_path = ca_cert_host_path
         self._container_id: str | None = None
         self._shell: asyncio.subprocess.Process | None = None
         # The event loop the persistent shell subprocess was created on. ``aclose`` compares it to the
@@ -294,16 +329,7 @@ class DockerExecutor:
         abs_cwd = cwd.resolve()
         proc = await asyncio.create_subprocess_exec(
             "docker",
-            "run",
-            "-d",
-            "--rm",
-            "-v",
-            f"{abs_cwd}:{_WORKSPACE}",
-            "-w",
-            _WORKSPACE,
-            settings.sandbox_image,
-            "sleep",
-            "infinity",
+            *self._docker_run_args(abs_cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -317,9 +343,78 @@ class DockerExecutor:
         self._container_id = _decode(stdout).strip()
         self._mounted_cwd = abs_cwd
         logger.info(
-            "[sandbox] docker start %s image=%s", self._container_id, settings.sandbox_image
+            "[sandbox] docker start %s image=%s%s",
+            self._container_id,
+            settings.sandbox_image,
+            " (proxy-wired)" if self._ca_cert_host_path is not None else "",
         )
+        if self._ca_cert_host_path is not None:
+            # Fold the mounted mitmproxy CA into the worker's trust store **synchronously, before
+            # returning the container as ready** — so the very first ``bash`` (a lazily-created worker)
+            # already trusts the proxy CA and an HTTPS tool call validates. Doing it here (not as a
+            # PID-1 entry step) closes the race the old ``bash -c "update-ca-certificates && …"`` had:
+            # ``docker run -d`` returns before that step finished, so the first ``docker exec`` landed in
+            # the untrusted window (ADR-0011 §6). Proxy path only; the non-proxy container never runs it.
+            await self._trust_proxy_ca(self._container_id)
         return self._container_id
+
+    def _docker_run_args(self, abs_cwd: Path) -> list[str]:
+        """Build the ``docker run`` argv for the keeper container (proxy wiring is additive).
+
+        With no Credential-Proxy wiring (every non-proxy caller) this is **byte-identical** to the
+        task-072 command: ``run -d --rm -v <cwd>:/workspace -w /workspace <image> sleep infinity``. On
+        the proxy path (task 075) it additionally joins ``--network``, sets each ``proxy_env`` var
+        (``http_proxy`` / ``https_proxy`` → the proxy container), and bind-mounts the mitmproxy CA
+        read-only. The entry command stays ``sleep infinity`` in **both** cases — the CA is trusted by a
+        synchronous :meth:`_trust_proxy_ca` after create (not a PID-1 entry step), which is what closes
+        the first-command CA-trust race. Order is fixed so the non-proxy prefix never shifts.
+        """
+        args = ["run", "-d", "--rm", "-v", f"{abs_cwd}:{_WORKSPACE}", "-w", _WORKSPACE]
+        if self._network is not None:
+            args += ["--network", self._network]
+        for key, value in (self._proxy_env or {}).items():
+            args += ["-e", f"{key}={value}"]
+        if self._ca_cert_host_path is not None:
+            args += ["-v", f"{self._ca_cert_host_path}:{_WORKER_CA_PATH}:ro"]
+        args += [settings.sandbox_image, "sleep", "infinity"]
+        return args
+
+    async def _trust_proxy_ca(self, container_id: str) -> None:
+        """Fold the mounted mitmproxy CA into the worker's trust store, synchronously (ADR-0011 §6).
+
+        Runs ``docker exec <id> update-ca-certificates`` and **waits for it to finish** so the CA is in
+        the system trust store before :meth:`_ensure_container` returns — the fix for the first-command
+        CA-trust race (a lazily-created worker's first ``bash`` used to race a PID-1
+        ``update-ca-certificates``, so the first HTTPS tool call failed ``CERTIFICATE_VERIFY_FAILED``).
+        Runs on ``run_sync``'s loop (setup — same loop the shell will use), so there is no cross-loop
+        concern. Bounded by :data:`_CA_TRUST_TIMEOUT_S`. On failure (non-zero / timeout) the just-created
+        container is reaped and a :class:`RuntimeError` is raised — caught by :meth:`run`'s infra-failure
+        handler and rendered for the model (never a silent leak, never a crash). Proxy path only.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            container_id,
+            "update-ca-certificates",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,  # one stream: update-ca-certificates chats on stderr
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CA_TRUST_TIMEOUT_S)
+        except TimeoutError:
+            proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()  # reap the killed exec (no zombie / ResourceWarning)
+            await _run_docker_quiet("rm", "-f", container_id)  # don't leak the worker
+            raise RuntimeError(
+                f"update-ca-certificates timed out after {_CA_TRUST_TIMEOUT_S:g}s"
+            ) from None
+        if proc.returncode != 0:
+            await _run_docker_quiet("rm", "-f", container_id)  # don't leak the worker
+            raise RuntimeError(
+                f"update-ca-certificates failed (exit {proc.returncode}): {_decode(stdout).strip()}"
+            )
+        logger.info("[sandbox] proxy CA trusted in worker %s", container_id[:12])
 
     async def _ensure_shell(self, container_id: str) -> asyncio.subprocess.Process:
         """Return the live persistent shell, lazily (re)spawning it after a reset (ADR-0011 §2).
