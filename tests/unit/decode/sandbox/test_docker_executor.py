@@ -501,3 +501,73 @@ async def test_run_lets_an_unexpected_error_surface(mocker):
 
     with pytest.raises(ValueError, match="a real bug"):
         await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+
+# --- container-leak safety: a failed shell startup still reaps the container -------------------------
+
+
+async def test_run_force_removes_the_container_when_shell_startup_fails(mocker):
+    # Regression (PR #21 nit): _ensure_container brings the keeper container up (``sleep infinity``), but
+    # _ensure_shell THEN raises an OSError-family error (e.g. BrokenPipeError draining the ``exec 2>&1``
+    # startup). The old except handler nulled _container_id via _discard_session WITHOUT a ``docker rm -f``,
+    # so ``--rm`` (which only reaps when the container stops, and ``sleep infinity`` never does) left the
+    # still-running container orphaned. run() must force-remove that already-captured container id —
+    # loop-free, via the SAME ``docker rm -f`` path aclose uses — before discarding the session.
+    executor = DockerExecutor()
+    # A real _ensure_container run (faked ``docker run``) so self._container_id is genuinely captured.
+    run_proc = _fake_proc(mocker, stdout=b"container123\n")
+    mocker.patch("asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc]))
+    mocker.patch.object(
+        executor, "_ensure_shell", side_effect=BrokenPipeError("exec 2>&1 drain broke")
+    )
+    reap = mocker.patch("decode.sandbox.docker_executor._run_docker_quiet", new=mocker.AsyncMock())
+
+    result = await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+    # The container that came up is force-removed — not orphaned — via aclose's loop-free ``docker rm -f``.
+    reap.assert_awaited_once_with("rm", "-f", "container123")
+    assert result.exit_code == _DAEMON_LOST_EXIT  # still a rendered failure, never a crash
+    assert executor._container_id is None  # the session is discarded AFTER the reap
+    assert executor._shell is None
+
+
+async def test_run_removes_nothing_when_no_container_was_created(mocker):
+    # Guard the already-fine common daemon-down path (task-074): _ensure_container raises BEFORE any
+    # container id is captured, so there is nothing to remove — the leak fix's ``if _container_id is not
+    # None`` guard must skip ``docker rm -f`` entirely and add no new error to the rendered failure.
+    executor = DockerExecutor()
+    mocker.patch.object(
+        executor,
+        "_ensure_container",
+        side_effect=RuntimeError("Cannot connect to the Docker daemon"),
+    )
+    reap = mocker.patch("decode.sandbox.docker_executor._run_docker_quiet", new=mocker.AsyncMock())
+
+    result = await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+    reap.assert_not_awaited()  # no container id → nothing to remove
+    assert result.exit_code == _DAEMON_LOST_EXIT  # still the rendered daemon-lost failure
+    assert executor._container_id is None
+
+
+async def test_run_does_not_remove_the_container_on_a_successful_command(mocker):
+    # Guard the happy path: a normal run() reuses the live session container and must NOT force-remove it —
+    # the leak fix's ``docker rm -f`` lives only on the shell-startup failure path, never on success.
+    executor = DockerExecutor()
+    executor._container_id = "cid-live"  # container already up (reused this session)
+    executor._mounted_cwd = Path("/repo").resolve()  # matches cwd → _ensure_container early-returns
+    marker = "__DECODE_END_fixed__"
+    mocker.patch("decode.sandbox.docker_executor._make_marker", return_value=marker)
+    # A fake persistent shell: stdin swallows the payload, stdout emits output then the marker+$? line.
+    shell = _FakeShell(_FakeReader([b"hi\n", f"{marker} 0\n".encode()]))
+    shell.stdin = mocker.MagicMock()
+    shell.stdin.drain = mocker.AsyncMock()
+    mocker.patch.object(executor, "_ensure_shell", return_value=shell)
+    reap = mocker.patch("decode.sandbox.docker_executor._run_docker_quiet", new=mocker.AsyncMock())
+
+    result = await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+
+    assert result.exit_code == 0
+    assert result.stdout == "hi"
+    reap.assert_not_awaited()  # the container is reused, not removed
+    assert executor._container_id == "cid-live"  # session preserved

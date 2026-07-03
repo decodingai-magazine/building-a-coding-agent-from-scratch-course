@@ -203,6 +203,13 @@ class DockerExecutor:
             # the stale session so a later call re-attempts from scratch. Scoped to the KNOWN infra
             # exceptions — not a blanket ``except`` — so real bugs still surface.
             logger.warning("[sandbox] docker unavailable, sandbox session lost: %s", exc)
+            # If _ensure_container brought the keeper container up (``sleep infinity``) but _ensure_shell
+            # THEN failed (e.g. BrokenPipeError draining ``exec 2>&1``), the id is already captured —
+            # force-remove it BEFORE discarding so ``--rm`` (which only reaps on a stopped container, and
+            # ``sleep infinity`` never stops) does not orphan it. Reuses aclose's loop-free ``docker rm -f``
+            # path (the ONE teardown discipline). A no-op on the common daemon-down path (id is None).
+            if self._container_id is not None:
+                await _run_docker_quiet("rm", "-f", self._container_id)
             self._discard_session()
             return ExecResult(
                 "", str(exc), _DAEMON_LOST_EXIT, timed_out=False, note=_DAEMON_LOST_NOTE

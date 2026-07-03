@@ -26,7 +26,7 @@ zenml** (must not be relied on); `modal 1.5.1` is a first-class runtime dependen
 `App.lookup(name, create_if_missing=True)`; the canonical design lives in the kitaru repo
 `examples/end_to_end/agent_harness_platform` @ 90f123f and the kitaru.ai walkthrough "Stage 2 — Your
 agents need a sandbox" (decode **adapts** these; `SandboxProxyRule` / `build_credential_map` /
-`DockerProxy` are NOT in the `kitaru` package). mitmproxy runs **inside its own container** (official
+`DockerCredentialProxy` are NOT in the `kitaru` package). mitmproxy runs **inside its own container** (official
 `mitmproxy/mitmproxy` image + a mounted addon) — it is not a decode dependency.
 
 Project constraints honored: infrastructure is imported/called directly (no gateway); the interactive
@@ -114,7 +114,7 @@ reach the model or the sandbox payload** (AGENTS.md). This ADR is groomed into t
 6. **Credential Proxy — headless-only, docker-only, canonical (task 075).** Built exactly ADR-0008
    §5's three pieces, in `src/decode/sandbox/proxy.py`: `SandboxProxyRule` (per-host header templates),
    `build_credential_map(rules)` (host-side `{{ name.key }}` → value via `kitaru.get_secret(name).values`
-   → `{host:{header:value}}`), and a `DockerProxy` topology — a `mitmproxy/mitmproxy` addon container
+   → `{host:{header:value}}`), and a `DockerCredentialProxy` topology — a `mitmproxy/mitmproxy` addon container
    on a shared docker network, the worker pointed at it via `http_proxy`/`https_proxy` and trusting its
    CA. The resolved map is handed **only to the proxy container's env, never the worker's**. Engaged
    only from the headless flow (a `_sandbox_proxy()` context manager in `runtime/flow.py`, mirroring
