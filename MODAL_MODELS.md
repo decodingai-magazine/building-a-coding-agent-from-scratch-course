@@ -153,13 +153,22 @@ model with one command. Authoritative docs:
 > *Advanced Configurations* (Routing Region + Compute Placement). If a flag name has drifted, run
 > `modal endpoint create --help` — the CLI is the source of truth.
 
-### 5.1 Prerequisites — authenticate the CLI
+### 5.1 Prerequisites — authenticate the CLI (and the Modal Sandbox)
 
 ```bash
 # Installed already via pyproject (`modal>=1.5.1`); auth once:
 modal token set --token-id <your-token-id> --token-secret <your-token-secret>
 # or set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in your environment (see .env.example)
 ```
+
+> **Two Modal credential scopes — don't conflate them.** The `modal token set` pair
+> (`MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`) are your **account** tokens: they authenticate the Modal
+> CLI *and* the **Modal Sandbox** (`SANDBOX_MODE=modal`, [ADR-0011](docs/adr/0011-sandboxing-and-credential-proxy.md)) —
+> everything that acts as *you* on Modal (create/deploy endpoints, spin up a sandbox). They are
+> **distinct** from the **endpoint / proxy** tokens below (`MODAL_ENDPOINT_URL`, `MODAL_ENDPOINT_MODEL`,
+> and the optional `MODAL_PROXY_TOKEN_ID` / `MODAL_PROXY_TOKEN_SECRET`), which are how `decode` *calls*
+> your served LLM. Sandbox startup checks only that the **account** tokens are present (env pair or
+> `~/.modal.toml`); the endpoint/proxy tokens are irrelevant to the sandbox. See [`.env.example`](.env.example).
 
 ### 5.2 Create the endpoint
 
@@ -285,8 +294,8 @@ Selecting it is **shipped** (ADR-0005, tasks 037-039): set the **LLM Provider** 
    MODAL_PROXY_TOKEN_SECRET=ws-...          # Modal-Secret (optional — omit if --unauthenticated)
    ```
    These endpoint vars are **distinct** from the `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` account
-   tokens of §5.1 (the CLI/sandbox auth) — overloading the two scopes is exactly what ADR-0005 §2
-   avoids.
+   tokens of §5.1 (which authenticate the CLI and the Modal **Sandbox**, `SANDBOX_MODE=modal` — ADR-0011)
+   — overloading the two scopes is exactly what ADR-0005 §2 avoids.
 2. **The Provider Seam builds the model.** For `modal`, `_build_model()` constructs an
    `OpenAIChatModel` over a custom `AsyncOpenAI` client whose `base_url = f"{MODAL_ENDPOINT_URL}/v1"`
    — the bespoke client is needed for the per-user URL and the optional proxy-token headers.

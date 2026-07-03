@@ -4,7 +4,7 @@
 
 This repository is an **educational, open-source course** that builds `decode` from scratch, step by step. It is a single Python package (`decode`); each module under `src/decode/` maps to one part of the architecture.
 
-> **Status — Milestone 1 (vanilla on-device agent).** What's built today: the agent loop with **selectable LLM providers** (Gemini / OpenRouter / Modal — run it for free; see [LLM providers](#llm-providers)), the steering TUI, the core tools, the permission gate, memory, and a session log. Later milestones add sandboxing, observability (Opik), a durability runtime (Kitaru), and MCP — see [`AGENTS.md`](AGENTS.md) and the architecture decisions in [`docs/adr/0002-milestone-1-vanilla-agent-architecture.md`](docs/adr/0002-milestone-1-vanilla-agent-architecture.md) and [`docs/adr/0005-multi-llm-provider-support.md`](docs/adr/0005-multi-llm-provider-support.md).
+> **Status — Milestone 1 (vanilla on-device agent).** What's built today: the agent loop with **selectable LLM providers** (Gemini / OpenRouter / Modal — run it for free; see [LLM providers](#llm-providers)), the steering TUI, the core tools, the permission gate, memory, and a session log. Later milestones add observability (Opik) and MCP; the durability runtime (Kitaru — see [Headless runtime](#headless-runtime-decode-run)) and [sandboxing](#sandboxing) have since landed — see [`AGENTS.md`](AGENTS.md) and the architecture decisions in [`docs/adr/0002-milestone-1-vanilla-agent-architecture.md`](docs/adr/0002-milestone-1-vanilla-agent-architecture.md) and [`docs/adr/0005-multi-llm-provider-support.md`](docs/adr/0005-multi-llm-provider-support.md).
 
 ## Requirements
 
@@ -309,6 +309,76 @@ Tune it in `.env` — every setting is optional with a safe default:
 - `LSP_SERVER_COMMAND` / `LSP_SERVER_ARGS` — **swap the server**: the default is `ty` + `["server"]`; drop in `pylsp` (or any stdio LSP server) by overriding these (the spawn is `[LSP_SERVER_COMMAND, *LSP_SERVER_ARGS]`).
 - `LSP_DIAGNOSTICS_ON_EDIT=false` turns off only the post-edit diagnostics; the `lsp` tool still works.
 - `LSP_REQUEST_TIMEOUT_S` (default `10.0`) — per-request wall-clock timeout.
+
+## Sandboxing
+
+By default `decode` runs model-chosen `bash` commands as a **host subprocess** in your working directory — fast, and byte-identical to every earlier milestone. When you want a boundary around those commands, set the **Sandbox Mode** (`SANDBOX_MODE`) and `decode` runs them inside a **Sandbox** instead, behind one execution seam. The design and the full isolation-backend comparison are recorded in [`docs/adr/0011-sandboxing-and-credential-proxy.md`](docs/adr/0011-sandboxing-and-credential-proxy.md).
+
+| `SANDBOX_MODE` | Where `bash` runs | Semantics |
+|---|---|---|
+| `none` (default) | a host subprocess, pinned to your working directory | today's behavior — **zero change**; no Docker or Modal needed |
+| `docker` | one session-persistent **local** container over your bind-mounted repo | a **persistent shell**: `cd` / `export` / `pip install` carry across `bash` calls; your repo is one shared tree at `/workspace`. A timeout kills+restarts the shell (cwd resets to `/workspace`, env cleared) and the reply says so |
+| `modal` | one session-persistent **remote** `modal.Sandbox`, empty scratch | nothing runs on your machine; `/workspace` starts **empty** (no local tree) — the model fetches code via `git clone` / `git fetch`; filesystem changes persist across calls but `cd` / `env` reset per call |
+
+The mode is chosen **once at startup** and fixed for the session, and the `bash` tool description adapts per mode so the model knows the live rules (docker's persistent shell vs modal's empty remote scratch) and is never surprised at runtime. `bash` stays gated exactly as before — the Sandbox is defense-in-depth *beneath* the same approval prompt.
+
+**Startup guard.** Like the provider-key guard, a selected backend that isn't available fails with one friendly line and a non-zero exit (never a traceback), in both the REPL and the headless `decode run` / `decode replay` pre-flight:
+
+- `SANDBOX_MODE=docker` with the Docker daemon down → `Decode: SANDBOX_MODE=docker but the Docker daemon is not reachable — start Docker and retry (see .env.example).`
+- `SANDBOX_MODE=modal` with no Modal **account** credentials → ``Decode: SANDBOX_MODE=modal but Modal credentials are missing — run `modal token set …` (see .env.example).``
+
+Those account tokens (`modal token set`, i.e. `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`) are what the Modal **Sandbox** authenticates with — distinct from the endpoint/proxy tokens `decode` uses to *call* a Modal-served model (see [`MODAL_MODELS.md`](MODAL_MODELS.md)).
+
+Tune it in `.env` — every setting is optional with a safe default:
+
+- `SANDBOX_MODE` (default `none`) — `none` / `docker` / `modal`.
+- `SANDBOX_IMAGE` (default `python:3.12-slim`) — the **Worker** image (`docker` pulls it; `modal` maps it via `Image.from_registry`). Must include `bash`.
+- `SANDBOX_TIMEOUT_S` (default `600.0`) — max lifetime of a **remote** (modal) Sandbox before Modal reaps it (docker's session container has no lifetime cap).
+
+### Isolation honesty
+
+`decode` ships **two** rungs of a longer ladder, and is deliberately clear about what each buys:
+
+- **Docker (local)** — a filesystem + namespace boundary for **accidental** misbehavior, not a hostile-code jail (a shared kernel on Linux; on macOS, Docker Desktop's VM adds a boundary for free).
+- **Modal (remote)** — the rung for genuinely **untrusted** code: nothing executes on your own machine.
+
+gVisor / Kata are **zero-code** upgrades a Linux operator gets by setting the docker daemon's default runtime — every sandbox command inherits it, because `decode` drives the standard docker CLI; Firecracker and Wasm are non-goals. The full backend comparison is [ADR-0011's isolation table](docs/adr/0011-sandboxing-and-credential-proxy.md#isolation-backends-compared--why-docker--modal).
+
+### Credential Proxy (a Worker that holds no secret)
+
+A sandboxed **Worker** sometimes needs to make an authenticated tool call — but a prompt-injected agent can read anything in the Worker's environment, so no token should ever live there. The **Credential Proxy** (headless + docker only, **opt-in**) solves this the canonical way: the Worker is pointed at a `mitmproxy` container that injects the credential **after** the request has left the Worker, so the Worker holds no secret and the resolved credentials live only in the proxy container's env. Design in ADR-0011 §6.
+
+Set it up in three pieces:
+
+1. **A Proxy Rule** — add a `SandboxProxyRule` to `DEFAULT_PROXY_RULES` in `src/decode/sandbox/proxy.py` (it ships **empty** = opt-in). Each rule maps hosts to header templates; a `{{ secret-name.key }}` template is resolved host-side from a Kitaru secret at flow start:
+
+   ```python
+   DEFAULT_PROXY_RULES = [
+       SandboxProxyRule(
+           name="github-auth",
+           hosts=["api.github.com"],
+           headers={"Authorization": "Bearer {{ github-token.value }}"},
+       ),
+   ]
+   ```
+
+2. **The Kitaru secret** the template reads (the raw token then lives only in Kitaru):
+
+   ```bash
+   kitaru secrets set github-token --private --value=<your-token>
+   ```
+
+3. **Turn it on** in `.env` and run headless in docker mode:
+
+   ```bash
+   SANDBOX_CREDENTIAL_PROXY_ENABLED=true
+   # then, e.g.:
+   SANDBOX_MODE=docker decode run "use python urllib to GET https://api.github.com/user and print the login"
+   ```
+
+The Worker's request is authenticated though it holds no token — confirm with `docker exec <worker-id> env | grep -i token` (nothing). Egress is **cooperative** (the Worker is *pointed* at the proxy, not forced through it), so this is not an exfiltration barrier; an internal-only default-deny network is the upgrade path.
+
+This sandbox **Credential Proxy** (a *tool* credential for the Worker) is distinct from the [credentials proxy](#credentials-proxy-keep-the-model-key-out-of-the-flow-payload) above, which keeps the *model* key out of the flow payload by hydrating `Settings` — different secret, different mechanism.
 
 ## Develop
 
