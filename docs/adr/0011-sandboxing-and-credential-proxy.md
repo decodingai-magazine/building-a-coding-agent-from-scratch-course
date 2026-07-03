@@ -1,6 +1,8 @@
 # 0011. Sandboxing + Credential Proxy — three executors behind one run seam, a headless mitmproxy for tool credentials
 
-**Status:** Accepted
+**Status:** Accepted — §2 (docker persistent-shell shape), §3 (modal empty-scratch shape), and the
+per-mode `bash` descriptions are superseded by [ADR-0012](0012-isolated-workspace.md); §1 (seam +
+guards), §5 (replay-safety), §6 (Credential Proxy), and §7 (isolation ladder) remain in force.
 **Date:** 2026-07-02
 
 ## Context
