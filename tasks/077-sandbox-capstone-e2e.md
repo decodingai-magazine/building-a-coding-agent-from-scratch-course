@@ -241,3 +241,55 @@ bash_description drop suffix     → test_bash_description_adapts_per_mode FAILE
   product/`src`/docs/Makefile/pyproject regression.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-03 14:40 — Acceptance Review (whole sandboxing feature, PR #21, tasks 071-077)
+
+**VERDICT: ACCEPT**
+
+Feature-level user-POV gate for the sandboxing feature (ADR-0011). Walked every user-facing surface
+against the shipped code + docs (not just the task files). All acceptance criteria hold from a real
+user's perspective.
+
+**User journey verified**
+- **Default `SANDBOX_MODE=none` is byte-identical (the load-bearing opt-in promise).** `_sandbox_config_error()`
+  returns `None` with **no probe** for `none` (`cli.py:198`); `_get_executor()` keeps the eager
+  `LocalExecutor` and imports no sandbox module (`bash.py:100`); `bash_description` returns the base
+  **unchanged** (`bash.py:173`). A user who sets nothing sees zero change.
+- **Startup guards are friendly, never tracebacks.** Both the REPL (`cli.py:398-402`) and the headless
+  `decode run`/`replay` pre-flight (`cli.py:327-330`) echo one action-oriented line to stderr + `Exit(1)`:
+  `"…Docker daemon is not reachable — start Docker and retry (see .env.example)."` /
+  `"…Modal credentials are missing — run \`modal token set …\` (see .env.example)."` Presence-only (no
+  modal import, no network), matching the provider-key guard convention.
+- **The model is never surprised.** The per-mode `bash` description suffixes (`bash.py:65-82`) state the
+  live semantics — docker's persistent shell + shared `/workspace` + timeout-resets-shell; modal's remote
+  empty scratch, no local tree, `cd`/`export` reset per call.
+- **`decode run` + replay in a sandbox re-executes bash** (side effects re-run, not served stale) via the
+  `{"cache": False}` bash checkpoint when `sandbox_mode != "none"` — the honest ADR-0010 reconciliation,
+  proven end-to-end in the 075 QA (file `1→2` on replay vs a forced-cache control `1→1`).
+- **Credential Proxy: a Worker that holds no token.** `DEFAULT_PROXY_RULES` ships **empty** (opt-in,
+  `proxy.py:80`); the resolved map reaches only the proxy container's env; the README 3-step operator
+  setup matches the shipped `github-auth` example; `import decode.cli` imports no kitaru (REPL invariant).
+
+**ADR scope delivered** — 3 executors behind ONE seam (`select_executor` returns only `CommandExecutor`
+in every branch, `sandbox/__init__.py:33-56`); callers see only `ExecResult` (no Docker/Modal types leak
+up); secrets never reach the model or the sandbox payload (credential-boundary proven by the worker-env
+scan in 075/077).
+
+**Docs reconciliation (076) is honest** — the two AGENTS.md invariants, the four Testing-E2E rows, the
+README `## Sandboxing` section, the `.env.example` block, and the MODAL account-vs-endpoint token note all
+match shipped behavior. Notably the SWE corrected a *fictional* `docker ps --filter label=…` peek to plain
+`docker ps` after verifying `_docker_run_args` adds no label — docs fixed to reality, not the reverse.
+
+**Two out-of-scope drifts — judged NON-BLOCKING, agreed:**
+1. Glossary named the proxy topology class `DockerProxy` while the code ships `DockerCredentialProxy`
+   (`proxy.py:153`) — a contributor-doc reference, invisible to any user, and the canonical *term*
+   "Credential Proxy" is used correctly everywhere. `DockerProxy` had **zero** code/test coupling
+   (`grep` clean in `src/`+`tests/`). Fixed inline in `docs/glossary.md` as prescribed glossary
+   rename-tracking (I author the glossary). ADR-0011 retains `DockerProxy` as its design-time name (an
+   Accepted ADR is a point-in-time record; not edited).
+2. README `MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b` (lines 89, 98) vs `settings.py:123` default
+   `Qwen/Qwen3.6-35B-A3B-FP8` — a **pre-existing** Milestone-5 provider-doc drift, unrelated to
+   sandboxing; the 076 diff correctly did not touch it. Worth a separate docs-drift follow-up; NOT a
+   reason to block this feature.
+
+All user acceptance criteria verified from the user POV. Hand off to the PR Reviewer.
