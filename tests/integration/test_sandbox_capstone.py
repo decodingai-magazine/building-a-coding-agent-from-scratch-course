@@ -17,8 +17,9 @@ change to ``bash``'s own logic:
 * ``docker`` — one session-persistent local container, a **fresh** ``docker exec`` per call over the
   bind-mounted Workspace (``SandboxExecutor(DockerBackend())``, ADR-0012 §2 — ``cd`` / ``export`` do NOT
   persist, but the filesystem does);
-* ``modal`` — one session-persistent **remote** empty-scratch ``modal.Sandbox``
-  (:class:`~decode.sandbox.modal_executor.ModalExecutor`, no local tree).
+* ``modal`` — one session-persistent **remote** ``modal.Sandbox`` (``SandboxExecutor(ModalBackend())``,
+  ADR-0012 §2 — fresh ``sb.exec`` per call, file ops via the SandboxFilesystem API + a bootstrap upload /
+  export sweep).
 
 The model is told the active mode's live semantics through the mode-specific ``bash`` **description**
 (``none`` byte-identical; ``docker`` / ``modal`` append their sandbox-semantics paragraph). A headless
@@ -47,7 +48,7 @@ Like the M1 capstone it swaps only the boundaries; everything structural is real
 **Part 2 — the skipif-guarded real-infra smokes.** Each SKIPS (never fails) when its infra is absent,
 using the **same** predicates as the executors' own integration tests (a ``docker info`` probe; the
 ``modal`` credential presence check): a real ``SandboxExecutor(DockerBackend())`` fresh-exec round-trip,
-a real :class:`~decode.sandbox.modal_executor.ModalExecutor` remote-scratch round-trip, and the real
+a real ``SandboxExecutor(ModalBackend())`` isolated-Workspace round-trip, and the real
 docker Credential-Proxy boundary (an authenticated outbound call arrives with the
 injected header while the worker env holds no secret). Each tears its container / sandbox / network down
 in a ``finally`` so the suite is hermetic under ``filterwarnings=["error"]`` and leaves no infra litter.
@@ -81,7 +82,7 @@ from decode.harness.runner import TurnContext
 from decode.permissions.gate import PermissionGate
 from decode.sandbox.docker_backend import DockerBackend
 from decode.sandbox.executor import SandboxExecutor
-from decode.sandbox.modal_executor import ModalExecutor
+from decode.sandbox.modal_backend import ModalBackend
 from decode.sandbox.proxy import (
     DEFAULT_PROXY_RULES,
     DockerCredentialProxy,
@@ -309,9 +310,9 @@ def test_sandbox_mode_selects_the_matching_executor_class(monkeypatch) -> None:
     Through the REAL :func:`decode.sandbox.select_executor` (not faked): ``none`` keeps the eager host
     :class:`~decode.tools.exec.LocalExecutor` (no sandbox module imported), ``docker`` yields a
     :class:`~decode.sandbox.executor.SandboxExecutor` (over a ``DockerBackend``), and ``modal`` a
-    :class:`~decode.sandbox.modal_executor.ModalExecutor` — construction is inert for all three (no
-    container started, no remote sandbox created, no ``modal`` SDK imported), so no daemon / account is
-    needed to prove the mapping.
+    :class:`~decode.sandbox.executor.SandboxExecutor` (over a ``ModalBackend``) — construction is inert
+    for all three (no container started, no remote sandbox created, no ``modal`` SDK imported), so no
+    daemon / account is needed to prove the mapping.
     """
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "none")
     bash_mod.reset_executor()
@@ -325,7 +326,9 @@ def test_sandbox_mode_selects_the_matching_executor_class(monkeypatch) -> None:
 
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "modal")
     bash_mod.reset_executor()
-    assert isinstance(bash_mod._get_executor(), ModalExecutor)
+    modal_executor = bash_mod._get_executor()
+    assert isinstance(modal_executor, SandboxExecutor)
+    assert isinstance(modal_executor._backend, ModalBackend)
 
 
 async def test_bash_routes_a_command_through_the_selected_executor(
@@ -428,8 +431,10 @@ async def test_bash_description_adapts_per_mode(monkeypatch, tmp_path: Path) -> 
     assert (
         "do NOT carry over" in docker_desc
     )  # docker's fresh-exec: cd/export do not persist (ADR-0012)
-    assert "remote Modal sandbox" in modal_desc and "NOT present" in modal_desc  # empty scratch
-    assert ".decode/skills" in modal_desc  # ...except the seeded skills dir (the model is told)
+    # modal's paragraph names the remote sandbox and the session-end export sweep (ADR-0012 §5).
+    assert "remote Modal sandbox" in modal_desc
+    assert "exported back to the host" in modal_desc
+    assert "do NOT carry over" in modal_desc  # modal is fresh-exec too
 
 
 # ================================================================================================
@@ -465,7 +470,7 @@ def test_none_mode_agent_imports_no_sandbox_executor_module() -> None:
         "b._get_executor(); "  # selects the none-mode executor (must not import the sandbox pkg)
         "leaked = [m for m in "
         "('decode.sandbox.docker_backend', 'decode.sandbox.executor', "
-        "'decode.sandbox.modal_executor') if m in sys.modules]; "
+        "'decode.sandbox.modal_backend') if m in sys.modules]; "
         "assert not leaked, leaked; "
         "print('OK')"
     )
@@ -795,65 +800,59 @@ async def test_real_docker_fresh_exec_contract(
 
 
 @pytest.mark.skipif(not _MODAL_AVAILABLE, reason="modal account credentials are not present")
-async def test_real_modal_remote_scratch_contract(tmp_path: Path) -> None:
-    """The real Modal sandbox contract against a live account — else SKIP (ADR-0011 §3).
+async def test_real_modal_isolated_workspace_contract(tmp_path: Path) -> None:
+    """The real Modal isolated-Workspace contract against a live account — else SKIP (ADR-0012 §2,4,5).
 
-    One session-persistent remote ``modal.Sandbox``: (1) a file written in one ``run`` is readable
-    in the next (fs persists across execs); (2) the project's ``.decode/skills/`` is **seeded** at
-    ``/workspace/.decode/skills`` (the live acceptance gate for ``add_local_dir`` on
-    ``Sandbox.create``) while everything else stays **absent** (no local-tree sync); (3) a timeout
-    kills the exec but NOT the sandbox (the fs survives, no ``note``); (4) ``aclose`` terminates
-    the sandbox (no leaked remote sandbox). Lean — a few cents of Modal compute — and reaps the
-    sandbox in a ``finally``.
+    One ``SandboxExecutor(ModalBackend())``, one session-persistent remote sandbox: (1) the host
+    Workspace is **bootstrap-uploaded** into ``/workspace`` at create (a seeded file is readable by
+    ``bash``); (2) **direct SandboxFilesystem file ops** — a file ``bash`` writes is returned by
+    ``read_bytes`` (no mirror), a ``remove`` is reflected by a later ``stat`` (no deletion-blindness);
+    (3) the filesystem persists across ``run``s while a timeout kills the exec but NOT the sandbox
+    (no ``note``); (4) ``export`` sweeps ``/workspace`` back to the host; (5) ``aclose`` = export +
+    terminate (no leaked remote sandbox). Lean — a few cents of Modal compute — reaping in a ``finally``.
+
+    (This is a lean capstone smoke over the whole stack; the exhaustive real-modal matrix lives in
+    ``tests/integration/test_modal_executor.py``.)
     """
-    # A minimal project cwd whose .decode/skills/ must be seeded into the remote /workspace —
-    # and whose OTHER content (pyproject.toml) must NOT be.
-    project = tmp_path / "project"
-    (project / ".decode" / "skills" / "demo").mkdir(parents=True)
-    (project / ".decode" / "skills" / "demo" / "SKILL.md").write_text(
-        "# demo skill\n", encoding="utf-8"
-    )
-    (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    executor = ModalExecutor()
+    workspace = tmp_path / ".decode" / "sandbox"
+    workspace.mkdir(parents=True)
+    (workspace / "marker.txt").write_text("bootstrapped\n", encoding="utf-8")
+    executor = SandboxExecutor(ModalBackend())
     try:
-        # 1. Filesystem persists across run()s (one sandbox).
-        await executor.run("echo data > /workspace/f.txt", cwd=project, timeout_s=_MODAL_TIMEOUT_S)
-        readback = await executor.run(
-            "cat /workspace/f.txt", cwd=project, timeout_s=_MODAL_TIMEOUT_S
+        await executor.start(workspace)  # spawn + bootstrap-upload the host Workspace
+        backend = executor._backend
+
+        # 1. The bootstrap upload landed: bash sees the host-seeded file inside /workspace.
+        seen = await executor.run(
+            "cat /workspace/marker.txt", cwd=tmp_path, timeout_s=_MODAL_TIMEOUT_S
         )
-        assert readback.stdout.strip() == "data"
-        assert readback.exit_code == 0
+        assert seen.stdout.strip() == "bootstrapped"
 
-        # 2a. The skills seed made it: the cwd-relative skill path resolves inside /workspace.
-        seeded = await executor.run(
-            "cat .decode/skills/demo/SKILL.md", cwd=project, timeout_s=_MODAL_TIMEOUT_S
-        )
-        assert seeded.exit_code == 0
-        assert "# demo skill" in seeded.stdout
+        # 2. Direct, truthful file ops: a bash-written file reads back, and a remove is seen at once.
+        await executor.run("echo from-bash > b.txt", cwd=tmp_path, timeout_s=_MODAL_TIMEOUT_S)
+        assert (await backend.read_bytes("b.txt")).decode().strip() == "from-bash"
+        await backend.remove("b.txt")
+        assert await backend.stat("b.txt") is None  # no deletion-blindness (no stale mirror)
 
-        # 2b. Everything else stays absent: a host file (pyproject.toml) is NOT present.
-        host_file = await executor.run("ls pyproject.toml", cwd=project, timeout_s=_MODAL_TIMEOUT_S)
-        assert host_file.exit_code != 0
-        assert host_file.timed_out is False
-
-        # 2c. Preconfigured tooling: the default image ships ``uv``, so skill scripts run via
-        #     ``uv run …`` remotely with no per-session bootstrap.
-        uv_probe = await executor.run("uv --version", cwd=project, timeout_s=_MODAL_TIMEOUT_S)
-        assert uv_probe.exit_code == 0
-        assert uv_probe.stdout.startswith("uv ")
-
-        # 3. A per-exec timeout kills the command but leaves the sandbox (and its fs) alive.
-        timed = await executor.run("sleep 100", cwd=project, timeout_s=1.0)
+        # 3. Filesystem persists across run()s; a per-exec timeout kills the command, not the sandbox.
+        await executor.run("echo kept > f.txt", cwd=tmp_path, timeout_s=_MODAL_TIMEOUT_S)
+        timed = await executor.run("sleep 100", cwd=tmp_path, timeout_s=1.0)
         assert timed.timed_out is True
-        assert timed.note == ""  # unlike docker, no session reset — the sandbox persists
-        alive = await executor.run("echo alive", cwd=project, timeout_s=_MODAL_TIMEOUT_S)
-        assert alive.stdout.strip() == "alive"
-        assert alive.exit_code == 0
-    finally:
-        await executor.aclose()  # terminate the remote sandbox (no leak)
+        assert timed.note == ""  # only the exec died — the sandbox + its fs persist
+        persisted = await executor.run("cat f.txt", cwd=tmp_path, timeout_s=_MODAL_TIMEOUT_S)
+        assert persisted.stdout.strip() == "kept"
 
-    # 4. aclose terminated + cleared the sandbox (a later run would create a fresh one).
-    assert executor._sandbox is None
+        # 4. A standalone export sweeps a remote-only file down to the host, sandbox still alive.
+        await executor.run(
+            "echo shipped > only-remote.txt", cwd=tmp_path, timeout_s=_MODAL_TIMEOUT_S
+        )
+        await executor.export()
+        assert (workspace / "only-remote.txt").read_text(encoding="utf-8").strip() == "shipped"
+    finally:
+        await executor.aclose()  # export + terminate the remote sandbox (no leak)
+
+    # 5. aclose terminated + cleared the sandbox (a later run would create a fresh one).
+    assert executor._backend._sandbox is None
 
 
 # --- The real docker Credential-Proxy boundary (a lean slice of the 075 topology) --------------

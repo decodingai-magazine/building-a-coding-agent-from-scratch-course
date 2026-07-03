@@ -78,14 +78,13 @@ _DOCKER_DESCRIPTION_SUFFIX = (
 )
 _MODAL_DESCRIPTION_SUFFIX = (
     "Sandbox (SANDBOX_MODE=modal): commands run in a remote Modal sandbox, not on the local machine. "
-    "The local project tree is NOT present in the sandbox — only the project's .decode/skills/ "
-    "directory (if it exists) is seeded at /workspace/.decode/skills, so skill scripts can be run "
-    "directly. To work with other code you must fetch it yourself (e.g. `git clone` / `git fetch`) "
-    "or generate it. Filesystem changes and installations (e.g. `git clone`, `pip install`) persist "
-    "across bash calls, but each command runs as a fresh process, so shell `cd` and `export` do NOT "
-    "carry over between calls — use absolute paths or chain them in one call (e.g. `cd "
-    "/workspace/app && <command>`). Apart from the seeded skills, the sandbox starts empty at "
-    "/workspace."
+    "The working directory /workspace is the sandbox's isolated workspace, backed by the project's "
+    ".decode/sandbox/ directory on the host. Filesystem changes and installations (e.g. `git clone`, "
+    "`pip install`) persist across bash calls (one sandbox per session), but each command runs as a "
+    "fresh process, so shell `cd` and `export` do NOT carry over between calls — use absolute paths or "
+    "chain them in one call (e.g. `cd /workspace/app && <command>`). If a command times out, only that "
+    "command is killed; the sandbox and its filesystem survive. The workspace is exported back to the "
+    "host when the session ends. stdout and stderr are captured as separate streams."
 )
 
 
@@ -186,6 +185,24 @@ async def close_executor() -> None:
     close = getattr(executor, "close", None)
     if close is not None:
         close()
+
+
+async def export_executor() -> None:
+    """Sweep the live sandbox Workspace back to the host **mid-session**, leaving it alive (ADR-0012 §5,8).
+
+    The hook a mid-session ``/ship`` (task 083) triggers: if the cached executor exposes an async
+    ``export`` (the :class:`~decode.sandbox.executor.SandboxExecutor`), it is awaited so ``/workspace`` is
+    swept down to the host ``.decode/sandbox`` — a **docker no-op** (its bind mount is already the host
+    Workspace) and a **modal** ``copy_to_local``-style tar sweep. Unlike :func:`close_executor` it does
+    **not** reset the memo or destroy the sandbox, so the session continues. Duck-typed like
+    :func:`warm_executor`/:func:`close_executor` (the :class:`CommandExecutor` Protocol stays run-only), so
+    it is a safe **no-op** in ``none`` mode (:class:`LocalExecutor` has no ``export``) and when nothing was
+    ever selected (the default :class:`LocalExecutor` memo).
+    """
+    executor = _EXECUTOR
+    export = getattr(executor, "export", None)
+    if export is not None:
+        await export()
 
 
 def bash_description(base: str) -> str:

@@ -110,14 +110,18 @@ def test_get_executor_docker_returns_a_real_sandbox_executor(monkeypatch):
     assert isinstance(bash_mod._get_executor(), SandboxExecutor)
 
 
-def test_get_executor_modal_returns_a_real_modal_executor(monkeypatch):
-    # Through the REAL select_executor: modal mode yields a ModalExecutor (inert — no creds needed).
-    from decode.sandbox.modal_executor import ModalExecutor
+def test_get_executor_modal_returns_a_real_sandbox_executor(monkeypatch):
+    # Through the REAL select_executor: modal mode yields a SandboxExecutor over a ModalBackend (inert —
+    # no creds needed; the remote sandbox + modal import are lazy on first run, ADR-0012 §2).
+    from decode.sandbox.executor import SandboxExecutor
+    from decode.sandbox.modal_backend import ModalBackend
 
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "modal")
     bash_mod.reset_executor()
 
-    assert isinstance(bash_mod._get_executor(), ModalExecutor)
+    executor = bash_mod._get_executor()
+    assert isinstance(executor, SandboxExecutor)
+    assert isinstance(executor._backend, ModalBackend)
 
 
 def test_reset_executor_rearms_selection(monkeypatch):
@@ -239,6 +243,34 @@ async def test_warm_executor_failure_propagates_and_keeps_the_memo(monkeypatch, 
     assert bash_mod._get_executor() is executor  # memo kept — the first bash retries through it
 
 
+# --- export_executor: the mid-session /ship sweep hook (task 083, ADR-0012 §5,8) ----------------
+
+
+async def test_export_executor_awaits_export_without_resetting_the_memo(monkeypatch):
+    # /ship sweeps the live Workspace to the host mid-session: export is awaited, but — unlike
+    # close_executor — the memo is NOT reset and the sandbox is NOT destroyed (the session continues).
+    export = AsyncMock()
+    executor = SimpleNamespace(export=export)
+    monkeypatch.setattr(bash_mod, "_EXECUTOR", executor)
+    monkeypatch.setattr(bash_mod, "_executor_selected", True)
+
+    await bash_mod.export_executor()
+
+    export.assert_awaited_once()
+    assert bash_mod._EXECUTOR is executor  # still live — no reset, no destroy
+    assert bash_mod._executor_selected is True
+
+
+async def test_export_executor_is_a_safe_noop_in_none_mode():
+    # The LocalExecutor default has no ``export`` (duck-typed like warm/close): export_executor must
+    # not raise, and the "nothing was selected" case (a fresh reset memo) is the same path.
+    bash_mod.reset_executor()
+
+    await bash_mod.export_executor()
+
+    assert isinstance(bash_mod._EXECUTOR, LocalExecutor)  # untouched
+
+
 # --- bash_description: the mode-specific description composition -------------------------------
 
 
@@ -262,16 +294,18 @@ def test_bash_description_docker_appends_the_fresh_exec_paragraph(monkeypatch):
     assert "NOT mounted" in out  # ...and that the project tree is out of reach via bash
 
 
-def test_bash_description_modal_appends_the_remote_scratch_paragraph(monkeypatch):
+def test_bash_description_modal_appends_the_remote_sandbox_paragraph(monkeypatch):
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "modal")
 
     out = bash_mod.bash_description("BASE")
 
     assert out.startswith("BASE\n\n")
-    assert "remote Modal sandbox" in out
-    assert "NOT present" in out  # the local tree is absent
-    assert "do NOT carry over" in out  # cd/export reset per call
-    assert ".decode/skills" in out  # ...except the seeded skills dir (the model is told)
+    assert "remote Modal sandbox" in out  # runs off the local machine
+    assert "do NOT carry over" in out  # fresh-exec: cd/export reset per call
+    assert (
+        "exported back to the host" in out
+    )  # the workspace is swept home at session end (ADR-0012)
+    assert "separate streams" in out  # stdout/stderr kept split
 
 
 # --- registry prepare: the description reaches the tool definition per mode --------------------
@@ -463,7 +497,7 @@ def test_none_mode_agent_imports_no_sandbox_executor_module():
         "b._get_executor(); "  # selects the none-mode executor (must not import the sandbox pkg)
         "leaked = [m for m in "
         "('decode.sandbox.docker_backend', 'decode.sandbox.executor', "
-        "'decode.sandbox.modal_executor') if m in sys.modules]; "
+        "'decode.sandbox.modal_backend') if m in sys.modules]; "
         "assert not leaked, leaked; "
         "print('OK')"
     )
