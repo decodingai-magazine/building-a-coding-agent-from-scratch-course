@@ -256,6 +256,8 @@ def test_bash_description_docker_appends_the_persistent_shell_paragraph(monkeypa
     assert "/workspace" in out
     assert "persistent bash shell" in out
     assert "merged into a single stream" in out  # 072 chose merged stdout/stderr
+    assert ".decode/sandbox" in out  # /workspace is the scratch — the model is told
+    assert "NOT mounted" in out  # ...and that the project tree is out of reach via bash
 
 
 def test_bash_description_modal_appends_the_remote_scratch_paragraph(monkeypatch):

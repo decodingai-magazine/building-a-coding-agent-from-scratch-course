@@ -53,16 +53,18 @@ reach the model or the sandbox payload** (AGENTS.md). This ADR is groomed into t
    declined at grooming).
 
 2. **Docker mode = ONE session-persistent container running a persistent shell (task 072).** Lazily
-   `docker run -d --rm -v <cwd>:/workspace -w /workspace <image> sleep infinity` on the first `bash`
-   call; every later command runs through **one long-lived `docker exec -i <id> bash --noprofile
-   --norc`** whose stdin we write each command into, reading stdout up to a unique end-marker line
-   carrying `$?`. So `cd` / `export` / `pip install` / background jobs **persist across bash calls**
-   within a session — the canonical DockerSandbox shape, and the reason a per-call `docker exec sh -c`
-   was rejected (it persists the filesystem but *not* `cd`/`export`). File tools stay host-side; the
-   bind mount keeps one shared tree (no split-brain). Torn down on decode exit (`--rm` is the
-   crash backstop). Isolation = process + everything outside the repo tree; the repo stays writable by
-   design. Access is via the **standard docker CLI**, shelled out with `asyncio` subprocess (see
-   Alternatives) — dependency-free and the teaching payoff.
+   `docker run -d --rm -v <cwd>/.decode/sandbox:/workspace -w /workspace <image> sleep infinity` on
+   the first `bash` call (*amended post-review — see the deviation bullet below; originally the whole
+   `<cwd>` was mounted*); every later command runs through **one long-lived `docker exec -i <id> bash
+   --noprofile --norc`** whose stdin we write each command into, reading stdout up to a unique
+   end-marker line carrying `$?`. So `cd` / `export` / `pip install` / background jobs **persist
+   across bash calls** within a session — the canonical DockerSandbox shape, and the reason a
+   per-call `docker exec sh -c` was rejected (it persists the filesystem but *not* `cd`/`export`).
+   File tools stay host-side on the real tree. Torn down on decode exit (`--rm` is the crash
+   backstop). Isolation = process + everything outside the `.decode/sandbox` scratch (plus a
+   read-only skills mount); the repo tree is **not** reachable from sandboxed bash. Access is via the
+   **standard docker CLI**, shelled out with `asyncio` subprocess (see Alternatives) —
+   dependency-free and the teaching payoff.
 
    - **Timeout contract survives the persistent shell.** On timeout the `ExecResult` contract
      (`timed_out=True`, partial output, no orphaned processes) still holds via the simplest honest
@@ -71,11 +73,16 @@ reach the model or the sandbox payload** (AGENTS.md). This ADR is groomed into t
      `bash._render`). `ponytail:` the ceiling — decode cannot surgically kill one hung command inside
      the container while preserving the session; a per-command PID/cgroup + `docker exec … kill` is
      the upgrade path.
-   - **Recorded deviation from canonical.** The canonical Stage-2 example mounts an **empty named
-     volume** (`workspace_<execution_id>`) at `/workspace` — no host tree. decode-docker deliberately
-     **bind-mounts the cwd** instead, because decode keeps its file tools host-side and the real repo
-     must be one shared tree with them. (decode-**modal**'s empty scratch `/workspace` *is* the
-     canonical shape — §3.) This is the obvious reviewer question, pre-empted.
+   - **Recorded deviation from canonical — superseded (amended post-review).** The canonical Stage-2
+     example mounts an **empty named volume** (`workspace_<execution_id>`) at `/workspace` — no host
+     tree. decode-docker originally bind-mounted the whole cwd ("one shared tree with the host file
+     tools"); post-review this was **reversed**: `/workspace` is now backed by the project's
+     `.decode/sandbox/` **scratch** (created on first use, host-visible and persistent), plus a
+     **read-only** `.decode/skills` mount at `/workspace/.decode/skills` (the same skills-only
+     carve-out as modal's seeding). Model-chosen bash can no longer read or write the repo — repo
+     access stays with the host-side file tools; sandbox code arrives via `git clone` / generation,
+     like modal. This converges docker mode on the canonical scratch shape while keeping the scratch
+     inspectable on the host.
 
 3. **Modal mode = ONE session-persistent remote `modal.Sandbox`, empty scratch (task 073).** Same
    lifecycle contract as Docker (lazy `Sandbox.create` via `App.lookup(name,
@@ -224,7 +231,7 @@ flowchart TB
     hbash --> seam
 
     local["LocalExecutor (none) — host subprocess<br/>the DEFAULT · byte-identical to today"]
-    docker["DockerExecutor (docker) — sandbox/docker_executor.py<br/>1 container · persistent bash shell · marker+$? protocol<br/>bind-mount cwd→/workspace · timeout=kill+restart shell"]
+    docker["DockerExecutor (docker) — sandbox/docker_executor.py<br/>1 container · persistent bash shell · marker+$? protocol<br/>bind-mount .decode/sandbox→/workspace (+skills ro) · timeout=kill+restart shell"]
     modal["ModalExecutor (modal) — sandbox/modal_executor.py<br/>1 remote modal.Sandbox · EMPTY /workspace scratch<br/>sb.exec per call · NO local tree"]
     seam --> local
     seam --> docker

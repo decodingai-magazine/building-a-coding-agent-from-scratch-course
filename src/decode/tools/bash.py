@@ -65,13 +65,17 @@ _executor_selected = False
 # and installed on the tool via the registry's ``prepare=`` callback.
 _DOCKER_DESCRIPTION_SUFFIX = (
     "Sandbox (SANDBOX_MODE=docker): commands run in a persistent bash shell inside a local Docker "
-    "container, with your project directory bind-mounted at /workspace (the shell's working "
-    "directory). Because the shell persists across calls, `cd`, `export`, and installations "
-    "(e.g. `pip install`) carry over from one bash call to the next. If a command times out it is "
-    "killed and the shell is restarted, so its working directory resets to /workspace and its "
-    "environment is cleared — but files already written to /workspace survive (they live on the "
-    "mounted project directory). stdout and stderr are merged into a single stream in the command's "
-    "own order."
+    "container. The shell's working directory /workspace is a scratch area backed by the project's "
+    ".decode/sandbox/ directory on the host — the project tree itself is NOT mounted, so repo files "
+    "are reachable only through the read/write/edit tools (which run on the host), never through "
+    "bash; to work with code inside the sandbox, fetch it (e.g. `git clone`) or generate it under "
+    "/workspace. The project's .decode/skills/ directory (if it exists) is mounted read-only at "
+    "/workspace/.decode/skills, so skill scripts can be run directly. Because the shell persists "
+    "across calls, `cd`, `export`, and installations (e.g. `pip install`) carry over from one bash "
+    "call to the next. If a command times out it is killed and the shell is restarted, so its "
+    "working directory resets to /workspace and its environment is cleared — but files already "
+    "written to /workspace survive (they live in .decode/sandbox/ on the host). stdout and stderr "
+    "are merged into a single stream in the command's own order."
 )
 _MODAL_DESCRIPTION_SUFFIX = (
     "Sandbox (SANDBOX_MODE=modal): commands run in a remote Modal sandbox, not on the local machine. "

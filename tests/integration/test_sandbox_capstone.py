@@ -704,6 +704,13 @@ async def test_real_docker_persistent_shell_contract(
     observability lines are emitted. Reaps the container in a ``finally`` so the suite stays hermetic even
     on failure.
     """
+    # A minimal project cwd: its .decode/sandbox scratch backs /workspace and its .decode/skills
+    # must appear read-only in the container (the project tree itself must NOT be mounted).
+    (tmp_path / ".decode" / "skills" / "demo").mkdir(parents=True)
+    (tmp_path / ".decode" / "skills" / "demo" / "SKILL.md").write_text(
+        "# demo skill\n", encoding="utf-8"
+    )
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
     executor = DockerExecutor()
     container_id: str | None = None
     try:
@@ -714,6 +721,24 @@ async def test_real_docker_persistent_shell_contract(
             warmed_id = executor._container_id
             assert warmed_id is not None
             assert _container_exists(warmed_id)
+
+            # 0b. Mount semantics (ADR-0011 §2 amended): /workspace IS the host scratch — a file
+            #     written in the container lands in <cwd>/.decode/sandbox on the host; the skills
+            #     mount is visible but read-only; the project tree itself is NOT in the container.
+            await executor.run("echo scratched > probe.txt", cwd=tmp_path, timeout_s=30.0)
+            host_probe = tmp_path / ".decode" / "sandbox" / "probe.txt"
+            assert host_probe.read_text(encoding="utf-8").strip() == "scratched"
+            seeded = await executor.run(
+                "cat .decode/skills/demo/SKILL.md", cwd=tmp_path, timeout_s=30.0
+            )
+            assert seeded.exit_code == 0
+            assert "# demo skill" in seeded.stdout
+            read_only = await executor.run(
+                "touch .decode/skills/blocked 2>&1", cwd=tmp_path, timeout_s=30.0
+            )
+            assert read_only.exit_code != 0  # the skills mount is read-only
+            no_tree = await executor.run("ls pyproject.toml", cwd=tmp_path, timeout_s=30.0)
+            assert no_tree.exit_code != 0  # the project tree is out of bash's reach
 
             # 1. Persistent shell: state written in one run() survives into the next.
             await executor.run("export CAP=persisted && cd /tmp", cwd=tmp_path, timeout_s=30.0)
@@ -912,7 +937,11 @@ async def test_real_docker_credential_proxy_boundary(monkeypatch, tmp_path: Path
     try:
         proxy.start()
         upstream = _start_upstream(proxy.network)
-        (tmp_path / "req.py").write_text(_REQUEST_SCRIPT, encoding="utf-8")
+        # The worker's /workspace is the project's .decode/sandbox scratch (ADR-0011 §2 amended),
+        # NOT the cwd itself — drop the probe script where the container will actually see it.
+        scratch = tmp_path / ".decode" / "sandbox"
+        scratch.mkdir(parents=True, exist_ok=True)
+        (scratch / "req.py").write_text(_REQUEST_SCRIPT, encoding="utf-8")
         executor = DockerExecutor(
             network=proxy.network,
             proxy_env=proxy.worker_proxy_env,

@@ -215,9 +215,10 @@ async def test_read_until_marker_returns_none_on_an_oversized_line():
 # --- Credential-Proxy wiring: the docker run argv (byte-identical off the proxy path) ---------
 
 
-def test_docker_run_args_are_byte_identical_without_proxy_wiring():
-    # The non-proxy caller (select_executor, every 072/074 test) must produce the EXACT task-072
-    # command: no --network, no -e, no CA mount, and a bare ``sleep infinity`` entry.
+def test_docker_run_args_mount_only_the_scratch_without_proxy_wiring():
+    # The non-proxy caller must mount ONLY the project's .decode/sandbox scratch at /workspace —
+    # NEVER the project tree itself (ADR-0011 §2 amended) — with no --network, no -e, no CA mount,
+    # and a bare ``sleep infinity`` entry. (/repo has no .decode/skills, so no skills mount either.)
     args = DockerExecutor()._docker_run_args(Path("/repo"))
 
     assert args == [
@@ -225,13 +226,26 @@ def test_docker_run_args_are_byte_identical_without_proxy_wiring():
         "-d",
         "--rm",
         "-v",
-        f"/repo:{_workspace()}",
+        f"/repo/.decode/sandbox:{_workspace()}",
         "-w",
         _workspace(),
         settings.sandbox_image,
         "sleep",
         "infinity",
     ]
+
+
+def test_docker_run_args_mount_the_skills_dir_read_only_when_present(tmp_path):
+    # A project shipping .decode/skills gets it mounted READ-ONLY at /workspace/.decode/skills —
+    # the same skills-only carve-out modal's add_local_dir seeding draws (payload script paths must
+    # resolve inside the sandbox; sessions/MEMORY/logs stay out).
+    (tmp_path / ".decode" / "skills" / "demo").mkdir(parents=True)
+
+    args = DockerExecutor()._docker_run_args(tmp_path)
+
+    assert f"{tmp_path / '.decode/sandbox'}:{_workspace()}" in args  # the scratch mount
+    assert f"{tmp_path / '.decode/skills'}:{_workspace()}/.decode/skills:ro" in args
+    assert f"{tmp_path}:{_workspace()}" not in args  # the project tree itself is NEVER mounted
 
 
 def _fake_proc(mocker, *, stdout=b"", returncode=0):
@@ -244,7 +258,7 @@ def _fake_proc(mocker, *, stdout=b"", returncode=0):
     return proc
 
 
-async def test_start_ensures_the_container_and_is_idempotent(mocker):
+async def test_start_ensures_the_container_and_is_idempotent(mocker, tmp_path):
     # The eager REPL warm-up (ADR-0011 §4): ``start()`` brings the keeper container up exactly like
     # the first run() would — the SAME pinned ``docker run`` argv — caches the id, and a second
     # ``start()`` spawns nothing (idempotent; the first run() after it starts nothing new either).
@@ -254,17 +268,18 @@ async def test_start_ensures_the_container_and_is_idempotent(mocker):
     )
     executor = DockerExecutor()
 
-    await executor.start(Path("/repo"))
-    await executor.start(Path("/repo"))  # idempotent: the cached id short-circuits
+    await executor.start(tmp_path)
+    await executor.start(tmp_path)  # idempotent: the cached id short-circuits
 
     assert executor._container_id == "container123"
     assert spawn.await_count == 1  # exactly one docker run — no second container
     argv = spawn.await_args_list[0].args
     assert argv[0] == "docker"
-    assert list(argv[1:]) == executor._docker_run_args(Path("/repo"))
+    assert list(argv[1:]) == executor._docker_run_args(tmp_path.resolve())
+    assert (tmp_path / ".decode" / "sandbox").is_dir()  # the scratch mount source was pre-created
 
 
-async def test_ensure_container_trusts_the_ca_synchronously_on_the_proxy_path(mocker):
+async def test_ensure_container_trusts_the_ca_synchronously_on_the_proxy_path(mocker, tmp_path):
     # The CA-trust race fix: on the proxy path _ensure_container runs ``docker exec <id>
     # update-ca-certificates`` and WAITS for it before returning, so the first command already trusts
     # the CA (no daemon — the docker run + docker exec are faked).
@@ -275,7 +290,7 @@ async def test_ensure_container_trusts_the_ca_synchronously_on_the_proxy_path(mo
     )
     executor = DockerExecutor(ca_cert_host_path=Path("/host/mitmproxy-ca-cert.pem"))
 
-    cid = await executor._ensure_container(Path("/repo"))
+    cid = await executor._ensure_container(tmp_path)
 
     assert cid == "container123"
     assert spawn.await_count == 2  # docker run, THEN docker exec update-ca-certificates
@@ -283,7 +298,7 @@ async def test_ensure_container_trusts_the_ca_synchronously_on_the_proxy_path(mo
     assert exec_argv[:4] == ("docker", "exec", "container123", "update-ca-certificates")
 
 
-async def test_ensure_container_runs_no_ca_step_off_the_proxy_path(mocker):
+async def test_ensure_container_runs_no_ca_step_off_the_proxy_path(mocker, tmp_path):
     # Byte-identical non-proxy path: ONLY the docker run — no update-ca-certificates docker exec.
     run_proc = _fake_proc(mocker, stdout=b"cid\n")
     spawn = mocker.patch(
@@ -291,7 +306,7 @@ async def test_ensure_container_runs_no_ca_step_off_the_proxy_path(mocker):
     )
     executor = DockerExecutor()  # no proxy wiring
 
-    await executor._ensure_container(Path("/repo"))
+    await executor._ensure_container(tmp_path)
 
     assert spawn.await_count == 1  # the docker run only — no CA step on the non-proxy path
 
@@ -319,8 +334,16 @@ def test_docker_run_args_add_network_env_and_ca_mount_when_wired():
 
     args = executor._docker_run_args(Path("/repo"))
 
-    # The non-proxy prefix is unchanged; proxy flags are additive and in a stable order.
-    assert args[:7] == ["run", "-d", "--rm", "-v", f"/repo:{_workspace()}", "-w", _workspace()]
+    # The base (scratch-mount) prefix is unchanged; proxy flags are additive and in a stable order.
+    assert args[:7] == [
+        "run",
+        "-d",
+        "--rm",
+        "-v",
+        f"/repo/.decode/sandbox:{_workspace()}",
+        "-w",
+        _workspace(),
+    ]
     assert "--network" in args and args[args.index("--network") + 1] == "decode-sandbox-net-abc"
     assert "-e" in args
     assert "http_proxy=http://decode-proxy-abc:8080" in args
@@ -526,7 +549,7 @@ async def test_run_lets_an_unexpected_error_surface(mocker):
 # --- container-leak safety: a failed shell startup still reaps the container -------------------------
 
 
-async def test_run_force_removes_the_container_when_shell_startup_fails(mocker):
+async def test_run_force_removes_the_container_when_shell_startup_fails(mocker, tmp_path):
     # Regression (PR #21 nit): _ensure_container brings the keeper container up (``sleep infinity``), but
     # _ensure_shell THEN raises an OSError-family error (e.g. BrokenPipeError draining the ``exec 2>&1``
     # startup). The old except handler nulled _container_id via _discard_session WITHOUT a ``docker rm -f``,
@@ -542,7 +565,7 @@ async def test_run_force_removes_the_container_when_shell_startup_fails(mocker):
     )
     reap = mocker.patch("decode.sandbox.docker_executor._run_docker_quiet", new=mocker.AsyncMock())
 
-    result = await executor.run("echo hi", cwd=Path("/repo"), timeout_s=30.0)
+    result = await executor.run("echo hi", cwd=tmp_path, timeout_s=30.0)
 
     # The container that came up is force-removed — not orphaned — via aclose's loop-free ``docker rm -f``.
     reap.assert_awaited_once_with("rm", "-f", "container123")

@@ -175,7 +175,11 @@ async def test_worker_request_arrives_with_injected_header_but_worker_holds_no_s
     try:
         proxy.start()
         upstream = _start_upstream(proxy.network)
-        (tmp_path / "req.py").write_text(_REQUEST_SCRIPT, encoding="utf-8")
+        # The worker's /workspace is the project's .decode/sandbox scratch (ADR-0011 §2 amended),
+        # NOT the cwd itself — drop the probe script where the container will actually see it.
+        scratch = tmp_path / ".decode" / "sandbox"
+        scratch.mkdir(parents=True, exist_ok=True)
+        (scratch / "req.py").write_text(_REQUEST_SCRIPT, encoding="utf-8")
         executor = DockerExecutor(
             network=proxy.network,
             proxy_env=proxy.worker_proxy_env,

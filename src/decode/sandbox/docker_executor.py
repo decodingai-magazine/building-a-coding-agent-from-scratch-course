@@ -58,10 +58,15 @@ model is told its state was cleared. ``ponytail:`` decode cannot *surgically* ki
 inside the container while keeping the session — restart is the simple honest rule; a per-command
 PID/cgroup + ``docker exec … kill`` is the upgrade path.
 
-**Deviation from canonical (ADR-0011 §2).** The canonical Stage-2 example mounts an **empty named
-volume** at ``/workspace`` — no host tree. decode-docker deliberately **bind-mounts the cwd** instead,
-because decode keeps its file tools host-side and the real repo must be one shared tree with them
-(no split-brain). decode-**modal** (task 073) is the canonical empty-scratch shape.
+**What is mounted (ADR-0011 §2, amended).** ``/workspace`` is backed by the project's
+``settings.sandbox_workspace_dir`` (``.decode/sandbox/``, created on first use) — a host-visible
+**scratch**, NOT the project tree. The repo is deliberately kept out of the container: model-chosen
+``bash`` can only touch the scratch, while decode's file tools (read/write/edit) keep operating on the
+real tree host-side. The one carve-out mirrors modal's seeding: ``settings.skills_dir``
+(``.decode/skills/``), when present, is bind-mounted **read-only** at ``/workspace/.decode/skills`` so
+the cwd-relative skill-script paths the payloads hand the model still resolve inside the sandbox.
+This is close to the canonical Stage-2 shape (an empty volume at ``/workspace``); the scratch being a
+host dir keeps its contents inspectable and persistent across sessions.
 """
 
 from __future__ import annotations
@@ -174,8 +179,9 @@ class DockerExecutor:
         # its loop-bound futures/transports cannot be awaited ("Event loop is closed") and must be
         # torn down loop-free instead (ADR-0011 §4). Paired with ``_shell``: set on spawn, cleared on reset.
         self._shell_loop: asyncio.AbstractEventLoop | None = None
-        # The cwd bind-mounted on first run(); the mount is fixed for the session (the shell owns its
-        # own cwd thereafter — that is the whole point of the persistent shell).
+        # The project cwd whose ``.decode/sandbox`` scratch (+ optional skills dir) was bind-mounted
+        # on first run(); the mount is fixed for the session (the shell owns its own cwd thereafter —
+        # that is the whole point of the persistent shell).
         self._mounted_cwd: Path | None = None
 
     async def run(self, command: str, *, cwd: Path, timeout_s: float) -> ExecResult:
@@ -348,6 +354,9 @@ class DockerExecutor:
             return self._container_id
 
         abs_cwd = cwd.resolve()
+        # Pre-create the scratch mount source host-side: docker would auto-create a missing bind
+        # source itself, but as a root-owned dir on Linux — this keeps it owned by the user.
+        (abs_cwd / settings.sandbox_workspace_dir).mkdir(parents=True, exist_ok=True)
         proc = await asyncio.create_subprocess_exec(
             "docker",
             *self._docker_run_args(abs_cwd),
@@ -382,15 +391,24 @@ class DockerExecutor:
     def _docker_run_args(self, abs_cwd: Path) -> list[str]:
         """Build the ``docker run`` argv for the keeper container (proxy wiring is additive).
 
-        With no Credential-Proxy wiring (every non-proxy caller) this is **byte-identical** to the
-        task-072 command: ``run -d --rm -v <cwd>:/workspace -w /workspace <image> sleep infinity``. On
-        the proxy path (task 075) it additionally joins ``--network``, sets each ``proxy_env`` var
-        (``http_proxy`` / ``https_proxy`` → the proxy container), and bind-mounts the mitmproxy CA
-        read-only. The entry command stays ``sleep infinity`` in **both** cases — the CA is trusted by a
-        synchronous :meth:`_trust_proxy_ca` after create (not a PID-1 entry step), which is what closes
-        the first-command CA-trust race. Order is fixed so the non-proxy prefix never shifts.
+        The base command mounts the project's **scratch** (``.decode/sandbox/``) at ``/workspace`` —
+        never the project tree itself (ADR-0011 §2, amended) — plus, when the project ships skills,
+        a **read-only** ``.decode/skills`` mount at ``/workspace/.decode/skills`` (mirroring modal's
+        seeding, so skill-script paths resolve). On the proxy path (task 075) it additionally joins
+        ``--network``, sets each ``proxy_env`` var (``http_proxy`` / ``https_proxy`` → the proxy
+        container), and bind-mounts the mitmproxy CA read-only. The entry command stays ``sleep
+        infinity`` in **both** cases — the CA is trusted by a synchronous :meth:`_trust_proxy_ca`
+        after create (not a PID-1 entry step), which is what closes the first-command CA-trust race.
+        Order is fixed so the base prefix never shifts.
         """
-        args = ["run", "-d", "--rm", "-v", f"{abs_cwd}:{_WORKSPACE}", "-w", _WORKSPACE]
+        workspace_src = abs_cwd / settings.sandbox_workspace_dir
+        args = ["run", "-d", "--rm", "-v", f"{workspace_src}:{_WORKSPACE}", "-w", _WORKSPACE]
+        skills_src = abs_cwd / settings.skills_dir
+        if skills_src.is_dir():
+            # Seed ONLY the project's skills, read-only (never sessions/MEMORY/logs — the same
+            # boundary modal's add_local_dir carve-out draws): payloads tell the model to run
+            # `.decode/skills/<name>/scripts/…` via bash, and those paths must resolve at /workspace.
+            args += ["-v", f"{skills_src}:{_WORKSPACE}/{settings.skills_dir.as_posix()}:ro"]
         if self._network is not None:
             args += ["--network", self._network]
         for key, value in (self._proxy_env or {}).items():

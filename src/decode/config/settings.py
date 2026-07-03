@@ -242,6 +242,11 @@ class Settings(BaseSettings):
     # The worker image: ``docker`` pulls it directly; ``modal`` maps it via
     # ``modal.Image.from_registry(...)``. Must include ``bash`` (the stock default does). Read by 072/073.
     sandbox_image: str = "python:3.12-slim"
+    # The HOST directory bind-mounted at the docker Worker's ``/workspace`` — the sandbox's writable
+    # scratch, cwd-relative like every ``.decode`` path (created on first use). The project tree is
+    # deliberately NOT mounted: model-chosen ``bash`` can only touch this scratch (plus the read-only
+    # ``skills_dir`` mount), while the file tools keep working on the real tree host-side. Read by 072.
+    sandbox_workspace_dir: Path = Path(".decode/sandbox")
     # Max lifetime (seconds) of a REMOTE (modal) sandbox before Modal reaps it; docker's session
     # container has no lifetime cap (it runs ``sleep infinity``). A non-positive value fails fast
     # (Field gt=0). Read by 073.
