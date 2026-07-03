@@ -23,6 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from pydantic import SecretStr
 from pydantic_ai import RunContext
 from pydantic_ai.messages import ModelResponse, TextPart
@@ -178,6 +179,64 @@ async def test_close_executor_is_a_safe_noop_in_none_mode():
 
     assert isinstance(bash_mod._EXECUTOR, LocalExecutor)
     assert bash_mod._executor_selected is False
+
+
+# --- warm_executor: the eager REPL warm-up (ADR-0011 §4) ---------------------------------------
+
+
+async def test_warm_executor_none_is_a_noop_that_never_selects(monkeypatch):
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "none")
+    bash_mod.reset_executor()
+    eager = bash_mod._EXECUTOR
+
+    await bash_mod.warm_executor(Path("/repo"))
+
+    # none returns BEFORE touching the memo: no selection ran, no ``[sandbox]`` log line, and the
+    # eager LocalExecutor is untouched — the plain REPL stays byte-identical (and a test's
+    # ``_EXECUTOR.run`` patch would survive the warm-up exactly as it survives the getter).
+    assert bash_mod._executor_selected is False
+    assert bash_mod._EXECUTOR is eager
+
+
+async def test_warm_executor_docker_selects_and_awaits_start(monkeypatch, tmp_path):
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    start = AsyncMock()
+    executor = SimpleNamespace(start=start)
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: executor)
+    bash_mod.reset_executor()
+
+    await bash_mod.warm_executor(tmp_path)
+
+    start.assert_awaited_once_with(tmp_path)
+    # Warm shares the ``_EXECUTOR`` memo: the warmed instance IS the one ``bash`` will use.
+    assert bash_mod._get_executor() is executor
+
+
+async def test_warm_executor_startless_executor_is_a_noop(monkeypatch, tmp_path):
+    # An executor without ``start`` (the Protocol minimum) warms as a no-op — duck-typed like
+    # ``close_executor``'s ``aclose``/``close`` probe, so ``CommandExecutor`` stays run-only.
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    executor = SimpleNamespace()
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: executor)
+    bash_mod.reset_executor()
+
+    await bash_mod.warm_executor(tmp_path)  # must not raise
+
+    assert bash_mod._get_executor() is executor
+
+
+async def test_warm_executor_failure_propagates_and_keeps_the_memo(monkeypatch, tmp_path):
+    # A failed start propagates (the app call site renders one friendly line) WITHOUT resetting the
+    # memo: the next ``bash`` retries through the same executor from scratch (it cached nothing).
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    executor = SimpleNamespace(start=AsyncMock(side_effect=RuntimeError("image pull failed")))
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: executor)
+    bash_mod.reset_executor()
+
+    with pytest.raises(RuntimeError, match="image pull failed"):
+        await bash_mod.warm_executor(tmp_path)
+
+    assert bash_mod._get_executor() is executor  # memo kept — the first bash retries through it
 
 
 # --- bash_description: the mode-specific description composition -------------------------------

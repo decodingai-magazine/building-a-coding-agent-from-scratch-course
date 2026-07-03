@@ -31,6 +31,7 @@ into the context window.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from pydantic_ai import ApprovalRequired, ModelRetry, RunContext
 
@@ -119,6 +120,30 @@ def install_executor(executor: CommandExecutor) -> None:
     global _EXECUTOR, _executor_selected
     _EXECUTOR = executor
     _executor_selected = True
+
+
+async def warm_executor(cwd: Path) -> None:
+    """Eagerly start the selected sandbox backend at REPL launch (ADR-0011 §4).
+
+    The interactive warm-up: ``tui/app.py`` calls this once right after startup so a ``docker`` /
+    ``modal`` session's sandbox is live (and visible — ``docker ps``) from launch instead of
+    materializing invisibly mid-first-turn. A **no-op in ``none`` mode** — it returns before
+    touching the executor memo, so the plain REPL stays byte-identical (no selection, no
+    ``[sandbox]`` log line, no sandbox import). Otherwise it runs the same lazy selection the
+    first ``bash`` call would (sharing the ``_EXECUTOR`` memo, so the warmed instance IS the one
+    ``bash`` uses) and awaits the executor's ``start(cwd)`` if it defines one — duck-typed like
+    :func:`close_executor`'s ``aclose``/``close`` probe, so the :class:`CommandExecutor` Protocol
+    stays run-only and a start-less executor warms as a no-op. Failures propagate with the memo
+    **kept**: the call site renders one friendly line and the next ``bash`` simply retries from
+    scratch (the executor caches nothing on a failed start). REPL-only: the headless flow installs
+    its own executor (:func:`install_executor`) and must not be warmed.
+    """
+    if settings.sandbox_mode == "none":
+        return
+    executor = _get_executor()
+    start = getattr(executor, "start", None)
+    if start is not None:
+        await start(cwd)
 
 
 def reset_executor() -> None:

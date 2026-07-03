@@ -183,6 +183,24 @@ def test_footer_hint_mentions_the_mode_cycle_and_slash_commands():
     assert "/mode" in hint
 
 
+def test_startup_banner_none_is_byte_identical_to_the_pre_sandbox_line():
+    # The plain REPL's banner must not change when sandboxing is off (ADR-0011 §1 opt-in promise).
+    banner = app.startup_banner("gemini", "gemini-2.5-flash", "none")
+
+    assert banner == "Decode - gemini:gemini-2.5-flash - type a line; /quit exits."
+    assert "sandbox" not in banner
+
+
+def test_startup_banner_names_an_active_sandbox_mode():
+    # docker/modal sessions surface the mode at launch — the "is the sandbox even on?" signal.
+    banner = app.startup_banner("gemini", "gemini-2.5-flash", "docker")
+
+    assert banner == (
+        "Decode - gemini:gemini-2.5-flash - sandbox:docker - type a line; /quit exits."
+    )
+    assert "sandbox:modal" in app.startup_banner("gemini", "g", "modal")
+
+
 def test_input_intent_enum_has_steer_followup_and_abort():
     # The keybindings record/emit intent for now (no harness until task 003).
     assert app.InputIntent.STEER.value == "steer"

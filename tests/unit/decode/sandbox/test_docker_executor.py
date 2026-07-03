@@ -244,6 +244,26 @@ def _fake_proc(mocker, *, stdout=b"", returncode=0):
     return proc
 
 
+async def test_start_ensures_the_container_and_is_idempotent(mocker):
+    # The eager REPL warm-up (ADR-0011 §4): ``start()`` brings the keeper container up exactly like
+    # the first run() would — the SAME pinned ``docker run`` argv — caches the id, and a second
+    # ``start()`` spawns nothing (idempotent; the first run() after it starts nothing new either).
+    run_proc = _fake_proc(mocker, stdout=b"container123\n")
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc])
+    )
+    executor = DockerExecutor()
+
+    await executor.start(Path("/repo"))
+    await executor.start(Path("/repo"))  # idempotent: the cached id short-circuits
+
+    assert executor._container_id == "container123"
+    assert spawn.await_count == 1  # exactly one docker run — no second container
+    argv = spawn.await_args_list[0].args
+    assert argv[0] == "docker"
+    assert list(argv[1:]) == executor._docker_run_args(Path("/repo"))
+
+
 async def test_ensure_container_trusts_the_ca_synchronously_on_the_proxy_path(mocker):
     # The CA-trust race fix: on the proxy path _ensure_container runs ``docker exec <id>
     # update-ca-certificates`` and WAITS for it before returning, so the first command already trusts

@@ -266,6 +266,20 @@ class DockerExecutor:
         )
         return ExecResult(stdout, "", exit_code, timed_out=False)
 
+    async def start(self, cwd: Path) -> None:
+        """Eagerly start the session container — the REPL warm-up hook (idempotent; ADR-0011 §4).
+
+        Called once by :func:`decode.tools.bash.warm_executor` at REPL launch so the keeper
+        container is up (and visible in ``docker ps``) from the start of the session instead of
+        materializing invisibly mid-first-turn — and so the first ``bash`` skips the image-pull /
+        container-start latency. Only the container comes up; the persistent shell stays lazy
+        (created on the first real command, exactly as before). Idempotent: a second ``start`` —
+        or the first ``run`` after it — finds the cached container id and starts nothing new.
+        Infra failures propagate (same exceptions ``run`` catches); the warm-up call site wraps
+        them and degrades to the lazy path.
+        """
+        await self._ensure_container(cwd)
+
     async def aclose(self) -> None:
         """Reap the session container + shell — idempotent, best-effort, LOOP-INDEPENDENT (ADR-0011 §2,4).
 

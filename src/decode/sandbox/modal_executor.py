@@ -136,6 +136,19 @@ class ModalExecutor:
         logger.debug("[sandbox] $ %s → exit=%d bytes=%d", command, exit_code, len(stdout))
         return ExecResult(stdout, stderr, exit_code, timed_out=False)
 
+    async def start(self, cwd: Path) -> None:
+        """Eagerly create the remote sandbox — the REPL warm-up hook (idempotent; ADR-0011 §3).
+
+        Called once by :func:`decode.tools.bash.warm_executor` at REPL launch so the session
+        sandbox is live from the start instead of materializing invisibly mid-first-turn — and so
+        the first ``bash`` skips the remote-create latency. ``cwd`` mirrors :meth:`run`'s contract
+        (host paths are meaningless remotely — see :meth:`run`). Idempotent: a second ``start`` —
+        or the first ``run`` after it — finds the cached sandbox and creates nothing new. Failures
+        propagate; the warm-up call site wraps them and degrades to the lazy path.
+        """
+        del cwd  # same contract as run(): never a remote working directory
+        await self._ensure_sandbox()
+
     async def aclose(self) -> None:
         """Terminate the session sandbox — idempotent, best-effort (ADR-0011 §3).
 

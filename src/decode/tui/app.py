@@ -69,7 +69,7 @@ from decode.permissions.types import PermissionMode
 from decode.services.lsp.service import shutdown_all as shutdown_lsp_servers
 from decode.skills.loader import load_skills
 from decode.skills.payload import format_skill_payload
-from decode.tools.bash import close_executor
+from decode.tools.bash import close_executor, warm_executor
 from decode.tui import render
 
 logger = logging.getLogger(__name__)
@@ -156,6 +156,20 @@ def footer_hint(agent: str, mode: str) -> str:
         f"agent:{agent} mode:{mode} | Enter steer | Alt+Enter follow-up | "
         "Esc abort | Shift+Tab mode | /agent /mode /compact /quit"
     )
+
+
+def startup_banner(provider: str, model: str, sandbox_mode: str) -> str:
+    """The one-line startup banner: provider:model (+ the sandbox mode when one is active).
+
+    Pure and string-returning (mirrors :func:`footer_hint`) so it is unit-testable. ``none`` —
+    the plain REPL — renders **byte-identical** to before sandboxing existed; ``docker`` /
+    ``modal`` insert a ``sandbox:<mode>`` segment so the user can SEE the session's ``bash``
+    commands run in a sandbox (the mode is fixed per session — ADR-0011 §1 — so the banner, not
+    the live footer, is its home).
+    """
+    if sandbox_mode == "none":
+        return f"Decode - {provider}:{model} - type a line; /quit exits."
+    return f"Decode - {provider}:{model} - sandbox:{sandbox_mode} - type a line; /quit exits."
 
 
 def parse_agent_command(line: str) -> str | None:
@@ -849,6 +863,23 @@ async def run_app(
     )
     runner = Runner(handler, on_event=_on_event)
 
+    # Eager sandbox warm-up (ADR-0011 §4): bring the docker/modal sandbox up NOW — visibly —
+    # instead of invisibly mid-first-turn (the container shows in ``docker ps`` from launch and the
+    # first bash skips the start latency). The progress line prints BEFORE the await because a cold
+    # image pull is slow — a silent hang here would be the exact confusion this fixes. A failure
+    # degrades to the lazy path (the memo is kept, so the first ``bash`` retries and its rendered
+    # infra-failure result carries any persistent problem to the model); the config-level failures
+    # were already caught by the CLI preflight. ``none`` skips the whole block — byte-identical.
+    if settings.sandbox_mode != "none":
+        emit_line(f"Decode - starting {settings.sandbox_mode} sandbox ({settings.sandbox_image})…")
+        try:
+            await warm_executor(deps.cwd)
+        except Exception as exc:
+            logger.warning("sandbox warm-up failed; degrading to lazy start", exc_info=True)
+            emit_line(
+                f"Decode: sandbox startup failed ({exc}); will retry on the first bash command."
+            )
+
     # Which provider/model this session is talking to (the active model id lives in a per-provider
     # settings field — same mapping as factory._build_model's branches).
     active_model = {
@@ -859,7 +890,7 @@ async def run_app(
     console.print(
         render.render_event(
             events.AssistantTextDelta(
-                text=f"Decode - {settings.llm_provider}:{active_model} - type a line; /quit exits."
+                text=startup_banner(settings.llm_provider, active_model, settings.sandbox_mode)
             )
         )
     )
