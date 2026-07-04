@@ -143,10 +143,15 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
     co-locate a proxy**:
     - **docker → the Credential Proxy (cred-free).** The retained headless mitmproxy sidecar (§9 / §6)
       injects the credential *after* the request leaves the worker, on a per-run docker network — the
-      worker holds **no** token. When `SANDBOX_GIT_TOKEN` is set the proxy **auto-engages** (no separate
-      `SANDBOX_CREDENTIAL_PROXY_ENABLED` flag needed) and `github_token_rules` builds the two host-side
-      header rules from that one token — Bearer for `api.github.com`, Basic `x-access-token:<PAT>` for the
-      `github.com` git transport (GitHub's git-over-HTTPS does not accept Bearer). The
+      worker holds **no** token. When `SANDBOX_GIT_TOKEN` is set **non-empty** the proxy **auto-engages**
+      (no separate `SANDBOX_CREDENTIAL_PROXY_ENABLED` flag needed) and `github_token_rules` builds the two
+      host-side header rules from that one token — Bearer for `api.github.com`, Basic `x-access-token:<PAT>`
+      for the `github.com` git transport (GitHub's git-over-HTTPS does not accept Bearer). **git is
+      installed into the proxy-wired worker at create** (its apt egresses through the proxy's passthrough
+      to the Debian mirrors, the CA already trusted) so that Basic rule has a client — a model `git push`
+      from inside the sandbox authenticates end to end while the worker stays token-free. (The gate is on
+      the resolved *value*, mirroring modal's `if token:`: an explicit `SANDBOX_GIT_TOKEN=` resolves to no
+      value and leaves the proxy **down** — it never engages and injects empty garbage headers.) The
       `SANDBOX_CREDENTIAL_PROXY_ENABLED` flag + `DEFAULT_PROXY_RULES` (Kitaru secrets) remain the general
       path for **other** hosts. This is the hardened path; it costs a mitmproxy container and a CA-trust
       step.
@@ -160,10 +165,10 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
     shares the host kernel, so keeping the secret out of the worker (inject after egress) earns its
     complexity; modal is a **remote, ephemeral** box, so a *scoped* token inside it has a bounded blast
     radius and buys real simplicity — mitigated by requiring a **fine-grained, repo-scoped PAT** (Contents
-    + Pull requests), not a broad classic token. `SANDBOX_GIT_TOKEN` empty (the default) injects nothing
-    on either backend — and leaves the docker proxy down unless the flag opts it in — so the strict "no
-    secret in the sandbox" invariant holds until an operator opts in; the host-side hand-back (§8) stays
-    the credential-free way to ship results.
+    + Pull requests), not a broad classic token. `SANDBOX_GIT_TOKEN` empty — unset (the default) *or* an
+    explicit `SANDBOX_GIT_TOKEN=` — injects nothing on either backend and leaves the docker proxy down
+    unless the flag opts it in, so the strict "no secret in the sandbox" invariant holds until an operator
+    opts in; the host-side hand-back (§8) stays the credential-free way to ship results.
 
 ## Diagram
 

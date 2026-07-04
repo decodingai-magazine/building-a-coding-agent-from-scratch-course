@@ -107,6 +107,13 @@ def test_sandbox_proxy_is_a_noop_in_docker_mode_when_proxy_disabled(monkeypatch)
     _assert_seam_untouched(monkeypatch, mode="docker", enabled=False, git_token=None)
 
 
+def test_sandbox_proxy_is_a_noop_in_docker_mode_with_an_empty_git_token(monkeypatch):
+    # Nit 4 regression: an explicit ``SANDBOX_GIT_TOKEN=`` parses to ``SecretStr("")`` (not None). It must
+    # NOT engage the docker proxy nor inject empty garbage headers — the gate is on the resolved VALUE
+    # (``bool(token)``), mirroring modal's ``if token:``. Only a NON-EMPTY token auto-engages the proxy.
+    _assert_seam_untouched(monkeypatch, mode="docker", enabled=False, git_token=SecretStr(""))
+
+
 def test_sandbox_proxy_is_a_noop_in_modal_mode_even_when_enabled(monkeypatch):
     # Docker-only: modal mode never builds the proxy even with the flag on (modal's dual proxy tokens
     # are a separate header surface — out of scope, ADR-0011).

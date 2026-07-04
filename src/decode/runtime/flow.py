@@ -312,11 +312,18 @@ def _sandbox_proxy(repo: str | None = None, local: bool = False) -> Iterator[Non
     on exit) and nests **inside** ``_config_from_secret_store`` so a proxy rule reads config already
     hydrated from the Kitaru secret.
     """
-    # `ponytail:` a set ``SANDBOX_GIT_TOKEN`` auto-engages the proxy (the one-knob GitHub path — same
-    # token modal direct-injects), so docker headless git-auth needs no separate proxy flag; the flag
-    # still enables the proxy for any OTHER ``DEFAULT_PROXY_RULES`` credential.
-    git_token = settings.sandbox_git_token
-    proxy_wanted = settings.sandbox_credential_proxy_enabled or git_token is not None
+    # `ponytail:` a NON-EMPTY ``SANDBOX_GIT_TOKEN`` auto-engages the proxy (the one-knob GitHub path —
+    # same token modal direct-injects), so docker headless git-auth needs no separate proxy flag; the
+    # flag still enables the proxy for any OTHER ``DEFAULT_PROXY_RULES`` credential. Gate on the resolved
+    # VALUE, mirroring modal's ``if token:`` — an explicit ``SANDBOX_GIT_TOKEN=`` parses to
+    # ``SecretStr("")`` (not ``None``), which must inject NOTHING and leave the proxy down, not engage it
+    # and prepend empty ``Bearer ``/``Basic base64("x-access-token:")`` garbage headers.
+    token = (
+        settings.sandbox_git_token.get_secret_value()
+        if settings.sandbox_git_token is not None
+        else ""
+    )
+    proxy_wanted = settings.sandbox_credential_proxy_enabled or bool(token)
     if not (settings.sandbox_mode == "docker" and proxy_wanted):
         yield
         return
@@ -333,10 +340,11 @@ def _sandbox_proxy(repo: str | None = None, local: bool = False) -> Iterator[Non
     from decode.tools.bash import install_executor
 
     # GitHub rules (from the token) go FIRST so ``api.github.com`` precedes ``github.com`` in the map
-    # (parent-domain matching); any explicit ``DEFAULT_PROXY_RULES`` on the same host then override.
+    # (parent-domain matching); any explicit ``DEFAULT_PROXY_RULES`` on the same host then override. Only
+    # a non-empty token contributes rules (an empty one never reaches here — the gate above bailed).
     rules = list(DEFAULT_PROXY_RULES)
-    if git_token is not None:
-        rules = github_token_rules(git_token.get_secret_value()) + rules
+    if token:
+        rules = github_token_rules(token) + rules
     proxy = DockerCredentialProxy(build_credential_map(rules))
     try:
         proxy.start()

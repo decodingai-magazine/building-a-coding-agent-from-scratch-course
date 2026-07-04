@@ -130,18 +130,21 @@ async def test_create_raises_on_a_docker_run_failure(mocker, tmp_path):
 
 async def test_create_trusts_the_ca_synchronously_on_the_proxy_path(mocker, tmp_path):
     # On the proxy path create runs ``docker exec <id> update-ca-certificates`` and WAITS before
-    # returning, so the first command already trusts the CA (no daemon — run + exec are faked).
+    # returning, so the first command already trusts the CA (no daemon — run + exec are faked). git then
+    # installs too (the wired worker is no longer skipped): docker run → CA trust → git install.
     run_proc = _fake_proc(mocker, stdout=b"container123\n")
     exec_proc = _fake_proc(mocker, stdout=b"updated\n")
+    git_proc = _fake_proc(mocker, stdout=b"done\n")
     spawn = mocker.patch(
-        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc, exec_proc])
+        "asyncio.create_subprocess_exec",
+        new=mocker.AsyncMock(side_effect=[run_proc, exec_proc, git_proc]),
     )
     backend = DockerBackend(ca_cert_host_path=Path("/host/mitmproxy-ca-cert.pem"))
 
     await backend.create(tmp_path)
 
     assert backend._container_id == "container123"
-    assert spawn.await_count == 2  # docker run, THEN docker exec update-ca-certificates
+    assert spawn.await_count == 3  # docker run, CA trust, THEN git install
     exec_argv = spawn.await_args_list[1].args
     assert exec_argv[:4] == ("docker", "exec", "container123", "update-ca-certificates")
 
@@ -225,19 +228,32 @@ async def test_create_survives_a_git_install_failure(mocker, tmp_path):
     )  # the session is up despite the failed git install
 
 
-async def test_create_skips_git_install_when_proxy_wired(mocker, tmp_path):
-    # A proxy-wired worker sits on an isolated egress network where apt can't reach mirrors — skip git.
-    run_proc = _fake_proc(mocker, stdout=b"cid\n")
+async def test_create_installs_git_on_a_proxy_wired_worker(mocker, tmp_path):
+    # The (A) fix (ADR-0012 §10): the proxy-wired worker DOES get git — its ``git push`` to github.com is
+    # exactly what the proxy's ``github-git`` Basic rule authenticates, so the client MUST be present.
+    # apt reaches the Debian mirrors THROUGH the proxy (``http_proxy`` set) after the CA is trusted, so
+    # three spawns fire: docker run → update-ca-certificates → the git-install ``sh -c``.
+    run_proc = _fake_proc(mocker, stdout=b"container123\n")
+    ca_proc = _fake_proc(mocker, stdout=b"updated\n")
+    git_proc = _fake_proc(mocker, stdout=b"done\n")
     spawn = mocker.patch(
-        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc])
+        "asyncio.create_subprocess_exec",
+        new=mocker.AsyncMock(side_effect=[run_proc, ca_proc, git_proc]),
     )
     backend = DockerBackend(
-        network="decode-sandbox-net-abc", proxy_env={"http_proxy": "http://decode-proxy:8080"}
+        network="decode-sandbox-net-abc",
+        proxy_env={"http_proxy": "http://decode-proxy:8080"},
+        ca_cert_host_path=Path("/host/mitmproxy-ca-cert.pem"),
     )
 
     await backend.create(tmp_path)
 
-    assert spawn.await_count == 1  # the docker run only — no git install for a proxy-wired worker
+    assert spawn.await_count == 3  # docker run, CA trust, THEN git install (no longer skipped)
+    ca_argv = spawn.await_args_list[1].args
+    assert ca_argv[:4] == ("docker", "exec", "container123", "update-ca-certificates")
+    git_argv = spawn.await_args_list[2].args
+    # The proxy-wired worker installs git the same way the default worker does (identity configured too).
+    assert list(git_argv) == ["docker", "exec", "container123", "sh", "-c", _git_setup_command()]
 
 
 # --- exec: a fresh ``docker exec`` per call ---------------------------------------------------

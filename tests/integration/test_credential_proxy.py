@@ -26,6 +26,7 @@ import pytest
 
 import decode.runtime.flow as flow_mod
 import decode.tools.bash as bash_mod
+from decode.config.settings import settings
 from decode.sandbox.docker_backend import DockerBackend
 from decode.sandbox.executor import SandboxExecutor
 from decode.sandbox.proxy import DockerCredentialProxy, SandboxProxyRule, build_credential_map
@@ -274,6 +275,72 @@ async def test_worker_trusts_the_proxy_ca_on_its_very_first_command(monkeypatch,
             await executor.aclose()
         proxy.stop()
 
+    assert not _container_exists(proxy._container_name)
+    assert not _network_exists(proxy.network)
+
+
+async def test_proxy_wired_worker_has_git_and_still_holds_no_token(monkeypatch, tmp_path):
+    """The (A) fix (ADR-0012 §10 / task 086): git IS installed in the proxy-wired worker, token-free.
+
+    The one docker configuration that carries the git token — the auto-engaged Credential Proxy — is
+    exactly where git MUST be present, since the proxy's ``github-git`` Basic rule authenticates the
+    worker's ``git push``. Proven end to end against a REAL proxy topology: ``git --version`` exits 0
+    inside the proxy-wired worker (apt reached the Debian mirrors THROUGH the mitmproxy passthrough) and
+    its ``SANDBOX_GIT_USER_*`` identity is configured, WHILE a scan of the worker's own env shows no
+    secret (the credential lives only in the proxy container). This is the regression guard for the bug
+    where a set ``SANDBOX_GIT_TOKEN`` silently dropped git from the worker. Reaps in ``finally``.
+    """
+    monkeypatch.setattr(
+        "kitaru.get_secret", lambda name: SimpleNamespace(values={"token": _SECRET_VALUE})
+    )
+    credential_map = build_credential_map(
+        [
+            SandboxProxyRule(
+                name="upstream-auth",
+                hosts=[_UPSTREAM_ALIAS],
+                headers={_INJECTED_HEADER: "{{ test-secret.token }}"},
+            )
+        ]
+    )
+    proxy = DockerCredentialProxy(credential_map)
+    executor: SandboxExecutor | None = None
+    worker_id: str | None = None
+    try:
+        proxy.start()
+        # The worker's /workspace is the project's .decode/sandbox scratch (ADR-0012 §2), not the cwd.
+        scratch = tmp_path / ".decode" / "sandbox"
+        scratch.mkdir(parents=True, exist_ok=True)
+        executor = SandboxExecutor(
+            DockerBackend(
+                network=proxy.network,
+                proxy_env=proxy.worker_proxy_env,
+                ca_cert_host_path=proxy.ca_cert_host_path,
+            )
+        )
+        # create() trusts the CA THEN installs git — the apt egresses through the proxy passthrough.
+        await executor.start(scratch)
+        worker_id = executor._backend._container_id
+
+        # git is present in the proxy-wired worker (apt reached the mirrors THROUGH the proxy) ...
+        version = await executor.run("git --version", cwd=scratch, timeout_s=120.0)
+        assert version.exit_code == 0, version.stderr or version.stdout
+        assert "git version" in version.stdout
+        # ... with its identity configured (so a model ``git commit`` works) ...
+        ident = await executor.run("git config --global user.name", cwd=scratch, timeout_s=30.0)
+        assert ident.stdout.strip() == settings.sandbox_git_user_name
+
+        # ... and the worker STILL holds no secret — the credential lives only in the proxy container.
+        env = subprocess.run(
+            ["docker", "exec", worker_id, "env"], capture_output=True, text=True, timeout=15.0
+        ).stdout
+        assert _SECRET_VALUE not in env
+        assert "http_proxy=" in env  # routed through the proxy — it just holds no token
+    finally:
+        if executor is not None:
+            await executor.aclose()
+        proxy.stop()
+
+    assert worker_id is None or not _container_exists(worker_id)
     assert not _container_exists(proxy._container_name)
     assert not _network_exists(proxy.network)
 

@@ -259,10 +259,12 @@ class Settings(BaseSettings):
     # honors it its own way (the deliberate **docker = Credential Proxy (cred-free) vs modal = direct
     # injection** trade-off): **modal** injects it DIRECTLY as ``GITHUB_TOKEN`` (via ``modal.Secret`` +
     # a baked git credential helper) so it is readable inside the remote sandbox; **docker** (headless
-    # only) feeds it to the Credential Proxy, which auto-engages when this is set and injects the auth
-    # header AFTER egress, so the worker holds no token. Empty (the default) injects nothing — rely on
-    # the host-side git hand-back. Because modal keeps the token in the sandbox, use a **fine-grained
-    # PAT scoped to the target repo** (Contents + Pull requests), never a broad classic token.
+    # only) feeds it to the Credential Proxy, which auto-engages when this is set NON-EMPTY and injects
+    # the auth header AFTER egress, so the worker holds no token — git is installed into that worker too,
+    # so its ``git push`` over the injected header has a client. Empty — unset (the default) or an
+    # explicit ``SANDBOX_GIT_TOKEN=`` — injects nothing (the proxy stays down); rely on the host-side git
+    # hand-back. Because modal keeps the token in the sandbox, use a **fine-grained PAT scoped to the
+    # target repo** (Contents + Pull requests), never a broad classic token.
     sandbox_git_token: SecretStr | None = None
     # The HOST directory bind-mounted at the docker Worker's ``/workspace``, cwd-relative like every
     # ``.decode`` path. Under ADR-0012 it IS the isolated Workspace — a ``git clone`` of ``sandbox_repo``

@@ -10,8 +10,10 @@ settles on:
   one keeper container per session, the host Workspace (``settings.sandbox_workspace_dir``)
   bind-mounted at ``/workspace``. The Credential-Proxy wiring is kept intact (ADR-0011 §6, retained):
   an optional ``--network`` + ``proxy_env`` + a read-only CA mount, with a **synchronous**
-  ``update-ca-certificates`` after create so the very first command already trusts the proxy CA. A
-  default (unwired) worker then gets a best-effort ``apt-get install git`` — the slim base ships none.
+  ``update-ca-certificates`` after create so the very first command already trusts the proxy CA. Every
+  worker then gets a best-effort ``apt-get install git`` + the ``SANDBOX_GIT_USER_*`` identity (the slim
+  base ships none) — the **proxy-wired** worker included, its apt reaching the mirrors *through* the
+  proxy, so a model ``git push`` to ``github.com`` has a client to consume the proxy's Basic rule (§10).
 * **exec** — a fresh ``docker exec -w /workspace <id> bash -lc <command>`` per call, with **separate**
   stdout/stderr (no merge, unlike the old shell), bounded by ``timeout_s``. On timeout only the one
   ``docker exec`` **client** process group is killed — the **container and its filesystem survive**
@@ -164,11 +166,15 @@ class DockerBackend:
                 # The CA step reaped the container; drop the id so a later run re-creates from scratch.
                 self._container_id = None
                 raise
-        # A default (unwired) worker gets git so a model ``git`` command in the Workspace works; a
-        # proxy-wired worker is skipped — it sits on an isolated egress network where apt cannot reach
-        # Debian mirrors, and the credential-proxy path does not need git.
-        if self._network is None and self._proxy_env is None and self._ca_cert_host_path is None:
-            await self._install_git(self._container_id)
+        # The slim base ships no git, so install it in EVERY worker — the proxy-wired one included. Its
+        # ``git push`` to ``github.com`` over HTTPS is exactly what the Credential Proxy's ``github-git``
+        # Basic rule authenticates (ADR-0012 §10), so the git client MUST be present to consume it. apt
+        # reaches the Debian mirrors THROUGH the proxy (``http_proxy`` is set and the proxy
+        # passthrough-forwards unconfigured hosts) and the proxy CA is already trusted above, so the
+        # install completes on the wired worker too — and the worker still holds no token (§10; the token
+        # lives only in the proxy container). Best-effort on every path (a failed install leaves the
+        # session up with no git, never a crash).
+        await self._install_git(self._container_id)
 
     async def export(self) -> None:
         """No-op: the bind mount is live, so the host Workspace already IS the sandbox filesystem (§5)."""
@@ -398,13 +404,17 @@ class DockerBackend:
         into this same exec so it adds no extra ``docker exec`` (see :func:`_git_setup_command`), and a
         model ``git commit`` in the Workspace then works out of the box.
 
+        Runs on **every** worker, the proxy-wired one included: there apt egresses through the mitmproxy
+        proxy (``http_proxy`` set, CA trusted by :meth:`_trust_proxy_ca` first), which passthrough-forwards
+        the Debian mirrors — so ``git`` lands to consume the proxy's ``github-git`` push rule (ADR-0012
+        §10). The token never enters the worker regardless (the proxy injects it after egress).
+
         ``ponytail:`` installed per session into the container rather than baking a fatter image — this
         keeps the 278 MB slim base AND the worker's ``ancestor=<image>`` identity (so every hygiene reap
         filter and ``docker run`` argv test stays valid), at the cost of a one-off ~15 s apt at session
         start (bake git into a custom ``SANDBOX_IMAGE`` to skip it). **Best-effort** — a failure (offline
         / restricted apt) logs a warning and leaves the session running with no git (the model would see
-        ``git: command not found``, exactly today's behavior), never a crash. Bounded by
-        :data:`_GIT_INSTALL_TIMEOUT_S`.
+        ``git: command not found``), never a crash. Bounded by :data:`_GIT_INSTALL_TIMEOUT_S`.
         """
         try:
             proc = await asyncio.create_subprocess_exec(

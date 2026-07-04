@@ -552,3 +552,26 @@ F simplicity) plus the requested cross-cutting seams. Highlights verified:
 
 The three previously-triaged non-blockers (HITL `--repo` auto-ship unwired; `_branch_name` exotic-ref;
 `/ship` doc cosmetics) confirmed non-blocking. Pipeline may advance to hand-off.
+
+### [PR Reviewer] 2026-07-04 — Review (git-auth follow-on `7ba7262`)
+
+**VERDICT: BLOCKERS**
+
+Reviewed **only** commit `7ba7262` (18 files, ~796 insertions) across all six dimensions + the requested
+credential-path seams (docker worker token-free, modal token hygiene, `github_token_rules`
+ordering/base64, the auto-engage gate, empty-token, no-secret-logging, git-install not hanging the
+proxy-isolated worker). Findings: **1 Blocker, 2 Nits.**
+
+- **Blocker (already ticketed — no duplicate filed):** the proxy-wired docker worker ships no `git`/`gh`,
+  so ADR-0012 §10's in-sandbox `git push` / `gh pr create` promise is undeliverable on docker with the
+  default image, and the `github-git` (github.com Basic) rule has no consumer there. This independently
+  corroborates the pending PA rejection; findings folded into
+  `tasks/086-pa-rejection-docker-sandbox-git-push.md` (the active rollup).
+- **Nit (net-new → added to 086):** explicit-empty `SANDBOX_GIT_TOKEN=` (`SecretStr("")`) auto-engages the
+  docker proxy with garbage empty headers while modal injects nothing — corrects an assumption in 086's ACs.
+- **Nit (net-new → added to 086; routes to PA):** glossary "Worker" invariant ("no token ever enters it")
+  is contradicted by the modal `SANDBOX_GIT_TOKEN` path.
+
+Caveman plugin is NOT installed for this project (its only `installed_plugins.json` entry is scoped to a
+different project) → no PR comments posted; findings route via the rollup. Pipeline stays blocked on
+`tasks/086`; re-invoke me after the fix + PA ACCEPT + re-push.
