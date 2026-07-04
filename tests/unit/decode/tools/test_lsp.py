@@ -109,6 +109,41 @@ async def test_lsp_requires_approval_when_not_approved(tmp_path: Path, mocker):
     sentinel.assert_not_called()
 
 
+# --- sandbox postures (ADR-0012 §7): none+docker operate on the workspace, modal is disabled --------
+
+
+async def test_lsp_disabled_in_the_modal_sandbox_with_a_friendly_note(tmp_path: Path, mocker):
+    # modal: ty is host-side and cannot reach the remote Workspace fs, so lsp is best-effort-disabled
+    # with a friendly ModelRetry — BEFORE the service is reached (deps.cwd is the empty host workspace).
+    mocker.patch.object(lsp_module.settings, "sandbox_mode", "modal")
+    sentinel = mocker.Mock(side_effect=AssertionError("must not reach the service in modal"))
+    mocker.patch.object(lsp_service, "definition", sentinel)
+    path = _source_file(tmp_path)
+
+    with pytest.raises(ModelRetry, match="modal sandbox"):
+        await lsp_module.lsp(_ctx(tmp_path), op="definition", path=path, line=1, column=1)
+    sentinel.assert_not_called()
+
+
+async def test_lsp_operates_on_the_workspace_path_in_docker(tmp_path: Path, mocker):
+    # docker: the Workspace is a real host bind mount, so ty runs against ``deps.cwd`` normally — the mode
+    # is NOT short-circuited; the op reaches the service pointed at the workspace path (ADR-0012 §7).
+    mocker.patch.object(lsp_module.settings, "sandbox_mode", "docker")
+    path = _source_file(tmp_path)
+    captured: dict[str, object] = {}
+
+    async def _fake(cwd, p, line, column):  # type: ignore[no-untyped-def]
+        captured["cwd"] = cwd
+        return Location(path="mod.py", line=2, column=5)
+
+    mocker.patch.object(lsp_service, "definition", _fake)
+
+    out = await lsp_module.lsp(_ctx(tmp_path), op="definition", path=path, line=1, column=1)
+
+    assert out == "mod.py:2:5"
+    assert captured["cwd"] == tmp_path  # pointed at the Workspace (deps.cwd), not disabled
+
+
 # --- definition -----------------------------------------------------------------------------
 
 

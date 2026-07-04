@@ -68,9 +68,14 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
    remote plumbing, always truthful). **Modal** file ops are the `SandboxFilesystem` API (direct
    against the remote — no mirror). `glob`/`grep` run as **remote commands** (`find`/`grep`) via `exec`
    for both backends (never download the tree to search it), with output-parity to the host
-   implementations. Containment/normalization is **backend-agnostic path math** on logical paths (not
-   host `Path.resolve` — Modal paths are not host paths). `none` mode keeps today's direct-pathlib
-   tools, byte-identical.
+   implementations. Containment is **layered**: above the seam, backend-agnostic path math
+   (`_resolve_logical`, a logical-root fold — not host `Path.resolve`, since a Modal path is not a host
+   path) rejects `..` / absolute escapes for *both* backends; and because a docker mount is shared with
+   the host, the **docker** backend *additionally* resolves symlinks physically below the seam and
+   raises `WorkspaceEscape` (an `OSError` the file layer renders as a refusal), so a symlink planted in
+   the Workspace by `bash` cannot be followed off the mount onto the host — string math alone cannot see
+   a symlink. **Modal** needs no such layer (remote-only file ops on a disposable sandbox — no host fs
+   to escape onto). `none` mode keeps today's direct-pathlib tools, byte-identical.
 
 5. **Transport is minimal (the mtime-sync is retired).** Docker: the bind mount is the only transport
    (always live — no bootstrap, no export). Modal: **ONE** bootstrap upload of the cloned repo +

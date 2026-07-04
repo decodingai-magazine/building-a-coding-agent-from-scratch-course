@@ -849,16 +849,36 @@ async def run_app(
     # session carries history (§1).
     decisions = DecisionChannel()
     agent = build_agent()
+
+    # Harness Home is the launch cwd (ADR-0012 §6): every harness artifact — the permission file, the
+    # session log, MEMORY.md, the skills catalog — anchors here, even when the agent's tool scope
+    # (``deps.cwd``) moves into an isolated Workspace in a sandbox mode. The permission file is anchored
+    # explicitly to Harness Home so it survives the tool-scope move (``none`` mode: the two are equal).
+    harness_home = Path.cwd()
+    permissions_file = harness_home / settings.permissions_file
+
     # The gate loads the user's optional allow/deny rules from ``.decode/settings.json`` (ADR-0003
     # §4); a missing/malformed file is non-fatal (empty rules → mode-only). The interactive
     # ``a``/``always`` answer persists into and reloads this same file via the resolver below.
-    gate = PermissionGate(user_rules=rules.load_rule_set(settings.permissions_file))
+    gate = PermissionGate(user_rules=rules.load_rule_set(permissions_file))
+
+    # In a sandbox mode the agent's whole tool scope becomes the isolated Workspace (ADR-0012 §3,6):
+    # ``deps.cwd`` = a ``git clone`` at ``.decode/sandbox`` (empty this task — ``--repo`` lands in 082),
+    # so the file/search tools + ``bash`` operate there while harness artifacts stay at Harness Home.
+    # ``none`` keeps ``cwd == harness_home`` — byte-identical. The sandbox import stays lazy (§9).
+    tool_scope = harness_home
+    if settings.sandbox_mode != "none":
+        from decode.sandbox.workspace import prepare_workspace
+
+        tool_scope = prepare_workspace(harness_home)
+
     deps = AgentDeps(
-        cwd=Path.cwd(),
+        cwd=tool_scope,
+        harness_home=harness_home,
         emit=_on_event,
         gate=gate,
         resolve_permission=_make_permission_resolver(
-            decisions, console, gate=gate, permissions_file=settings.permissions_file
+            decisions, console, gate=gate, permissions_file=permissions_file
         ),
         resolve_user_question=_make_user_question_resolver(decisions, console),
     )
@@ -885,7 +905,9 @@ async def run_app(
 
     session: PromptSession[object] = PromptSession(
         key_bindings=_build_key_bindings(on_cycle_mode=cycle_mode),
-        completer=SlashCompleter(deps.cwd),
+        # The slash-command menu lists the project skills — a harness artifact, so from Harness Home
+        # (not the Workspace ``deps.cwd``, which in a sandbox mode holds only the seeded copy). §6.
+        completer=SlashCompleter(harness_home),
         complete_while_typing=True,
         # Re-render the footer on a timer so the "working…" spinner animates while a turn runs in
         # the background (without this the footer only repaints on keystrokes).
@@ -899,7 +921,10 @@ async def run_app(
     # JSONL log this run writes its turns to. The replayed history seeds the handler so the
     # conversation continues; the new log starts after the replayed prefix (already-persisted).
     resumed_history = _load_resume_history(resume, console)
-    session_log = SessionLog.create(settings.sessions_dir, cwd=deps.cwd)
+    # The session log is a harness artifact: its header records Harness Home (the launch cwd), not the
+    # sandbox Workspace ``deps.cwd`` (ADR-0012 §6). ``sessions_dir`` is process-cwd-relative and so
+    # already lands at Harness Home (decode never chdirs).
+    session_log = SessionLog.create(settings.sessions_dir, cwd=harness_home)
 
     # Hold the handler directly: it owns the cross-turn ``message_history`` the on-exit memory
     # write-back summarizes (the runner keeps it private). One handler per session (§1). Wiring
@@ -922,14 +947,14 @@ async def run_app(
     # infra-failure result carries any persistent problem to the model); the config-level failures
     # were already caught by the CLI preflight. ``none`` skips the whole block — byte-identical.
     if settings.sandbox_mode != "none":
-        # Lazy import so the ``none`` path imports no sandbox module (ADR-0012 §9). Warm the executor
-        # against the resolved Workspace (``workspace_dir(cwd)`` — the sandbox's ``/workspace``);
-        # ``deps.cwd`` stays the launch cwd this task (file tools move into the Workspace in 081).
-        from decode.sandbox.workspace import workspace_dir
-
+        # Warm the executor against the resolved Workspace — now ``deps.cwd`` IS the Workspace
+        # (``prepare_workspace(harness_home)`` above), the single tree both ``bash`` and the file tools
+        # operate on (ADR-0012 §4,6), so it is passed verbatim (never re-derived — that would double-nest
+        # a ``.decode/sandbox`` under it). The progress line prints BEFORE the await because a cold image
+        # pull is slow. A failure degrades to the lazy path (memo kept; the first op retries).
         emit_line(f"Decode - starting {settings.sandbox_mode} sandbox ({settings.sandbox_image})…")
         try:
-            await warm_executor(workspace_dir(deps.cwd))
+            await warm_executor(deps.cwd)
         except Exception as exc:
             logger.warning("sandbox warm-up failed; degrading to lazy start", exc_info=True)
             emit_line(
@@ -1002,7 +1027,8 @@ async def run_app(
             # so a ``clear`` skill can never shadow it: summarize-then-wipe when idle, a busy line
             # mid-turn — never opening a second prompt.
             if is_clear_command(text):
-                await _handle_clear_command(handler, runner, cwd=deps.cwd, emit=emit_line)
+                # ``/clear``'s summarize-to-MEMORY.md write-back is a harness artifact → Harness Home.
+                await _handle_clear_command(handler, runner, cwd=harness_home, emit=emit_line)
                 continue
 
             # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved
@@ -1013,7 +1039,8 @@ async def run_app(
             skill_cmd = parse_skill_command(text)
             if skill_cmd is not None:
                 name, trailing = skill_cmd
-                turn_input = _handle_skill_command(name, trailing, cwd=deps.cwd, emit=emit_line)
+                # Skills are a harness artifact → resolve from Harness Home, not the Workspace (§6).
+                turn_input = _handle_skill_command(name, trailing, cwd=harness_home, emit=emit_line)
                 if turn_input is not None:
                     await runner.submit(turn_input, intent)
                 continue
@@ -1032,10 +1059,10 @@ async def run_app(
     await runner.wait_idle()
 
     # On-exit memory write-back (ADR-0002 §8): one cheap Gemini call summarizes the session into
-    # a dated line appended to the project-root MEMORY.md, picked up next session by
-    # assemble_memory. The accumulated conversation lives on the handler; ``deps.cwd`` is the
-    # project root. Fully non-fatal — extract_on_exit never raises, so it cannot block exit.
-    await extract_on_exit(handler.message_history, deps.cwd)
+    # a dated line appended to MEMORY.md, picked up next session by assemble_memory. MEMORY.md is a
+    # harness artifact, so it anchors at Harness Home (the launch cwd), NOT the sandbox Workspace
+    # ``deps.cwd`` (ADR-0012 §6). Fully non-fatal — extract_on_exit never raises, so it cannot block exit.
+    await extract_on_exit(handler.message_history, harness_home)
 
     # On-exit LSP teardown (ADR-0007 §6): shut down every Language Server spawned this session so no
     # ``ty server`` child orphans. A cheap no-op when none was spawned (lazy — the common case) and

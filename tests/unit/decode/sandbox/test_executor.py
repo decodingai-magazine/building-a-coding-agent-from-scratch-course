@@ -131,6 +131,34 @@ async def test_start_is_idempotent(mocker, tmp_path):
     assert len(backend.created) == 1
 
 
+# --- file_backend: the file/search tools' byte-transport seam (ADR-0012 §4) -------------------
+
+
+async def test_file_backend_ensures_created_and_returns_the_backend(tmp_path):
+    # The file-tool seam: ``file_backend`` ensures the sandbox exists (so a file op works before the
+    # first ``bash``) and hands back the ONE backend the tools route their byte transport through.
+    backend = _FakeBackend()
+    executor = SandboxExecutor(backend)
+
+    result = await executor.file_backend(tmp_path)
+
+    assert result is backend
+    assert len(backend.created) == 1  # ensured created
+
+
+async def test_file_backend_reuses_the_backend_bash_already_created(tmp_path):
+    # File tools + ``bash`` share the ONE backend/container per session: after a ``run`` created it,
+    # ``file_backend`` returns the same backend without re-creating (the shared memo).
+    backend = _FakeBackend()
+    executor = SandboxExecutor(backend)
+    await executor.run("echo hi", cwd=tmp_path, timeout_s=5.0)
+
+    result = await executor.file_backend(tmp_path)
+
+    assert result is backend
+    assert len(backend.created) == 1  # not re-created — shares the create memo with run()
+
+
 # --- aclose / export: session teardown --------------------------------------------------------
 
 

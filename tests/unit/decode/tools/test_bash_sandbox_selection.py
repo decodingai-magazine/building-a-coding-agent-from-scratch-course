@@ -23,6 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import anyio
 import pytest
 from pydantic import SecretStr
 from pydantic_ai import RunContext
@@ -269,6 +270,52 @@ async def test_export_executor_is_a_safe_noop_in_none_mode():
     await bash_mod.export_executor()
 
     assert isinstance(bash_mod._EXECUTOR, LocalExecutor)  # untouched
+
+
+# --- active_backend: the file-tool seam (ADR-0012 §4) -----------------------------------------
+
+
+def test_active_backend_none_mode_returns_none_without_touching_the_memo(monkeypatch):
+    # none mode: the file tools take the direct-pathlib path. ``active_backend`` returns None BEFORE any
+    # selection — no ``[sandbox]`` log, no sandbox import, no memo change (the none path stays clean).
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "none")
+    bash_mod.reset_executor()
+
+    assert bash_mod.active_backend(Path("/repo")) is None
+    assert bash_mod._executor_selected is False  # never selected
+
+
+def test_active_backend_returns_none_for_a_backendless_executor(monkeypatch):
+    # A selected executor without ``file_backend`` (the ``none`` LocalExecutor / a fake) yields None —
+    # duck-typed like warm/close, so the seam stays optional and never bridges for a run-only executor.
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: SimpleNamespace())
+    bash_mod.reset_executor()
+
+    assert bash_mod.active_backend(Path("/x")) is None
+
+
+async def test_active_backend_docker_returns_the_executors_created_backend(monkeypatch, tmp_path):
+    # docker/modal: ``active_backend`` shares ``bash``'s ``_EXECUTOR`` memo and returns the executor's
+    # created backend via ``file_backend(cwd)`` — the SAME backend/container ``bash`` runs through, so a
+    # file-tool write is visible to ``bash`` and vice-versa. Bridged (from_thread) → driven in a thread.
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    sentinel_backend = object()
+
+    class _FakeExecutor:
+        async def file_backend(self, cwd: Path) -> object:
+            self.cwd = cwd
+            return sentinel_backend
+
+    executor = _FakeExecutor()
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: executor)
+    bash_mod.reset_executor()
+
+    backend = await anyio.to_thread.run_sync(lambda: bash_mod.active_backend(tmp_path))
+
+    assert backend is sentinel_backend
+    assert executor.cwd == tmp_path  # ensured-created against the passed Workspace cwd
+    assert bash_mod._get_executor() is executor  # shares the bash memo (one backend per session)
 
 
 # --- bash_description: the mode-specific description composition -------------------------------

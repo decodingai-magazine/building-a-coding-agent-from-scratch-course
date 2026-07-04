@@ -45,7 +45,7 @@ import signal
 from pathlib import Path, PurePosixPath
 
 from decode.config.settings import settings
-from decode.sandbox.executor import FileStat
+from decode.sandbox.executor import FileStat, WorkspaceEscape
 from decode.tools.exec import ExecResult
 
 logger = logging.getLogger(__name__)
@@ -295,14 +295,28 @@ class DockerBackend:
             path.unlink(missing_ok=True)
 
     def _path(self, rel: str) -> Path:
-        """Resolve a logical Workspace path ``rel`` to its host path on the bind mount.
+        """Resolve a logical Workspace path ``rel`` to its **contained** host path on the bind mount.
 
-        Containment (no ``..`` escape) is the caller's job above the seam (081); this only joins the
-        (already validated) logical path onto the mounted Workspace root.
+        Containment is layered (ADR-0012 §4). ``_resolve_logical`` above the seam already rejected ``..``
+        / absolute escapes with string math for both backends — but string math cannot see a **symlink**:
+        because the mount is shared with the host, a symlink planted inside the Workspace (by sandboxed
+        ``bash``) could otherwise be *followed* off the mount onto the host by a plain ``self._workspace /
+        rel`` pathlib op (a host ``/etc/passwd`` read, a host-file write). So this adds the physical
+        layer: resolve the joined path (following symlinks) and raise :class:`WorkspaceEscape` if it
+        lands outside the Workspace root — the file layer renders that as a model-readable refusal (it is
+        an :class:`OSError`). ``self._workspace`` is already ``.resolve()``d in :meth:`create`, so this is
+        a resolved-vs-resolved comparison; a brand-new nested path (nothing on disk yet) resolves
+        lexically and stays contained, and an in-workspace symlink pointing INSIDE resolves to its real
+        (contained) target.
         """
         if self._workspace is None:
             raise RuntimeError("DockerBackend file ops require a created workspace")
-        return self._workspace / rel
+        resolved = (self._workspace / rel).resolve()
+        if resolved != self._workspace and self._workspace not in resolved.parents:
+            raise WorkspaceEscape(
+                f"path {rel!r} escapes the workspace sandbox (resolves outside the bind mount)"
+            )
+        return resolved
 
     # --- docker run argv + proxy CA trust -------------------------------------------------------
 

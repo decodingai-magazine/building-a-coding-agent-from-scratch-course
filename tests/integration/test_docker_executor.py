@@ -17,16 +17,25 @@ litter (cost hygiene: ``docker ps -a`` shows nothing leaked afterwards).
 
 from __future__ import annotations
 
+import functools
 import logging
 import subprocess
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
+import anyio
 import pytest
+from pydantic_ai import ModelRetry, RunContext
 
+from decode.agent.deps import AgentDeps
+from decode.entities.permissions import PermissionDecision, PermissionRequest
+from decode.permissions.gate import PermissionGate
 from decode.sandbox.docker_backend import DockerBackend
-from decode.sandbox.executor import FileStat, SandboxExecutor
+from decode.sandbox.executor import FileStat, SandboxExecutor, WorkspaceEscape
+from decode.tools import files
+from decode.tools.askuser import deny_user_question_resolver
 
 
 def _docker_available() -> bool:
@@ -168,6 +177,90 @@ async def test_file_ops_and_bash_share_one_truthful_tree(executor: SandboxExecut
             "test -e b.txt && echo present || echo gone", cwd=tmp_path, timeout_s=30.0
         )
     ).stdout.strip() == "gone"
+
+
+async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
+    return PermissionDecision.deny()
+
+
+def _ctx(cwd: Path) -> RunContext[AgentDeps]:
+    """A pre-approved RunContext whose ``deps.cwd`` is the logical Workspace root."""
+    deps = AgentDeps(
+        cwd=cwd,
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        resolve_user_question=deny_user_question_resolver,
+    )
+    return RunContext(deps=deps, model=None, usage=None, tool_call_approved=True)  # type: ignore[arg-type]
+
+
+async def _call(fn: Callable[..., str], *args: Any, **kwargs: Any) -> str:
+    """Invoke a sync file tool in a worker thread so its ``anyio.from_thread.run`` bridge works."""
+    return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+
+async def test_glob_and_grep_tools_execute_find_and_grep_inside_the_container(
+    executor: SandboxExecutor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # THE real-docker file-search proof (ADR-0012 §4): the ``glob`` / ``grep`` TOOLS route through the
+    # backend seam and run ``find`` / ``grep`` INSIDE the container against the bind-mounted Workspace —
+    # with output-parity to ``none`` mode (host ``Path.glob`` / ``re``) on the very same tree. ``start``
+    # mounts ``tmp_path`` *verbatim* as the Workspace (exactly as the REPL warm-up does), so ``deps.cwd``
+    # and the mount are the one tree both the tools and in-container ``find`` see (``file_backend`` alone
+    # would derive ``cwd/.decode/sandbox`` and mount an empty subdir — the earlier bug this pins).
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "a.py").write_text("import os  # TODO tidy\n", encoding="utf-8")
+    (tmp_path / "src" / "main.py").write_text(
+        "def main():\n    return 1  # TODO\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "pkg" / "util.py").write_text("def util():\n    pass\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("a TODO in prose\n", encoding="utf-8")
+
+    await executor.start(tmp_path)  # create + mount tmp_path verbatim (== deps.cwd); container live
+    backend = await executor.file_backend(tmp_path)  # the SAME backend/container bash runs through
+
+    # ``none``-mode baselines on the host tree, computed BEFORE the seam is patched in (default mode is
+    # none → direct pathlib) and AFTER ``start`` so both sides observe the identical final tree (``start``
+    # seeds skills host-side; parity holds regardless of what it adds, since the mount reflects the host).
+    none_glob = files.glob(_ctx(tmp_path), "**/*.py")
+    none_grep = files.grep(_ctx(tmp_path), "TODO")
+
+    monkeypatch.setattr("decode.tools.files._active_backend", lambda _cwd: backend)
+    sandbox_glob = await _call(files.glob, _ctx(tmp_path), "**/*.py")
+    sandbox_grep = await _call(files.grep, _ctx(tmp_path), "TODO")
+
+    assert sandbox_glob == none_glob  # find-in-container + shared matcher == host Path.glob
+    assert (
+        sandbox_grep == none_grep
+    )  # grep-in-container == host re, down to sorted path:lineno:line
+    # Sanity: the expected files/hits are actually present (not a two-empty-strings false pass).
+    assert "src/main.py" in sandbox_glob and "a.py" in sandbox_glob
+    assert "a.py:1:" in sandbox_grep and "notes.txt" not in sandbox_glob
+
+
+async def test_a_bash_planted_symlink_escape_is_refused_not_followed_to_the_host(
+    executor: SandboxExecutor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # SECURITY end-to-end (ADR-0012 §4): sandboxed ``bash`` plants a symlink inside /workspace pointing
+    # onto the host; the host-side file ops must NOT follow it off the shared mount. Mirrors the Tester's
+    # reproduction, where ``read evil`` previously returned the host's /etc/passwd through the mount.
+    await executor.start(tmp_path)  # mount tmp_path verbatim as the Workspace; container live
+    backend = await executor.file_backend(tmp_path)  # the SAME backend/container bash runs through
+
+    planted = await executor.run("ln -s /etc/passwd evil", cwd=tmp_path, timeout_s=30.0)
+    assert planted.exit_code == 0
+    assert (tmp_path / "evil").is_symlink()  # the symlink is on the shared mount, host-visible
+
+    # The backend refuses to follow it off the mount — no host /etc/passwd read ...
+    with pytest.raises(WorkspaceEscape):
+        await backend.read_bytes("evil")
+
+    # ... and the file TOOL through the seam renders a clean ModelRetry, so the host file never reaches
+    # the model (previously this returned the host's /etc/passwd contents to the model).
+    monkeypatch.setattr("decode.tools.files._active_backend", lambda _cwd: backend)
+    with pytest.raises(ModelRetry, match="Sandbox file operation failed"):
+        await _call(files.read, _ctx(tmp_path), "evil")
 
 
 async def test_aclose_removes_the_container_and_is_idempotent(

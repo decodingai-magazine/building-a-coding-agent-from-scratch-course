@@ -28,7 +28,7 @@ from decode.sandbox.docker_backend import (
     _WORKSPACE,
     DockerBackend,
 )
-from decode.sandbox.executor import FileStat
+from decode.sandbox.executor import FileStat, WorkspaceEscape
 
 
 def _fake_proc(mocker, *, stdout=b"", stderr=b"", returncode=0):
@@ -337,6 +337,59 @@ async def test_file_ops_require_a_created_workspace():
 
     with pytest.raises(RuntimeError, match="created workspace"):
         await backend.read_bytes("f.txt")
+
+
+async def test_file_ops_refuse_a_symlink_that_escapes_the_workspace(tmp_path):
+    # SECURITY (ADR-0012 §4): a symlink planted inside the Workspace (as sandboxed ``bash`` can) that
+    # points onto the HOST must not be followed off the bind mount by the host-side pathlib file ops.
+    # ``_path`` resolves symlinks physically and raises WorkspaceEscape, so read/write/stat refuse the
+    # escape — the host file outside the mount is never read from and never written to.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = tmp_path / "outside_secret.txt"
+    outside.write_bytes(b"HOST SECRET")
+
+    backend = DockerBackend()
+    backend._workspace = workspace.resolve()  # create()'s invariant: the mount root is resolved
+    # An absolute-target symlink, a ``../``-chain symlink, and a root symlink — all escape the mount.
+    os.symlink(outside, workspace / "evil_abs")
+    os.symlink("../outside_secret.txt", workspace / "evil_rel")
+    os.symlink(os.sep, workspace / "rootlink")
+
+    for name in ("evil_abs", "evil_rel"):
+        with pytest.raises(WorkspaceEscape):
+            await backend.read_bytes(name)
+        with pytest.raises(WorkspaceEscape):
+            await backend.stat(name)
+        with pytest.raises(WorkspaceEscape):
+            await backend.write_bytes(name, b"pwned")
+    # Writing THROUGH a symlinked dir onto the host is refused too (the host file is never created).
+    with pytest.raises(WorkspaceEscape):
+        await backend.write_bytes("rootlink/tmp/decode_created_outside.txt", b"pwned")
+
+    assert outside.read_bytes() == b"HOST SECRET"  # byte-unchanged: never read, never overwritten
+
+
+async def test_file_ops_allow_the_root_new_nested_paths_and_in_workspace_symlinks(tmp_path):
+    # Containment must not over-reject: the root itself, a brand-new nested path (nothing on disk yet),
+    # and an in-workspace symlink pointing INSIDE the Workspace all resolve within the mount.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    backend = DockerBackend()
+    backend._workspace = workspace.resolve()
+
+    assert backend._path("") == workspace.resolve()  # the root resolves to the mount, not an escape
+
+    await backend.write_bytes("a/b/c.txt", b"nested")  # brand-new nested path is contained
+    assert await backend.read_bytes("a/b/c.txt") == b"nested"
+    assert await backend.stat("a/b/c.txt") == FileStat(
+        path="a/b/c.txt", is_dir=False, size=len(b"nested")
+    )
+
+    # An in-workspace symlink pointing INSIDE is allowed and operates on the real (contained) target.
+    (workspace / "real.txt").write_bytes(b"real")
+    os.symlink(workspace / "real.txt", workspace / "inside_link")
+    assert await backend.read_bytes("inside_link") == b"real"
 
 
 # --- destroy: docker rm -f, loop-free + idempotent --------------------------------------------

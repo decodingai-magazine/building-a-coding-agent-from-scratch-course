@@ -67,6 +67,23 @@ class FileStat:
     size: int
 
 
+class WorkspaceEscape(OSError):
+    """A logical path resolved (following symlinks) **outside** the Workspace root (ADR-0012 §4).
+
+    The physical containment layer for a real-filesystem backend. Above the seam, ``_resolve_logical``
+    already rejects ``..`` / absolute escapes with string math for *both* backends — but string math
+    cannot see a **symlink** planted inside the Workspace (by sandboxed ``bash``) that points onto the
+    host. A backend whose file ops are plain pathlib on a mount shared with the host (docker) resolves
+    the path physically before touching it and raises this when it lands outside the mount, so the
+    symlink is never followed off the Workspace. Modal is naturally host-safe (remote-only file ops on a
+    disposable sandbox), so only the docker backend raises it.
+
+    It subclasses :class:`OSError` **on purpose**: the file-tool layer renders it as a model-readable
+    refusal through its existing never-crash ``(RuntimeError, OSError)`` boundary **without importing
+    this class**, so the ``none`` path pulls in no sandbox module (the §9 laziness invariant).
+    """
+
+
 class SandboxBackend(Protocol):
     """The thin per-backend seam a :class:`SandboxExecutor` drives — exec + file ops + lifecycle (§2,4).
 
@@ -86,8 +103,11 @@ class SandboxBackend(Protocol):
       crash-free.
     * **file ops** — on **logical** paths relative to the Workspace root: :meth:`read_bytes` /
       :meth:`write_bytes` / :meth:`make_directory` / :meth:`stat` / :meth:`list_dir` / :meth:`remove`.
-      Containment/normalization is the caller's job (above the seam); these operate on the (already
-      validated) logical path.
+      Normalization + ``..`` / absolute rejection is the caller's job (string-math above the seam); these
+      operate on the (already validated) logical path. A **real-filesystem** backend (docker's bind
+      mount) additionally contains *physically* below the seam — its path resolver follows symlinks and
+      raises :class:`WorkspaceEscape` (an :class:`OSError`) if a logical path resolves outside the
+      Workspace root, so a mount-shared symlink cannot be followed onto the host.
     """
 
     async def create(self, workspace: Path) -> None:
@@ -192,6 +212,21 @@ class SandboxExecutor:
         """
         self._workspace = workspace
         await self._ensure_created(workspace)
+
+    async def file_backend(self, cwd: Path) -> SandboxBackend:
+        """Return the **created** backend for the file/search tools' byte transport (ADR-0012 §4).
+
+        The file-tool seam (081): ``read`` / ``write`` / ``edit`` / ``glob`` / ``grep`` route their byte
+        transport (and ``find`` / ``grep`` exec) through this backend instead of host pathlib in a sandbox
+        mode. It shares the **one** backend ``bash`` runs through (same container / remote sandbox per
+        session), so a file written by a tool is visible to ``bash`` and vice-versa. Ensures the sandbox
+        exists first (:meth:`_ensure_created`) — so a file op works even before the first ``bash`` on the
+        REPL-warm-failed / headless-lazy path — reusing the memo, exactly as :meth:`run` does. ``cwd`` only
+        derives the Workspace when nothing was started (the same lazy fallback as :meth:`run`). The
+        containment path-math above the seam keeps every logical path inside the Workspace (081).
+        """
+        await self._ensure_created(cwd)
+        return self._backend
 
     async def export(self) -> None:
         """Sweep the sandbox filesystem back to the host Workspace (ADR-0012 §5,8).

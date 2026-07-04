@@ -5,7 +5,16 @@ instruction function as ``ctx.deps``. :class:`AgentDeps` is that object for ``de
 
 It carries:
 
-* ``cwd`` — the working directory the agent operates in (tools resolve paths against it);
+* ``cwd`` — the agent's **tool scope** (ADR-0012 §6): the file/search tools + ``bash`` resolve paths
+  against it. In ``none`` mode it is the launch cwd; in a **sandbox** mode it is the logical Workspace
+  root (``/workspace`` ≡ the host ``.decode/sandbox``), so the whole tool scope is contained there.
+* ``harness_home`` — the **artifact root** (ADR-0012 §6): the launch cwd, where decode's *own*
+  artifacts always anchor — ``.decode/sessions``, ``.decode/MEMORY.md``, the ``.decode/settings.json``
+  permission file, ``.decode/skills`` — regardless of where ``cwd`` points. The skills catalog +
+  dispatcher and memory injection (``AGENTS.md`` walk + ``MEMORY.md``) read this, while the file/search
+  tools + ``bash`` read ``cwd``. It **defaults to ``cwd``** (set in :meth:`AgentDeps.__post_init__`), so
+  every ``none``-mode caller — and every test built before the split — behaves byte-for-byte as before
+  (the two are equal). Only a sandbox launch sets them apart.
 * ``emit`` — a sink the loop calls to stream :mod:`decode.entities.events` to the TUI;
 * ``gate`` — the :class:`~decode.permissions.gate.PermissionGate` *policy* object (task 005):
   given a tool call it returns allow/ask/deny (always *ask* in v1);
@@ -107,3 +116,13 @@ class AgentDeps:
     task_store: list[Task] = field(default_factory=list)
     active_agent: AgentDef = field(default_factory=_default_active_agent)
     headless_durable_waits: bool = False
+    # The Harness-Home artifact root (ADR-0012 §6). ``None`` here means "defaults to ``cwd``" — set in
+    # :meth:`__post_init__` — so a deps built without it (``none`` mode, and every pre-split test) keeps
+    # ``harness_home == cwd`` and is byte-for-byte unchanged. A sandbox launch passes the launch cwd so
+    # harness artifacts stay anchored there while ``cwd`` moves into the Workspace.
+    harness_home: Path | None = None
+
+    def __post_init__(self) -> None:
+        """Default ``harness_home`` to ``cwd`` when unset — the back-compat equal-roots case (§6)."""
+        if self.harness_home is None:
+            self.harness_home = self.cwd

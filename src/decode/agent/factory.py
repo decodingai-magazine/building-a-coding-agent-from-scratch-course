@@ -282,10 +282,15 @@ def _register_instructions(agent: Agent[AgentDeps, str | DeferredToolRequests]) 
 
     @agent.instructions
     def assemble_instructions(ctx: RunContext[AgentDeps]) -> str:
+        # Memory + skills are HARNESS artifacts, so they read ``harness_home`` (the launch cwd), not
+        # ``cwd`` — in a sandbox mode ``cwd`` is the Workspace, but ``AGENTS.md`` / ``MEMORY.md`` and the
+        # project's ``.decode/skills`` catalog stay anchored at Harness Home (ADR-0012 §6). In ``none``
+        # mode the two are equal, so this is byte-identical to before.
+        harness_home = ctx.deps.harness_home or ctx.deps.cwd
         parts = (
             _BASE_INSTRUCTIONS,
             ctx.deps.active_agent.prompt,
-            assemble_memory(ctx.deps.cwd),
-            assemble_skills_catalog(ctx.deps.cwd),
+            assemble_memory(harness_home),
+            assemble_skills_catalog(harness_home),
         )
         return "\n\n".join(part for part in parts if part)

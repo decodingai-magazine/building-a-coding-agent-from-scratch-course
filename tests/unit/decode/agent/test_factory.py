@@ -180,6 +180,43 @@ async def test_memory_is_injected_into_the_first_request_instructions(tmp_path, 
     assert f"# From {tmp_path / 'AGENTS.md'}" in first.instructions
 
 
+async def test_memory_injection_reads_harness_home_not_the_workspace_cwd(tmp_path, mocker):
+    """ADR-0012 §6: memory is a harness artifact → injected from ``harness_home``, not the sandbox cwd.
+
+    With ``cwd`` (the Workspace) and ``harness_home`` (the launch cwd) distinct, the ``AGENTS.md`` under
+    Harness Home reaches the model, while an ``AGENTS.md`` that only exists in the Workspace does NOT —
+    proving the instructions hook reads ``harness_home``.
+    """
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (home / "AGENTS.md").write_text("HARNESS-HOME RULE: from home", encoding="utf-8")
+    (workspace / "AGENTS.md").write_text("WORKSPACE RULE: should not load", encoding="utf-8")
+    deps = AgentDeps(
+        cwd=workspace,
+        harness_home=home,
+        emit=lambda event: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_no_user_resolver,
+    )
+
+    agent = build_agent()
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="ok")):
+        result = await agent.run("hi", deps=deps)
+
+    first = result.all_messages()[0]
+    assert isinstance(first, ModelRequest)
+    assert first.instructions is not None
+    assert "HARNESS-HOME RULE: from home" in first.instructions
+    assert "WORKSPACE RULE" not in first.instructions  # the Workspace AGENTS.md is not injected
+    assert f"# From {home / 'AGENTS.md'}" in first.instructions
+
+
 async def test_build_agent_retries_empty_model_responses_before_giving_up(tmp_path, mocker):
     """build_agent() raises the output-retry budget so a few empty/thinking-only turns don't abort.
 

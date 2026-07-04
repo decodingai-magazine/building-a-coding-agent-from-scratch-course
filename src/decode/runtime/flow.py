@@ -237,6 +237,50 @@ def _start_runtime_executor(executor: Any, workspace: Path) -> None:
         loop.close()
 
 
+def _warm_headless_executor(workspace: Path) -> None:
+    """Eagerly warm the headless sandbox executor against ``workspace`` — best-effort (ADR-0012 §2,6).
+
+    The headless mirror of the REPL's warm-up (:func:`decode.tools.bash.warm_executor`): it selects the
+    sandbox executor by ``SANDBOX_MODE`` and starts it against the Workspace so ``bash`` *and* the file
+    tools share one live container / remote sandbox. Runs ``warm_executor`` on a **dedicated** short-lived
+    loop (like :func:`_start_runtime_executor` — never :func:`asyncio.run`, which would reset the thread's
+    current loop and orphan ``run_sync``'s). **Idempotent**: on the proxy path the executor
+    :func:`_sandbox_proxy` already installed + started is found and its ``start`` is a no-op; on the
+    non-proxy sandbox path it does the lazy select + start. A warm-up failure is logged, never raised — the
+    first ``bash`` / file op retries the create lazily. ``warm_executor`` is a no-op in ``none`` mode.
+    """
+    from decode.tools.bash import warm_executor
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(warm_executor(workspace))
+    except Exception:
+        logger.warning(
+            "[sandbox] headless sandbox warm-up failed; degrading to lazy start", exc_info=True
+        )
+    finally:
+        loop.close()
+
+
+def _prepare_headless_tool_scope() -> Path:
+    """The headless agent tool scope: the prepared+warmed Workspace in a sandbox mode, else cwd (§3,6).
+
+    ``none`` → the launch cwd (``deps.cwd == harness_home``, byte-identical). A sandbox mode → the
+    isolated Workspace: :func:`~decode.sandbox.workspace.prepare_workspace` ensures ``.decode/sandbox``
+    (empty this task — ``--repo`` lands in 082), then :func:`_warm_headless_executor` starts the executor
+    against it (idempotent w.r.t. the :func:`_sandbox_proxy` path). Returned as ``deps.cwd`` so the
+    file/search tools + ``bash`` operate inside the Workspace while harness artifacts stay at ``Path.cwd()``.
+    The sandbox import stays lazy so ``none`` pulls in no sandbox module (ADR-0012 §9).
+    """
+    if settings.sandbox_mode == "none":
+        return Path.cwd()
+    from decode.sandbox.workspace import prepare_workspace
+
+    workspace = prepare_workspace(Path.cwd())  # repo=None this task (082 wires --repo/SANDBOX_REPO)
+    _warm_headless_executor(workspace)
+    return workspace
+
+
 @contextmanager
 def _sandbox_proxy() -> Iterator[None]:
     """Run the docker Credential Proxy for a headless flow span, tear it down on exit (ADR-0011 §6).
@@ -342,17 +386,22 @@ def _build_runtime_agent(
     )
 
 
-def _build_headless_deps() -> AgentDeps:
-    """Construct the headless :class:`~decode.agent.deps.AgentDeps` (ADR-0008 §2).
+def _build_headless_deps(cwd: Path | None = None) -> AgentDeps:
+    """Construct the headless :class:`~decode.agent.deps.AgentDeps` (ADR-0008 §2; ADR-0012 §6).
 
-    ``cwd`` is the launch directory; ``emit`` only logs (no TUI); the gate is in **BYPASS** so
-    every gated tool runs inline (no ``ApprovalRequired`` → no Kitaru wait); and both decision
-    resolvers are the headless deny defaults so ``ask_user`` / ``exit_plan_mode`` map to a
-    ``ModelRetry`` instead of hanging. ``active_agent`` defaults (via the dataclass factory) to the
-    full-tool ``build`` persona — the same persona the interactive default uses.
+    ``cwd`` is the agent's **tool scope** — the isolated Workspace in a sandbox mode (passed from
+    :func:`_prepare_headless_tool_scope`), else the launch directory; ``harness_home`` is always the
+    launch cwd, so harness artifacts (memory injection, skills) stay anchored there while the file/search
+    tools + ``bash`` operate in the Workspace. ``cwd=None`` defaults to the launch cwd (the ``none``-mode
+    equal-roots case, byte-identical). ``emit`` only logs (no TUI); the gate is in **BYPASS** so every
+    gated tool runs inline (no ``ApprovalRequired`` → no Kitaru wait); and both decision resolvers are the
+    headless deny defaults so ``ask_user`` / ``exit_plan_mode`` map to a ``ModelRetry`` instead of hanging.
+    ``active_agent`` defaults (via the dataclass factory) to the full-tool ``build`` persona.
     """
+    home = Path.cwd()
     return AgentDeps(
-        cwd=Path.cwd(),
+        cwd=cwd or home,
+        harness_home=home,
         emit=_headless_emit,
         gate=PermissionGate(mode=PermissionMode.BYPASS),
         resolve_permission=_deny_permission_resolver,
@@ -410,8 +459,9 @@ def run_agent_task(task: str, model: str | None = None) -> str:
     """
     try:
         with _config_from_secret_store(), _sandbox_proxy():
+            tool_scope = _prepare_headless_tool_scope()
             durable_agent = _build_runtime_agent(model)
-            deps = _build_headless_deps()
+            deps = _build_headless_deps(tool_scope)
             result = durable_agent.run_sync(task, deps=deps)
         output = result.output
         if not isinstance(output, str):
@@ -500,8 +550,8 @@ def _build_hitl_runtime_agent(
     return _to_hitl_durable_agent(build_agent(flow_mode=True, model=model))
 
 
-def _build_hitl_deps() -> AgentDeps:
-    """Construct the headless **gating** deps for the HITL flow (ADR-0008 §3).
+def _build_hitl_deps(cwd: Path | None = None) -> AgentDeps:
+    """Construct the headless **gating** deps for the HITL flow (ADR-0008 §3; ADR-0012 §6).
 
     Unlike the bypass deps (:func:`_build_headless_deps`), the gate runs in
     :attr:`~decode.permissions.types.PermissionMode.DEFAULT` (a *gating* mode) and
@@ -511,10 +561,14 @@ def _build_hitl_deps() -> AgentDeps:
     adapter turns it into a durable approval wait). ``resolve_user_question`` is the durable
     :func:`flow_resolve_user_question` bridge so ``ask_user`` / ``exit_plan_mode`` pause on a wait.
     ``resolve_permission`` stays the deny safety-net: the adapter resolves approvals natively from
-    ``ApprovalRequired`` under ``run_sync``, so this resolver is never reached.
+    ``ApprovalRequired`` under ``run_sync``, so this resolver is never reached. ``cwd`` is the tool scope
+    (the Workspace in a sandbox mode, else the launch cwd) and ``harness_home`` the artifact root, the
+    same Harness-Home split as :func:`_build_headless_deps` (ADR-0012 §6).
     """
+    home = Path.cwd()
     return AgentDeps(
-        cwd=Path.cwd(),
+        cwd=cwd or home,
+        harness_home=home,
         emit=_headless_emit,
         gate=PermissionGate(mode=PermissionMode.DEFAULT),
         resolve_permission=_deny_permission_resolver,
@@ -550,8 +604,9 @@ def run_agent_task_hitl(task: str, model: str | None = None) -> str:
     """
     try:
         with _config_from_secret_store(), _sandbox_proxy():
+            tool_scope = _prepare_headless_tool_scope()
             durable_agent = _build_hitl_runtime_agent(model)
-            deps = _build_hitl_deps()
+            deps = _build_hitl_deps(tool_scope)
             # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a
             # ``sleep`` in this run pauses on a flow-scope ``kitaru.wait`` (ADR-0008 §4) while a later
             # in-process interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).

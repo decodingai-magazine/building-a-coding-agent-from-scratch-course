@@ -141,6 +141,38 @@ def test_agent_deps_carries_a_supplied_active_agent():
     assert deps.active_agent is plan
 
 
+def test_agent_deps_harness_home_defaults_to_cwd():
+    # ADR-0012 §6: a deps built without ``harness_home`` (every none-mode caller + pre-split test) gets
+    # ``harness_home == cwd`` — the equal-roots back-compat case, byte-identical to before the split.
+    deps = AgentDeps(
+        cwd=Path("/tmp/project"),
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
+    )
+
+    assert deps.harness_home == Path("/tmp/project")
+    assert deps.harness_home == deps.cwd
+
+
+def test_agent_deps_harness_home_is_independent_of_cwd_when_supplied():
+    # A sandbox launch splits them: ``cwd`` = the Workspace (tool scope), ``harness_home`` = the launch
+    # cwd (artifact root). They are carried independently (ADR-0012 §6).
+    deps = AgentDeps(
+        cwd=Path("/tmp/project/.decode/sandbox"),
+        harness_home=Path("/tmp/project"),
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
+    )
+
+    assert deps.cwd == Path("/tmp/project/.decode/sandbox")
+    assert deps.harness_home == Path("/tmp/project")
+    assert deps.harness_home != deps.cwd
+
+
 def test_agent_deps_emit_is_a_callable_field():
     # `emit` is data, not a method: swapping the sink rebinds where events go.
     first: list[events.Event] = []

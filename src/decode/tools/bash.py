@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import anyio
 from pydantic_ai import ApprovalRequired, ModelRetry, RunContext
 
 from decode.agent.deps import AgentDeps
@@ -40,6 +42,11 @@ from decode.config.settings import settings
 from decode.tools.approval import needs_approval
 from decode.tools.exec import CommandExecutor, ExecResult, LocalExecutor
 from decode.tools.truncate import Truncated, truncate
+
+if TYPE_CHECKING:
+    # Typing only: a runtime import would pull the sandbox executor module into the ``none`` path and
+    # break its laziness (ADR-0012 §9). ``from __future__ import annotations`` keeps this a string.
+    from decode.sandbox.executor import SandboxBackend
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +210,32 @@ async def export_executor() -> None:
     export = getattr(executor, "export", None)
     if export is not None:
         await export()
+
+
+def active_backend(cwd: Path) -> SandboxBackend | None:
+    """Return the active session's **created** sandbox backend, or ``None`` in ``none`` mode (ADR-0012 §4).
+
+    The file-tool half of the executor seam (mirroring :func:`_get_executor` for ``bash``): the sync
+    ``read`` / ``write`` / ``edit`` / ``glob`` / ``grep`` tools call this to reach the backend they route
+    their byte transport through in a sandbox mode. ``none`` mode returns ``None`` **before touching the
+    memo** — no selection, no ``[sandbox]`` log line, no sandbox import — so the file tools stay on
+    today's direct-pathlib path, byte-identical. In ``docker`` / ``modal`` it shares ``bash``'s ``_EXECUTOR``
+    memo (the **same** container / remote sandbox per session — a tool-written file is visible to ``bash``
+    and vice-versa) and returns the executor's created backend via
+    :meth:`~decode.sandbox.executor.SandboxExecutor.file_backend`.
+
+    Called from the file tools, which Pydantic AI runs in a worker thread, so it bridges to the executor's
+    async ``file_backend`` via :func:`anyio.from_thread.run` (the same sync→async bridge the LSP enricher
+    uses). A non-sandbox / start-less executor (the ``none`` :class:`LocalExecutor`, a fake) yields
+    ``None`` — duck-typed like :func:`warm_executor` / :func:`close_executor`, so the seam stays optional.
+    """
+    if settings.sandbox_mode == "none":
+        return None
+    executor = _get_executor()
+    file_backend = getattr(executor, "file_backend", None)
+    if file_backend is None:
+        return None
+    return anyio.from_thread.run(file_backend, cwd)
 
 
 def bash_description(base: str) -> str:

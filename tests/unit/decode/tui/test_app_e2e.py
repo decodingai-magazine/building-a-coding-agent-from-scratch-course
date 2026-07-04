@@ -39,6 +39,8 @@ from support.noop_helper import register_noop
 
 from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
+from decode.sandbox.executor import FileStat
+from decode.tools import files
 from decode.tools.askuser import ask_user
 from decode.tui import app as app_mod
 
@@ -105,6 +107,7 @@ async def _drive_run_app(
     agent: Agent[AgentDeps, str | DeferredToolRequests],
     *,
     script: Callable[[io.StringIO, Callable[[str], None]], Awaitable[None]],
+    **run_app_kwargs: object,
 ) -> str:
     """Run the real ``run_app`` against a piped prompt_toolkit input; return captured output.
 
@@ -112,6 +115,7 @@ async def _drive_run_app(
     and drives the conversation reactively (waiting for what it sees before typing the next
     line), exactly like a human at the terminal. The whole thing runs under a hard timeout so
     a regression of the concurrent-prompt deadlock fails fast instead of hanging the suite.
+    ``run_app_kwargs`` are forwarded to ``run_app`` (e.g. ``mode="bypass"`` for the sandbox e2e).
     """
     monkeypatch.setattr(app_mod, "build_agent", lambda: agent)
     buf = io.StringIO()
@@ -122,7 +126,7 @@ async def _drive_run_app(
         def send(line: str) -> None:
             pipe.send_text(f"{line}\r")
 
-        app_task = asyncio.ensure_future(app_mod.run_app(console=console))
+        app_task = asyncio.ensure_future(app_mod.run_app(console=console, **run_app_kwargs))  # type: ignore[arg-type]
         try:
             await asyncio.wait_for(script(buf, send), timeout=5.0)
             await asyncio.wait_for(app_task, timeout=5.0)
@@ -1202,3 +1206,112 @@ async def test_run_app_clear_on_an_empty_session_is_a_friendly_line(monkeypatch)
 
     assert "Decode - nothing to clear yet." in output
     assert _CHAT_REPLY in output  # the REPL kept working after the no-op clear
+
+
+# --- Harness-Home split end-to-end (ADR-0012 §6): sandbox writes vs harness artifacts -----------
+
+
+class _WorkspaceBackend:
+    """A minimal sandbox backend for the write path — pathlib ``stat`` / ``write_bytes`` on a host dir.
+
+    Stands in for the docker bind-mount (no container) so an app-level ``write`` in a sandbox mode lands
+    in the Workspace dir it is bound to, letting the test prove the tool scope really moved there.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    async def stat(self, rel: str) -> FileStat | None:
+        path = self._root / rel
+        try:
+            st = path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        return FileStat(path=rel, is_dir=path.is_dir(), size=st.st_size)
+
+    async def write_bytes(self, rel: str, data: bytes) -> None:
+        path = self._root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+
+def _build_sandbox_write_agent(*, path: str, content: str, final_text: str):
+    """A ``FunctionModel`` agent that streams one ``write`` tool call, then final text (real write tool)."""
+    import json
+
+    state = {"calls": 0}
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        state["calls"] += 1
+        if state["calls"] == 1:
+            yield {
+                0: DeltaToolCall(
+                    name="write", json_args=json.dumps({"path": path, "content": content})
+                )
+            }
+        else:
+            yield final_text
+
+    agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
+        FunctionModel(stream_function=stream_function),
+        deps_type=AgentDeps,
+        output_type=[str, DeferredToolRequests],
+    )
+    agent.tool(files.write)
+    return agent
+
+
+async def test_run_app_sandbox_write_lands_in_workspace_and_memory_at_harness_home(
+    monkeypatch, tmp_path, sessions_dir
+):
+    """ADR-0012 §6 end-to-end: a sandbox-mode ``write`` lands in the Workspace while harness artifacts
+    (the ``/quit`` MEMORY.md write-back, the session log) anchor at Harness Home (the launch cwd).
+
+    Drives the REAL ``run_app`` in docker mode with a fake backend at the file-tool seam (no container),
+    ``mode="bypass"`` so the ``write`` runs inline (no prompt). The proof is the split: the file the model
+    writes appears INSIDE the Workspace and NOT at Harness Home, while the exit memory write-back and the
+    session-log header both resolve to Harness Home.
+    """
+    from unittest.mock import AsyncMock
+
+    monkeypatch.chdir(tmp_path)  # Harness Home = the launch cwd = tmp_path
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(app_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr("decode.sandbox.workspace.prepare_workspace", lambda home: workspace)
+    monkeypatch.setattr(app_mod, "warm_executor", AsyncMock())  # no real container
+    monkeypatch.setattr(app_mod, "close_executor", AsyncMock())
+    monkeypatch.setattr(
+        "decode.tools.files._active_backend", lambda cwd: _WorkspaceBackend(workspace)
+    )
+    extract_spy = AsyncMock()
+    monkeypatch.setattr(
+        app_mod, "extract_on_exit", extract_spy
+    )  # spy the memory write-back's anchor
+
+    agent = _build_sandbox_write_agent(
+        path="out.txt", content="WORKSPACE-FILE", final_text="WROTE-IT"
+    )
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("create out.txt")
+        await _wait_for(buf, "WROTE-IT")
+        send("/quit")
+
+    await _drive_run_app(monkeypatch, agent, script=script, mode="bypass")
+
+    # (a) the write landed INSIDE the Workspace — the tool scope moved there ...
+    assert (workspace / "out.txt").read_text(encoding="utf-8") == "WORKSPACE-FILE"
+    # ... and NOT at Harness Home (the launch cwd).
+    assert not (tmp_path / "out.txt").exists()
+    # (b) the /quit memory write-back anchored at Harness Home, NOT the Workspace (ADR-0012 §6).
+    extract_spy.assert_awaited_once()
+    assert extract_spy.await_args.args[1] == tmp_path
+    # (c) the session log is a harness artifact: its header records Harness Home (the launch cwd).
+    import json
+
+    session_file = next(sessions_dir.glob("*.jsonl"))
+    header = json.loads(session_file.read_text(encoding="utf-8").splitlines()[0])
+    assert header["cwd"] == str(tmp_path)
