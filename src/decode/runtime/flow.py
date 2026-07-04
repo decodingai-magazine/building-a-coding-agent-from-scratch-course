@@ -288,12 +288,14 @@ def _prepare_headless_tool_scope(repo: str | None = None, local: bool = False) -
 def _sandbox_proxy(repo: str | None = None, local: bool = False) -> Iterator[None]:
     """Run the docker Credential Proxy for a headless flow span, tear it down on exit (ADR-0011 §6).
 
-    Engaged **only** when ``settings.sandbox_mode == "docker"`` **and**
-    ``settings.sandbox_credential_proxy_enabled`` — otherwise a pure no-op that yields immediately,
-    imports nothing, and touches no seam, so every ``none`` / ``modal`` / proxy-disabled headless flow
-    stays byte-unchanged and the REPL never imports :mod:`decode.sandbox.proxy` or kitaru. When engaged
-    it (1) resolves the credential map host-side from :data:`~decode.sandbox.proxy.DEFAULT_PROXY_RULES`,
-    (2) starts a ``mitmproxy`` addon container on a per-run docker network, (3) installs a proxy-wired
+    Engaged when ``settings.sandbox_mode == "docker"`` **and** either
+    ``settings.sandbox_credential_proxy_enabled`` **or** ``settings.sandbox_git_token`` is set (the
+    one-knob GitHub path, ADR-0012 §10) — otherwise a pure no-op that yields immediately, imports
+    nothing, and touches no seam, so every ``none`` / ``modal`` / proxy-disabled headless flow stays
+    byte-unchanged and the REPL never imports :mod:`decode.sandbox.proxy` or kitaru. When engaged
+    it (1) resolves the credential map host-side from :data:`~decode.sandbox.proxy.DEFAULT_PROXY_RULES`
+    (prepending :func:`~decode.sandbox.proxy.github_token_rules` built from ``sandbox_git_token`` when
+    set), (2) starts a ``mitmproxy`` addon container on a per-run docker network, (3) installs a proxy-wired
     ``SandboxExecutor(DockerBackend(...))`` as ``bash``'s executor for the flow span (the seam via
     :func:`decode.tools.bash.install_executor`) and eagerly starts it against the Workspace
     (``prepare_workspace_or_empty`` — cloning ``repo`` at HEAD when given so the worker's ``bash`` sees
@@ -310,7 +312,12 @@ def _sandbox_proxy(repo: str | None = None, local: bool = False) -> Iterator[Non
     on exit) and nests **inside** ``_config_from_secret_store`` so a proxy rule reads config already
     hydrated from the Kitaru secret.
     """
-    if not (settings.sandbox_mode == "docker" and settings.sandbox_credential_proxy_enabled):
+    # `ponytail:` a set ``SANDBOX_GIT_TOKEN`` auto-engages the proxy (the one-knob GitHub path — same
+    # token modal direct-injects), so docker headless git-auth needs no separate proxy flag; the flag
+    # still enables the proxy for any OTHER ``DEFAULT_PROXY_RULES`` credential.
+    git_token = settings.sandbox_git_token
+    proxy_wanted = settings.sandbox_credential_proxy_enabled or git_token is not None
+    if not (settings.sandbox_mode == "docker" and proxy_wanted):
         yield
         return
     # Lazy imports: only an enabled docker headless flow pulls in the sandbox proxy (REPL stays clean).
@@ -320,11 +327,17 @@ def _sandbox_proxy(repo: str | None = None, local: bool = False) -> Iterator[Non
         DEFAULT_PROXY_RULES,
         DockerCredentialProxy,
         build_credential_map,
+        github_token_rules,
     )
     from decode.sandbox.workspace import prepare_workspace_or_empty
     from decode.tools.bash import install_executor
 
-    proxy = DockerCredentialProxy(build_credential_map(DEFAULT_PROXY_RULES))
+    # GitHub rules (from the token) go FIRST so ``api.github.com`` precedes ``github.com`` in the map
+    # (parent-domain matching); any explicit ``DEFAULT_PROXY_RULES`` on the same host then override.
+    rules = list(DEFAULT_PROXY_RULES)
+    if git_token is not None:
+        rules = github_token_rules(git_token.get_secret_value()) + rules
+    proxy = DockerCredentialProxy(build_credential_map(rules))
     try:
         proxy.start()
         executor = SandboxExecutor(

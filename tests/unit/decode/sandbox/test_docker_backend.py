@@ -23,10 +23,12 @@ import pytest
 from decode.config.settings import settings
 from decode.sandbox.docker_backend import (
     _DAEMON_LOST_EXIT,
+    _GIT_INSTALL_CMD,
     _TIMEOUT_EXIT,
     _WORKER_CA_PATH,
     _WORKSPACE,
     DockerBackend,
+    _git_setup_command,
 )
 from decode.sandbox.executor import FileStat, WorkspaceEscape
 
@@ -97,8 +99,9 @@ def test_proxy_wiring_defaults_to_none_so_construction_is_inert():
 
 async def test_create_starts_the_container_and_caches_the_id(mocker, tmp_path):
     run_proc = _fake_proc(mocker, stdout=b"container123\n")
+    git_proc = _fake_proc(mocker, stdout=b"ok\n")  # the default worker's apt-get install git
     spawn = mocker.patch(
-        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc])
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc, git_proc])
     )
     backend = DockerBackend()
 
@@ -107,7 +110,7 @@ async def test_create_starts_the_container_and_caches_the_id(mocker, tmp_path):
 
     assert backend._container_id == "container123"
     assert backend._workspace == tmp_path.resolve()
-    assert spawn.await_count == 1  # exactly one docker run — no second container
+    assert spawn.await_count == 2  # one docker run + one git install — no second container
     argv = spawn.await_args_list[0].args
     assert argv[0] == "docker"
     assert list(argv[1:]) == backend._run_args(tmp_path.resolve())
@@ -145,13 +148,15 @@ async def test_create_trusts_the_ca_synchronously_on_the_proxy_path(mocker, tmp_
 
 async def test_create_runs_no_ca_step_off_the_proxy_path(mocker, tmp_path):
     run_proc = _fake_proc(mocker, stdout=b"cid\n")
+    git_proc = _fake_proc(mocker, stdout=b"ok\n")  # the default worker installs git (not a CA step)
     spawn = mocker.patch(
-        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc])
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc, git_proc])
     )
 
     await DockerBackend().create(tmp_path)
 
-    assert spawn.await_count == 1  # the docker run only — no CA step on the non-proxy path
+    # No CA step on the non-proxy path: neither spawn runs update-ca-certificates.
+    assert all("update-ca-certificates" not in call.args for call in spawn.await_args_list)
 
 
 async def test_create_reaps_the_worker_and_drops_the_id_when_ca_trust_fails(mocker, tmp_path):
@@ -170,6 +175,69 @@ async def test_create_reaps_the_worker_and_drops_the_id_when_ca_trust_fails(mock
 
     reap.assert_awaited_once_with("rm", "-f", "container123")  # the worker was reaped, not leaked
     assert backend._container_id is None  # the id is dropped after the reap
+
+
+# --- create: git install (the slim base ships none) -------------------------------------------
+
+
+async def test_create_installs_and_configures_git_for_a_default_worker(mocker, tmp_path):
+    # The slim base has no git, so create runs ONE ``sh -c`` that installs git AND sets its identity.
+    run_proc = _fake_proc(mocker, stdout=b"container123\n")
+    git_proc = _fake_proc(mocker, stdout=b"done\n")
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc, git_proc])
+    )
+
+    await DockerBackend().create(tmp_path)
+
+    git_argv = spawn.await_args_list[1].args
+    assert list(git_argv) == ["docker", "exec", "container123", "sh", "-c", _git_setup_command()]
+
+
+def test_git_setup_command_appends_the_default_identity():
+    # One ``&&``-chain: install git, then set the default decode identity (so git commit works).
+    cmd = _git_setup_command()
+    assert cmd.startswith(_GIT_INSTALL_CMD)
+    assert "&& git config --global user.name decode" in cmd
+    assert "&& git config --global user.email decode@localhost" in cmd
+
+
+def test_git_setup_command_skips_config_when_the_identity_is_cleared(monkeypatch):
+    # Both SANDBOX_GIT_USER_* empty → no ``git config`` appended, just the install.
+    monkeypatch.setattr(settings, "sandbox_git_user_name", "")
+    monkeypatch.setattr(settings, "sandbox_git_user_email", "")
+    assert _git_setup_command() == _GIT_INSTALL_CMD
+
+
+async def test_create_survives_a_git_install_failure(mocker, tmp_path):
+    # git install is best-effort: a non-zero apt leaves the session up (no git), never crashes create.
+    run_proc = _fake_proc(mocker, stdout=b"container123\n")
+    git_proc = _fake_proc(mocker, stdout=b"E: could not resolve mirror\n", returncode=100)
+    mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc, git_proc])
+    )
+    backend = DockerBackend()
+
+    await backend.create(tmp_path)  # does not raise
+
+    assert (
+        backend._container_id == "container123"
+    )  # the session is up despite the failed git install
+
+
+async def test_create_skips_git_install_when_proxy_wired(mocker, tmp_path):
+    # A proxy-wired worker sits on an isolated egress network where apt can't reach mirrors — skip git.
+    run_proc = _fake_proc(mocker, stdout=b"cid\n")
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc])
+    )
+    backend = DockerBackend(
+        network="decode-sandbox-net-abc", proxy_env={"http_proxy": "http://decode-proxy:8080"}
+    )
+
+    await backend.create(tmp_path)
+
+    assert spawn.await_count == 1  # the docker run only — no git install for a proxy-wired worker
 
 
 # --- exec: a fresh ``docker exec`` per call ---------------------------------------------------

@@ -124,6 +124,23 @@ def prepare_workspace_or_empty(
         return workspace_dir(harness_home), str(exc)
 
 
+def git_config_pairs() -> list[tuple[str, str]]:
+    """The ``(key, value)`` git-config pairs to preconfigure in the sandbox — ``user.name`` / ``user.email``.
+
+    Read from the ``SANDBOX_GIT_USER_*`` settings (default ``decode`` / ``decode@localhost`` — the same
+    identity the hand-back stamps its capture commit with), an empty value skipped, so a model ``git
+    commit`` in the Workspace has an author out of the box (or none if both are cleared). Host-side and
+    import-light (no docker/modal), so each backend applies it its own way: docker ``git config`` in the
+    session container, modal a baked image layer.
+    """
+    pairs: list[tuple[str, str]] = []
+    if settings.sandbox_git_user_name:
+        pairs.append(("user.name", settings.sandbox_git_user_name))
+    if settings.sandbox_git_user_email:
+        pairs.append(("user.email", settings.sandbox_git_user_email))
+    return pairs
+
+
 def _git_clone(repo: str, workspace: Path, *, local: bool) -> None:
     """``git clone`` ``repo`` into the empty ``workspace`` at its committed HEAD (sync subprocess).
 

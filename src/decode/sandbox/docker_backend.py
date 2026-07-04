@@ -10,7 +10,8 @@ settles on:
   one keeper container per session, the host Workspace (``settings.sandbox_workspace_dir``)
   bind-mounted at ``/workspace``. The Credential-Proxy wiring is kept intact (ADR-0011 §6, retained):
   an optional ``--network`` + ``proxy_env`` + a read-only CA mount, with a **synchronous**
-  ``update-ca-certificates`` after create so the very first command already trusts the proxy CA.
+  ``update-ca-certificates`` after create so the very first command already trusts the proxy CA. A
+  default (unwired) worker then gets a best-effort ``apt-get install git`` — the slim base ships none.
 * **exec** — a fresh ``docker exec -w /workspace <id> bash -lc <command>`` per call, with **separate**
   stdout/stderr (no merge, unlike the old shell), bounded by ``timeout_s``. On timeout only the one
   ``docker exec`` **client** process group is killed — the **container and its filesystem survive**
@@ -40,12 +41,14 @@ import asyncio
 import contextlib
 import logging
 import os
+import shlex
 import shutil
 import signal
 from pathlib import Path, PurePosixPath
 
 from decode.config.settings import settings
 from decode.sandbox.executor import FileStat, WorkspaceEscape
+from decode.sandbox.workspace import git_config_pairs
 from decode.tools.exec import ExecResult
 
 logger = logging.getLogger(__name__)
@@ -74,6 +77,13 @@ _TIMEOUT_EXIT = -signal.SIGKILL
 # be spawned (the ``docker`` CLI itself is gone) so a ``bash`` call surfaces a failure, never a crash.
 _DAEMON_LOST_EXIT = 125
 _DAEMON_LOST_NOTE = "The docker sandbox became unreachable — the session was lost."
+
+# The slim uv base image ships no git, so a model ``git`` command in the Workspace would fail with
+# ``command not found``. ``_install_git`` runs this once per default (unwired) session container — cheap
+# next to baking a 5x-larger full image, and it keeps the worker's ``ancestor=<image>`` identity intact.
+_GIT_INSTALL_CMD = "apt-get update && apt-get install -y --no-install-recommends git"
+# Bound (seconds) for that install — ~15s on a warm network; this only caps a wedged / offline apt.
+_GIT_INSTALL_TIMEOUT_S = 120.0
 
 
 class DockerBackend:
@@ -154,6 +164,11 @@ class DockerBackend:
                 # The CA step reaped the container; drop the id so a later run re-creates from scratch.
                 self._container_id = None
                 raise
+        # A default (unwired) worker gets git so a model ``git`` command in the Workspace works; a
+        # proxy-wired worker is skipped — it sits on an isolated egress network where apt cannot reach
+        # Debian mirrors, and the credential-proxy path does not need git.
+        if self._network is None and self._proxy_env is None and self._ca_cert_host_path is None:
+            await self._install_git(self._container_id)
 
     async def export(self) -> None:
         """No-op: the bind mount is live, so the host Workspace already IS the sandbox filesystem (§5)."""
@@ -375,6 +390,58 @@ class DockerBackend:
             )
         logger.info("[sandbox] proxy CA trusted in worker %s", container_id[:12])
 
+    async def _install_git(self, container_id: str) -> None:
+        """Best-effort ``apt-get install git`` **+ git-identity config** in the fresh keeper container.
+
+        The slim base ships no git, so one ``sh -c`` installs it and (chained with ``&&``, so only after a
+        successful install) sets the ``SANDBOX_GIT_USER_*`` identity via ``git config --global`` — folded
+        into this same exec so it adds no extra ``docker exec`` (see :func:`_git_setup_command`), and a
+        model ``git commit`` in the Workspace then works out of the box.
+
+        ``ponytail:`` installed per session into the container rather than baking a fatter image — this
+        keeps the 278 MB slim base AND the worker's ``ancestor=<image>`` identity (so every hygiene reap
+        filter and ``docker run`` argv test stays valid), at the cost of a one-off ~15 s apt at session
+        start (bake git into a custom ``SANDBOX_IMAGE`` to skip it). **Best-effort** — a failure (offline
+        / restricted apt) logs a warning and leaves the session running with no git (the model would see
+        ``git: command not found``, exactly today's behavior), never a crash. Bounded by
+        :data:`_GIT_INSTALL_TIMEOUT_S`.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                container_id,
+                "sh",
+                "-c",
+                _git_setup_command(),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,  # one stream: apt chats on both
+            )
+        except OSError as exc:
+            logger.warning(
+                "[sandbox] git install could not spawn: %s (continuing without git)", exc
+            )
+            return
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_GIT_INSTALL_TIMEOUT_S)
+        except TimeoutError:
+            proc.kill()
+            with contextlib.suppress(Exception):
+                await proc.wait()  # reap the killed exec (no zombie / ResourceWarning)
+            logger.warning(
+                "[sandbox] git install timed out after %gs (continuing without git)",
+                _GIT_INSTALL_TIMEOUT_S,
+            )
+            return
+        if proc.returncode != 0:
+            logger.warning(
+                "[sandbox] git install failed (exit %s; continuing without git): %s",
+                proc.returncode,
+                _decode(stdout).strip()[-500:],
+            )
+            return
+        logger.info("[sandbox] git installed in worker %s", container_id[:12])
+
 
 def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
     """Send ``sig`` to the ``docker exec`` client's whole process group; tolerate an already-dead one.
@@ -404,3 +471,18 @@ async def _run_docker_quiet(*args: str) -> None:
 def _decode(raw: bytes) -> str:
     """Decode captured subprocess bytes as UTF-8, replacing undecodable bytes (never crash)."""
     return raw.decode("utf-8", errors="replace")
+
+
+def _git_setup_command() -> str:
+    """The ``sh -c`` line that installs git and (if configured) sets its identity, ``&&``-chained.
+
+    Config runs only after a successful install (no git → nothing to configure). The identity comes from
+    :func:`~decode.sandbox.workspace.git_config_pairs` (default ``decode`` / ``decode@localhost``), each
+    value ``shlex.quote``d so a name with spaces / quotes stays one safe shell token — so a model ``git
+    commit`` in the Workspace works out of the box.
+    """
+    parts = [_GIT_INSTALL_CMD]
+    parts += [
+        f"git config --global {key} {shlex.quote(value)}" for key, value in git_config_pairs()
+    ]
+    return " && ".join(parts)

@@ -14,8 +14,14 @@ host mirror — ``read`` never lies, so the deletion-blind mtime-sync is rejecte
 cross the wire are ONE bootstrap upload of the host Workspace at :meth:`create` and ONE end-of-session
 sweep at :meth:`export`. ``add_local_dir`` is gone.
 
-* **create** — ``App.lookup`` → ``Sandbox.create("sleep","infinity", image=from_registry(sandbox_image),
-  timeout=…)`` → ``mkdir -p /workspace`` → the **bootstrap upload** (see below). The keeper entrypoint is
+* **create** — ``App.lookup`` → ``Sandbox.create("sleep","infinity",
+  image=from_registry(sandbox_image).apt_install("git"), timeout=…)`` → ``mkdir -p /workspace`` → the
+  **bootstrap upload** (see below). ``.apt_install("git")`` + ``.run_commands("git config --global …")``
+  bake git (absent from the slim base) **and** the ``SANDBOX_GIT_USER_*`` identity into cached image
+  layers — no per-session cost, unlike docker's in-container install. When ``SANDBOX_GIT_TOKEN`` is set
+  the token rides a ``modal.Secret`` into the sandbox env + a credential-helper layer, so the agent can
+  ``git push`` / open a PR from inside the sandbox — the docker-proxy vs modal-direct-inject trade-off
+  (ADR-0012 §10). The keeper entrypoint is
   ``sleep infinity`` (the docker keeper's exact shape): without it modal runs the image's own ``CMD`` —
   the astral uv default (``Cmd=[uv]``) prints help and exits, taking the sandbox down moments after
   create.
@@ -74,6 +80,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import shlex
 import signal
 from collections.abc import Awaitable, Callable
 from pathlib import Path, PurePosixPath
@@ -81,7 +88,7 @@ from typing import Any, TypeVar
 
 from decode.config.settings import settings
 from decode.sandbox.executor import FileStat
-from decode.sandbox.workspace import extract_tar, tar_dir
+from decode.sandbox.workspace import extract_tar, git_config_pairs, tar_dir
 from decode.tools.exec import ExecResult
 
 logger = logging.getLogger(__name__)
@@ -96,6 +103,16 @@ _WORKSPACE = "/workspace"
 
 # The modal App the sandbox is looked up / created under (``create_if_missing=True`` on first use).
 _APP_NAME = "decode-sandbox"
+
+# The git credential helper baked into the image when ``SANDBOX_GIT_TOKEN`` is injected (ADR-0012 §10,
+# modal only). It echoes the runtime ``$GITHUB_TOKEN`` (from the ``modal.Secret``) as the HTTPS password
+# so ``git push`` to github.com authenticates as Basic ``x-access-token:<token>`` — the same shape
+# actions/checkout uses. Single-quoted so ``$GITHUB_TOKEN`` is NOT expanded at build time (only when git
+# invokes the helper at push time), keeping the token out of the cached image layer.
+_GIT_CREDENTIAL_HELPER = (
+    "git config --global credential.helper "
+    "'!f() { echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }; f'"
+)
 
 # The remote ``/tmp`` staging paths for the ONE tar bootstrap upload and the ONE export sweep — absolute
 # (the SandboxFilesystem API requires absolute remote paths) and OUTSIDE ``/workspace`` so neither is
@@ -461,12 +478,38 @@ class ModalBackend:
         """
         modal = _load_modal()
         app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
-        image = modal.Image.from_registry(settings.sandbox_image)
+        # ``.apt_install("git")``: the slim base ships no git, so a model ``git`` command in the Workspace
+        # would fail — bake it into the image (a cached layer, so no per-session cost, unlike docker).
+        image = modal.Image.from_registry(settings.sandbox_image).apt_install("git")
+        # Bake the git identity into the image too (a cached layer keyed by the values) so a model ``git
+        # commit`` works out of the box — the same ``SANDBOX_GIT_USER_*`` identity docker sets via
+        # ``git config`` in the container. ``shlex.quote`` keeps a spaced/quoted name one safe token.
+        for key, value in git_config_pairs():
+            image = image.run_commands(f"git config --global {key} {shlex.quote(value)}")
+        # Direct credential injection — MODAL ONLY (docker keeps the Credential Proxy so its worker holds
+        # no token; ADR-0012 §10). When ``SANDBOX_GIT_TOKEN`` is set, inject it as ``GITHUB_TOKEN`` (a
+        # ``modal.Secret`` → the sandbox env) and bake a git credential helper that reads it, so a model
+        # ``git push`` / ``gh`` in the Workspace authenticates from inside the sandbox. The helper reads
+        # ``$GITHUB_TOKEN`` at push time, so the token rides the Secret and never the cached image layer.
+        secrets: list[Any] = []
+        token = (
+            settings.sandbox_git_token.get_secret_value()
+            if settings.sandbox_git_token is not None
+            else ""
+        )
+        if token:
+            image = image.run_commands(_GIT_CREDENTIAL_HELPER)
+            secrets = [modal.Secret.from_dict({"GITHUB_TOKEN": token})]
         # An explicit long-lived entrypoint (the docker keeper's exact shape): without it modal runs the
         # image's own CMD — the astral uv default (``Cmd=[uv]``) prints help and quits, taking the sandbox
         # with it. NO ``add_local_dir`` — skills ride the bootstrap upload host-side now (ADR-0012 §5).
         sandbox = await modal.Sandbox.create.aio(
-            "sleep", "infinity", app=app, image=image, timeout=int(settings.sandbox_timeout_s)
+            "sleep",
+            "infinity",
+            app=app,
+            image=image,
+            timeout=int(settings.sandbox_timeout_s),
+            secrets=secrets,
         )
         logger.info("[sandbox] modal create %s image=%s", sandbox.object_id, settings.sandbox_image)
         try:

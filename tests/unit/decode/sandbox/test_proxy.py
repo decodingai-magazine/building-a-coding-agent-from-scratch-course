@@ -10,6 +10,7 @@ header injection, the credential boundary — lives in the ``@skipif``-guarded
 
 from __future__ import annotations
 
+import base64
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from decode.sandbox.proxy import (
     DockerCredentialProxy,
     SandboxProxyRule,
     build_credential_map,
+    github_token_rules,
 )
 
 # The resolved secret value the tests inject — the string that must NEVER appear in a log line.
@@ -185,6 +187,35 @@ def test_build_credential_map_logs_names_never_values(mocker, caplog):
     assert _SECRET_VALUE not in caplog.text  # the resolved value never appears
     assert "github-auth" in caplog.text  # the rule name does (for correlation)
     assert "Authorization" in caplog.text  # the header name does
+
+
+# --- github_token_rules: the SANDBOX_GIT_TOKEN one-knob shortcut ------------------------------
+
+
+def test_github_token_rules_builds_bearer_api_then_basic_git():
+    # api.github.com FIRST (Bearer for the REST/PR API), github.com SECOND (Basic for git-over-HTTPS).
+    rules = github_token_rules("ghp_abc123")
+
+    assert [r.name for r in rules] == ["github-api", "github-git"]
+    assert rules[0].hosts == ["api.github.com"]
+    assert rules[0].headers == {"Authorization": "Bearer ghp_abc123"}
+    assert rules[1].hosts == ["github.com"]
+    # git transport wants Basic base64("x-access-token:<PAT>"), NOT Bearer.
+    expected_basic = base64.b64encode(b"x-access-token:ghp_abc123").decode()
+    assert rules[1].headers == {"Authorization": f"Basic {expected_basic}"}
+
+
+def test_github_token_rules_resolve_with_no_kitaru_fetch_and_api_host_first(mocker):
+    # Fed through build_credential_map the literal values pass through untouched (no {{ }} → no secret
+    # fetch), and api.github.com is the FIRST map key so _match_host picks Bearer for the API host
+    # (github.com parent-matches api.github.com; _match_host returns the first match).
+    spy = _patch_get_secret(mocker, {})
+
+    result = build_credential_map(github_token_rules("ghp_x"))
+
+    assert list(result) == ["api.github.com", "github.com"]  # insertion order == match precedence
+    assert result["api.github.com"] == {"Authorization": "Bearer ghp_x"}
+    spy.assert_not_called()  # literal headers → no Kitaru secret is touched
 
 
 # --- DockerCredentialProxy: pure properties (no docker) ---------------------------------------

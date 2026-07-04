@@ -285,6 +285,9 @@ def _engage_proxy(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
     monkeypatch.setattr(flow_mod.settings, "sandbox_credential_proxy_enabled", True)
+    # No git token → keep the map a pure passthrough (a set SANDBOX_GIT_TOKEN would auto-inject the
+    # GitHub rules, ADR-0012 §10); this test proves only the topology + teardown, not the map contents.
+    monkeypatch.setattr(flow_mod.settings, "sandbox_git_token", None)
     # A passthrough map is enough to prove the topology + teardown; no upstream request is made here.
     monkeypatch.setattr("decode.sandbox.proxy.DEFAULT_PROXY_RULES", [])
     # A fresh, un-selected bash seam so we can prove the context installs then restores it.

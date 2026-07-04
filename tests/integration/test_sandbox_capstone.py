@@ -97,6 +97,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
+from decode.config.settings import settings
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import TurnContext
@@ -1241,6 +1242,31 @@ async def test_real_docker_isolated_workspace_roundtrip_and_handback(tmp_path: P
         await executor.aclose()  # idempotent safety net — no leaked container
 
 
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="the docker daemon is not reachable")
+async def test_real_docker_workspace_has_git(tmp_path: Path) -> None:
+    """git is available AND identity-configured in the default docker Workspace — else SKIP.
+
+    The slim base image ships no git (ADR-0012); ``DockerBackend.create`` installs it AND sets the
+    ``SANDBOX_GIT_USER_*`` identity (default ``decode``) best-effort for an unwired worker, so a model
+    ``git commit`` works. Proven end to end: ``git --version`` exits 0 and ``git config user.name`` is the
+    configured identity. Reaps in ``finally``.
+    """
+    workspace = tmp_path / ".decode" / "sandbox"
+    workspace.mkdir(parents=True)
+    executor = SandboxExecutor(DockerBackend())
+    try:
+        await executor.start(
+            workspace
+        )  # create() installs + configures git before the first command
+        result = await executor.run("git --version", cwd=workspace, timeout_s=60.0)
+        assert result.exit_code == 0, result.stderr or result.stdout
+        assert "git version" in result.stdout
+        ident = await executor.run("git config --global user.name", cwd=workspace, timeout_s=30.0)
+        assert ident.stdout.strip() == settings.sandbox_git_user_name  # the preconfigured identity
+    finally:
+        await executor.aclose()
+
+
 def _host_workspace_with_marker(tmp_path: Path, *, content: str = "bootstrapped\n") -> Path:
     """A populated NON-git host Workspace (one marker file) — the modal bootstrap-upload source.
 
@@ -1303,6 +1329,58 @@ async def test_real_modal_isolated_workspace_roundtrip(tmp_path: Path) -> None:
         await executor.aclose()  # export + terminate the remote sandbox (no leak)
 
     assert executor._backend._sandbox is None  # aclose terminated + cleared it
+
+
+@pytest.mark.skipif(not _MODAL_AVAILABLE, reason="modal account credentials are not present")
+async def test_real_modal_workspace_has_git(tmp_path: Path) -> None:
+    """git AND its identity are baked into the modal image so a model ``git commit`` works — else SKIP.
+
+    The slim base ships no git; the modal image chains ``.apt_install("git")`` + ``.run_commands("git
+    config …")`` (cached layers, no per-session cost). Proven end to end: ``git --version`` exits 0 and
+    ``git config user.name`` is the configured identity. The first run may be slow while modal builds the
+    layers (cached afterwards). Reaps in ``finally``.
+    """
+    workspace = _host_workspace_with_marker(tmp_path)
+    executor = SandboxExecutor(ModalBackend())
+    try:
+        await executor.start(workspace)
+        result = await executor.run("git --version", cwd=workspace, timeout_s=_MODAL_TIMEOUT_S)
+        assert result.exit_code == 0, result.stderr or result.stdout
+        assert "git version" in result.stdout
+        ident = await executor.run(
+            "git config --global user.name", cwd=workspace, timeout_s=_MODAL_TIMEOUT_S
+        )
+        assert ident.stdout.strip() == settings.sandbox_git_user_name  # the preconfigured identity
+    finally:
+        await executor.aclose()  # export + terminate the remote sandbox (no leak)
+
+
+@pytest.mark.skipif(not _MODAL_AVAILABLE, reason="modal account credentials are not present")
+async def test_real_modal_injects_the_git_token_into_the_sandbox(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """SANDBOX_GIT_TOKEN rides a modal.Secret into the sandbox env + a credential helper — else SKIP.
+
+    The direct-injection path (ADR-0012 §10), proven end to end WITHOUT a real GitHub call: a DUMMY token
+    shows up as ``$GITHUB_TOKEN`` inside the remote sandbox and git's ``credential.helper`` is wired to
+    read it (so a real ``git push`` would authenticate). Docker never does this — it uses the Credential
+    Proxy so its worker holds no token. Reaps in ``finally``.
+    """
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr("dummy-token-not-real"))
+    workspace = _host_workspace_with_marker(tmp_path)
+    executor = SandboxExecutor(ModalBackend())
+    try:
+        await executor.start(workspace)
+        env = await executor.run("printenv GITHUB_TOKEN", cwd=workspace, timeout_s=_MODAL_TIMEOUT_S)
+        assert (
+            env.stdout.strip() == "dummy-token-not-real"
+        )  # the modal.Secret reached the sandbox env
+        helper = await executor.run(
+            "git config --global credential.helper", cwd=workspace, timeout_s=_MODAL_TIMEOUT_S
+        )
+        assert "GITHUB_TOKEN" in helper.stdout  # the helper reads the runtime token at push time
+    finally:
+        await executor.aclose()
 
 
 def test_modal_export_over_a_clone_round_trips_git(tmp_path: Path) -> None:

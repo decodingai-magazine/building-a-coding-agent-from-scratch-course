@@ -16,8 +16,10 @@ from pathlib import Path
 
 import pytest
 
+from decode.config.settings import settings
 from decode.sandbox.workspace import (
     extract_tar,
+    git_config_pairs,
     prepare_workspace,
     prepare_workspace_or_empty,
     seed_skills,
@@ -472,3 +474,32 @@ def test_extract_tar_keeps_the_data_filter_traversal_guard(tmp_path):
     # An absolute symlink is rejected outright.
     with pytest.raises(tarfile.FilterError):
         extract_tar(_one_member_tar("link", linkname="/etc/passwd"), dest)
+
+
+# --- git_config_pairs: the sandbox git identity (user.name / user.email) ------------------------
+
+
+def test_git_config_pairs_returns_the_default_decode_identity():
+    # Defaults match the hand-back's own capture-commit identity, so git commit works out of the box.
+    assert git_config_pairs() == [
+        ("user.name", "decode"),
+        ("user.email", "decode@localhost"),
+    ]
+
+
+def test_git_config_pairs_reflects_an_override(monkeypatch):
+    monkeypatch.setattr(settings, "sandbox_git_user_name", "Ada Lovelace")
+    monkeypatch.setattr(settings, "sandbox_git_user_email", "ada@example.com")
+
+    assert git_config_pairs() == [
+        ("user.name", "Ada Lovelace"),
+        ("user.email", "ada@example.com"),
+    ]
+
+
+def test_git_config_pairs_skips_a_cleared_field(monkeypatch):
+    # An empty value is dropped (not configured), so clearing both yields no pairs at all.
+    monkeypatch.setattr(settings, "sandbox_git_user_name", "bot")
+    monkeypatch.setattr(settings, "sandbox_git_user_email", "")
+
+    assert git_config_pairs() == [("user.name", "bot")]

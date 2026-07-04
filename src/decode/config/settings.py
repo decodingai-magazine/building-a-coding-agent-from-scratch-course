@@ -243,8 +243,27 @@ class Settings(BaseSettings):
     # ``modal.Image.from_registry(...)``. Must include ``bash``. The default is astral's uv variant
     # of python-slim — python 3.12 + ``uv`` preinstalled — so BOTH sandboxes come preconfigured to
     # run python via ``uv`` (skill payloads say ``uv run .decode/skills/<name>/scripts/…``, and a
-    # per-session ``pip install uv`` bootstrap would cost seconds on every launch).
+    # per-session ``pip install uv`` bootstrap would cost seconds on every launch). git is NOT in the
+    # slim base, so each backend adds it on top (modal bakes an ``apt_install("git")`` layer; docker
+    # installs it into the fresh container at create) — a model ``git`` command in the Workspace works.
     sandbox_image: str = "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
+    # The git identity preconfigured in the sandbox (``git config --global user.name`` / ``user.email``),
+    # so a model ``git commit`` in the Workspace succeeds instead of erroring "Please tell me who you
+    # are". Defaults to the same ``decode`` / ``decode@localhost`` the hand-back stamps its own
+    # dirty-worktree capture commit with (``sandbox/handback.py``), so every decode-authored commit on
+    # the handed-back branch shares one identity. Override to author the model's commits as yourself
+    # (e.g. ``SANDBOX_GIT_USER_NAME="$(git config user.name)"``) or as a bot; set both empty to skip.
+    sandbox_git_user_name: str = "decode"
+    sandbox_git_user_email: str = "decode@localhost"
+    # The one git token for BOTH sandboxes' git push / ``gh pr create`` (ADR-0012 §10) — each backend
+    # honors it its own way (the deliberate **docker = Credential Proxy (cred-free) vs modal = direct
+    # injection** trade-off): **modal** injects it DIRECTLY as ``GITHUB_TOKEN`` (via ``modal.Secret`` +
+    # a baked git credential helper) so it is readable inside the remote sandbox; **docker** (headless
+    # only) feeds it to the Credential Proxy, which auto-engages when this is set and injects the auth
+    # header AFTER egress, so the worker holds no token. Empty (the default) injects nothing — rely on
+    # the host-side git hand-back. Because modal keeps the token in the sandbox, use a **fine-grained
+    # PAT scoped to the target repo** (Contents + Pull requests), never a broad classic token.
+    sandbox_git_token: SecretStr | None = None
     # The HOST directory bind-mounted at the docker Worker's ``/workspace``, cwd-relative like every
     # ``.decode`` path. Under ADR-0012 it IS the isolated Workspace — a ``git clone`` of ``sandbox_repo``
     # (or empty) — and the file tools operate on it THROUGH the backend seam (docker: pathlib on the

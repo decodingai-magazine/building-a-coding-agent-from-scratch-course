@@ -468,3 +468,87 @@ test proven non-vacuous by mutation), the read-only-`.git` fix survived the syml
 export-over-clone git round-trip green), the full suite is green with 0 warnings and 0 leaks, the real
 docker+modal legs ran for real, the only tracked src change is `workspace.py`, and the "39" nit is
 fixed. Hand off to PA for acceptance review.
+
+### [PA] 2026-07-04 11:40 — Acceptance Review (feature `isolated-workspace`, PR #25, tasks 078-085)
+
+**VERDICT: ACCEPT**
+
+Walked the whole feature from the user's perspective against the Tasks Plan ACs and the user's three
+stated intents. Reviewed the shipped code (not just the Tester logs) at each user-facing surface. All
+three promises are delivered end-to-end, proven against real docker + real modal by the capstone.
+
+- **Fully isolated + EXACT SAME LOGIC across backends** — ONE `SandboxExecutor` (`sandbox/executor.py`)
+  over a `SandboxBackend` seam; `select_executor` returns `SandboxExecutor(DockerBackend())` /
+  `SandboxExecutor(ModalBackend())`; the old `docker_executor.py` (711 L) + `modal_executor.py` (289 L)
+  are deleted. Both `exec` paths are fresh-exec (`run → backend.exec("bash","-lc",…)`, no persistent
+  shell) and render the identical `ExecResult`/timeout contract. File tools route through the seam
+  (`tools/files.py`): docker pathlib-on-mount, modal `SandboxFilesystem` + remote `find`/`grep`; `none`
+  stays direct-pathlib byte-identical. The only per-backend difference is byte transport (mount vs
+  bootstrap-upload/export) — the intentional same-logic-as-local transport the user accepted in the Q5
+  grilling, documented in ADR-0012 §5 + README + AGENTS.md.
+- **Clone any user-provided repo** — `--repo`/`--local` on `decode` and `decode run` (+ `SANDBOX_REPO`),
+  `_resolve_sandbox_repo` precedence, `workspace.prepare_workspace` clones the USER's repo at committed
+  HEAD into `/workspace` (verified in CLI `--help` + the real docker/modal clone round-trips: `read`/
+  `bash` see the cloned files). `SANDBOX_MODE=none` + `--repo` → one friendly stderr line + exit 1 in
+  BOTH the REPL and the headless pre-flight (`_sandbox_repo_config_error`), never a crash; a bad repo
+  degrades to an empty Workspace + one friendly line.
+- **Ship results back as a NEW BRANCH** — `sandbox/handback.py::ship_workspace` secures a deterministic
+  `decode/<session-id>` branch (auto-commits dirty work, preserves the model's own commits) and
+  `git push origin`s it (URL → remote, local path → local source), **host-side only** (boundary test +
+  the real-docker "NO GIT IN SANDBOX" proof — no credential ever enters the sandbox). Never-lose-results
+  is real: secure-before-push, so a failed/disabled push still leaves a named local branch with a
+  recovery line. Fires on REPL exit (after `close_executor`'s modal export sweep), the idle-only `/ship`
+  (discoverable in footer + completer; exports first mid-session), and headless `decode run --repo`
+  completion; unchanged/non-git/no-repo → friendly skip (no spurious branch for a do-nothing session).
+
+**User-facing copy** is clear, action-oriented, and consistent (deliberate `Decode - ` status vs
+`Decode: ` error convention). The three AGENTS.md invariants (Sandbox / Harness-home / Hand-back) match
+shipped behavior; README, `.env.example`, and `settings.py` comments are reconciled and accurate.
+**Documentation discipline** honored: one feature ADR (0012), glossary terms added (Workspace, Harness
+Home, Sandbox Backend, Hand-back), and ADR-0011's Status correctly records the partial supersession.
+
+**Known non-blockers, judged — none breaks the user promise:** (1) `decode run --hitl --repo` auto-ship
+is intentionally unwired, but its results still survive locally at `.decode/sandbox` (modal exported via
+`close_executor`) and the 3 primary paths ship — an edge-of-edge operator path, documented honestly;
+(2) `_branch_name` exotic-ref hardening is unreachable (hex session ids); (3) two `/ship` doc-placeholder
+cosmetics. The capstone-surfaced read-only-`.git` modal-export bug was found AND fixed (c55c571) — a net
+positive that makes the real-modal `--repo` hand-back work end to end.
+
+All ACs across 078-085 verified from the user POV. User satisfaction guaranteed. Hand off to the PR Reviewer.
+
+### [PR Reviewer] 2026-07-04 12:30 — Review
+
+**VERDICT: NO BLOCKERS**
+
+Reviewed the full diff for PR #25 (`feat/isolated-workspace`, tasks 078-085 + ADR-0012 + the
+`extract_tar` fix c55c571) — every changed file (~11.8k insertions across src + tests + docs).
+
+- Blockers: 0
+- Nits: 3 (appended to the PR description)
+
+Walked all six review dimensions (A performance, B clean-code, C tests, D standards, E doc-discipline,
+F simplicity) plus the requested cross-cutting seams. Highlights verified:
+
+- **Security — host-side-only git.** `handback._run_git` is the single choke point: a host `git -C`
+  subprocess with ambient creds + `GIT_TERMINAL_PROMPT=0`, never `executor.run`/`backend.exec`; push
+  stderr kept out of the user message (URL-cred leak) and only logged. Boundary test + real-docker
+  "no git in sandbox" proof cover it.
+- **Security — layered containment.** `files._resolve_logical` (string math, both backends, rejects
+  `..`/absolute) + `docker_backend._path` (physical symlink resolution → `WorkspaceEscape`, an OSError
+  rendered by `_bridge` without files.py importing it). Modal is remote-disposable (no host to escape).
+  `extract_tar` symlink-skip (`_add_owner_write`) + `filter="data"` close the read-only-`.git` overwrite
+  safely and fail-closed on escaping symlinks.
+- **Correctness — harness-home vs deps.cwd split** threaded consistently (factory/skills read
+  `harness_home`; file tools + bash read `deps.cwd`; session log / permission file / MEMORY.md / skills
+  / SlashCompleter all anchored to Harness Home; lsp uses the Workspace path for docker, disabled for
+  modal). No artifact leaks into the Workspace; no tool scope leaks to launch cwd.
+- **Correctness — loop-bridge + teardown** loop-independent by construction (fresh-exec; dedicated
+  short-lived loops in the headless flow that avoid orphaning `run_sync`'s loop); never-crash contract
+  on the file tools (`_active_backend` + `_bridge`) renders ModelRetry on infra failure.
+- **Replay-safety** `{"cache": False}` present on the bash checkpoint when `sandbox_mode != none`.
+- **Doc discipline** complete: ADR-0012 Accepted, ADR-0011 supersession recorded, glossary carries
+  every new concept (Workspace, Harness Home, Hand-back, Session Branch, Sandbox Backend), `.env.example`
+  + settings reconciled.
+
+The three previously-triaged non-blockers (HITL `--repo` auto-ship unwired; `_branch_name` exotic-ref;
+`/ship` doc cosmetics) confirmed non-blocking. Pipeline may advance to hand-off.

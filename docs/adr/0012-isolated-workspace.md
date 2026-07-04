@@ -2,6 +2,11 @@
 
 **Status:** Accepted
 **Date:** 2026-07-03
+**Amended:** 2026-07-04 — added §10: **one `SANDBOX_GIT_TOKEN`, two injection mechanisms** — modal
+direct-injects it into the sandbox env; docker feeds it to the Credential Proxy (which auto-engages
+when the token is set) so the worker stays cred-free. One knob lets the model push a branch / open a PR
+from inside either sandbox; the docker-vs-modal split is only *how* the token is injected, not *which*
+token or *where* it is configured.
 
 Supersedes, in part, **[ADR-0011](0011-sandboxing-and-credential-proxy.md)**: §2 (the Docker
 persistent-shell shape), §3 (the Modal empty-scratch / no-local-tree shape), and the two per-mode
@@ -130,6 +135,36 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
    seam intact (§6); and the isolation-backend ladder table (§7). The interactive REPL stays kitaru-free
    and the `none` path imports no sandbox module.
 
+10. **Sandbox tool credentials — one `SANDBOX_GIT_TOKEN`, injected differently per backend.** Beyond
+    the host-side hand-back (§8), a model may want to make its *own* authenticated call from inside the
+    Workspace — `git push` its branch, `gh pr create` — so the results go remote → remote without the
+    host-side export/ship "sync" at all. A **single** setting, `SANDBOX_GIT_TOKEN`, supplies that
+    credential for **both** backends; only the injection *mechanism* differs, because **only docker can
+    co-locate a proxy**:
+    - **docker → the Credential Proxy (cred-free).** The retained headless mitmproxy sidecar (§9 / §6)
+      injects the credential *after* the request leaves the worker, on a per-run docker network — the
+      worker holds **no** token. When `SANDBOX_GIT_TOKEN` is set the proxy **auto-engages** (no separate
+      `SANDBOX_CREDENTIAL_PROXY_ENABLED` flag needed) and `github_token_rules` builds the two host-side
+      header rules from that one token — Bearer for `api.github.com`, Basic `x-access-token:<PAT>` for the
+      `github.com` git transport (GitHub's git-over-HTTPS does not accept Bearer). The
+      `SANDBOX_CREDENTIAL_PROXY_ENABLED` flag + `DEFAULT_PROXY_RULES` (Kitaru secrets) remain the general
+      path for **other** hosts. This is the hardened path; it costs a mitmproxy container and a CA-trust
+      step.
+    - **modal → direct injection (`SANDBOX_GIT_TOKEN`).** Modal has no co-located network to run a proxy
+      on, so the *same* token is injected **into** the sandbox: `SANDBOX_GIT_TOKEN` rides a `modal.Secret`
+      into the sandbox env as `GITHUB_TOKEN`, and a baked git **credential helper** reads `$GITHUB_TOKEN`
+      at push time (so the token rides the Secret, never the cached image layer). `GITHUB_TOKEN` serves
+      both `git push` and `gh` at once — no base64, no rule ordering, no dummy token. Simpler, but the
+      token **is** readable inside the sandbox.
+    The **source** is unified (one setting); the **mechanism** asymmetry is chosen on purpose: docker
+    shares the host kernel, so keeping the secret out of the worker (inject after egress) earns its
+    complexity; modal is a **remote, ephemeral** box, so a *scoped* token inside it has a bounded blast
+    radius and buys real simplicity — mitigated by requiring a **fine-grained, repo-scoped PAT** (Contents
+    + Pull requests), not a broad classic token. `SANDBOX_GIT_TOKEN` empty (the default) injects nothing
+    on either backend — and leaves the docker proxy down unless the flag opts it in — so the strict "no
+    secret in the sandbox" invariant holds until an operator opts in; the host-side hand-back (§8) stays
+    the credential-free way to ship results.
+
 ## Diagram
 
 ```mermaid
@@ -159,7 +194,13 @@ flowchart TB
     subgraph proxy["CREDENTIAL PROXY (retained, headless+docker) — worker holds NO secret"]
         mitm["mitmproxy addon container — injects header after the request leaves the worker"]
     end
-    docker -. proxy path only .-> mitm
+    docker -. proxy path .-> mitm
+
+    subgraph gtok["SANDBOX_GIT_TOKEN (opt-in, §10) — ONE token, injected per-backend"]
+        tok["docker: sources the proxy (auto-engages) → Bearer/Basic header after egress, worker token-free<br/>modal: modal.Secret → GITHUB_TOKEN env + git credential helper (readable in-sandbox by design)"]
+    end
+    tok -. docker: feeds .-> mitm
+    modal -. modal: direct inject .-> tok
 
     git(["Hand-back: decode/&lt;session-id&gt; branch<br/>secured + pushed host-side — no cred in the sandbox"])
     ws --> git
@@ -179,7 +220,9 @@ flowchart TB
     class docker,modal exec;
     class ws wsc;
     class mitm sec;
+    class tok mcredc;
     class git ext;
+    classDef mcredc fill:#ad1457,stroke:#880e4f,color:#ffffff;
 ```
 
 ## Consequences
@@ -205,6 +248,13 @@ flowchart TB
   Workspace with no extra wiring.
 - **Retained guarantees hold** — the startup guard, replay-safety, the Credential Proxy (worker holds
   no secret), the isolation ladder, the kitaru-free REPL, and the byte-identical `none` path.
+- **One token, two postures (§10).** A single `SANDBOX_GIT_TOKEN` supplies the in-sandbox credential for
+  an authenticated tool call *from inside* the sandbox on **both** backends — docker feeds it to the
+  Credential Proxy (auto-engaging, worker stays token-free), modal trades that hardness for simplicity by
+  injecting it into the sandbox env. The source is unified; only the mechanism differs. The default
+  (empty) injects nothing and leans on the host-side hand-back, so "no secret in the sandbox" still holds
+  everywhere until an operator opts in. The honest cost: an opted-in *modal* token is readable by a
+  prompt-injected agent, bounded only by the PAT's scope — the reason the docker path stays proxy-based.
 - **Honest ceilings (`ponytail:`):**
   - **Modal LSP is best-effort-off** — `ty` runs host-side and cannot reach the remote fs. Upgrade
     path: run `ty` inside the sandbox over piped stdio (deferred).

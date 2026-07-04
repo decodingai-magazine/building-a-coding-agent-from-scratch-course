@@ -346,8 +346,48 @@ Tune it in `.env` — every setting is optional with a safe default:
 
 - `SANDBOX_MODE` (default `none`) — `none` / `docker` / `modal`.
 - `SANDBOX_REPO` (default empty) — the repo (URL or local path) cloned into the Workspace at launch; the `--repo` flag overrides it and `--local` picks a fast local clone. Empty means an empty Workspace. The **hand-back needs no extra variable** — it reuses `--repo` / `SANDBOX_REPO` and your ambient git credentials.
-- `SANDBOX_IMAGE` (default `ghcr.io/astral-sh/uv:python3.12-bookworm-slim`) — the **Worker** image (`docker` pulls it; `modal` maps it via `Image.from_registry`). Must include `bash`; the default is astral's `uv` variant of python-slim, so both sandboxes come **preconfigured with `uv`** and skill scripts run via `uv run` out of the box.
+- `SANDBOX_IMAGE` (default `ghcr.io/astral-sh/uv:python3.12-bookworm-slim`) — the **Worker** image (`docker` pulls it; `modal` maps it via `Image.from_registry`). Must include `bash`; the default is astral's `uv` variant of python-slim, so both sandboxes come **preconfigured with `uv`** and skill scripts run via `uv run` out of the box. **git** isn't in the slim base, so each backend adds it (modal bakes an `apt_install("git")` layer; docker installs it into the container at startup) — a model `git` command in the Workspace just works.
 - `SANDBOX_TIMEOUT_S` (default `600.0`) — max lifetime of a **remote** (modal) Sandbox before Modal reaps it (docker's session container has no lifetime cap).
+- `SANDBOX_GIT_USER_NAME` / `SANDBOX_GIT_USER_EMAIL` (default `decode` / `decode@localhost`) — the git identity preconfigured in the Workspace (`git config --global`), so a model `git commit` succeeds instead of erroring *"Please tell me who you are"*. The default matches the identity the hand-back stamps its own capture commit with. Set them to your own (e.g. `SANDBOX_GIT_USER_NAME="$(git config user.name)"`) to author the model's commits as yourself, or both empty to skip. **Note:** this is only the commit *identity* — pushing a branch / opening a PR needs *credentials* (below).
+- `SANDBOX_GIT_TOKEN` (default empty) — **one** git token that lets the model `git push` its branch / `gh pr create` **from inside the sandbox** on **both** backends (results go remote→remote, no host-side export). Set it once; each backend injects it its own way — the deliberate **docker vs modal split** (ADR-0012 §10): **modal** puts it **directly** in the sandbox env (`GITHUB_TOKEN` via `modal.Secret` + a baked git credential helper), so it's readable in-sandbox; **docker** (headless) feeds it to the [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret), which **auto-engages** when this is set and injects the auth header **after egress**, so the worker holds no token. Because modal keeps it in the sandbox, use a **fine-grained, repo-scoped PAT** (Contents + Pull requests). Empty ⇒ inject nothing; the credential-free path stays the host-side hand-back above.
+
+### Quickstart — try each mode
+
+Four ways to launch it, one per row of the table above. Each still gates `bash` / `write` exactly like `none`; run the **check** in a second terminal to see the isolation for yourself. `modal` needs `modal token set` first.
+
+**1 · docker, no repo** — an isolated empty scratch:
+
+```bash
+SANDBOX_MODE=docker decode
+```
+
+The banner shows `sandbox:docker` and `docker ps` lists the container **at launch** (before any `bash` runs); `ls /workspace` shows only `.decode/skills/`, and a `write` lands under the host `.decode/sandbox/`, never in your tree. Fresh-exec: `export X=1` then a second `bash` `echo $X` prints empty (the filesystem persists across calls, the shell doesn't), and a symlink escape (`ln -s /etc/passwd evil`, then `read evil`) is refused.
+
+**2 · docker, with a repo** — clone in, branch back out:
+
+```bash
+SANDBOX_MODE=docker decode --repo /path/to/repo --local   # or --repo <git-url>
+```
+
+`/workspace` is the clone (`git -C /workspace log -1` matches its HEAD); change a file, then `/ship` (or quit) lands a `decode/<session-id>` branch in the source repo. The push ran **host-side** with no secret in the sandbox — `docker exec <id> env | grep -i token` prints nothing.
+
+**3 · modal, no repo** — the same, but nothing runs on your machine:
+
+```bash
+SANDBOX_MODE=modal decode
+```
+
+`modal container list` shows it running, and a `bash` `uname -a` reports a remote Linux host, not your Mac. A `git clone` into `/workspace` persists across `bash` calls; the Workspace is swept back to `.decode/sandbox/` on exit.
+
+**4 · modal, with a repo** — the clone is bootstrap-uploaded remotely, branch back:
+
+```bash
+SANDBOX_MODE=modal decode --repo /path/to/repo --local
+```
+
+The clone is uploaded to the remote `/workspace` at launch; `/ship` (or quit) sweeps it back and pushes `decode/<session-id>` host-side, exactly as docker does.
+
+The offline half of the capstone proves all four with **no key and no infra** (the real docker/modal legs skip cleanly when unavailable): `uv run pytest tests/integration/test_sandbox_capstone.py`.
 
 ### Isolation honesty
 
@@ -361,6 +401,10 @@ gVisor / Kata are **zero-code** upgrades a Linux operator gets by setting the do
 ### Credential Proxy (a Worker that holds no secret)
 
 A sandboxed **Worker** sometimes needs to make an authenticated tool call — but a prompt-injected agent can read anything in the Worker's environment, so no token should ever live there. The **Credential Proxy** (headless + docker only, **opt-in**) solves this the canonical way: the Worker is pointed at a `mitmproxy` container that injects the credential **after** the request has left the Worker, so the Worker holds no secret and the resolved credentials live only in the proxy container's env. Design in ADR-0011 §6.
+
+This is the **docker** path. **Modal** can't run a co-located proxy, so it takes the simpler, less-hardened route — inject a scoped token straight into the sandbox via `SANDBOX_GIT_TOKEN` (above). That per-backend trade-off is ADR-0012 §10.
+
+> **GitHub shortcut.** For the common *push a branch / open a PR* case you need **none** of the setup below — just set `SANDBOX_GIT_TOKEN` (above). The docker proxy **auto-engages** when it's set and builds the two GitHub header rules (Bearer for `api.github.com`, Basic for `github.com`) from that one token — the same token modal direct-injects. The three pieces below are the **general** path for any *other* host/header.
 
 Set it up in three pieces:
 
@@ -391,6 +435,8 @@ Set it up in three pieces:
    ```
 
 The Worker's request is authenticated though it holds no token — confirm with `docker exec <worker-id> env | grep -i token` (nothing). Egress is **cooperative** (the Worker is *pointed* at the proxy, not forced through it), so this is not an exfiltration barrier; an internal-only default-deny network is the upgrade path.
+
+That whole boundary — authenticated request out, empty-token env in the Worker — is exercised end-to-end (Docker required) by `uv run pytest tests/integration/test_sandbox_capstone.py -k credential_proxy`, no PAT of your own needed.
 
 This sandbox **Credential Proxy** (a *tool* credential for the Worker) is distinct from the [credentials proxy](#credentials-proxy-keep-the-model-key-out-of-the-flow-payload) above, which keeps the *model* key out of the flow payload by hydrating `Settings` — different secret, different mechanism.
 

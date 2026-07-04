@@ -9,9 +9,10 @@ contract offline:
 * **exec** — the fresh ``bash -lc`` / ``workdir=/workspace`` / int per-exec ``timeout`` / ``text=False``
   shape, the stdout/stderr/exit mapping, the timeout-kills-the-exec-not-the-sandbox rule, and the
   ``errors="replace"`` decode contract (binary output never crashes the turn);
-* **create + bootstrap** — ``App.lookup`` → ``Sandbox.create("sleep","infinity", …)`` → ``mkdir -p
-  /workspace`` → the ONE tar bootstrap upload (``filesystem.write_bytes`` + a remote ``tar -x`` exec),
-  with **no** ``add_local_dir`` anywhere;
+* **create + bootstrap** — ``App.lookup`` → ``Sandbox.create("sleep","infinity",
+  image=from_registry(…).apt_install("git"), …)`` → ``mkdir -p /workspace`` → the ONE tar bootstrap
+  upload (``filesystem.write_bytes`` + a remote ``tar -x`` exec), with git baked into the image and
+  **no** ``add_local_dir`` anywhere;
 * **file ops = the SandboxFilesystem API** against ``/workspace/<rel>`` (a fake fs backed by a real
   ``tmp_path`` so the round-trips are truthful), including the missing-file mapping (``read_bytes`` /
   ``list_dir`` → ``FileNotFoundError``; ``stat`` → ``None``) that mirrors
@@ -40,11 +41,14 @@ from io import BytesIO
 from pathlib import Path, PurePosixPath
 
 import pytest
+from pydantic import SecretStr
 
+from decode.config.settings import settings
 from decode.sandbox.executor import FileStat
 from decode.sandbox.modal_backend import (
     _BOOTSTRAP_TAR,
     _EXPORT_TAR,
+    _GIT_CREDENTIAL_HELPER,
     _SANDBOX_LOST_EXIT,
     _SANDBOX_LOST_NOTE,
     _WORKSPACE,
@@ -111,6 +115,28 @@ class _RecordingSync:
     def __call__(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         return self._return_value
+
+
+class _FakeImage:
+    """A ``modal.Image`` stand-in: ``.apt_install(*pkgs)`` / ``.run_commands(*cmds)`` record + return self.
+
+    Deliberately has **no** ``add_local_dir`` — calling it ``AttributeError``s — so green everywhere is
+    the pin that the backend now bakes git (``apt_install``) and the git identity (``run_commands``) into
+    the image yet still NEVER seeds via ``add_local_dir`` (ADR-0012 §5). ``from_registry`` returns this
+    instance and every builder call chains back to it, so the same object reaches ``Sandbox.create``.
+    """
+
+    def __init__(self) -> None:
+        self.apt_install_calls: list[tuple] = []
+        self.run_commands_calls: list[tuple] = []
+
+    def apt_install(self, *packages: str) -> _FakeImage:
+        self.apt_install_calls.append(packages)
+        return self
+
+    def run_commands(self, *commands: str) -> _FakeImage:
+        self.run_commands_calls.append(commands)
+        return self
 
 
 class _FakeStream:
@@ -304,25 +330,35 @@ class _FakeSandbox:
 
 
 def _make_fake_modal(
-    sandbox: _FakeSandbox, *, image: object = "image-obj"
+    sandbox: _FakeSandbox, *, image: _FakeImage | None = None
 ) -> tuple[types.SimpleNamespace, dict]:
     """Build a fake ``modal`` module exposing exactly the surface the backend uses.
 
-    The default ``image`` is a plain string — it would raise on ``add_local_dir`` (a plain ``str`` has no
-    such method), so green everywhere IS the pin that the backend NEVER calls ``add_local_dir`` (ADR-0012
-    §5 retires the modal ``add_local_dir`` seeding). ``exception`` points at the fake filesystem-error
-    namespace so the missing-file normalization is proven with no real modal import.
+    The default ``image`` is a fresh :class:`_FakeImage` — it supports the ``.apt_install("git")`` the
+    backend now chains, but has **no** ``add_local_dir``, so green everywhere IS the pin that the backend
+    still NEVER seeds via ``add_local_dir`` (ADR-0012 §5 retires the modal ``add_local_dir`` seeding).
+    ``exception`` points at the fake filesystem-error namespace so the missing-file normalization is
+    proven with no real modal import.
     """
+    image = image if image is not None else _FakeImage()
     lookup = _Recording(return_value="app-obj")
     from_registry = _RecordingSync(return_value=image)
     create = _Recording(return_value=sandbox)
+    secret_from_dict = _RecordingSync(return_value="secret-obj")
     fake = types.SimpleNamespace(
         App=types.SimpleNamespace(lookup=lookup),
         Image=types.SimpleNamespace(from_registry=from_registry),
         Sandbox=types.SimpleNamespace(create=create),
+        Secret=types.SimpleNamespace(from_dict=secret_from_dict),
         exception=_FAKE_EXCEPTION_NS,
     )
-    return fake, {"lookup": lookup, "from_registry": from_registry, "create": create}
+    return fake, {
+        "lookup": lookup,
+        "from_registry": from_registry,
+        "create": create,
+        "image": image,
+        "secret_from_dict": secret_from_dict,
+    }
 
 
 @pytest.fixture
@@ -379,14 +415,54 @@ async def test_create_spawns_the_sandbox_once_with_the_configured_image_and_life
         ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim",),
         {},
     )
+    # git is baked into the image: ``from_registry(...).apt_install("git")`` — the slim base ships none.
+    assert fake_modal["image"].apt_install_calls == [("git",)]
+    # ... and the default git identity is baked in too, so a model ``git commit`` works out of the box.
+    assert fake_modal["image"].run_commands_calls == [
+        ("git config --global user.name decode",),
+        ("git config --global user.email decode@localhost",),
+    ]
     create_args, create_kwargs = fake_modal["create"].calls[0]
     # The explicit long-lived entrypoint (the docker keeper's shape): without it modal runs the image's
     # own CMD — the astral uv default (``Cmd=[uv]``) prints help and exits, killing the sandbox.
     assert create_args == ("sleep", "infinity")
     assert create_kwargs["app"] == "app-obj"
-    assert create_kwargs["image"] == "image-obj"
+    # The image that reaches ``Sandbox.create`` is the ``.apt_install`` result (chained off from_registry).
+    assert create_kwargs["image"] is fake_modal["image"]
     assert create_kwargs["timeout"] == 600  # int(settings.sandbox_timeout_s) default
+    # No SANDBOX_GIT_TOKEN by default → no injected secret and no credential-helper layer (the run_commands
+    # above are the identity only). Docker's Credential Proxy, not this, is the token-free path there.
+    assert create_kwargs["secrets"] == []
+    assert fake_modal["secret_from_dict"].calls == []
     assert backend._sandbox is sandbox
+
+
+async def test_create_injects_the_git_token_secret_and_credential_helper_when_set(
+    fake_modal, sandbox, workspace, monkeypatch
+):
+    # SANDBOX_GIT_TOKEN set → the token rides a modal.Secret into the sandbox env AND a credential-helper
+    # layer is baked, so the agent can ``git push`` / open a PR from inside modal (ADR-0012 §10). Docker
+    # does NOT do this — it keeps the Credential Proxy so its worker holds no token.
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr("ghp_deadbeef"))
+    backend = ModalBackend()
+
+    await backend.create(workspace)
+
+    # The raw token is passed to modal.Secret.from_dict as GITHUB_TOKEN (host-side; it rides the Secret,
+    # never the image layer).
+    assert fake_modal["secret_from_dict"].calls == [(({"GITHUB_TOKEN": "ghp_deadbeef"},), {})]
+    _, create_kwargs = fake_modal["create"].calls[0]
+    assert create_kwargs["secrets"] == ["secret-obj"]  # the from_dict result reaches Sandbox.create
+    # The credential-helper layer is baked AFTER the identity config layers.
+    assert fake_modal["image"].run_commands_calls[-1] == (_GIT_CREDENTIAL_HELPER,)
+
+
+def test_git_credential_helper_reads_the_runtime_token_not_a_baked_one():
+    # The helper feeds git Basic auth from $GITHUB_TOKEN at push time — single-quoted so the token is
+    # NOT expanded (and thus not frozen) into the image layer at build time.
+    assert "$GITHUB_TOKEN" in _GIT_CREDENTIAL_HELPER
+    assert "username=x-access-token" in _GIT_CREDENTIAL_HELPER
+    assert _GIT_CREDENTIAL_HELPER.startswith("git config --global credential.helper '")
 
 
 async def test_create_bootstraps_the_workspace_dir_before_any_command(

@@ -18,6 +18,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import SecretStr
 
 import decode.runtime.flow as flow_mod
 import decode.tools.bash as bash_mod
@@ -76,10 +77,13 @@ def test_build_runtime_agent_is_byte_identical_in_none_mode(monkeypatch):
 # --- _sandbox_proxy(): a no-op unless docker + proxy enabled ----------------------------------
 
 
-def _assert_seam_untouched(monkeypatch, *, mode: str, enabled: bool) -> None:
+def _assert_seam_untouched(
+    monkeypatch, *, mode: str, enabled: bool, git_token: SecretStr | None = None
+) -> None:
     """Enter/exit ``_sandbox_proxy`` for the given config and assert the bash executor seam is inert."""
     monkeypatch.setattr(flow_mod.settings, "sandbox_mode", mode)
     monkeypatch.setattr(flow_mod.settings, "sandbox_credential_proxy_enabled", enabled)
+    monkeypatch.setattr(flow_mod.settings, "sandbox_git_token", git_token)
     # A sentinel executor + un-selected memo; a no-op must leave both exactly as they were.
     sentinel = LocalExecutor()
     monkeypatch.setattr(bash_mod, "_EXECUTOR", sentinel)
@@ -99,10 +103,45 @@ def test_sandbox_proxy_is_a_noop_in_none_mode(monkeypatch):
 
 
 def test_sandbox_proxy_is_a_noop_in_docker_mode_when_proxy_disabled(monkeypatch):
-    _assert_seam_untouched(monkeypatch, mode="docker", enabled=False)
+    # Flag off AND no token → the proxy stays down (both are opt-in engagement signals).
+    _assert_seam_untouched(monkeypatch, mode="docker", enabled=False, git_token=None)
 
 
 def test_sandbox_proxy_is_a_noop_in_modal_mode_even_when_enabled(monkeypatch):
     # Docker-only: modal mode never builds the proxy even with the flag on (modal's dual proxy tokens
     # are a separate header surface — out of scope, ADR-0011).
     _assert_seam_untouched(monkeypatch, mode="modal", enabled=True)
+
+
+def test_sandbox_proxy_stays_down_in_modal_mode_even_with_a_git_token(monkeypatch):
+    # A SANDBOX_GIT_TOKEN engages the *docker* proxy only; modal direct-injects the token itself
+    # (modal_backend), so the docker proxy body must never run in modal mode.
+    _assert_seam_untouched(monkeypatch, mode="modal", enabled=False, git_token=SecretStr("ghp_x"))
+
+
+def test_sandbox_proxy_engages_on_a_git_token_even_when_the_flag_is_off(monkeypatch):
+    # ADR-0012 §10 (the one-knob GitHub path): a set SANDBOX_GIT_TOKEN auto-engages the docker proxy
+    # with the flag OFF, and the github rules built from the token are prepended (api.github.com first)
+    # ahead of DEFAULT_PROXY_RULES. Hermetic: build_credential_map records the rules then bails before
+    # any container/workspace work runs.
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(flow_mod.settings, "sandbox_credential_proxy_enabled", False)
+    monkeypatch.setattr(flow_mod.settings, "sandbox_git_token", SecretStr("ghp_from_setting"))
+
+    recorded: dict[str, object] = {}
+
+    class _Bail(Exception):
+        pass
+
+    def _record_then_bail(rules):
+        recorded["rules"] = rules
+        raise _Bail
+
+    monkeypatch.setattr("decode.sandbox.proxy.build_credential_map", _record_then_bail)
+
+    with pytest.raises(_Bail), flow_mod._sandbox_proxy():
+        pass
+
+    rules = recorded["rules"]
+    assert [r.name for r in rules] == ["github-api", "github-git"]  # prepended, api host first
+    assert rules[0].headers["Authorization"] == "Bearer ghp_from_setting"  # literal setting token
