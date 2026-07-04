@@ -19,7 +19,7 @@ from pathlib import Path  # noqa: E402
 import click  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
-from decode.agents.loader import load_agent  # noqa: E402
+from decode.agents.loader import load_primary_agent  # noqa: E402
 from decode.config.settings import settings  # noqa: E402
 from decode.permissions.types import PermissionMode  # noqa: E402
 from decode.tui.app import run_app  # noqa: E402
@@ -400,7 +400,7 @@ def _runtime_config_preflight(repo: str | None = None) -> str | None:
     "agent",
     default=_DEFAULT_AGENT,
     metavar="NAME",
-    help="Start with this agent persona (build / plan / explore / code-reviewer).",
+    help="Start with this agent persona (build / plan / code-reviewer).",
 )
 @click.option(
     "--mode",
@@ -479,11 +479,12 @@ def cli(
         click.echo(repo_error, err=True)
         raise click.exceptions.Exit(1)
 
-    # Unknown-agent startup guard (ADR-0003 §9): validate ``--agent`` against the catalog *before*
-    # the REPL so a bad name exits with one friendly line (listing the available agents) instead of
-    # a traceback — mirroring the no-key guard. ``load_agent`` raises ValueError naming the choices.
+    # Unknown-agent startup guard (ADR-0003 §9, ADR-0013 §3): validate ``--agent`` against the
+    # catalog *before* the REPL so an unselectable name exits with one friendly line (listing the
+    # primary agents) instead of a traceback — mirroring the no-key guard. ``load_primary_agent``
+    # raises ValueError naming the primary choices for both an unknown name and a subagent (explore).
     try:
-        load_agent(agent)
+        load_primary_agent(agent)
     except ValueError as exc:
         logger.debug("unknown --agent %r; refusing to start", agent)
         click.echo(f"Decode: {exc}", err=True)

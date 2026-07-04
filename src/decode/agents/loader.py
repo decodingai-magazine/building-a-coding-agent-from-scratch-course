@@ -4,7 +4,8 @@ Each built-in persona is a ``builtin/*.md`` file: a YAML frontmatter block (deli
 lines) carrying ``name`` / ``description`` / ``tools`` / ``mode`` (+ optional ``allow`` / ``deny``),
 followed by the system-prompt body. :func:`parse_agent_file` splits and validates one such file into
 an :class:`~decode.entities.agent_def.AgentDef`; :func:`load_builtin_agents` does it for every bundled
-file and keys them by name; :func:`load_agent` returns one by name (or a clear "no such agent" error).
+file and keys them by name; :func:`load_agent` returns one by name (or a clear "no such agent" error);
+:func:`load_primary_agent` returns one only if it is a **primary** (rejecting subagents — ADR-0013 §3).
 
 The files are **packaged data** (loaded via :mod:`importlib.resources` from the installed
 ``decode.agents.builtin`` package), never a hard-coded repo path, so the catalog works from an
@@ -53,17 +54,41 @@ def load_builtin_agents() -> dict[str, AgentDef]:
 
 
 def load_agent(name: str) -> AgentDef:
-    """Return the built-in agent named ``name`` (ADR-0003 §5).
+    """Return the built-in agent named ``name`` — primary *or* subagent (ADR-0003 §5).
 
-    Raises :class:`ValueError` with a message listing the available agent names when ``name`` is not
-    a built-in, so the CLI ``--agent`` guard and the ``/agent`` slash command can show the user what
-    they *can* pick.
+    Raises :class:`ValueError` with a message listing every available agent name when ``name`` is not
+    a built-in. This is the by-name loader; the two *selection* surfaces (the CLI ``--agent`` guard
+    and the ``/agent`` slash command) go through :func:`load_primary_agent`, which additionally
+    rejects subagents (ADR-0013 §3).
     """
     agents = load_builtin_agents()
     agent = agents.get(name)
     if agent is None:
         available = ", ".join(sorted(agents))
         raise ValueError(f"no such agent {name!r}; available agents: {available}")
+    return agent
+
+
+def load_primary_agent(name: str) -> AgentDef:
+    """Return the built-in **primary** agent named ``name``, rejecting subagents (ADR-0013 §3).
+
+    A *primary* is a persona selectable as the one main agent (``subagent is False`` — build / plan /
+    code-reviewer); a *subagent* (explore, ``subagent: true``) is spawnable only via the Agent tool.
+    This is the shared guard behind both selection surfaces — the CLI ``--agent`` flag and the
+    ``/agent`` slash command. It raises :class:`ValueError` listing only the **primary** names when
+    ``name`` is unknown *or* names a subagent, so the caller can render one friendly primaries-only
+    line (and, because the raise precedes any mutation in ``select_agent``, the session stays intact).
+    """
+    agents = load_builtin_agents()
+    primaries = ", ".join(sorted(n for n, a in agents.items() if not a.subagent))
+    agent = agents.get(name)
+    if agent is None:
+        raise ValueError(f"no such agent {name!r}; available agents: {primaries}")
+    if agent.subagent:
+        raise ValueError(
+            f"agent {name!r} is a subagent and cannot be selected as a main agent; "
+            f"available agents: {primaries}"
+        )
     return agent
 
 
@@ -86,6 +111,7 @@ def parse_agent_file(text: str) -> AgentDef:
         mode=_parse_mode(meta.get("mode")),
         allow=_optional_str_tuple(meta, "allow"),
         deny=_optional_str_tuple(meta, "deny"),
+        subagent=_optional_bool(meta, "subagent"),
         prompt=body.strip(),
     )
 
@@ -134,3 +160,19 @@ def _optional_str_tuple(meta: dict[str, object], key: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"'{key}' must be a list of strings when present")
     return tuple(value)
+
+
+def _optional_bool(meta: dict[str, object], key: str) -> bool:
+    """Read an optional boolean frontmatter field (e.g. ``subagent``; ADR-0013 §3).
+
+    Absent → ``False``. Present-but-not-a-bool raises :class:`ValueError` naming the key — mirroring
+    :func:`_optional_str_tuple`'s loud validation (a catalog file is authored data the developer must
+    fix, not user input to tolerate). ``isinstance(value, bool)`` also rejects an int like ``1``
+    (``bool`` is a strict subtype), so only a real YAML boolean (``true`` / ``false``) is accepted.
+    """
+    value = meta.get(key)
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError(f"'{key}' must be a boolean when present")
+    return value

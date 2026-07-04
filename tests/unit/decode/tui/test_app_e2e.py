@@ -587,30 +587,33 @@ async def _drive_run_app_with_keys(
     return buf.getvalue()
 
 
-async def test_run_app_agent_slash_switches_and_an_unknown_name_stays_alive(monkeypatch):
-    """``/agent <name>`` switches + confirms; ``/agent nope`` is a friendly inline error.
+async def test_run_app_agent_slash_switches_and_rejections_stay_alive(monkeypatch):
+    """``/agent <primary>`` switches + confirms; a subagent / unknown name are friendly inline errors.
 
     Driven through the real ``run_app`` (single input surface — no second ``prompt_async``): the
-    slash command is parsed in the main loop before submit, switches the persona, and renders one
-    confirmation; an unknown name renders an inline error and the REPL keeps going (a later chat
-    still works).
+    slash command is parsed in the main loop before submit, switches to a primary and renders one
+    confirmation; ``/agent explore`` (a subagent — ADR-0013 §3) and ``/agent nope`` (unknown) each
+    render an inline error and the REPL keeps going (a later chat still works).
     """
     agent = _build_chat_agent()
 
     async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
-        send("/agent explore")
-        await _wait_for(buf, "agent: explore")
-        send("/agent nope")
+        send("/agent plan")
+        await _wait_for(buf, "agent: plan")
+        send("/agent explore")  # a subagent — cannot be selected as the main agent
+        await _wait_for(buf, "subagent")
+        send("/agent nope")  # an unknown name
         await _wait_for(buf, "no such agent")
-        send("still here?")  # the session survived the bad command
+        send("still here?")  # the session survived both rejected commands
         await _wait_for(buf, _CHAT_REPLY)
         send("/quit")
 
     output = await _drive_run_app(monkeypatch, agent, script=script)
 
-    assert "agent: explore" in output  # the switch rendered a confirmation
-    assert "no such agent" in output  # the bad name rendered a friendly inline error
-    assert _CHAT_REPLY in output  # the REPL kept running after the error
+    assert "agent: plan" in output  # the primary switch rendered a confirmation
+    assert "subagent" in output  # /agent explore rejected: explore is a subagent
+    assert "no such agent" in output  # the unknown name rendered a friendly inline error
+    assert _CHAT_REPLY in output  # the REPL kept running after the errors
 
 
 async def test_run_app_mode_slash_switches_and_an_unknown_mode_stays_alive(monkeypatch):

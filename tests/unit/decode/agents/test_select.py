@@ -102,7 +102,7 @@ def test_selecting_a_new_agent_replaces_the_prior_agents_rules():
     select_agent("code-reviewer", deps=deps, gate=gate)
     assert gate.check(_bash("git diff")).outcome is PermissionOutcome.ALLOW
 
-    select_agent("explore", deps=deps, gate=gate)  # explore carries no rules
+    select_agent("build", deps=deps, gate=gate)  # build (a primary) carries no git rule
 
     assert gate.check(_bash("git diff")).outcome is PermissionOutcome.ASK
 
@@ -116,4 +116,19 @@ def test_select_unknown_agent_raises_value_error_listing_available_agents():
 
     # The deps / gate are left untouched by a failed selection (build default, DEFAULT mode).
     assert deps.active_agent.name == "build"
+    assert gate.mode is PermissionMode.DEFAULT
+
+
+def test_select_explore_subagent_is_rejected_and_leaves_state_untouched():
+    # ADR-0013 §3: explore is a subagent — it cannot be selected as the main agent. The rejection
+    # (primaries only) happens before any mutation, so ``deps`` / ``gate`` are untouched and the
+    # REPL's ``/agent`` stays alive.
+    gate = PermissionGate()
+    deps = _deps(gate)
+
+    with pytest.raises(ValueError) as excinfo:
+        select_agent("explore", deps=deps, gate=gate)
+
+    assert "available agents: build, code-reviewer, plan" in str(excinfo.value)
+    assert deps.active_agent.name == "build"  # untouched — still the default persona
     assert gate.mode is PermissionMode.DEFAULT

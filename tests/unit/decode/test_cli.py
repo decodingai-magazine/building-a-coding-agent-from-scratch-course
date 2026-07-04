@@ -262,6 +262,35 @@ def test_cli_validates_the_agent_before_building_the_agent(mocker):
     run_app.assert_not_awaited()
 
 
+@pytest.mark.parametrize("name", ["build", "plan", "code-reviewer"])
+def test_cli_each_primary_agent_still_starts(mocker, name):
+    # The three primaries stay selectable as the main agent (only explore is demoted — ADR-0013 §3).
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["--agent", name])
+
+    assert result.exit_code == 0
+    run_app.assert_awaited_once()
+    assert run_app.await_args.kwargs.get("agent") == name
+
+
+def test_cli_with_the_explore_subagent_exits_nonzero_listing_primaries(mocker):
+    """``--agent explore`` is rejected (a subagent, ADR-0013 §3): friendly stderr line, primaries only.
+
+    Like the unknown-name guard — non-zero exit, no traceback, and only the primary agents (build /
+    code-reviewer / plan) are offered — never the subagent-only explore.
+    """
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["--agent", "explore"])
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    assert "available agents: build, code-reviewer, plan" in result.output
+    # The guard short-circuited before the REPL — no agent built for a subagent name.
+    run_app.assert_not_awaited()
+
+
 def test_cli_agent_plan_starts_the_real_repl_in_plan_mode(mocker):
     """End-to-end through the real ``run_app``: ``--agent plan`` selects plan before the loop.
 
