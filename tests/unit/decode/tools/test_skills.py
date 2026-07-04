@@ -92,6 +92,38 @@ def test_skill_takes_ctx_and_name_only_no_args():
     assert params == ["ctx", "name"]
 
 
+# --- harness-home split (ADR-0012 §6): skills are a harness artifact → read from harness_home --------
+
+
+async def test_skill_dispatcher_reads_harness_home_not_the_workspace_cwd(tmp_path):
+    # In a sandbox mode ``deps.cwd`` is the Workspace, but the project's skills catalog stays anchored at
+    # Harness Home — so the dispatcher must resolve a project skill placed under harness_home, and must
+    # NOT see one that only exists under the Workspace ``cwd`` (proving it reads harness_home).
+    home = tmp_path / "home"
+    home.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_project_skill(home, name="deploy", body="DEPLOY-FROM-HARNESS-HOME")
+    _write_project_skill(workspace, name="ghost", body="SHOULD-NOT-LOAD")
+    deps = AgentDeps(
+        cwd=workspace,
+        harness_home=home,
+        emit=lambda _e: None,  # type: ignore[arg-type]
+        gate=PermissionGate(),
+        resolve_permission=_deny_permission_resolver,
+        resolve_user_question=_no_user_resolver,
+    )
+    ctx: RunContext[AgentDeps] = RunContext(
+        deps=deps, model=None, usage=None, tool_call_approved=False
+    )  # type: ignore[arg-type]
+
+    out = await skills.skill(ctx, "deploy")
+    assert "DEPLOY-FROM-HARNESS-HOME" in out  # resolved from Harness Home, not the Workspace
+
+    with pytest.raises(ModelRetry, match="No skill named 'ghost'"):
+        await skills.skill(ctx, "ghost")  # a Workspace-only skill is invisible to the dispatcher
+
+
 # --- direct: happy path + override + unknown ------------------------------------------------
 
 

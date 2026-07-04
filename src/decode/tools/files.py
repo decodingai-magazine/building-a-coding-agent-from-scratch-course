@@ -22,6 +22,22 @@ A missing / unreadable path, an empty result set, a bad regex, or an unmatchable
 ``edit`` target returns a model-readable :class:`pydantic_ai.ModelRetry` so the model can
 correct itself — the REPL never crashes on bad tool input.
 
+**Sandbox routing (ADR-0012 §4).** In a sandbox mode the tools operate on the isolated Workspace
+**through the backend seam** instead of host pathlib: :func:`_active_backend` (mirroring ``bash``'s
+executor memo) yields the session's :class:`~decode.sandbox.executor.SandboxBackend`, and
+``read`` / ``write`` / ``edit`` route their byte transport through its file ops while ``glob`` / ``grep``
+run as backend ``exec`` (``find`` / ``grep``) — the same one container / remote sandbox ``bash`` uses.
+The **shared logic stays host-side above the seam**: containment is backend-agnostic path math
+(:func:`_resolve_logical` — a ``PurePosixPath`` fold that rejects ``..`` escapes on the *logical*
+Workspace root, never host ``Path.resolve``, since a modal path is not a host path), and read's
+numbering/truncation, edit's search/replace, glob's matching, and grep's rendering are the **same**
+code both modes call — so a sandbox result reads identically to a host one. Containment is **layered**:
+a real-filesystem backend (docker's shared mount) additionally resolves symlinks *physically* below the
+seam and raises :class:`~decode.sandbox.executor.WorkspaceEscape` (an :class:`OSError`, rendered here by
+:func:`_bridge`) so a symlink planted in the Workspace can't be followed onto the host — string math
+alone can't see a symlink. ``none`` mode is the direct-pathlib path, byte-identical to before (the seam
+yields ``None``, so it is never engaged).
+
 **Sync, not async.** Filesystem access here is local and the tool layer runs **sequentially**
 in v1 (ADR-0002 §7), so there is no concurrency to win back by going async; Pydantic AI already
 runs a sync tool in a worker thread. Keeping these sync keeps the code readable (the
@@ -30,12 +46,17 @@ network/DB-only "async-for-IO" rule from AGENTS.md does not bite on a single loc
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
 import re
+import shlex
 import tempfile
-from pathlib import Path
+from collections.abc import Awaitable, Callable
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
+import anyio
 from pydantic_ai import ApprovalRequired, ModelRetry, RunContext
 
 from decode.agent.deps import AgentDeps
@@ -44,6 +65,11 @@ from decode.services import lsp as lsp_service
 from decode.services.lsp import Diagnostic
 from decode.tools.approval import needs_approval
 from decode.tools.truncate import truncate
+
+if TYPE_CHECKING:
+    # Typing only: a runtime import would pull the sandbox executor module into the ``none`` path and
+    # break its laziness (ADR-0012 §9). ``from __future__ import annotations`` keeps this a string.
+    from decode.sandbox.executor import SandboxBackend
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +145,85 @@ def _contain(base: Path, matches: list[Path]) -> list[Path]:
     return sorted(m for m in matches if m.is_file() and _is_within(base, m.resolve()))
 
 
+def _active_backend(cwd: Path) -> SandboxBackend | None:
+    """The active session's sandbox backend for byte transport, or ``None`` in ``none`` mode (§4).
+
+    The file-tool seam: a thin indirection over :func:`decode.tools.bash.active_backend` (imported
+    lazily so the ``none`` path never pulls in the sandbox package) — mirroring how the LSP enricher
+    reaches its service. ``None`` means "no seam engaged" → the direct-pathlib path. This is the one
+    function tests patch to inject a fake backend and exercise the sandbox routing hermetically.
+
+    **Never-crash contract.** Reaching the backend *creates* the sandbox on first touch, which can fail
+    (a bad ``SANDBOX_IMAGE``, a daemon that died mid-session — the task-071 preflight only checks daemon
+    reachability, not image validity, and a file op can be the first sandbox touch). A create failure is
+    caught and rendered as a model-readable :class:`pydantic_ai.ModelRetry` — the same never-crash
+    contract ``bash`` upholds (its executor renders an exit-125 ``ExecResult``). It is **not** downgraded
+    to ``None``: falling through to host pathlib on the launch cwd would be a second escape.
+    """
+    from decode.tools.bash import active_backend
+
+    try:
+        return active_backend(cwd)
+    except (RuntimeError, OSError) as exc:
+        logger.debug("sandbox backend unavailable for a file op: %s", exc)
+        raise ModelRetry(
+            f"The sandbox is unavailable ({exc}); it could not be started for this operation."
+        ) from exc
+
+
+def _bridge[T](op: Callable[..., Awaitable[T]], *args: object) -> T:
+    """Run an async backend file op from a sync tool, rendering an infra failure as a retry (§4).
+
+    The op-level never-crash boundary: the file tools are sync (Pydantic AI runs them in a worker
+    thread), so they bridge to the async backend via :func:`anyio.from_thread.run`. This wraps that
+    bridge so an infra failure below the seam becomes a model-readable :class:`pydantic_ai.ModelRetry`
+    instead of a raw traceback — mirroring how ``bash.run`` renders a backend failure as an exit-125
+    result. The op's *own* model-facing errors (a missing file, a ``..`` escape rendered upstream) are
+    :class:`~pydantic_ai.ModelRetry`\\ s and pass straight through. A :class:`WorkspaceEscape` surfacing
+    from a real-fs backend's physical containment (:meth:`DockerBackend._path`) is an :class:`OSError`,
+    so it is caught here by base class and rendered — files.py never imports it, keeping the ``none`` path
+    free of any sandbox import (ADR-0012 §9).
+    """
+    try:
+        return anyio.from_thread.run(op, *args)
+    except ModelRetry:
+        raise
+    except (RuntimeError, OSError) as exc:
+        logger.debug("sandbox file op failed: %s", exc)
+        raise ModelRetry(f"Sandbox file operation failed: {exc}") from exc
+
+
+def _resolve_logical(raw: str) -> str:
+    """Resolve ``raw`` to a Workspace-relative POSIX path, rejecting escapes (ADR-0012 §4).
+
+    Backend-agnostic path math — **never** host ``Path.resolve`` (a modal Workspace path is not a host
+    path): fold ``.`` / ``..`` in ``raw`` against the logical Workspace root and reject anything that
+    escapes it (a ``..`` climbing above the root, or an absolute path). This is the deferred ``..``
+    containment (a 079 Tester note) landing here, shared by **both** backends above the seam — the
+    docker / modal file ops receive an already-validated logical path. Returns the path relative to the
+    Workspace root (e.g. ``"sub/f.txt"``; ``""`` for the root). Raises :class:`pydantic_ai.ModelRetry`
+    (not a crash) on an escape, the same refusal :func:`_resolve_in_cwd` gives in ``none`` mode — so a
+    model that wanders out of tree is corrected identically in either mode.
+    """
+    pure = PurePosixPath(raw)
+    escape = ModelRetry(
+        f"Path {raw!r} resolves outside the working directory; stay within the project tree."
+    )
+    if pure.is_absolute():
+        raise escape
+    parts: list[str] = []
+    for part in pure.parts:
+        if part == ".":
+            continue
+        if part == "..":
+            if not parts:
+                raise escape
+            parts.pop()
+        else:
+            parts.append(part)
+    return "/".join(parts)
+
+
 def read(
     ctx: RunContext[AgentDeps],
     path: str,
@@ -141,6 +246,12 @@ def read(
         logger.debug("read requires approval (path=%r)", path)
         raise ApprovalRequired
 
+    backend = _active_backend(ctx.deps.cwd)
+    if backend is not None:
+        rel = _resolve_logical(path)
+        content = _bridge(_sandbox_read_content, backend, path, rel)
+        return _render_numbered(content, path, offset=offset, limit=limit)
+
     target = _resolve_in_cwd(ctx.deps.cwd, path)
     if not target.exists():
         raise ModelRetry(f"No such file: {path!r}.")
@@ -151,6 +262,17 @@ def read(
     except (OSError, UnicodeDecodeError) as exc:
         raise ModelRetry(f"Could not read {path!r}: {exc}.") from exc
 
+    return _render_numbered(content, path, offset=offset, limit=limit)
+
+
+def _render_numbered(content: str, path: str, *, offset: int | None, limit: int | None) -> str:
+    """Number ``content``'s lines into the model-facing read result — shared by both modes (§4).
+
+    The rendering tail both the ``none`` (direct-pathlib) and sandbox (backend ``read_bytes``) paths call,
+    so a sandbox read reads **byte-identically** to a host read: 1-indexed ``cat -n`` numbering for the
+    ``offset`` / ``limit`` window, then the safety cap through :mod:`decode.tools.truncate` with the
+    overflow spill note. An ``offset`` past end-of-file is a model-readable :class:`pydantic_ai.ModelRetry`.
+    """
     start = 1 if offset is None else max(offset, 1)
     # `limit` is the caller's requested window (None → all lines from `offset`); the safety
     # cap below (truncate) is what bounds runaway output, not this.
@@ -169,6 +291,27 @@ def read(
             f"{settings.max_output_bytes} bytes; full content at {result.full_path}]"
         )
     return text
+
+
+async def _sandbox_read_content(backend: SandboxBackend, path: str, rel: str) -> str:
+    """Read + decode the logical Workspace path ``rel`` via the backend seam (ADR-0012 §4).
+
+    The sandbox byte transport for :func:`read`: ``stat`` for the same missing / is-a-directory
+    :class:`pydantic_ai.ModelRetry`\\ s ``none`` mode raises, then ``read_bytes`` + UTF-8 decode. The
+    shared :func:`_render_numbered` does the numbering/truncation above the seam. Runs on the event loop
+    (the sync tool bridges here via :func:`anyio.from_thread.run`); a raised ``ModelRetry`` propagates
+    back through the bridge, so the model sees the same error whichever backend is active.
+    """
+    st = await backend.stat(rel)
+    if st is None:
+        raise ModelRetry(f"No such file: {path!r}.")
+    if st.is_dir:
+        raise ModelRetry(f"{path!r} is a directory; use glob to list its contents.")
+    try:
+        raw = await backend.read_bytes(rel)
+        return raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ModelRetry(f"Could not read {path!r}: {exc}.") from exc
 
 
 def _number_lines(content: str, *, start: int, limit: int | None) -> str | None:
@@ -201,11 +344,77 @@ def glob(ctx: RunContext[AgentDeps], pattern: str) -> str:
         raise ApprovalRequired
 
     _reject_escaping_pattern(pattern)
+    backend = _active_backend(ctx.deps.cwd)
+    if backend is not None:
+        matches = _bridge(_sandbox_glob, backend, pattern)
+        if not matches:
+            raise ModelRetry(f"No files match {pattern!r} under the working directory.")
+        return "\n".join(matches)
+
     base = ctx.deps.cwd.resolve()
     matches = _contain(base, list(base.glob(pattern)))
     if not matches:
         raise ModelRetry(f"No files match {pattern!r} under the working directory.")
     return "\n".join(str(p.relative_to(base)) for p in matches)
+
+
+# The backend ``exec`` glob runs to enumerate the Workspace's files (paths only — never the tree's
+# contents, ADR-0012 §4). The pattern is matched host-side by :func:`_glob_match` (shared logic above
+# the seam), which reproduces ``pathlib.Path.glob`` exactly (verified on 3.12), so a sandbox glob lists
+# the same files a host glob would. ``ponytail:`` ``find -type f`` skips symlinks (``none``-mode
+# ``Path.glob`` follows in-tree ones) and enumerates the whole tree — fine for a repo clone; a
+# ``find``-side ``-name`` prefilter is the upgrade path if a huge Workspace ever makes this a cost.
+_FIND_ALL_FILES = "find . -type f"
+
+
+async def _sandbox_glob(backend: SandboxBackend, pattern: str) -> list[str]:
+    """List Workspace files matching ``pattern`` via a backend ``find`` exec (ADR-0012 §4).
+
+    Execs ``find . -type f`` in ``/workspace`` to enumerate every file (relative paths), then filters
+    host-side with :func:`_glob_match` — the shared matcher that mirrors ``Path.glob`` — and sorts, so
+    the result is the same sorted relative-path list ``none`` mode's ``base.glob`` returns. Runs on the
+    event loop (the sync tool bridges here).
+    """
+    result = await backend.exec("bash", "-lc", _FIND_ALL_FILES, timeout_s=settings.bash_timeout_s)
+    files = _parse_find_output(result.stdout)
+    return sorted(f for f in files if _glob_match(f, pattern))
+
+
+def _parse_find_output(raw: str) -> list[str]:
+    """Parse ``find . -type f`` stdout into Workspace-relative POSIX paths (strip the ``./`` prefix)."""
+    files: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped == ".":
+            continue
+        files.append(stripped[2:] if stripped.startswith("./") else stripped)
+    return files
+
+
+def _glob_match(path: str, pattern: str) -> bool:
+    """Whether the relative POSIX ``path`` matches shell-glob ``pattern`` with ``Path.glob`` semantics.
+
+    The shared, backend-agnostic matcher (verified against :meth:`pathlib.Path.glob` on 3.12): the
+    pattern and path are split on ``/`` and matched segment-by-segment — each non-``**`` segment by
+    :func:`fnmatch.fnmatch` against **one** path component (``*`` never crosses ``/``), and ``**`` against
+    zero or more components (so ``**/*.py`` matches both top-level and nested ``.py``). This is what gives
+    the sandbox ``glob`` output-parity with the host implementation.
+    """
+    return _match_segments(path.split("/"), pattern.split("/"))
+
+
+def _match_segments(parts: list[str], pats: list[str]) -> bool:
+    """Recursive segment match for :func:`_glob_match` (``**`` = zero-or-more path components)."""
+    if not pats:
+        return not parts
+    head, *rest = pats
+    if head == "**":
+        return any(_match_segments(parts[i:], rest) for i in range(len(parts) + 1))
+    if not parts:
+        return False
+    if fnmatch.fnmatch(parts[0], head):
+        return _match_segments(parts[1:], rest)
+    return False
 
 
 def grep(
@@ -230,6 +439,13 @@ def grep(
     except re.error as exc:
         raise ModelRetry(f"Invalid regular expression {pattern!r}: {exc}.") from exc
 
+    backend = _active_backend(ctx.deps.cwd)
+    if backend is not None:
+        hits = _bridge(_sandbox_grep, backend, pattern, path, glob)
+        if not hits:
+            raise ModelRetry(f"No matches for {pattern!r} in the searched files.")
+        return _render_grep_hits(hits)
+
     base = ctx.deps.cwd.resolve()
     candidates = _grep_candidates(base, path=path, glob=glob)
 
@@ -247,6 +463,16 @@ def grep(
 
     if not hits:
         raise ModelRetry(f"No matches for {pattern!r} in the searched files.")
+    return _render_grep_hits(hits)
+
+
+def _render_grep_hits(hits: list[str]) -> str:
+    """Render ``path:lineno:line`` hits into the model-facing grep result — shared by both modes (§4).
+
+    The rendering tail both the ``none`` (Python-``re`` per line) and sandbox (backend ``grep`` exec)
+    paths call, so a sandbox grep reads **byte-identically** to a host grep: the hits joined and passed
+    through the safety cap (:mod:`decode.tools.truncate`) with the overflow spill note.
+    """
     result = truncate(
         "\n".join(hits) + "\n",
         max_lines=settings.max_output_lines,
@@ -256,6 +482,78 @@ def grep(
     if result.truncated:
         text += f"\n\n[matches truncated; full results at {result.full_path}]"
     return text
+
+
+async def _sandbox_grep(
+    backend: SandboxBackend, pattern: str, path: str | None, glob: str | None
+) -> list[str]:
+    """Search the Workspace via a backend ``grep`` exec, returning sorted ``path:lineno:line`` hits (§4).
+
+    The search **executes in the sandbox** (never downloading the tree's contents, ADR-0012 §4), with
+    the same scope resolution as ``none`` mode: a single ``path`` (``stat``-checked for the same "no such
+    file to search" :class:`pydantic_ai.ModelRetry`), else the files matching ``glob`` (resolved via
+    :func:`_sandbox_glob` for exact ``Path.glob`` file-scope parity), else the whole tree (a recursive
+    ``grep -r``). Hits are stripped of the ``./`` prefix and sorted by ``(path, lineno)`` to reproduce
+    ``none`` mode's sorted-candidate, ascending-line order.
+
+    ``ponytail:`` grep's regex is its ERE dialect, not Python ``re`` (the pattern was ``re``-validated
+    above for a shared "invalid regex" error, but a pattern whose dialects differ can match differently);
+    a specific-``glob`` scope passes its file list as ``grep`` args (bounded by the OS arg limit for a
+    huge match). Both are acceptable for the tool layer; the recursive default avoids the arg-limit path.
+    """
+    if path is not None:
+        rel = _resolve_logical(path)
+        st = await backend.stat(rel)
+        if st is None or st.is_dir:
+            raise ModelRetry(f"No such file to search: {path!r}.")
+        command = _grep_files_command(pattern, [rel])
+    elif glob is not None:
+        _reject_escaping_pattern(glob)
+        files = await _sandbox_glob(backend, glob)
+        if not files:
+            return []
+        command = _grep_files_command(pattern, files)
+    else:
+        command = _grep_recursive_command(pattern)
+    result = await backend.exec("bash", "-lc", command, timeout_s=settings.bash_timeout_s)
+    return _parse_grep_output(result.stdout)
+
+
+# grep flags for both scopes: -r recursive (recursive scope only), -H force the filename prefix (so a
+# single file still renders ``path:lineno:line``), -n line numbers, -I skip binary files (``none`` mode
+# skips undecodable ones), -E extended regex, -e so a pattern starting with ``-`` is not misread. ``--``
+# ends the options so a path/pattern starting with ``-`` is safe. Pattern + paths are ``shlex.quote``d.
+def _grep_recursive_command(pattern: str) -> str:
+    """The recursive ``grep`` command for the whole-Workspace scope (``none`` mode's ``**/*`` default)."""
+    return f"grep -rHnI -E -e {shlex.quote(pattern)} -- ."
+
+
+def _grep_files_command(pattern: str, files: list[str]) -> str:
+    """The ``grep`` command scoped to an explicit ``files`` list (a single ``path`` or a ``glob`` scope)."""
+    quoted_files = " ".join(shlex.quote(f) for f in files)
+    return f"grep -HnI -E -e {shlex.quote(pattern)} -- {quoted_files}"
+
+
+def _parse_grep_output(raw: str) -> list[str]:
+    """Parse ``grep -Hn`` stdout into ``path:lineno:line`` hits: strip ``./`` and sort by ``(path, lineno)``.
+
+    The sort reproduces ``none`` mode's order (sorted candidates, ascending line): the path is sorted by
+    its ``PurePosixPath`` parts (matching ``none`` mode's ``Path`` sort) and then the numeric line.
+    """
+    hits: list[str] = []
+    for line in raw.splitlines():
+        if not line:
+            continue
+        hits.append(line[2:] if line.startswith("./") else line)
+    return sorted(hits, key=_grep_hit_sort_key)
+
+
+def _grep_hit_sort_key(hit: str) -> tuple[tuple[str, ...], int]:
+    """Sort key for a ``path:lineno:line`` hit — ``(path parts, lineno)`` (``none``-mode order)."""
+    path, _, rest = hit.partition(":")
+    lineno_text, _, _ = rest.partition(":")
+    lineno = int(lineno_text) if lineno_text.isdigit() else 0
+    return (PurePosixPath(path).parts, lineno)
 
 
 def _grep_candidates(base: Path, *, path: str | None, glob: str | None) -> list[Path]:
@@ -294,6 +592,13 @@ def write(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
         logger.debug("write requires approval (path=%r)", path)
         raise ApprovalRequired
 
+    backend = _active_backend(ctx.deps.cwd)
+    if backend is not None:
+        rel = _resolve_logical(path)
+        _bridge(_sandbox_write_bytes, backend, path, rel, content.encode("utf-8"))
+        logger.debug("wrote %d bytes to %r (sandbox)", len(content), path)
+        return _enrich(f"Wrote {path!r} ({len(content)} characters).", ctx.deps.cwd, path)
+
     target = _resolve_in_cwd(ctx.deps.cwd, path)
     if target.is_dir():
         raise ModelRetry(f"{path!r} is a directory; choose a file path to write.")
@@ -302,6 +607,20 @@ def write(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
     logger.debug("wrote %d bytes to %r", len(content), path)
     base = f"Wrote {path!r} ({len(content)} characters)."
     return _enrich(base, ctx.deps.cwd, path)
+
+
+async def _sandbox_write_bytes(backend: SandboxBackend, path: str, rel: str, data: bytes) -> None:
+    """Write ``data`` to the logical Workspace path ``rel`` via the backend seam (ADR-0012 §4).
+
+    The sandbox byte transport for :func:`write`: ``stat`` for the same is-a-directory
+    :class:`pydantic_ai.ModelRetry` ``none`` mode raises, then ``write_bytes`` (the backend creates
+    missing parents — the one directory side effect ``write`` has). The LSP enrichment stays on the
+    worker thread in :func:`write` (it bridges to the LSP service itself), so it is *not* run here.
+    """
+    st = await backend.stat(rel)
+    if st is not None and st.is_dir:
+        raise ModelRetry(f"{path!r} is a directory; choose a file path to write.")
+    await backend.write_bytes(rel, data)
 
 
 def edit(ctx: RunContext[AgentDeps], path: str, old_string: str, new_string: str) -> str:
@@ -334,6 +653,13 @@ def edit(ctx: RunContext[AgentDeps], path: str, old_string: str, new_string: str
     if old_string == "":
         raise ModelRetry("old_string is empty; provide the exact text to replace.")
 
+    backend = _active_backend(ctx.deps.cwd)
+    if backend is not None:
+        rel = _resolve_logical(path)
+        _bridge(_sandbox_edit_bytes, backend, path, rel, old_string, new_string)
+        logger.debug("edited %r (sandbox)", path)
+        return _enrich(f"Edited {path!r} (replaced 1 occurrence).", ctx.deps.cwd, path)
+
     target = _resolve_in_cwd(ctx.deps.cwd, path)
     if not target.is_file():
         raise ModelRetry(f"No such file to edit: {path!r}.")
@@ -344,20 +670,52 @@ def edit(ctx: RunContext[AgentDeps], path: str, old_string: str, new_string: str
     except (OSError, UnicodeDecodeError) as exc:
         raise ModelRetry(f"Could not read {path!r} to edit: {exc}.") from exc
 
-    had_bom = raw.startswith(_UTF8_BOM)
-    body = raw[len(_UTF8_BOM) :] if had_bom else raw
+    final = _apply_edit(raw, old_string, new_string)
+    _atomic_write_bytes(target, final.encode("utf-8"))
+    logger.debug("edited %r", path)
+    base = f"Edited {path!r} (replaced 1 occurrence)."
+    return _enrich(base, ctx.deps.cwd, path)
+
+
+def _apply_edit(raw_text: str, old_string: str, new_string: str) -> str:
+    """Apply edit's unique-match replacement to ``raw_text`` — shared by both modes (ADR-0012 §4).
+
+    The search/replace core both the ``none`` (pathlib) and sandbox (backend ``read_bytes`` / ``write_bytes``)
+    paths call, so an edit behaves **byte-identically** in either mode: strip a leading UTF-8 BOM, detect
+    the CRLF / CR / LF style, LF-normalize for matching, apply :func:`_replace_unique` (exact-then-fuzzy,
+    raising the same ambiguous / not-found :class:`pydantic_ai.ModelRetry`), then restore the original BOM
+    + line-ending style. Returns the new full text (the caller writes it back atomically / via the seam).
+    """
+    had_bom = raw_text.startswith(_UTF8_BOM)
+    body = raw_text[len(_UTF8_BOM) :] if had_bom else raw_text
     eol = _detect_eol(body)
     normalized = _to_lf(body)
     needle = _to_lf(old_string)
-
     new_normalized = _replace_unique(normalized, needle, _to_lf(new_string))
-
     restored = new_normalized.replace("\n", eol) if eol != "\n" else new_normalized
-    final = (_UTF8_BOM + restored) if had_bom else restored
-    _atomic_write_bytes(target, final.encode("utf-8"))
-    logger.debug("edited %r (eol=%r, bom=%s)", path, eol, had_bom)
-    base = f"Edited {path!r} (replaced 1 occurrence)."
-    return _enrich(base, ctx.deps.cwd, path)
+    return (_UTF8_BOM + restored) if had_bom else restored
+
+
+async def _sandbox_edit_bytes(
+    backend: SandboxBackend, path: str, rel: str, old_string: str, new_string: str
+) -> None:
+    """Read → replace → write the logical Workspace path ``rel`` via the backend seam (ADR-0012 §4).
+
+    The sandbox byte transport for :func:`edit`: ``stat`` for the same missing-file
+    :class:`pydantic_ai.ModelRetry` ``none`` mode raises, ``read_bytes`` (raw bytes, not text — the
+    shared :func:`_apply_edit` needs the untranslated newlines to restore the style), the shared
+    transform, then ``write_bytes`` of the new full text. The LSP enrichment stays on the worker thread
+    in :func:`edit`, so it is *not* run here.
+    """
+    st = await backend.stat(rel)
+    if st is None or st.is_dir:
+        raise ModelRetry(f"No such file to edit: {path!r}.")
+    try:
+        raw = (await backend.read_bytes(rel)).decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ModelRetry(f"Could not read {path!r} to edit: {exc}.") from exc
+    final = _apply_edit(raw, old_string, new_string)
+    await backend.write_bytes(rel, final.encode("utf-8"))
 
 
 def _enrich(base: str, cwd: Path, path: str) -> str:
@@ -373,8 +731,16 @@ def _enrich(base: str, cwd: Path, path: str) -> str:
     not ``.py``, the server is unavailable, the file is clean, or it has only warnings — and it
     **swallows every exception**, so the enricher can never change or break the write/edit return or
     the file write. No extra permission gate: it rides the write/edit approval already granted.
+
+    **Sandbox posture (ADR-0012 §7).** In ``none`` + ``docker`` the enricher runs: ``ty`` is host-side and
+    ``cwd`` is a real host path it can open (``none`` = the repo tree; ``docker`` = the live bind mount, so
+    the just-written file is on disk for ``ty``). In ``modal`` it is **best-effort-disabled** — ``ty``
+    cannot reach the remote Workspace filesystem — so this returns ``base`` untouched (ADR-0007's
+    best-effort posture; ty-inside-the-sandbox is the recorded upgrade path).
     """
     if not (settings.lsp_enabled and settings.lsp_diagnostics_on_edit):
+        return base
+    if settings.sandbox_mode == "modal":
         return base
     if not path.lower().endswith(".py"):
         return base

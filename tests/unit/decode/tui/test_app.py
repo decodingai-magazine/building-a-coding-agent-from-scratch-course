@@ -188,6 +188,27 @@ def test_footer_hint_mentions_clear():
     assert "/clear" in hint
 
 
+def test_is_ship_command_matches_slash_ship():
+    assert app.is_ship_command("/ship") is True
+
+
+def test_is_ship_command_ignores_surrounding_whitespace():
+    assert app.is_ship_command("  /ship  ") is True
+
+
+def test_is_ship_command_is_false_for_other_input():
+    assert app.is_ship_command("/shipx") is False
+    assert app.is_ship_command("ship") is False
+    assert app.is_ship_command("/clear") is False
+    assert app.is_ship_command("") is False
+
+
+def test_footer_hint_mentions_ship():
+    hint = app.footer_hint("build", "default")
+
+    assert "/ship" in hint
+
+
 def test_footer_hint_includes_the_active_agent_and_mode():
     # ADR-0003 §9: the footer shows the live agent + mode so the user always knows the state.
     hint = app.footer_hint("plan", "edit")
@@ -878,6 +899,184 @@ def test_slash_completer_includes_clear(tmp_path):
     completer = app.SlashCompleter(tmp_path)
 
     assert "/clear" in completer._meta  # /clear autocompletes alongside the other built-ins
+
+
+# --- the /ship command: git hand-back of the sandbox Workspace (ADR-0012 §8, task 083) --------
+
+
+def test_slash_completer_includes_ship(tmp_path):
+    completer = app.SlashCompleter(tmp_path)
+
+    assert "/ship" in completer._meta  # /ship autocompletes alongside the other built-ins
+
+
+def test_ship_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
+    # Like /compact and /clear: a project skill named `ship` is reachable via the dispatcher, but
+    # `/ship` never reaches the skill branch — the loop matches is_ship_command first (precedence).
+    from decode.skills.loader import load_skills
+
+    _write_skill(tmp_path / ".decode" / "skills", "ship")
+
+    assert "ship" in load_skills(tmp_path)  # still reachable via the skill dispatcher
+    assert app.is_ship_command("/ship") is True  # the loop's /ship branch matches first
+
+
+@pytest.mark.parametrize("phase", [app.Phase.DISPATCHING, app.Phase.RUNNING])
+async def test_handle_ship_command_busy_renders_busy_and_never_ships(mocker, tmp_path, phase):
+    # Idle-only: never ship mid-turn (the export/ship would race the live session) — busy line, no-op.
+    export = mocker.patch.object(app, "export_executor", mocker.AsyncMock())
+    ship = mocker.patch("decode.sandbox.handback.ship_workspace")
+    mocker.patch.object(app.settings, "sandbox_mode", "docker")
+    runner = mocker.Mock()
+    runner.phase = phase
+    lines: list[str] = []
+
+    await app._handle_ship_command(
+        runner, harness_home=tmp_path, repo="/src", session_id="abc123", emit=lines.append
+    )
+
+    export.assert_not_awaited()  # no mid-turn export
+    ship.assert_not_called()  # no mid-turn ship
+    assert lines == ["Decode - busy; try /ship again once the turn finishes."]
+
+
+async def test_handle_ship_command_none_mode_prints_no_workspace(mocker, tmp_path):
+    # In none mode there is no sandbox Workspace to ship — a friendly line, no export, no ship.
+    export = mocker.patch.object(app, "export_executor", mocker.AsyncMock())
+    ship = mocker.patch("decode.sandbox.handback.ship_workspace")
+    mocker.patch.object(app.settings, "sandbox_mode", "none")
+    runner = mocker.Mock()
+    runner.phase = app.Phase.IDLE
+    lines: list[str] = []
+
+    await app._handle_ship_command(
+        runner, harness_home=tmp_path, repo=None, session_id="abc123", emit=lines.append
+    )
+
+    export.assert_not_awaited()
+    ship.assert_not_called()
+    assert lines == ["Decode - no sandbox workspace to ship."]
+
+
+async def test_handle_ship_command_no_repo_prints_no_workspace(mocker, tmp_path):
+    # A sandbox mode but no --repo (an empty scratch, nothing cloned) → the same friendly line.
+    export = mocker.patch.object(app, "export_executor", mocker.AsyncMock())
+    ship = mocker.patch("decode.sandbox.handback.ship_workspace")
+    mocker.patch.object(app.settings, "sandbox_mode", "docker")
+    runner = mocker.Mock()
+    runner.phase = app.Phase.IDLE
+    lines: list[str] = []
+
+    await app._handle_ship_command(
+        runner, harness_home=tmp_path, repo=None, session_id="abc123", emit=lines.append
+    )
+
+    export.assert_not_awaited()
+    ship.assert_not_called()
+    assert lines == ["Decode - no sandbox workspace to ship."]
+
+
+async def test_handle_ship_command_idle_exports_then_ships_and_prints_outcome(mocker, tmp_path):
+    # Idle + sandbox mode + a repo: export the live Workspace first (modal sweep; docker no-op), THEN
+    # ship it host-side, THEN print the outcome — in that order.
+    from decode.sandbox.handback import ShipResult
+
+    export = mocker.patch.object(app, "export_executor", mocker.AsyncMock())
+    ship = mocker.patch(
+        "decode.sandbox.handback.ship_workspace",
+        return_value=ShipResult(branch="decode/abc123", pushed=True, message="handed it back."),
+    )
+    mocker.patch.object(app.settings, "sandbox_mode", "docker")
+    runner = mocker.Mock()
+    runner.phase = app.Phase.IDLE
+    lines: list[str] = []
+
+    await app._handle_ship_command(
+        runner, harness_home=tmp_path, repo="/src", session_id="abc123", emit=lines.append
+    )
+
+    export.assert_awaited_once_with()  # the modal mid-session sweep runs first
+    ship.assert_called_once_with(tmp_path, repo="/src", session_id="abc123")
+    assert lines == ["Decode - handed it back."]  # the ShipResult message, Decode-prefixed
+
+
+def test_ship_outcome_line_prefixes_the_ship_result_message():
+    from decode.sandbox.handback import ShipResult
+
+    line = app._ship_outcome_line(
+        ShipResult(branch="decode/x", pushed=False, message="could not push decode/x ...")
+    )
+
+    assert line == "Decode - could not push decode/x ..."
+
+
+# --- the on-exit auto-ship (ADR-0012 §8, task 083 AC5) ----------------------------------------
+
+
+def test_ship_on_exit_none_mode_is_a_silent_noop(mocker, tmp_path):
+    # none mode: no isolated Workspace → the exit hand-back does nothing and prints nothing (AC7).
+    ship = mocker.patch("decode.sandbox.handback.ship_workspace")
+    mocker.patch.object(app.settings, "sandbox_mode", "none")
+    lines: list[str] = []
+
+    app._ship_on_exit(tmp_path, repo=None, session_id="abc123", emit=lines.append)
+
+    ship.assert_not_called()
+    assert lines == []
+
+
+def test_ship_on_exit_no_repo_is_a_silent_noop(mocker, tmp_path):
+    # A sandbox mode but no repo → silent no-op (byte-identical, AC7).
+    ship = mocker.patch("decode.sandbox.handback.ship_workspace")
+    mocker.patch.object(app.settings, "sandbox_mode", "docker")
+    lines: list[str] = []
+
+    app._ship_on_exit(tmp_path, repo=None, session_id="abc123", emit=lines.append)
+
+    ship.assert_not_called()
+    assert lines == []
+
+
+def test_ship_on_exit_prints_the_outcome_when_a_branch_was_shipped(mocker, tmp_path):
+    # A real ship (branch set) → the outcome line renders (naming the branch, best-effort non-fatal).
+    from decode.sandbox.handback import ShipResult
+
+    mocker.patch(
+        "decode.sandbox.handback.ship_workspace",
+        return_value=ShipResult(branch="decode/abc123", pushed=True, message="handed it back."),
+    )
+    mocker.patch.object(app.settings, "sandbox_mode", "docker")
+    lines: list[str] = []
+
+    app._ship_on_exit(tmp_path, repo="/src", session_id="abc123", emit=lines.append)
+
+    assert lines == ["Decode - handed it back."]
+
+
+def test_ship_on_exit_skip_is_silent(mocker, tmp_path):
+    # An unchanged/non-git Workspace (branch=None) → nothing printed on exit (byte-identical AC7).
+    from decode.sandbox.handback import ShipResult
+
+    mocker.patch(
+        "decode.sandbox.handback.ship_workspace",
+        return_value=ShipResult(branch=None, pushed=False, message="nothing to hand back."),
+    )
+    mocker.patch.object(app.settings, "sandbox_mode", "docker")
+    lines: list[str] = []
+
+    app._ship_on_exit(tmp_path, repo="/src", session_id="abc123", emit=lines.append)
+
+    assert lines == []
+
+
+def test_ship_on_exit_swallows_errors(mocker, tmp_path):
+    # Best-effort: a hand-back error never propagates out of the shutdown sequence (never blocks exit).
+    mocker.patch("decode.sandbox.handback.ship_workspace", side_effect=RuntimeError("boom"))
+    mocker.patch.object(app.settings, "sandbox_mode", "docker")
+
+    app._ship_on_exit(
+        tmp_path, repo="/src", session_id="abc123", emit=lambda _line: None
+    )  # no raise
 
 
 # --- the /<skill-name> resource trailer (ADR-0004 §1,§5; task 033) ----------------------------

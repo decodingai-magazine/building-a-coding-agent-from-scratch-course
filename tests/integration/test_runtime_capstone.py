@@ -711,8 +711,9 @@ def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypa
 
     run = Client().get_pipeline_run(handle.exec_id)
     # The persisted flow arguments are the task string + the Model Override input (``model=None``
-    # here) — no credential rides in the payload/logs; a model id is not a secret (ADR-0010 §2).
-    assert set(run.config.parameters) == {"task", "model"}
+    # here) + the Workspace clone inputs (``repo``/``local``, ADR-0012 §3) — no credential rides in
+    # the payload/logs; a model id / repo path is not a secret (ADR-0010 §2).
+    assert set(run.config.parameters) == {"task", "model", "repo", "local"}
     assert run.config.parameters["task"] == "summarize the repository"
     assert _KITARU_RAW_KEY not in run.config.model_dump_json()
     assert _SETTINGS_RAW_KEY not in run.config.model_dump_json()

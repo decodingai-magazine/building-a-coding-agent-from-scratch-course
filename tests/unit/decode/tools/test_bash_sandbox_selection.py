@@ -4,8 +4,8 @@ These cover the task-074 additions to :mod:`decode.tools.bash` and :mod:`decode.
 
 * ``_get_executor()`` selects the executor by ``SANDBOX_MODE`` on first use, lazily, and memoizes it;
 * ``reset_executor()`` re-arms selection; ``close_executor()`` reaps a sandbox executor and resets;
-* ``bash_description()`` + the registry ``prepare`` compose the mode-specific tool description
-  (``none`` byte-identical, ``docker`` / ``modal`` append their sandbox-semantics paragraph);
+* ``bash_description()`` + the registry ``prepare`` compose the tool description (``none``
+  byte-identical; ``docker`` AND ``modal`` append the SAME unified sandbox paragraph — ADR-0012 §2);
 * end to end, a ``bash`` call in docker mode routes through the *selected* executor's ``run`` (a fake
   records it) and renders its :class:`ExecResult` — the seam swap, with no real infra;
 * the ``none`` path imports no sandbox executor module, and a docker-mode REPL agent imports no kitaru.
@@ -23,6 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import anyio
 import pytest
 from pydantic import SecretStr
 from pydantic_ai import RunContext
@@ -99,25 +100,29 @@ def test_get_executor_docker_selects_via_the_seam_and_memoizes(monkeypatch):
     assert calls["n"] == 1  # select_executor ran exactly once
 
 
-def test_get_executor_docker_returns_a_real_docker_executor(monkeypatch):
-    # Through the REAL select_executor (not faked): docker mode yields a DockerExecutor. Construction
-    # is inert, so no daemon is needed here.
-    from decode.sandbox.docker_executor import DockerExecutor
+def test_get_executor_docker_returns_a_real_sandbox_executor(monkeypatch):
+    # Through the REAL select_executor (not faked): docker mode yields a SandboxExecutor (over a
+    # DockerBackend). Construction is inert, so no daemon is needed here (ADR-0012 §2).
+    from decode.sandbox.executor import SandboxExecutor
 
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
     bash_mod.reset_executor()
 
-    assert isinstance(bash_mod._get_executor(), DockerExecutor)
+    assert isinstance(bash_mod._get_executor(), SandboxExecutor)
 
 
-def test_get_executor_modal_returns_a_real_modal_executor(monkeypatch):
-    # Through the REAL select_executor: modal mode yields a ModalExecutor (inert — no creds needed).
-    from decode.sandbox.modal_executor import ModalExecutor
+def test_get_executor_modal_returns_a_real_sandbox_executor(monkeypatch):
+    # Through the REAL select_executor: modal mode yields a SandboxExecutor over a ModalBackend (inert —
+    # no creds needed; the remote sandbox + modal import are lazy on first run, ADR-0012 §2).
+    from decode.sandbox.executor import SandboxExecutor
+    from decode.sandbox.modal_backend import ModalBackend
 
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "modal")
     bash_mod.reset_executor()
 
-    assert isinstance(bash_mod._get_executor(), ModalExecutor)
+    executor = bash_mod._get_executor()
+    assert isinstance(executor, SandboxExecutor)
+    assert isinstance(executor._backend, ModalBackend)
 
 
 def test_reset_executor_rearms_selection(monkeypatch):
@@ -239,6 +244,80 @@ async def test_warm_executor_failure_propagates_and_keeps_the_memo(monkeypatch, 
     assert bash_mod._get_executor() is executor  # memo kept — the first bash retries through it
 
 
+# --- export_executor: the mid-session /ship sweep hook (task 083, ADR-0012 §5,8) ----------------
+
+
+async def test_export_executor_awaits_export_without_resetting_the_memo(monkeypatch):
+    # /ship sweeps the live Workspace to the host mid-session: export is awaited, but — unlike
+    # close_executor — the memo is NOT reset and the sandbox is NOT destroyed (the session continues).
+    export = AsyncMock()
+    executor = SimpleNamespace(export=export)
+    monkeypatch.setattr(bash_mod, "_EXECUTOR", executor)
+    monkeypatch.setattr(bash_mod, "_executor_selected", True)
+
+    await bash_mod.export_executor()
+
+    export.assert_awaited_once()
+    assert bash_mod._EXECUTOR is executor  # still live — no reset, no destroy
+    assert bash_mod._executor_selected is True
+
+
+async def test_export_executor_is_a_safe_noop_in_none_mode():
+    # The LocalExecutor default has no ``export`` (duck-typed like warm/close): export_executor must
+    # not raise, and the "nothing was selected" case (a fresh reset memo) is the same path.
+    bash_mod.reset_executor()
+
+    await bash_mod.export_executor()
+
+    assert isinstance(bash_mod._EXECUTOR, LocalExecutor)  # untouched
+
+
+# --- active_backend: the file-tool seam (ADR-0012 §4) -----------------------------------------
+
+
+def test_active_backend_none_mode_returns_none_without_touching_the_memo(monkeypatch):
+    # none mode: the file tools take the direct-pathlib path. ``active_backend`` returns None BEFORE any
+    # selection — no ``[sandbox]`` log, no sandbox import, no memo change (the none path stays clean).
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "none")
+    bash_mod.reset_executor()
+
+    assert bash_mod.active_backend(Path("/repo")) is None
+    assert bash_mod._executor_selected is False  # never selected
+
+
+def test_active_backend_returns_none_for_a_backendless_executor(monkeypatch):
+    # A selected executor without ``file_backend`` (the ``none`` LocalExecutor / a fake) yields None —
+    # duck-typed like warm/close, so the seam stays optional and never bridges for a run-only executor.
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: SimpleNamespace())
+    bash_mod.reset_executor()
+
+    assert bash_mod.active_backend(Path("/x")) is None
+
+
+async def test_active_backend_docker_returns_the_executors_created_backend(monkeypatch, tmp_path):
+    # docker/modal: ``active_backend`` shares ``bash``'s ``_EXECUTOR`` memo and returns the executor's
+    # created backend via ``file_backend(cwd)`` — the SAME backend/container ``bash`` runs through, so a
+    # file-tool write is visible to ``bash`` and vice-versa. Bridged (from_thread) → driven in a thread.
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    sentinel_backend = object()
+
+    class _FakeExecutor:
+        async def file_backend(self, cwd: Path) -> object:
+            self.cwd = cwd
+            return sentinel_backend
+
+    executor = _FakeExecutor()
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: executor)
+    bash_mod.reset_executor()
+
+    backend = await anyio.to_thread.run_sync(lambda: bash_mod.active_backend(tmp_path))
+
+    assert backend is sentinel_backend
+    assert executor.cwd == tmp_path  # ensured-created against the passed Workspace cwd
+    assert bash_mod._get_executor() is executor  # shares the bash memo (one backend per session)
+
+
 # --- bash_description: the mode-specific description composition -------------------------------
 
 
@@ -247,29 +326,31 @@ def test_bash_description_none_is_identity(monkeypatch):
     assert bash_mod.bash_description("BASE") == "BASE"
 
 
-def test_bash_description_docker_appends_the_persistent_shell_paragraph(monkeypatch):
+def test_bash_description_docker_appends_the_unified_sandbox_paragraph(monkeypatch):
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
 
     out = bash_mod.bash_description("BASE")
 
-    assert out.startswith("BASE\n\n")
+    assert out == f"BASE\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
     assert "/workspace" in out
-    assert "persistent bash shell" in out
-    assert "merged into a single stream" in out  # 072 chose merged stdout/stderr
-    assert ".decode/sandbox" in out  # /workspace is the scratch — the model is told
-    assert "NOT mounted" in out  # ...and that the project tree is out of reach via bash
+    assert "isolated Workspace" in out  # /workspace IS the isolated Workspace (ADR-0012 §2)
+    assert "git clone of your repo" in out  # ...a clone of --repo, or an empty scratch
+    assert (
+        "do NOT carry over" in out
+    )  # fresh-exec: cd/export do not persist across calls (ADR-0012)
+    assert "separate streams" in out  # stdout/stderr kept split
 
 
-def test_bash_description_modal_appends_the_remote_scratch_paragraph(monkeypatch):
+def test_bash_description_modal_appends_the_same_unified_paragraph(monkeypatch):
+    """ADR-0012 §2: modal gets the SAME unified paragraph as docker (one fresh-exec shape)."""
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "modal")
+    modal_out = bash_mod.bash_description("BASE")
 
-    out = bash_mod.bash_description("BASE")
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    docker_out = bash_mod.bash_description("BASE")
 
-    assert out.startswith("BASE\n\n")
-    assert "remote Modal sandbox" in out
-    assert "NOT present" in out  # the local tree is absent
-    assert "do NOT carry over" in out  # cd/export reset per call
-    assert ".decode/skills" in out  # ...except the seeded skills dir (the model is told)
+    # The whole point of the task: docker == modal == base + the ONE unified paragraph.
+    assert modal_out == docker_out == f"BASE\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
 
 
 # --- registry prepare: the description reaches the tool definition per mode --------------------
@@ -293,7 +374,7 @@ async def test_bash_prepare_docker_appends_the_paragraph(monkeypatch):
     result = await prepare(_AgentCtx("build"), td)  # type: ignore[arg-type]
 
     assert result is not td  # a replaced copy, not the passed object
-    assert result.description == f"BASE\n\n{bash_mod._DOCKER_DESCRIPTION_SUFFIX}"
+    assert result.description == f"BASE\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
 
 
 async def test_bash_prepare_still_hides_bash_when_the_agent_omits_it(monkeypatch):
@@ -351,7 +432,7 @@ async def _bash_description_via_agent(mode: str, monkeypatch, cwd: Path) -> str:
 
 
 async def test_agent_bash_description_docker_is_none_plus_the_paragraph(monkeypatch, tmp_path):
-    """The model-facing bash description: docker == none + the docker paragraph (proves none is base).
+    """The model-facing bash description: docker == none + the unified paragraph (proves none is base).
 
     Capturing the description the model actually receives proves the end-to-end wiring (registry
     ``prepare`` → the model schema). ``docker == none + suffix`` transitively proves the ``none``-mode
@@ -361,15 +442,17 @@ async def test_agent_bash_description_docker_is_none_plus_the_paragraph(monkeypa
     docker_desc = await _bash_description_via_agent("docker", monkeypatch, tmp_path)
 
     assert "/workspace" not in none_desc  # none carries no sandbox paragraph
-    assert "SANDBOX_MODE" not in none_desc
-    assert docker_desc == f"{none_desc}\n\n{bash_mod._DOCKER_DESCRIPTION_SUFFIX}"
+    assert "isolated Workspace" not in none_desc
+    assert docker_desc == f"{none_desc}\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
 
 
-async def test_agent_bash_description_modal_is_none_plus_the_paragraph(monkeypatch, tmp_path):
+async def test_agent_bash_description_modal_equals_docker(monkeypatch, tmp_path):
+    """ADR-0012 §2: the description the model sees is IDENTICAL for docker and modal (one paragraph)."""
     none_desc = await _bash_description_via_agent("none", monkeypatch, tmp_path)
+    docker_desc = await _bash_description_via_agent("docker", monkeypatch, tmp_path)
     modal_desc = await _bash_description_via_agent("modal", monkeypatch, tmp_path)
 
-    assert modal_desc == f"{none_desc}\n\n{bash_mod._MODAL_DESCRIPTION_SUFFIX}"
+    assert modal_desc == docker_desc == f"{none_desc}\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
 
 
 # --- end to end: a bash call routes through the SELECTED executor (the seam swap) --------------
@@ -378,7 +461,7 @@ async def test_agent_bash_description_modal_is_none_plus_the_paragraph(monkeypat
 async def test_bash_routes_through_the_selected_docker_executor(monkeypatch, tmp_path):
     """docker mode: ``bash`` runs through the executor ``select_executor`` returns, and renders it.
 
-    A fake stands in for :class:`DockerExecutor` at the ``select_executor`` seam (no real daemon). The
+    A fake stands in for the docker ``SandboxExecutor`` at the ``select_executor`` seam (no real daemon). The
     fake records the ``run`` call and returns a canned :class:`ExecResult`; the tool must route the
     command through it and render that result — proving the executor swap end to end.
     """
@@ -402,22 +485,23 @@ async def test_bash_routes_through_the_selected_docker_executor(monkeypatch, tmp
 
 
 async def test_bash_renders_a_daemon_loss_without_raising(monkeypatch, tmp_path):
-    """docker mode, daemon dies mid-session: ``bash`` returns a rendered failure, never lets it escape.
+    """docker mode, daemon down: ``bash`` returns a rendered failure, never lets it escape.
 
-    The secondary task-074 defect (the tool-boundary half): when the docker daemon becomes unreachable
-    mid-session, :meth:`DockerExecutor.run` catches the infra failure and returns a rendered
-    :class:`ExecResult` (exit 125 + note). This proves the whole boundary stays intact — ``bash`` renders
-    that result to text (so the model reacts) rather than a ``RuntimeError`` crashing the turn. A real
-    ``DockerExecutor`` is used with only its ``_ensure_container`` seam patched to raise (as a dead daemon
-    would make ``docker run`` fail), so no daemon is needed.
+    The tool-boundary never-crash contract: when the docker backend cannot be created (daemon down),
+    :meth:`SandboxExecutor.run` catches the infra failure and returns a rendered :class:`ExecResult`
+    (exit 125 + a session-lost note + the cause on stderr). This proves the whole boundary stays intact —
+    ``bash`` renders that result to text (so the model reacts) rather than a ``RuntimeError`` crashing the
+    turn. A real ``SandboxExecutor(DockerBackend())`` is used with only the backend's ``create`` patched
+    to raise (as a dead daemon makes ``docker run`` fail), so no daemon is needed.
     """
-    from decode.sandbox.docker_executor import DockerExecutor
+    from decode.sandbox.docker_backend import DockerBackend
+    from decode.sandbox.executor import SandboxExecutor
 
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
-    executor = DockerExecutor()
+    backend = DockerBackend()
     monkeypatch.setattr(
-        executor,
-        "_ensure_container",
+        backend,
+        "create",
         AsyncMock(
             side_effect=RuntimeError(
                 "docker run failed (exit 1): Cannot connect to the Docker daemon at "
@@ -425,13 +509,13 @@ async def test_bash_renders_a_daemon_loss_without_raising(monkeypatch, tmp_path)
             )
         ),
     )
-    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: executor)
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: SandboxExecutor(backend))
     bash_mod.reset_executor()
 
     out = await bash_mod.bash(_ctx(tmp_path), command="echo hi")  # must NOT raise
 
     assert "Exit code: 125" in out  # docker's container-failed convention, rendered for the model
-    assert "Docker daemon became unreachable" in out  # the daemon-lost note reaches the model
+    assert "unreachable" in out  # the session-lost note reaches the model
     assert "Cannot connect to the Docker daemon" in out  # the underlying failure text is surfaced
 
 
@@ -459,7 +543,8 @@ def test_none_mode_agent_imports_no_sandbox_executor_module():
         "build_agent(); "
         "b._get_executor(); "  # selects the none-mode executor (must not import the sandbox pkg)
         "leaked = [m for m in "
-        "('decode.sandbox.docker_executor', 'decode.sandbox.modal_executor') if m in sys.modules]; "
+        "('decode.sandbox.docker_backend', 'decode.sandbox.executor', "
+        "'decode.sandbox.modal_backend') if m in sys.modules]; "
         "assert not leaked, leaked; "
         "print('OK')"
     )
@@ -475,7 +560,7 @@ def test_docker_mode_repl_agent_imports_no_kitaru_or_modal():
         "import decode.tools.bash as b; "
         "from decode.agent.factory import build_agent; "
         "build_agent(); "
-        "b._get_executor(); "  # selects docker → constructs DockerExecutor (inert, no daemon)
+        "b._get_executor(); "  # selects docker → SandboxExecutor(DockerBackend()) (inert, no daemon)
         "leaked = sorted(m for m in sys.modules "
         "if m == 'kitaru' or m.startswith('kitaru.') or m == 'modal' or m.startswith('modal.')); "
         "assert not leaked, leaked; "

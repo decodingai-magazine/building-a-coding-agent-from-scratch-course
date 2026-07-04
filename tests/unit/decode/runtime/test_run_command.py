@@ -9,6 +9,8 @@ exit that never builds a flow.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from click.testing import CliRunner
 from pydantic import SecretStr, ValidationError
@@ -183,6 +185,77 @@ def test_run_command_prints_the_agents_output(monkeypatch, _provider_ok):
 
     assert result.exit_code == 0
     assert "the headless answer" in result.output
+
+
+# --- task 083: auto-ship the Workspace after a headless `decode run --repo` completes (ADR-0012 §8) --
+
+
+def test_run_invokes_the_auto_ship_with_the_run_exec_id(monkeypatch, _provider_ok):
+    """After the bypass run prints its output, the auto-ship fires with the run's exec_id as session id."""
+    _patch_seam(monkeypatch, "done")
+    calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        cli_mod, "_auto_ship_headless", lambda repo, exec_id: calls.append((repo, exec_id))
+    )
+
+    result = CliRunner().invoke(cli, ["run", "list the files"])
+
+    assert result.exit_code == 0
+    # Wired once, with the resolved repo (None in none mode) and a real exec_id string.
+    assert len(calls) == 1
+    repo, exec_id = calls[0]
+    assert repo is None  # none mode → an empty Workspace, nothing to ship
+    assert isinstance(exec_id, str) and exec_id
+
+
+def test_auto_ship_headless_no_repo_is_a_silent_noop(mocker, capsys):
+    """No repo (none mode / no --repo) → the auto-ship ships nothing and prints nothing (byte-identical)."""
+    ship = mocker.patch("decode.sandbox.handback.ship_workspace")
+
+    cli_mod._auto_ship_headless(None, "exec-abc")
+
+    ship.assert_not_called()  # not even imported/called
+    assert capsys.readouterr().err == ""
+
+
+def test_auto_ship_headless_prints_the_outcome_on_stderr(mocker, capsys):
+    """A real ship echoes its outcome (branch + result) on **stderr** so stdout stays pipe-clean."""
+    from decode.sandbox.handback import ShipResult
+
+    ship = mocker.patch(
+        "decode.sandbox.handback.ship_workspace",
+        return_value=ShipResult(branch="decode/exec-abc", pushed=True, message="handed it back."),
+    )
+
+    cli_mod._auto_ship_headless("/src", "exec-abc")
+
+    ship.assert_called_once_with(Path.cwd(), repo="/src", session_id="exec-abc")
+    captured = capsys.readouterr()
+    assert captured.out == ""  # pipe-clean stdout
+    assert "handed it back." in captured.err  # the outcome lands on stderr
+
+
+def test_auto_ship_headless_skip_prints_nothing(mocker, capsys):
+    """A skip (branch=None: unchanged/non-git Workspace) prints nothing — no noise on a no-op run."""
+    from decode.sandbox.handback import ShipResult
+
+    mocker.patch(
+        "decode.sandbox.handback.ship_workspace",
+        return_value=ShipResult(branch=None, pushed=False, message="nothing to hand back."),
+    )
+
+    cli_mod._auto_ship_headless("/src", "exec-abc")
+
+    assert capsys.readouterr().err == ""
+
+
+def test_auto_ship_headless_swallows_errors(mocker, capsys):
+    """The auto-ship is best-effort: a hand-back error never propagates out of a completed run."""
+    mocker.patch("decode.sandbox.handback.ship_workspace", side_effect=RuntimeError("boom"))
+
+    cli_mod._auto_ship_headless("/src", "exec-abc")  # must not raise
+
+    assert "boom" not in capsys.readouterr().err  # the raw error is logged, not surfaced
 
 
 def test_run_command_disabled_runtime_guard_does_not_build_a_flow(monkeypatch, _provider_ok):
@@ -547,3 +620,117 @@ def test_run_sandbox_none_default_runs_no_probe_and_runs_the_flow(monkeypatch, _
     assert result.exit_code == 0
     assert "the headless answer" in result.output
     assert calls == {"docker": 0, "modal": 0}  # none mode probes nothing
+
+
+# --- task 082: the Workspace repo — threaded into the flow, guarded in none mode (ADR-0012 §3) ------
+
+
+def _recording_flow_run(monkeypatch, text):
+    """Replace ``decode.runtime.run_agent_task`` with a fake recording the ``.run(...)`` kwargs.
+
+    The cli imports the flow lazily (``from decode.runtime import run_agent_task``), so patching the
+    attribute on ``decode.runtime`` is what the ``run`` body resolves at call time. Returns the
+    ``captured`` kwargs dict so a test can assert the ``repo`` / ``local`` (and ``model``) the cli
+    threaded into the durable flow (ADR-0012 §3). ``_load_runtime_output`` is stubbed to ``text``.
+    """
+    import decode.runtime as runtime_mod
+
+    captured: dict[str, object] = {}
+
+    class _FakeHandle:
+        exec_id = "exec-fake"
+
+    class _FakeFlow:
+        def run(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeHandle()
+
+    monkeypatch.setattr(runtime_mod, "run_agent_task", _FakeFlow())
+    monkeypatch.setattr(flow_mod, "_load_runtime_output", lambda exec_id: text)
+    return captured
+
+
+def test_run_help_documents_the_repo_and_local_flags():
+    """``decode run --help`` documents ``--repo`` and ``--local`` (discoverability)."""
+    result = CliRunner().invoke(cli, ["run", "--help"])
+
+    assert result.exit_code == 0
+    assert "--repo" in result.output
+    assert "--local" in result.output
+
+
+def test_run_repo_and_local_threaded_into_the_flow(monkeypatch, _provider_ok):
+    """``decode run --repo X --local`` (docker) threads the resolved repo + local into the flow (§3)."""
+    monkeypatch.setattr(cli_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(cli_mod, "_docker_daemon_reachable", lambda: True)
+    captured = _recording_flow_run(monkeypatch, "the sandbox answer")
+
+    result = CliRunner().invoke(cli, ["run", "--repo", "/some/repo", "--local", "build it"])
+
+    assert result.exit_code == 0
+    assert captured["repo"] == "/some/repo"  # the resolved --repo rode into the durable flow
+    assert captured["local"] is True  # ...and the --local flag
+    assert "the sandbox answer" in result.stdout
+
+
+def test_run_repo_falls_back_to_sandbox_repo_setting(monkeypatch, _provider_ok):
+    """No ``--repo`` but ``SANDBOX_REPO`` set (docker) → the setting is threaded into the flow (§3)."""
+    monkeypatch.setattr(cli_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(cli_mod.settings, "sandbox_repo", "https://from.env/repo.git")
+    monkeypatch.setattr(cli_mod, "_docker_daemon_reachable", lambda: True)
+    captured = _recording_flow_run(monkeypatch, "answer")
+
+    result = CliRunner().invoke(cli, ["run", "build it"])
+
+    assert result.exit_code == 0
+    assert captured["repo"] == "https://from.env/repo.git"
+
+
+def test_run_no_repo_threads_none_into_the_flow(monkeypatch, _provider_ok):
+    """``decode run`` with no repo (none mode) → ``repo=None`` (an empty Workspace) into the flow."""
+    captured = _recording_flow_run(monkeypatch, "answer")
+
+    result = CliRunner().invoke(cli, ["run", "list the files"])
+
+    assert result.exit_code == 0
+    assert captured["repo"] is None
+    assert captured["local"] is False
+
+
+def test_run_repo_in_none_mode_is_a_friendly_line_no_flow(monkeypatch, _provider_ok):
+    """``decode run --repo`` while ``SANDBOX_MODE=none`` → friendly stderr line, non-zero, no flow (§3)."""
+    _no_flow_tripwires(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run", "--repo", "/some/repo", "do it"])
+
+    assert result.exit_code != 0
+    assert "--repo/SANDBOX_REPO" in result.stderr
+    assert "SANDBOX_MODE=docker" in result.stderr  # names the fix
+    assert "Traceback" not in result.stderr
+
+
+def test_run_sandbox_repo_env_in_none_mode_is_a_friendly_line_no_flow(monkeypatch, _provider_ok):
+    """A bare ``SANDBOX_REPO`` (no flag) in ``none`` mode also trips the headless guard, no flow built."""
+    monkeypatch.setattr(cli_mod.settings, "sandbox_repo", "https://from.env/repo.git")
+    _no_flow_tripwires(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run", "list the files"])
+
+    assert result.exit_code != 0
+    assert "--repo/SANDBOX_REPO" in result.stderr
+
+
+def test_replay_sandbox_repo_env_in_none_mode_is_a_friendly_line(monkeypatch, _provider_ok):
+    """``decode replay`` shares the pre-flight: ``SANDBOX_REPO`` in ``none`` mode → friendly line, no replay."""
+
+    def _tripwire(*_a, **_k):
+        raise AssertionError("no replay may run when the sandbox-repo guard trips")
+
+    monkeypatch.setattr(cli_mod.settings, "sandbox_repo", "https://from.env/repo.git")
+    monkeypatch.setattr(flow_mod, "replay_agent_task", _tripwire)
+
+    result = CliRunner().invoke(cli, ["replay", "exec-123", "--from", "some_checkpoint"])
+
+    assert result.exit_code != 0
+    assert "--repo/SANDBOX_REPO" in result.stderr
+    assert "Traceback" not in result.stderr

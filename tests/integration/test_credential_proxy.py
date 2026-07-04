@@ -2,7 +2,7 @@
 
 The living proof that the credential-injection topology holds against a **real docker daemon**: a
 ``mitmproxy/mitmproxy`` addon container on a per-run network, a proxy-wired
-:class:`~decode.sandbox.docker_executor.DockerExecutor` worker pointed at it, and a stub upstream —
+``SandboxExecutor(DockerBackend(...))`` worker pointed at it, and a stub upstream —
 so a request the token-free worker makes **arrives at the upstream with the injected header**, while
 the worker's own env holds **no** secret. It also drives the real
 :func:`decode.runtime.flow._sandbox_proxy` context manager to prove it tears the proxy container +
@@ -26,7 +26,9 @@ import pytest
 
 import decode.runtime.flow as flow_mod
 import decode.tools.bash as bash_mod
-from decode.sandbox.docker_executor import DockerExecutor
+from decode.config.settings import settings
+from decode.sandbox.docker_backend import DockerBackend
+from decode.sandbox.executor import SandboxExecutor
 from decode.sandbox.proxy import DockerCredentialProxy, SandboxProxyRule, build_credential_map
 from decode.tools.exec import LocalExecutor
 
@@ -169,7 +171,7 @@ async def test_worker_request_arrives_with_injected_header_but_worker_holds_no_s
         ]
     )
     proxy = DockerCredentialProxy(credential_map)
-    executor: DockerExecutor | None = None
+    executor: SandboxExecutor | None = None
     upstream: str | None = None
     worker_id: str | None = None
     try:
@@ -180,14 +182,16 @@ async def test_worker_request_arrives_with_injected_header_but_worker_holds_no_s
         scratch = tmp_path / ".decode" / "sandbox"
         scratch.mkdir(parents=True, exist_ok=True)
         (scratch / "req.py").write_text(_REQUEST_SCRIPT, encoding="utf-8")
-        executor = DockerExecutor(
-            network=proxy.network,
-            proxy_env=proxy.worker_proxy_env,
-            ca_cert_host_path=proxy.ca_cert_host_path,
+        executor = SandboxExecutor(
+            DockerBackend(
+                network=proxy.network,
+                proxy_env=proxy.worker_proxy_env,
+                ca_cert_host_path=proxy.ca_cert_host_path,
+            )
         )
 
         result = await executor.run("python3 /workspace/req.py", cwd=tmp_path, timeout_s=30.0)
-        worker_id = executor._container_id
+        worker_id = executor._backend._container_id
 
         # The upstream echoed the header the proxy injected — it ARRIVED, though the worker never held it.
         assert result.exit_code == 0, result.stdout
@@ -246,13 +250,15 @@ async def test_worker_trusts_the_proxy_ca_on_its_very_first_command(monkeypatch,
         ]
     )
     proxy = DockerCredentialProxy(credential_map)
-    executor: DockerExecutor | None = None
+    executor: SandboxExecutor | None = None
     try:
         proxy.start()
-        executor = DockerExecutor(
-            network=proxy.network,
-            proxy_env=proxy.worker_proxy_env,
-            ca_cert_host_path=proxy.ca_cert_host_path,
+        executor = SandboxExecutor(
+            DockerBackend(
+                network=proxy.network,
+                proxy_env=proxy.worker_proxy_env,
+                ca_cert_host_path=proxy.ca_cert_host_path,
+            )
         )
 
         # THE FIRST command through the freshly-wired worker — it must already trust the proxy CA.
@@ -273,10 +279,82 @@ async def test_worker_trusts_the_proxy_ca_on_its_very_first_command(monkeypatch,
     assert not _network_exists(proxy.network)
 
 
-def _engage_proxy(monkeypatch) -> None:
+async def test_proxy_wired_worker_has_git_and_still_holds_no_token(monkeypatch, tmp_path):
+    """The (A) fix (ADR-0012 §10 / task 086): git IS installed in the proxy-wired worker, token-free.
+
+    The one docker configuration that carries the git token — the auto-engaged Credential Proxy — is
+    exactly where git MUST be present, since the proxy's ``github-git`` Basic rule authenticates the
+    worker's ``git push``. Proven end to end against a REAL proxy topology: ``git --version`` exits 0
+    inside the proxy-wired worker (apt reached the Debian mirrors THROUGH the mitmproxy passthrough) and
+    its ``SANDBOX_GIT_USER_*`` identity is configured, WHILE a scan of the worker's own env shows no
+    secret (the credential lives only in the proxy container). This is the regression guard for the bug
+    where a set ``SANDBOX_GIT_TOKEN`` silently dropped git from the worker. Reaps in ``finally``.
+    """
+    monkeypatch.setattr(
+        "kitaru.get_secret", lambda name: SimpleNamespace(values={"token": _SECRET_VALUE})
+    )
+    credential_map = build_credential_map(
+        [
+            SandboxProxyRule(
+                name="upstream-auth",
+                hosts=[_UPSTREAM_ALIAS],
+                headers={_INJECTED_HEADER: "{{ test-secret.token }}"},
+            )
+        ]
+    )
+    proxy = DockerCredentialProxy(credential_map)
+    executor: SandboxExecutor | None = None
+    worker_id: str | None = None
+    try:
+        proxy.start()
+        # The worker's /workspace is the project's .decode/sandbox scratch (ADR-0012 §2), not the cwd.
+        scratch = tmp_path / ".decode" / "sandbox"
+        scratch.mkdir(parents=True, exist_ok=True)
+        executor = SandboxExecutor(
+            DockerBackend(
+                network=proxy.network,
+                proxy_env=proxy.worker_proxy_env,
+                ca_cert_host_path=proxy.ca_cert_host_path,
+            )
+        )
+        # create() trusts the CA THEN installs git — the apt egresses through the proxy passthrough.
+        await executor.start(scratch)
+        worker_id = executor._backend._container_id
+
+        # git is present in the proxy-wired worker (apt reached the mirrors THROUGH the proxy) ...
+        version = await executor.run("git --version", cwd=scratch, timeout_s=120.0)
+        assert version.exit_code == 0, version.stderr or version.stdout
+        assert "git version" in version.stdout
+        # ... with its identity configured (so a model ``git commit`` works) ...
+        ident = await executor.run("git config --global user.name", cwd=scratch, timeout_s=30.0)
+        assert ident.stdout.strip() == settings.sandbox_git_user_name
+
+        # ... and the worker STILL holds no secret — the credential lives only in the proxy container.
+        env = subprocess.run(
+            ["docker", "exec", worker_id, "env"], capture_output=True, text=True, timeout=15.0
+        ).stdout
+        assert _SECRET_VALUE not in env
+        assert "http_proxy=" in env  # routed through the proxy — it just holds no token
+    finally:
+        if executor is not None:
+            await executor.aclose()
+        proxy.stop()
+
+    assert worker_id is None or not _container_exists(worker_id)
+    assert not _container_exists(proxy._container_name)
+    assert not _network_exists(proxy.network)
+
+
+def _engage_proxy(monkeypatch, tmp_path) -> None:
     """Flip settings so ``_sandbox_proxy`` engages, with an empty (passthrough) rule set + fake secret."""
+    # ``_sandbox_proxy`` now eagerly starts the worker against ``prepare_workspace(Path.cwd())`` (ADR-0012
+    # §2), so chdir into tmp: the worker's ``.decode/sandbox`` Workspace lands there, never in the repo.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
     monkeypatch.setattr(flow_mod.settings, "sandbox_credential_proxy_enabled", True)
+    # No git token → keep the map a pure passthrough (a set SANDBOX_GIT_TOKEN would auto-inject the
+    # GitHub rules, ADR-0012 §10); this test proves only the topology + teardown, not the map contents.
+    monkeypatch.setattr(flow_mod.settings, "sandbox_git_token", None)
     # A passthrough map is enough to prove the topology + teardown; no upstream request is made here.
     monkeypatch.setattr("decode.sandbox.proxy.DEFAULT_PROXY_RULES", [])
     # A fresh, un-selected bash seam so we can prove the context installs then restores it.
@@ -284,49 +362,57 @@ def _engage_proxy(monkeypatch) -> None:
     monkeypatch.setattr(bash_mod, "_executor_selected", False)
 
 
-def test_sandbox_proxy_context_installs_the_seam_then_tears_it_all_down(monkeypatch):
-    """The real ``_sandbox_proxy()`` installs a proxy-wired worker, then reaps everything on exit."""
-    _engage_proxy(monkeypatch)
+def test_sandbox_proxy_context_installs_the_seam_then_tears_it_all_down(monkeypatch, tmp_path):
+    """The real ``_sandbox_proxy()`` installs + starts a proxy-wired worker, then reaps everything."""
+    _engage_proxy(monkeypatch, tmp_path)
     captured: dict[str, object] = {}
 
     with flow_mod._sandbox_proxy():
-        # Inside the span the bash seam is a proxy-wired DockerExecutor (not the LocalExecutor default).
-        assert isinstance(bash_mod._EXECUTOR, DockerExecutor)
-        assert bash_mod._EXECUTOR._network is not None
+        # Inside the span the bash seam is a proxy-wired SandboxExecutor over a DockerBackend, eagerly
+        # started so its worker container is up (proxy CA trusted) before the first bash.
+        assert isinstance(bash_mod._EXECUTOR, SandboxExecutor)
+        assert isinstance(bash_mod._EXECUTOR._backend, DockerBackend)
+        assert bash_mod._EXECUTOR._backend._network is not None
         assert bash_mod._executor_selected is True
         captured["container_name"] = _proxy_container_name()
-        captured["network"] = bash_mod._EXECUTOR._network
+        captured["network"] = bash_mod._EXECUTOR._backend._network
+        captured["worker_id"] = bash_mod._EXECUTOR._backend._container_id
 
-    # On exit: the bash seam is restored to the none-mode default, and the proxy container + its network
-    # are gone (the worker was never started — no bash ran — so only the proxy needs reaping).
+    # On exit: the bash seam is restored to the none-mode default, and the worker container + the proxy
+    # container + its network are all gone (the flow's finally reaps the worker before the proxy stops).
     assert isinstance(bash_mod._EXECUTOR, LocalExecutor)
     assert bash_mod._executor_selected is False
+    worker_id = captured["worker_id"]
+    assert worker_id is None or not _container_exists(str(worker_id))
     assert not _container_exists(str(captured["container_name"]))
     assert not _network_exists(str(captured["network"]))
 
 
-def test_sandbox_proxy_context_tears_down_even_when_the_body_raises(monkeypatch):
-    """AC (teardown incl. on error): a raising flow body still reaps the proxy container + network."""
-    _engage_proxy(monkeypatch)
+def test_sandbox_proxy_context_tears_down_even_when_the_body_raises(monkeypatch, tmp_path):
+    """AC (teardown incl. on error): a raising flow body still reaps the worker + proxy + network."""
+    _engage_proxy(monkeypatch, tmp_path)
     seen: dict[str, object] = {}
 
     with pytest.raises(RuntimeError, match="boom"), flow_mod._sandbox_proxy():
         seen["container_name"] = _proxy_container_name()
-        seen["network"] = bash_mod._EXECUTOR._network  # type: ignore[attr-defined]
+        seen["network"] = bash_mod._EXECUTOR._backend._network  # type: ignore[attr-defined]
+        seen["worker_id"] = bash_mod._EXECUTOR._backend._container_id  # type: ignore[attr-defined]
         raise RuntimeError("boom in the flow body")
 
     assert isinstance(bash_mod._EXECUTOR, LocalExecutor)  # seam restored despite the error
     assert bash_mod._executor_selected is False
+    worker_id = seen["worker_id"]
+    assert worker_id is None or not _container_exists(str(worker_id))
     assert not _container_exists(str(seen["container_name"]))
     assert not _network_exists(str(seen["network"]))
 
 
 def _proxy_container_name() -> str:
-    """The proxy container name currently wired into the bash seam's DockerExecutor network.
+    """The proxy container name currently wired into the bash seam's DockerBackend network.
 
-    The DockerExecutor holds the network name (``decode-sandbox-net-<suffix>``); the proxy container is
+    The DockerBackend holds the network name (``decode-sandbox-net-<suffix>``); the proxy container is
     ``decode-proxy-<suffix>`` — the same suffix — so we can name it without threading the proxy handle.
     """
-    network = bash_mod._EXECUTOR._network  # type: ignore[attr-defined]
+    network = bash_mod._EXECUTOR._backend._network  # type: ignore[attr-defined]
     assert isinstance(network, str)
     return network.replace("decode-sandbox-net-", "decode-proxy-")

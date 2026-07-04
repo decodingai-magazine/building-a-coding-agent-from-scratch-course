@@ -371,6 +371,19 @@ def test_build_hitl_deps_is_gating_with_the_durable_resolver():
     assert deps.resolve_user_question is flow_resolve_user_question
 
 
+def test_build_hitl_deps_splits_the_workspace_from_harness_home(tmp_path):
+    """ADR-0012 §6: HITL deps carry the Workspace as ``cwd`` and the launch cwd as ``harness_home``."""
+    from pathlib import Path
+
+    workspace = tmp_path / "ws"
+    deps = _build_hitl_deps(workspace)
+
+    assert deps.cwd == workspace  # tool scope
+    assert deps.harness_home == Path.cwd()  # artifact root
+    # A no-arg build keeps the none-mode equal-roots case (byte-identical).
+    assert _build_hitl_deps().cwd == Path.cwd() == _build_hitl_deps().harness_home
+
+
 def test_to_hitl_durable_agent_forces_calls_and_opts_out_the_waiting_tools():
     """The HITL ``KitaruAgent`` forces ``calls`` granularity and opts the wait-capable tools out."""
     from kitaru.adapters.pydantic_ai import KitaruAgent

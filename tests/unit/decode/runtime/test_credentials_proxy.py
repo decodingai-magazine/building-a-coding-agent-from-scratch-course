@@ -8,8 +8,9 @@ is what ships (not the env-injection fallback).
 
 The payload test then proves the AGENTS.md invariant *"secrets never reach the model or the sandbox
 payload"*: even when the proxy resolves a raw key inside the flow body, the serialized flow arguments
-(``run.config.parameters``) carry only the task string and the Model Override input (``model=None``
-here — a model id is not a secret, ADR-0010 §2) — never a credential.
+(``run.config.parameters``) carry only non-secret inputs — the task string, the Model Override
+(``model=None`` here), and the Workspace clone inputs (``repo``/``local``, ADR-0012 §3) — never a
+credential (a model id / repo path is not a secret, ADR-0010 §2).
 """
 
 from __future__ import annotations
@@ -92,9 +93,9 @@ def test_flow_payload_carries_only_the_task_not_the_raw_key(monkeypatch, runtime
     The patched seam first calls the real ``build_agent(flow_mode=True)`` (so the proxy genuinely
     resolves the raw key inside the flow body), then runs the turn on a scripted offline model. After
     the run, the persisted execution's input parameters (``run.config.parameters``) are inspected:
-    they hold only ``{"task", "model"}`` (the Model Override input rides as a flow param, ADR-0010
-    §2), and the raw key appears nowhere in the serialized config. This is the AGENTS.md "secrets
-    never reach the ... payload" invariant, proven on the real store.
+    they hold only ``{"task", "model", "repo", "local"}`` (the Model Override + Workspace clone inputs
+    ride as flow params, ADR-0010 §2 / ADR-0012 §3), and the raw key appears nowhere in the serialized
+    config. This is the AGENTS.md "secrets never reach the ... payload" invariant, proven on the real store.
     """
     create_secret(runtime_secret_name, {"GEMINI_API_KEY": _KITARU_RAW_KEY}, private=True)
     _enable_proxy(monkeypatch)
@@ -116,8 +117,9 @@ def test_flow_payload_carries_only_the_task_not_the_raw_key(monkeypatch, runtime
 
     run = Client().get_pipeline_run(handle.exec_id)
     # The persisted flow arguments are the task string + the Model Override input (``model=None``
-    # here) — no credential rides in the payload; a model id is not a secret (ADR-0010 §2).
-    assert set(run.config.parameters) == {"task", "model"}
+    # here) + the Workspace clone inputs (``repo``/``local``, ADR-0012 §3) — no credential rides in
+    # the payload; a model id / repo path is not a secret (ADR-0010 §2).
+    assert set(run.config.parameters) == {"task", "model", "repo", "local"}
     assert run.config.parameters["task"] == "summarize the repository"
     assert _KITARU_RAW_KEY not in run.config.model_dump_json()
     assert _SETTINGS_RAW_KEY not in run.config.model_dump_json()

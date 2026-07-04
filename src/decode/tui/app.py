@@ -38,6 +38,7 @@ import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -69,8 +70,13 @@ from decode.permissions.types import PermissionMode
 from decode.services.lsp.service import shutdown_all as shutdown_lsp_servers
 from decode.skills.loader import load_skills
 from decode.skills.payload import format_skill_payload
-from decode.tools.bash import close_executor, warm_executor
+from decode.tools.bash import close_executor, export_executor, warm_executor
 from decode.tui import render
+
+if TYPE_CHECKING:
+    # Typing only: a runtime import would pull the sandbox hand-back module into the ``none`` path and
+    # break its laziness (ADR-0012 §9). ``from __future__ import annotations`` keeps this a string.
+    from decode.sandbox.handback import ShipResult
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +100,10 @@ _COMPACT_COMMAND = "/compact"
 # MEMORY.md write-back the quit path runs, THEN the handler resets and a clear marker rides the
 # session log so ``--resume`` replays to the post-clear state.
 _CLEAR_COMMAND = "/clear"
+# The git hand-back command (ADR-0012 §8): ship the sandbox Workspace back as a decode/<session-id>
+# branch. Reserved among the slash commands (matched before ``parse_skill_command``) so a project skill
+# named ``ship`` can never shadow it, and idle-only like ``/compact`` / ``/clear``.
+_SHIP_COMMAND = "/ship"
 # The order Shift+Tab cycles the gate mode through (ADR-0003 §9): default -> edit -> plan ->
 # bypass -> back to default. A tuple so :func:`next_mode` is a pure index step.
 _MODE_CYCLE: tuple[PermissionMode, ...] = (
@@ -158,6 +168,15 @@ def is_clear_command(line: str) -> bool:
     return line.strip() == _CLEAR_COMMAND
 
 
+def is_ship_command(line: str) -> bool:
+    """True when ``line`` is the ``/ship`` command (ignoring surrounding whitespace).
+
+    Pure (mirrors :func:`is_clear_command`): exact match after a strip — ``"/ship"`` and ``"  /ship  "``
+    are the command; ``"/shipx"`` / ``"ship"`` / ``"/clear"`` are not.
+    """
+    return line.strip() == _SHIP_COMMAND
+
+
 def footer_hint(agent: str, mode: str) -> str:
     """The bottom-toolbar hint: the live agent + mode, then the interaction keys (plain text).
 
@@ -168,7 +187,7 @@ def footer_hint(agent: str, mode: str) -> str:
     """
     return (
         f"agent:{agent} mode:{mode} | Enter steer | Alt+Enter follow-up | "
-        "Esc abort | Shift+Tab mode | /agent /mode /compact /clear /quit"
+        "Esc abort | Shift+Tab mode | /agent /mode /compact /clear /ship /quit"
     )
 
 
@@ -261,6 +280,7 @@ class SlashCompleter(Completer):
             _MODE_COMMAND: "switch the permission mode (/mode <name>)",
             _COMPACT_COMMAND: "compact the conversation now",
             _CLEAR_COMMAND: "clear the conversation (summarizes to memory first)",
+            _SHIP_COMMAND: "ship the sandbox workspace back as a git branch",
             _QUIT_COMMAND: "exit decode",
         }
         self._meta.update(
@@ -434,6 +454,92 @@ async def _handle_clear_command(
     await extract_on_exit(handler.message_history, cwd)
     handler.clear()
     emit(_CLEAR_DONE)
+
+
+# The inline lines the ``/ship`` command renders. ``_SHIP_BUSY`` is the mid-turn guard (we never ship
+# while a turn holds the live Workspace); ``_SHIP_NO_WORKSPACE`` is the ``none``-mode / no-repo case
+# (there is no isolated Workspace to hand back). The success/skip/failure text comes from the
+# ShipResult's own message via :func:`_ship_outcome_line`.
+_SHIP_BUSY = "Decode - busy; try /ship again once the turn finishes."
+_SHIP_NO_WORKSPACE = "Decode - no sandbox workspace to ship."
+
+
+def _ship_outcome_line(result: ShipResult) -> str:
+    """Render a :class:`~decode.sandbox.handback.ShipResult` as one ``Decode - `` line (ADR-0012 §8).
+
+    The ShipResult owns the friendly, credential-free sentence (shipped / skipped / push-failed —
+    naming the branch and its ``.decode/sandbox`` location on a failure); this only adds the REPL's
+    ``Decode - `` prefix, matching the ``/compact`` / ``/clear`` confirmation style. Duck-typed on
+    ``.message`` so no runtime sandbox import is needed on the ``none`` path (§9).
+    """
+    return f"Decode - {result.message}"
+
+
+async def _handle_ship_command(
+    runner: Runner,
+    *,
+    harness_home: Path,
+    repo: str | None,
+    session_id: str,
+    emit: Callable[[str], None],
+) -> None:
+    """Ship the sandbox Workspace back as a ``decode/<session-id>`` branch — the ``/ship`` command (§8).
+
+    Idle-only, wired like ``/compact`` / ``/clear`` (busy → one line, never ship mid-turn — the running
+    leg holds the live Workspace). In ``none`` mode or with no ``--repo`` there is no isolated Workspace,
+    so it prints a friendly line and does nothing (no export, no sandbox import). Otherwise it (a) runs
+    the executor :func:`~decode.tools.bash.export_executor` **first** — the modal mid-session sweep so
+    ``/workspace`` is host-visible for the host-side git (a docker no-op, its mount is already live) —
+    then (b) runs the host-side :func:`~decode.sandbox.handback.ship_workspace` and prints the outcome
+    (the branch + push result, or a friendly skip/failure line). The hand-back import stays lazy so the
+    ``none`` path pulls in no sandbox module (§9).
+    """
+    if runner.phase is not Phase.IDLE:
+        emit(_SHIP_BUSY)
+        return
+    if settings.sandbox_mode == "none" or repo is None:
+        emit(_SHIP_NO_WORKSPACE)
+        return
+    # Sweep the live sandbox Workspace down to the host first (modal copy_to_local; docker no-op), so the
+    # host-side git below sees the final ``/workspace`` state (ADR-0012 §5,8).
+    await export_executor()
+    # Lazy import: only a sandbox-mode ``/ship`` pulls in the hand-back module (the ``none`` path never
+    # touches ``decode.sandbox`` — §9).
+    from decode.sandbox.handback import ship_workspace
+
+    result = ship_workspace(harness_home, repo=repo, session_id=session_id)
+    emit(_ship_outcome_line(result))
+
+
+def _ship_on_exit(
+    harness_home: Path,
+    *,
+    repo: str | None,
+    session_id: str,
+    emit: Callable[[str], None],
+) -> None:
+    """Ship the Workspace back on REPL exit — best-effort, non-fatal, silent no-op otherwise (§8).
+
+    The exit counterpart to the ``/ship`` command (task 083 AC5). Runs in the shutdown sequence *after*
+    ``close_executor`` (which already ran the modal export sweep), so it reads the final host Workspace
+    directly — no export here. **Silent no-op** in ``none`` mode / no-repo (returning before importing
+    the hand-back keeps the ``none`` path free of any sandbox module — §9) and on a skip (an unchanged /
+    non-git Workspace → ``branch=None``), so those sessions stay byte-identical (AC7). Only a real ship
+    (or a push failure) emits its one outcome line — which names the branch on failure. Fully
+    **best-effort**: any hand-back error is logged, never raised, so it can never block exit or mask the
+    ``Decode - bye.`` line — exactly like the memory / LSP / executor teardown steps beside it.
+    """
+    if settings.sandbox_mode == "none" or repo is None:
+        return
+    from decode.sandbox.handback import ship_workspace
+
+    try:
+        result = ship_workspace(harness_home, repo=repo, session_id=session_id)
+    except Exception:
+        logger.warning("sandbox hand-back on exit failed; continuing shutdown", exc_info=True)
+        return
+    if result.branch is not None:
+        emit(_ship_outcome_line(result))
 
 
 # The friendly inline line for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirrors the
@@ -798,6 +904,8 @@ async def run_app(
     resume: str | None = None,
     agent: str = _DEFAULT_AGENT,
     mode: str | None = None,
+    repo: str | None = None,
+    local: bool = False,
 ) -> None:
     """Run the REPL until ``Ctrl-D`` or ``/quit``, routing input into the harness.
 
@@ -824,6 +932,12 @@ async def run_app(
     ``select_agent``, which resets the gate to the agent's default). The CLI validated it, so an
     unknown value here is logged and ignored (never crashes the launch).
 
+    ``repo`` / ``local`` are the sandbox Workspace clone-at-launch (``--repo`` / ``--local``,
+    resolved against ``SANDBOX_REPO`` by the cli; ADR-0012 §3). In a sandbox mode a ``repo`` is
+    ``git clone``d into the isolated Workspace (``local`` → a fast local clone), degrading to an
+    empty Workspace on a clone failure. The CLI guards ``--repo`` in ``none`` mode, so here ``repo``
+    is ``None`` whenever ``SANDBOX_MODE=none`` and the plain REPL stays byte-identical.
+
     The single input loop has three control surfaces, all on the **one** input surface (ADR-0003
     §9): the ``/agent`` / ``/mode`` slash commands (parsed before submit) and the Shift+Tab mode
     cycle keybind, alongside the two awaiting-decision modes (see module docstring): when the
@@ -849,16 +963,39 @@ async def run_app(
     # session carries history (§1).
     decisions = DecisionChannel()
     agent = build_agent()
+
+    # Harness Home is the launch cwd (ADR-0012 §6): every harness artifact — the permission file, the
+    # session log, MEMORY.md, the skills catalog — anchors here, even when the agent's tool scope
+    # (``deps.cwd``) moves into an isolated Workspace in a sandbox mode. The permission file is anchored
+    # explicitly to Harness Home so it survives the tool-scope move (``none`` mode: the two are equal).
+    harness_home = Path.cwd()
+    permissions_file = harness_home / settings.permissions_file
+
     # The gate loads the user's optional allow/deny rules from ``.decode/settings.json`` (ADR-0003
     # §4); a missing/malformed file is non-fatal (empty rules → mode-only). The interactive
     # ``a``/``always`` answer persists into and reloads this same file via the resolver below.
-    gate = PermissionGate(user_rules=rules.load_rule_set(settings.permissions_file))
+    gate = PermissionGate(user_rules=rules.load_rule_set(permissions_file))
+
+    # In a sandbox mode the agent's whole tool scope becomes the isolated Workspace (ADR-0012 §3,6):
+    # ``deps.cwd`` = ``.decode/sandbox`` (a ``git clone`` of ``--repo`` / ``SANDBOX_REPO``, else empty),
+    # so the file/search tools + ``bash`` operate there while harness artifacts stay at Harness Home.
+    # Only the Workspace PATH is resolved here (deps needs it below); the actual clone + eager warm-up
+    # run together in the sandbox block further down, where ``emit_line`` exists to show progress. The
+    # path is stable, so cloning into it after ``deps`` is built is fine. ``none`` keeps
+    # ``cwd == harness_home`` — byte-identical. The sandbox import stays lazy (§9).
+    tool_scope = harness_home
+    if settings.sandbox_mode != "none":
+        from decode.sandbox.workspace import workspace_dir
+
+        tool_scope = workspace_dir(harness_home)
+
     deps = AgentDeps(
-        cwd=Path.cwd(),
+        cwd=tool_scope,
+        harness_home=harness_home,
         emit=_on_event,
         gate=gate,
         resolve_permission=_make_permission_resolver(
-            decisions, console, gate=gate, permissions_file=settings.permissions_file
+            decisions, console, gate=gate, permissions_file=permissions_file
         ),
         resolve_user_question=_make_user_question_resolver(decisions, console),
     )
@@ -885,7 +1022,9 @@ async def run_app(
 
     session: PromptSession[object] = PromptSession(
         key_bindings=_build_key_bindings(on_cycle_mode=cycle_mode),
-        completer=SlashCompleter(deps.cwd),
+        # The slash-command menu lists the project skills — a harness artifact, so from Harness Home
+        # (not the Workspace ``deps.cwd``, which in a sandbox mode holds only the seeded copy). §6.
+        completer=SlashCompleter(harness_home),
         complete_while_typing=True,
         # Re-render the footer on a timer so the "working…" spinner animates while a turn runs in
         # the background (without this the footer only repaints on keystrokes).
@@ -899,7 +1038,10 @@ async def run_app(
     # JSONL log this run writes its turns to. The replayed history seeds the handler so the
     # conversation continues; the new log starts after the replayed prefix (already-persisted).
     resumed_history = _load_resume_history(resume, console)
-    session_log = SessionLog.create(settings.sessions_dir, cwd=deps.cwd)
+    # The session log is a harness artifact: its header records Harness Home (the launch cwd), not the
+    # sandbox Workspace ``deps.cwd`` (ADR-0012 §6). ``sessions_dir`` is process-cwd-relative and so
+    # already lands at Harness Home (decode never chdirs).
+    session_log = SessionLog.create(settings.sessions_dir, cwd=harness_home)
 
     # Hold the handler directly: it owns the cross-turn ``message_history`` the on-exit memory
     # write-back summarizes (the runner keeps it private). One handler per session (§1). Wiring
@@ -914,15 +1056,35 @@ async def run_app(
     )
     runner = Runner(handler, on_event=_on_event)
 
-    # Eager sandbox warm-up (ADR-0011 §4): bring the docker/modal sandbox up NOW — visibly —
-    # instead of invisibly mid-first-turn (the container shows in ``docker ps`` from launch and the
-    # first bash skips the start latency). The progress line prints BEFORE the await because a cold
-    # image pull is slow — a silent hang here would be the exact confusion this fixes. A failure
-    # degrades to the lazy path (the memo is kept, so the first ``bash`` retries and its rendered
-    # infra-failure result carries any persistent problem to the model); the config-level failures
-    # were already caught by the CLI preflight. ``none`` skips the whole block — byte-identical.
+    # Eager sandbox block (ADR-0011 §4; ADR-0012 §3): clone the Workspace, then bring the docker/modal
+    # sandbox up NOW — visibly — instead of invisibly mid-first-turn (the container shows in ``docker
+    # ps`` from launch and the first bash skips the start latency). Every progress line prints BEFORE
+    # its (slow) await — a cold image pull / a large clone would otherwise hang silently. ``none`` skips
+    # the whole block — byte-identical.
     if settings.sandbox_mode != "none":
+        from decode.sandbox.workspace import prepare_workspace_or_empty
+
+        # (1) Clone the repo into the Workspace host-side (ADR-0012 §3). The "cloning" progress line only
+        # prints when a clone will actually happen — a repo is requested AND the Workspace is still empty
+        # (a non-empty Workspace is reused, never re-cloned). A clone failure degrades to an empty
+        # Workspace + one friendly line (never a crash); ``deps.cwd`` is unchanged (same stable path).
+        if repo is not None and not any(deps.cwd.iterdir()):
+            emit_line(f"Decode - cloning {repo} into the workspace…")
+        _workspace, clone_error = prepare_workspace_or_empty(harness_home, repo=repo, local=local)
+        if clone_error is not None:
+            emit_line(
+                f"Decode: could not clone {repo} ({clone_error}); starting with an empty workspace."
+            )
+
+        # (2) Warm the executor against the resolved Workspace — ``deps.cwd`` IS the Workspace (the
+        # single tree both ``bash`` and the file tools operate on, ADR-0012 §4,6), passed verbatim
+        # (never re-derived — that would double-nest a ``.decode/sandbox``). For modal the warm-up also
+        # uploads the Workspace, so it gets its own progress line before the (slow) await. A warm-up
+        # failure degrades to the lazy path (memo kept; the first op retries), config-level failures
+        # having already been caught by the CLI preflight.
         emit_line(f"Decode - starting {settings.sandbox_mode} sandbox ({settings.sandbox_image})…")
+        if settings.sandbox_mode == "modal":
+            emit_line("Decode - uploading the workspace to the modal sandbox…")
         try:
             await warm_executor(deps.cwd)
         except Exception as exc:
@@ -997,7 +1159,22 @@ async def run_app(
             # so a ``clear`` skill can never shadow it: summarize-then-wipe when idle, a busy line
             # mid-turn — never opening a second prompt.
             if is_clear_command(text):
-                await _handle_clear_command(handler, runner, cwd=deps.cwd, emit=emit_line)
+                # ``/clear``'s summarize-to-MEMORY.md write-back is a harness artifact → Harness Home.
+                await _handle_clear_command(handler, runner, cwd=harness_home, emit=emit_line)
+                continue
+
+            # The git hand-back command (ADR-0012 §8), reserved like ``/compact`` / ``/clear`` (before
+            # the skill branch) so a ``ship`` skill can never shadow it: idle-only, it exports the live
+            # Workspace then ships it as a ``decode/<session-id>`` branch (a friendly line in
+            # ``none``/no-repo). ``session_log.session_id`` names the branch (ADR-0012 §8, task 083).
+            if is_ship_command(text):
+                await _handle_ship_command(
+                    runner,
+                    harness_home=harness_home,
+                    repo=repo,
+                    session_id=session_log.session_id,
+                    emit=emit_line,
+                )
                 continue
 
             # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved
@@ -1008,7 +1185,8 @@ async def run_app(
             skill_cmd = parse_skill_command(text)
             if skill_cmd is not None:
                 name, trailing = skill_cmd
-                turn_input = _handle_skill_command(name, trailing, cwd=deps.cwd, emit=emit_line)
+                # Skills are a harness artifact → resolve from Harness Home, not the Workspace (§6).
+                turn_input = _handle_skill_command(name, trailing, cwd=harness_home, emit=emit_line)
                 if turn_input is not None:
                     await runner.submit(turn_input, intent)
                 continue
@@ -1027,10 +1205,10 @@ async def run_app(
     await runner.wait_idle()
 
     # On-exit memory write-back (ADR-0002 §8): one cheap Gemini call summarizes the session into
-    # a dated line appended to the project-root MEMORY.md, picked up next session by
-    # assemble_memory. The accumulated conversation lives on the handler; ``deps.cwd`` is the
-    # project root. Fully non-fatal — extract_on_exit never raises, so it cannot block exit.
-    await extract_on_exit(handler.message_history, deps.cwd)
+    # a dated line appended to MEMORY.md, picked up next session by assemble_memory. MEMORY.md is a
+    # harness artifact, so it anchors at Harness Home (the launch cwd), NOT the sandbox Workspace
+    # ``deps.cwd`` (ADR-0012 §6). Fully non-fatal — extract_on_exit never raises, so it cannot block exit.
+    await extract_on_exit(handler.message_history, harness_home)
 
     # On-exit LSP teardown (ADR-0007 §6): shut down every Language Server spawned this session so no
     # ``ty server`` child orphans. A cheap no-op when none was spawned (lazy — the common case) and
@@ -1049,5 +1227,12 @@ async def run_app(
         await close_executor()
     except Exception:
         logger.warning("sandbox teardown on exit failed; continuing shutdown", exc_info=True)
+
+    # On-exit git hand-back (ADR-0012 §8): ship the Workspace back as a decode/<session-id> Session
+    # Branch host-side, after ``close_executor`` has run the modal export sweep. Best-effort/non-fatal
+    # like the memory/LSP/executor steps above — never blocks exit, on failure its one line names the
+    # branch; a silent no-op in ``none`` mode / no-repo / unchanged (byte-identical, AC7). ``repo`` is
+    # the launch flag (None in ``none`` mode by the CLI guard); the branch is named from the SessionLog.
+    _ship_on_exit(harness_home, repo=repo, session_id=session_log.session_id, emit=emit_line)
 
     console.print(render.render_event(events.AssistantTextDelta(text="Decode - bye.")))

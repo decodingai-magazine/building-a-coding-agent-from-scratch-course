@@ -312,15 +312,28 @@ Tune it in `.env` — every setting is optional with a safe default:
 
 ## Sandboxing
 
-By default `decode` runs model-chosen `bash` commands as a **host subprocess** in your working directory — fast, and byte-identical to every earlier milestone. When you want a boundary around those commands, set the **Sandbox Mode** (`SANDBOX_MODE`) and `decode` runs them inside a **Sandbox** instead, behind one execution seam. The design and the full isolation-backend comparison are recorded in [`docs/adr/0011-sandboxing-and-credential-proxy.md`](docs/adr/0011-sandboxing-and-credential-proxy.md).
+By default `decode` runs model-chosen `bash` commands as a **host subprocess** in your working directory, and the file tools (`read` / `write` / `edit` / `glob` / `grep`) edit that directory directly — fast, and byte-identical to every earlier milestone. Set the **Sandbox Mode** (`SANDBOX_MODE=docker` or `modal`) and `decode` instead gives the agent a **fully isolated Workspace**: its *whole* tool scope — the file tools **and** `bash` — operates inside a `git clone` of a repo you point it at, contained behind one execution seam, while decode's own artifacts (sessions, memory, logs, the permission file) stay put in your launch directory. The design is in [`docs/adr/0012-isolated-workspace.md`](docs/adr/0012-isolated-workspace.md), which supersedes the additive `bash`-only sandbox of [ADR-0011](docs/adr/0011-sandboxing-and-credential-proxy.md).
 
-| `SANDBOX_MODE` | Where `bash` runs | Semantics |
+| `SANDBOX_MODE` | Where the tools run | The Workspace |
 |---|---|---|
-| `none` (default) | a host subprocess, pinned to your working directory | today's behavior — **zero change**; no Docker or Modal needed |
-| `docker` | one session-persistent **local** container over the project's `.decode/sandbox/` scratch | a **persistent shell**: `cd` / `export` / `pip install` carry across `bash` calls; `/workspace` is the host-visible `.decode/sandbox/` scratch — the repo tree is **not** mounted (repo files stay with the host-side file tools), and `.decode/skills/` rides in read-only so skill scripts run. A timeout kills+restarts the shell (cwd resets to `/workspace`, env cleared) and the reply says so |
-| `modal` | one session-persistent **remote** `modal.Sandbox`, skills-seeded scratch | nothing runs on your machine; `/workspace` starts **empty except your project's `.decode/skills/`** (seeded so skill scripts run remotely — nothing else is synced) — the model fetches other code via `git clone` / `git fetch`; filesystem changes persist across calls but `cd` / `env` reset per call; a sandbox that outlives its `SANDBOX_TIMEOUT_S` lifetime mid-session is replaced on the next `bash` and the reply says the filesystem was reset |
+| `none` (default) | a host subprocess + direct-pathlib file tools, in your working directory | there is none — today's behavior, **zero change**; no Docker or Modal needed |
+| `docker` | one session-persistent **local** container | `/workspace` is a **live bind mount** of the host `.decode/sandbox/` — the file tools and `bash` share it, always truthful (a `bash` write shows up in `read`, a `rm` in `glob`) |
+| `modal` | one session-persistent **remote** `modal.Sandbox` | nothing runs on your machine; `/workspace` is **bootstrap-uploaded** once at launch, file ops go straight against the remote filesystem, and it's exported back to the host on exit / `/ship` |
 
-The mode is chosen **once at startup** and fixed for the session, and the sandbox **starts eagerly at launch**: a `Decode - starting <mode> sandbox …` progress line prints, then the banner carries a `sandbox:<mode>` segment — so `docker ps` shows the container before any `bash` runs and the first command skips the start latency (a failed warm-up degrades to lazy with one friendly line). The `bash` tool description adapts per mode so the model knows the live rules (docker's persistent shell vs modal's remote scratch) and is never surprised at runtime. `bash` stays gated exactly as before — the Sandbox is defense-in-depth *beneath* the same approval prompt.
+Both sandbox modes are **one unified executor**: the Workspace is a `git clone` of `--repo` (or `SANDBOX_REPO`) — or an empty scratch if you give none — and each `bash`/tool exec is **fresh** (the filesystem persists across calls, but `cd` / `export` don't — chain them: `cd /workspace/app && …`). The sandbox **starts eagerly at launch** (a `Decode - starting <mode> sandbox …` line, then a `sandbox:<mode>` banner segment — so `docker ps` shows the container before any `bash` runs), and `bash` stays gated exactly as before — the Sandbox is defense-in-depth *beneath* the same approval prompt.
+
+**Work on any repo, and get a branch back.** Point `decode` at a repo and it clones it into the Workspace at launch; when you finish it pushes your work back as a branch — with your own git credentials, and no secret ever inside the sandbox:
+
+```bash
+# clone a repo into an isolated docker Workspace and work on it:
+SANDBOX_MODE=docker decode --repo git@github.com:you/project.git
+#   … the agent reads, edits, and runs bash entirely inside /workspace …
+/ship          # or just quit — decode pushes a `decode/<session-id>` branch back to the repo
+```
+
+- **`--repo <url-or-path>`** clones a URL or a local path (add **`--local`** for a fast `git clone --local` of a local path) at its committed `HEAD`, using your **ambient git credentials** (SSH agent / credential helper). A bad repo degrades to an empty Workspace with one friendly line, never a crash; `--repo` without a sandbox mode is a friendly config error. It also works headless: `SANDBOX_MODE=docker decode run --repo <url> "<task>"`.
+- **Hand-back on exit or `/ship`.** decode commits any uncommitted model work (your model's own commits are preserved, never rewritten), points a deterministic **`decode/<session-id>`** branch at the result, and `git push`es it: `--repo <URL>` lands the branch on the **remote**, `--repo <local path>` in the **local source repo**. Every git command runs **host-side** — no credential ever enters the sandbox (the same guarantee the Credential Proxy below upholds).
+- **Never lose results.** If the push can't reach the origin, the branch still exists locally in `.decode/sandbox` and decode names it so you can push it yourself. An unchanged Workspace (nothing committed, nothing dirty) is skipped. Turning a pushed branch into a PR (`gh pr create`) is planned for a later milestone.
 
 **Startup guard.** Like the provider-key guard, a selected backend that isn't available fails with one friendly line and a non-zero exit (never a traceback), in both the REPL and the headless `decode run` / `decode replay` pre-flight:
 
@@ -332,8 +345,49 @@ Those account tokens (`modal token set`, i.e. `MODAL_TOKEN_ID` / `MODAL_TOKEN_SE
 Tune it in `.env` — every setting is optional with a safe default:
 
 - `SANDBOX_MODE` (default `none`) — `none` / `docker` / `modal`.
-- `SANDBOX_IMAGE` (default `ghcr.io/astral-sh/uv:python3.12-bookworm-slim`) — the **Worker** image (`docker` pulls it; `modal` maps it via `Image.from_registry`). Must include `bash`; the default is astral's `uv` variant of python-slim, so both sandboxes come **preconfigured with `uv`** and skill scripts run via `uv run` out of the box.
+- `SANDBOX_REPO` (default empty) — the repo (URL or local path) cloned into the Workspace at launch; the `--repo` flag overrides it and `--local` picks a fast local clone. Empty means an empty Workspace. The **hand-back needs no extra variable** — it reuses `--repo` / `SANDBOX_REPO` and your ambient git credentials.
+- `SANDBOX_IMAGE` (default `ghcr.io/astral-sh/uv:python3.12-bookworm-slim`) — the **Worker** image (`docker` pulls it; `modal` maps it via `Image.from_registry`). Must include `bash`; the default is astral's `uv` variant of python-slim, so both sandboxes come **preconfigured with `uv`** and skill scripts run via `uv run` out of the box. **git** isn't in the slim base, so each backend adds it (modal bakes an `apt_install("git")` layer; docker installs it into the container at startup) — a model `git` command in the Workspace just works.
 - `SANDBOX_TIMEOUT_S` (default `600.0`) — max lifetime of a **remote** (modal) Sandbox before Modal reaps it (docker's session container has no lifetime cap).
+- `SANDBOX_GIT_USER_NAME` / `SANDBOX_GIT_USER_EMAIL` (default `decode` / `decode@localhost`) — the git identity preconfigured in the Workspace (`git config --global`), so a model `git commit` succeeds instead of erroring *"Please tell me who you are"*. The default matches the identity the hand-back stamps its own capture commit with. Set them to your own (e.g. `SANDBOX_GIT_USER_NAME="$(git config user.name)"`) to author the model's commits as yourself, or both empty to skip. **Note:** this is only the commit *identity* — pushing a branch / opening a PR needs *credentials* (below).
+- `SANDBOX_GIT_TOKEN` (default empty) — **one** git token that lets the model `git push` its branch / `gh pr create` **from inside the sandbox** on **both** backends (results go remote→remote, no host-side export). Set it once; each backend injects it its own way — the deliberate **docker vs modal split** (ADR-0012 §10): **modal** puts it **directly** in the sandbox env (`GITHUB_TOKEN` via `modal.Secret` + a baked git credential helper), so it's readable in-sandbox; **docker** (headless) feeds it to the [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret), which **auto-engages** when this is set **non-empty** and injects the auth header **after egress**, so the worker holds no token (and git is installed into that worker so its `git push` over the injected header has a client). Because modal keeps it in the sandbox, use a **fine-grained, repo-scoped PAT** (Contents + Pull requests). Empty — unset or an explicit `SANDBOX_GIT_TOKEN=` — ⇒ inject nothing (the docker proxy stays down); the credential-free path stays the host-side hand-back above.
+
+### Quickstart — try each mode
+
+Four ways to launch it, one per row of the table above. Each still gates `bash` / `write` exactly like `none`; run the **check** in a second terminal to see the isolation for yourself. `modal` needs `modal token set` first.
+
+**1 · docker, no repo** — an isolated empty scratch:
+
+```bash
+SANDBOX_MODE=docker decode
+```
+
+The banner shows `sandbox:docker` and `docker ps` lists the container **at launch** (before any `bash` runs); `ls /workspace` shows only `.decode/skills/`, and a `write` lands under the host `.decode/sandbox/`, never in your tree. Fresh-exec: `export X=1` then a second `bash` `echo $X` prints empty (the filesystem persists across calls, the shell doesn't), and a symlink escape (`ln -s /etc/passwd evil`, then `read evil`) is refused.
+
+**2 · docker, with a repo** — clone in, branch back out:
+
+```bash
+SANDBOX_MODE=docker decode --repo /path/to/repo --local   # or --repo <git-url>
+```
+
+`/workspace` is the clone (`git -C /workspace log -1` matches its HEAD); change a file, then `/ship` (or quit) lands a `decode/<session-id>` branch in the source repo. The push ran **host-side** with no secret in the sandbox — `docker exec <id> env | grep -i token` prints nothing.
+
+**3 · modal, no repo** — the same, but nothing runs on your machine:
+
+```bash
+SANDBOX_MODE=modal decode
+```
+
+`modal container list` shows it running, and a `bash` `uname -a` reports a remote Linux host, not your Mac. A `git clone` into `/workspace` persists across `bash` calls; the Workspace is swept back to `.decode/sandbox/` on exit.
+
+**4 · modal, with a repo** — the clone is bootstrap-uploaded remotely, branch back:
+
+```bash
+SANDBOX_MODE=modal decode --repo /path/to/repo --local
+```
+
+The clone is uploaded to the remote `/workspace` at launch; `/ship` (or quit) sweeps it back and pushes `decode/<session-id>` host-side, exactly as docker does.
+
+The offline half of the capstone proves all four with **no key and no infra** (the real docker/modal legs skip cleanly when unavailable): `uv run pytest tests/integration/test_sandbox_capstone.py`.
 
 ### Isolation honesty
 
@@ -347,6 +401,10 @@ gVisor / Kata are **zero-code** upgrades a Linux operator gets by setting the do
 ### Credential Proxy (a Worker that holds no secret)
 
 A sandboxed **Worker** sometimes needs to make an authenticated tool call — but a prompt-injected agent can read anything in the Worker's environment, so no token should ever live there. The **Credential Proxy** (headless + docker only, **opt-in**) solves this the canonical way: the Worker is pointed at a `mitmproxy` container that injects the credential **after** the request has left the Worker, so the Worker holds no secret and the resolved credentials live only in the proxy container's env. Design in ADR-0011 §6.
+
+This is the **docker** path. **Modal** can't run a co-located proxy, so it takes the simpler, less-hardened route — inject a scoped token straight into the sandbox via `SANDBOX_GIT_TOKEN` (above). That per-backend trade-off is ADR-0012 §10.
+
+> **GitHub shortcut.** For the common *push a branch / open a PR* case you need **none** of the setup below — just set `SANDBOX_GIT_TOKEN` (above) **non-empty**. The docker proxy **auto-engages** and builds the two GitHub header rules (Bearer for `api.github.com`, Basic for `github.com`) from that one token — the same token modal direct-injects — and git is installed into the proxy-wired worker so its `git push` over the Basic rule has a client (worker still token-free). The three pieces below are the **general** path for any *other* host/header.
 
 Set it up in three pieces:
 
@@ -377,6 +435,8 @@ Set it up in three pieces:
    ```
 
 The Worker's request is authenticated though it holds no token — confirm with `docker exec <worker-id> env | grep -i token` (nothing). Egress is **cooperative** (the Worker is *pointed* at the proxy, not forced through it), so this is not an exfiltration barrier; an internal-only default-deny network is the upgrade path.
+
+That whole boundary — authenticated request out, empty-token env in the Worker — is exercised end-to-end (Docker required) by `uv run pytest tests/integration/test_sandbox_capstone.py -k credential_proxy`, no PAT of your own needed.
 
 This sandbox **Credential Proxy** (a *tool* credential for the Worker) is distinct from the [credentials proxy](#credentials-proxy-keep-the-model-key-out-of-the-flow-payload) above, which keeps the *model* key out of the flow payload by hydrating `Settings` — different secret, different mechanism.
 

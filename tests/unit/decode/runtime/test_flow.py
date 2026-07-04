@@ -10,6 +10,8 @@ the checkpoint cache on a re-run.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from kitaru.adapters.pydantic_ai import KitaruAgent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
@@ -216,3 +218,99 @@ def test_build_hitl_runtime_agent_threads_the_model_override_to_the_inner_agent(
     assert isinstance(overridden, KitaruAgent)
     assert overridden.model.model_name == "gemini-2.5-pro"
     assert default.model.model_name == default_id
+
+
+# --- Harness-Home split + headless tool scope (ADR-0012 §6) -----------------------------------
+
+
+def test_build_headless_deps_defaults_cwd_to_harness_home():
+    """none mode: ``cwd`` defaults to the launch cwd and ``harness_home`` equals it (byte-identical)."""
+    deps = flow_mod._build_headless_deps()
+
+    assert deps.cwd == Path.cwd()
+    assert deps.harness_home == Path.cwd()
+
+
+def test_build_headless_deps_splits_the_workspace_from_harness_home(tmp_path):
+    """A sandbox mode: ``cwd`` is the Workspace (tool scope), ``harness_home`` stays the launch cwd."""
+    workspace = tmp_path / "ws"
+    deps = flow_mod._build_headless_deps(workspace)
+
+    assert deps.cwd == workspace  # file/search tools + bash operate here
+    assert deps.harness_home == Path.cwd()  # harness artifacts (memory, skills) anchor here
+
+
+def test_prepare_headless_tool_scope_is_the_launch_cwd_in_none_mode(monkeypatch):
+    """none mode: no Workspace, no warm — the tool scope is just the launch cwd (§6)."""
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "none")
+
+    assert flow_mod._prepare_headless_tool_scope() == Path.cwd()
+
+
+def test_prepare_headless_tool_scope_prepares_and_warms_the_workspace_in_a_sandbox(
+    monkeypatch, tmp_path
+):
+    """A sandbox mode: prepare the Workspace, warm the executor against it, and return it as the scope."""
+    from unittest.mock import AsyncMock
+
+    workspace = tmp_path / ".decode" / "sandbox"
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(
+        "decode.sandbox.workspace.prepare_workspace",
+        lambda home, *, repo=None, local=False: workspace,
+    )
+    warm = AsyncMock()
+    monkeypatch.setattr("decode.tools.bash.warm_executor", warm)
+
+    scope = flow_mod._prepare_headless_tool_scope()
+
+    assert scope == workspace  # returned as deps.cwd
+    warm.assert_awaited_once_with(workspace)  # eagerly started against the Workspace
+
+
+def test_prepare_headless_tool_scope_threads_repo_and_local_to_the_clone(monkeypatch, tmp_path):
+    """A sandbox mode with ``--repo`` / ``--local``: the resolved repo + local flag reach the clone (§3)."""
+    from unittest.mock import AsyncMock
+
+    workspace = tmp_path / ".decode" / "sandbox"
+    captured: dict[str, object] = {}
+
+    def _fake_prepare(home, *, repo=None, local=False):
+        captured["home"] = home
+        captured["repo"] = repo
+        captured["local"] = local
+        return workspace
+
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr("decode.sandbox.workspace.prepare_workspace", _fake_prepare)
+    monkeypatch.setattr("decode.tools.bash.warm_executor", AsyncMock())
+
+    scope = flow_mod._prepare_headless_tool_scope("/some/repo", True)
+
+    assert scope == workspace
+    assert captured["repo"] == "/some/repo"  # the resolved --repo threaded to the clone
+    assert captured["local"] is True  # ...and the --local flag too
+
+
+def test_prepare_headless_tool_scope_degrades_to_empty_on_a_clone_failure(monkeypatch, tmp_path):
+    """A clone failure degrades to an empty Workspace instead of crashing the headless run (§3)."""
+    from unittest.mock import AsyncMock
+
+    workspace = tmp_path / ".decode" / "sandbox"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(
+        "decode.sandbox.workspace.prepare_workspace",
+        lambda home, *, repo=None, local=False: (_ for _ in ()).throw(
+            RuntimeError("git clone failed")
+        ),
+    )
+    monkeypatch.setattr("decode.sandbox.workspace.workspace_dir", lambda home, *_a, **_k: workspace)
+    warm = AsyncMock()
+    monkeypatch.setattr("decode.tools.bash.warm_executor", warm)
+
+    scope = flow_mod._prepare_headless_tool_scope("/broken/repo")
+
+    # Degraded to the empty Workspace path (never raised), and still warmed against it.
+    assert scope == workspace
+    warm.assert_awaited_once_with(workspace)

@@ -65,11 +65,17 @@ async def skill(ctx: RunContext[AgentDeps], name: str) -> str:
     ``git commit`` run through the gated ``bash`` tool, which default mode asks for and plan mode
     denies (ADR-0004 §7).
     """
-    catalog = load_skills(ctx.deps.cwd)
+    # Skills are HARNESS artifacts: load them from ``harness_home`` (the launch cwd), not ``cwd`` — in a
+    # sandbox mode ``cwd`` is the Workspace, but the project's ``.decode/skills`` catalog stays anchored at
+    # Harness Home (ADR-0012 §6). The payload's resource paths are ``harness_home``-relative and, because
+    # skills are seeded into ``<workspace>/.decode/skills`` too, the SAME relative path resolves for the
+    # workspace-scoped ``read`` / ``bash`` (ADR-0012 §5). In ``none`` mode the two roots are equal.
+    home = ctx.deps.harness_home or ctx.deps.cwd
+    catalog = load_skills(home)
     found = catalog.get(name)
     if found is None:
         available = ", ".join(sorted(catalog))
         logger.debug("skill dispatcher: unknown skill %r (available: %s)", name, available)
         raise ModelRetry(f"No skill named {name!r}. Available skills: {available}.")
     logger.debug("skill dispatcher returning %r payload (source=%s)", name, found.source)
-    return format_skill_payload(found, cwd=ctx.deps.cwd)
+    return format_skill_payload(found, cwd=home)

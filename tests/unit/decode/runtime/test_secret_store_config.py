@@ -256,8 +256,9 @@ def test_flow_payload_carries_only_the_task_not_the_secret_value(monkeypatch, ru
     from zenml.client import Client
 
     run = Client().get_pipeline_run(handle.exec_id)
-    # task + the Model Override input (``model=None`` here) now ride as flow params (ADR-0010 §2).
-    assert set(run.config.parameters) == {"task", "model"}
+    # task + the Model Override + the Workspace clone inputs (repo/local, ADR-0012 §3) ride as flow
+    # params (ADR-0010 §2); none is a secret, and the hydrated secret value appears nowhere.
+    assert set(run.config.parameters) == {"task", "model", "repo", "local"}
     assert run.config.parameters["task"] == "summarize the repository"
     assert sentinel not in run.config.model_dump_json()
 
@@ -303,6 +304,7 @@ def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
     from zenml.client import Client
 
     run = Client().get_pipeline_run(handle.exec_id)
-    # task + the Model Override input (``model=None`` here) now ride as flow params (ADR-0010 §2).
-    assert set(run.config.parameters) == {"task", "model"}
+    # task + the Model Override + the Workspace clone inputs (repo/local, ADR-0012 §3) ride as flow
+    # params (ADR-0010 §2); none is a secret, and the raw key appears nowhere in the payload.
+    assert set(run.config.parameters) == {"task", "model", "repo", "local"}
     assert raw_key not in run.config.model_dump_json()  # no raw key in the payload

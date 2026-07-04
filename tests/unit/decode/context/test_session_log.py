@@ -102,6 +102,14 @@ def test_create_names_the_file_from_the_timestamp_and_uuid(tmp_path: Path):
     assert log.path.parent == tmp_path
 
 
+def test_session_id_recovers_the_id_from_the_filename(tmp_path: Path):
+    # The session id is recoverable from an open log (the task-083 git hand-back names its Session
+    # Branch decode/<session-id>): it is the segment after the timestamp in the filename, not the ts.
+    log = SessionLog.create(tmp_path, cwd=tmp_path, now=_NOW, session_id=_UUID)
+
+    assert log.session_id == str(_UUID)
+
+
 # --------------------------------------------------------------------------------------------
 # append_turn — typed message batches appended, append-only (header never rewritten)
 # --------------------------------------------------------------------------------------------

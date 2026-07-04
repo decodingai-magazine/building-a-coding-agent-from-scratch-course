@@ -13,8 +13,9 @@ OS sandbox + classifier are M8).
 is now **live** (ADR-0011 §4): the cached ``_get_executor()`` seam selects by ``SANDBOX_MODE`` on
 first use — ``none`` keeps the host :class:`~decode.tools.exec.LocalExecutor` (byte-identical to
 before), ``docker`` / ``modal`` lazily swap in the sandbox executor from :mod:`decode.sandbox`.
-``bash`` itself stays infra-agnostic; the model is told the active mode's semantics through the
-mode-specific tool **description** (:func:`bash_description`, wired via the registry ``prepare=``).
+``bash`` itself stays infra-agnostic; the model is told the sandbox semantics through the tool
+**description** (:func:`bash_description`, wired via the registry ``prepare=``) — one unified
+sandbox paragraph for ``docker`` AND ``modal`` (ADR-0012 §2 fresh-exec), nothing for ``none``.
 
 **Timeout.** The wall-clock limit defaults to ``settings.bash_timeout_s`` and the model may
 request a shorter one via the optional ``timeout`` argument; a model-supplied value is
@@ -32,7 +33,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import anyio
 from pydantic_ai import ApprovalRequired, ModelRetry, RunContext
 
 from decode.agent.deps import AgentDeps
@@ -40,6 +43,11 @@ from decode.config.settings import settings
 from decode.tools.approval import needs_approval
 from decode.tools.exec import CommandExecutor, ExecResult, LocalExecutor
 from decode.tools.truncate import Truncated, truncate
+
+if TYPE_CHECKING:
+    # Typing only: a runtime import would pull the sandbox executor module into the ``none`` path and
+    # break its laziness (ADR-0012 §9). ``from __future__ import annotations`` keeps this a string.
+    from decode.sandbox.executor import SandboxBackend
 
 logger = logging.getLogger(__name__)
 
@@ -58,35 +66,24 @@ BASH_TOOL_NAME = "bash"
 _EXECUTOR: CommandExecutor = LocalExecutor()
 _executor_selected = False
 
-# The model-facing description paragraphs appended to the ``bash`` tool docstring per SANDBOX_MODE
-# (ADR-0011 §4). ``none`` appends nothing (byte-identical). ``docker`` / ``modal`` tell the model the
-# sandbox's live semantics so it is never surprised (docker's persistent shell + shared /workspace; the
-# empty remote scratch with no local tree). Composed onto the base description by :func:`bash_description`
-# and installed on the tool via the registry's ``prepare=`` callback.
-_DOCKER_DESCRIPTION_SUFFIX = (
-    "Sandbox (SANDBOX_MODE=docker): commands run in a persistent bash shell inside a local Docker "
-    "container. The shell's working directory /workspace is a scratch area backed by the project's "
-    ".decode/sandbox/ directory on the host — the project tree itself is NOT mounted, so repo files "
-    "are reachable only through the read/write/edit tools (which run on the host), never through "
-    "bash; to work with code inside the sandbox, fetch it (e.g. `git clone`) or generate it under "
-    "/workspace. The project's .decode/skills/ directory (if it exists) is mounted read-only at "
-    "/workspace/.decode/skills, so skill scripts can be run directly. Because the shell persists "
-    "across calls, `cd`, `export`, and installations (e.g. `pip install`) carry over from one bash "
-    "call to the next. If a command times out it is killed and the shell is restarted, so its "
-    "working directory resets to /workspace and its environment is cleared — but files already "
-    "written to /workspace survive (they live in .decode/sandbox/ on the host). stdout and stderr "
-    "are merged into a single stream in the command's own order."
-)
-_MODAL_DESCRIPTION_SUFFIX = (
-    "Sandbox (SANDBOX_MODE=modal): commands run in a remote Modal sandbox, not on the local machine. "
-    "The local project tree is NOT present in the sandbox — only the project's .decode/skills/ "
-    "directory (if it exists) is seeded at /workspace/.decode/skills, so skill scripts can be run "
-    "directly. To work with other code you must fetch it yourself (e.g. `git clone` / `git fetch`) "
-    "or generate it. Filesystem changes and installations (e.g. `git clone`, `pip install`) persist "
-    "across bash calls, but each command runs as a fresh process, so shell `cd` and `export` do NOT "
-    "carry over between calls — use absolute paths or chain them in one call (e.g. `cd "
-    "/workspace/app && <command>`). Apart from the seeded skills, the sandbox starts empty at "
-    "/workspace."
+# The ONE model-facing description paragraph appended to the ``bash`` tool docstring in a sandbox mode
+# (ADR-0012 §2 fresh-exec; supersedes ADR-0011's two per-mode suffixes). ``none`` appends nothing
+# (byte-identical). ``docker`` AND ``modal`` share this single paragraph because ADR-0012 collapsed the
+# two backends onto ONE fresh-exec ``SandboxExecutor`` shape — same rules for both: /workspace is the
+# isolated Workspace (a clone of the user's repo, or an empty scratch); the file tools operate on that
+# SAME tree; the filesystem persists across calls but each command is a fresh shell (cd/export do not
+# carry over); a timeout kills only that command. Composed onto the base description by
+# :func:`bash_description` and installed on the tool via the registry's ``prepare=``.
+_SANDBOX_DESCRIPTION_SUFFIX = (
+    "Sandbox: commands run inside an isolated sandbox, not on the host machine. The working directory "
+    "/workspace is the isolated Workspace — a git clone of your repo when one was supplied "
+    "(--repo/SANDBOX_REPO), otherwise an empty scratch — and it is the SAME tree the "
+    "read/write/edit/glob/grep tools operate on, so a file you create with bash is visible to those "
+    "tools and vice-versa. The filesystem persists across bash calls (one sandbox per session), but "
+    "each command runs as a fresh shell, so `cd` and `export` do NOT carry over between calls — use "
+    "absolute paths or chain them in one call (e.g. `cd /workspace/app && <command>`). If a command "
+    "times out, only that command is killed; the sandbox and its filesystem survive. stdout and stderr "
+    "are captured as separate streams."
 )
 
 
@@ -117,8 +114,8 @@ def install_executor(executor: CommandExecutor) -> None:
     """Install ``executor`` as the cached ``bash`` executor for a flow span (ADR-0011 §6).
 
     The one hook the headless Credential Proxy uses: :func:`decode.runtime.flow._sandbox_proxy` builds
-    a proxy-wired :class:`~decode.sandbox.docker_executor.DockerExecutor` host-side and installs it here
-    so every sandboxed ``bash`` in that flow routes through the proxy instead of the plain executor
+    a proxy-wired ``SandboxExecutor(DockerBackend(...))`` host-side and installs it here so every
+    sandboxed ``bash`` in that flow routes through the proxy instead of the plain executor
     :func:`_get_executor` would lazily select. Mirrors
     :func:`decode.tools.sleep.install_durable_sleeper`: it sets the module seam **and** marks selection
     done (so ``_get_executor`` returns this instance, not a freshly-selected one). Paired with
@@ -129,28 +126,28 @@ def install_executor(executor: CommandExecutor) -> None:
     _executor_selected = True
 
 
-async def warm_executor(cwd: Path) -> None:
-    """Eagerly start the selected sandbox backend at REPL launch (ADR-0011 §4).
+async def warm_executor(workspace: Path) -> None:
+    """Eagerly start the selected sandbox backend at REPL launch (ADR-0011 §4; ADR-0012 §2).
 
-    The interactive warm-up: ``tui/app.py`` calls this once right after startup so a ``docker`` /
-    ``modal`` session's sandbox is live (and visible — ``docker ps``) from launch instead of
-    materializing invisibly mid-first-turn. A **no-op in ``none`` mode** — it returns before
-    touching the executor memo, so the plain REPL stays byte-identical (no selection, no
-    ``[sandbox]`` log line, no sandbox import). Otherwise it runs the same lazy selection the
-    first ``bash`` call would (sharing the ``_EXECUTOR`` memo, so the warmed instance IS the one
-    ``bash`` uses) and awaits the executor's ``start(cwd)`` if it defines one — duck-typed like
-    :func:`close_executor`'s ``aclose``/``close`` probe, so the :class:`CommandExecutor` Protocol
-    stays run-only and a start-less executor warms as a no-op. Failures propagate with the memo
-    **kept**: the call site renders one friendly line and the next ``bash`` simply retries from
-    scratch (the executor caches nothing on a failed start). REPL-only: the headless flow installs
-    its own executor (:func:`install_executor`) and must not be warmed.
+    The interactive warm-up: ``tui/app.py`` calls this once right after startup — passing the resolved
+    Workspace directory (``workspace_dir(cwd)``, ADR-0012 §3) — so a ``docker`` / ``modal`` session's
+    sandbox is live (and visible — ``docker ps``) from launch instead of materializing invisibly
+    mid-first-turn. A **no-op in ``none`` mode** — it returns before touching the executor memo, so the
+    plain REPL stays byte-identical (no selection, no ``[sandbox]`` log line, no sandbox import).
+    Otherwise it runs the same lazy selection the first ``bash`` call would (sharing the ``_EXECUTOR``
+    memo, so the warmed instance IS the one ``bash`` uses) and awaits the executor's ``start(workspace)``
+    if it defines one — duck-typed like :func:`close_executor`'s ``aclose``/``close`` probe, so the
+    :class:`CommandExecutor` Protocol stays run-only and a start-less executor warms as a no-op. Failures
+    propagate with the memo **kept**: the call site renders one friendly line and the next ``bash``
+    simply retries from scratch (the executor caches nothing on a failed start). REPL-only: the headless
+    flow installs its own executor (:func:`install_executor`) and must not be warmed.
     """
     if settings.sandbox_mode == "none":
         return
     executor = _get_executor()
     start = getattr(executor, "start", None)
     if start is not None:
-        await start(cwd)
+        await start(workspace)
 
 
 def reset_executor() -> None:
@@ -189,20 +186,63 @@ async def close_executor() -> None:
         close()
 
 
-def bash_description(base: str) -> str:
-    """Compose the model-facing ``bash`` description for the active ``SANDBOX_MODE`` (ADR-0011 §4).
+async def export_executor() -> None:
+    """Sweep the live sandbox Workspace back to the host **mid-session**, leaving it alive (ADR-0012 §5,8).
 
-    ``none`` returns ``base`` **unchanged** (byte-identical to before this task — the caller detects the
-    no-op and leaves the ``ToolDefinition`` untouched). ``docker`` / ``modal`` append the matching
-    sandbox-semantics paragraph so the model is told the live rules (docker's persistent shell + shared
-    ``/workspace``; the empty remote scratch with no local tree) instead of being surprised at runtime.
+    The hook a mid-session ``/ship`` (task 083) triggers: if the cached executor exposes an async
+    ``export`` (the :class:`~decode.sandbox.executor.SandboxExecutor`), it is awaited so ``/workspace`` is
+    swept down to the host ``.decode/sandbox`` — a **docker no-op** (its bind mount is already the host
+    Workspace) and a **modal** ``copy_to_local``-style tar sweep. Unlike :func:`close_executor` it does
+    **not** reset the memo or destroy the sandbox, so the session continues. Duck-typed like
+    :func:`warm_executor`/:func:`close_executor` (the :class:`CommandExecutor` Protocol stays run-only), so
+    it is a safe **no-op** in ``none`` mode (:class:`LocalExecutor` has no ``export``) and when nothing was
+    ever selected (the default :class:`LocalExecutor` memo).
     """
-    mode = settings.sandbox_mode
-    if mode == "docker":
-        return f"{base}\n\n{_DOCKER_DESCRIPTION_SUFFIX}"
-    if mode == "modal":
-        return f"{base}\n\n{_MODAL_DESCRIPTION_SUFFIX}"
-    return base
+    executor = _EXECUTOR
+    export = getattr(executor, "export", None)
+    if export is not None:
+        await export()
+
+
+def active_backend(cwd: Path) -> SandboxBackend | None:
+    """Return the active session's **created** sandbox backend, or ``None`` in ``none`` mode (ADR-0012 §4).
+
+    The file-tool half of the executor seam (mirroring :func:`_get_executor` for ``bash``): the sync
+    ``read`` / ``write`` / ``edit`` / ``glob`` / ``grep`` tools call this to reach the backend they route
+    their byte transport through in a sandbox mode. ``none`` mode returns ``None`` **before touching the
+    memo** — no selection, no ``[sandbox]`` log line, no sandbox import — so the file tools stay on
+    today's direct-pathlib path, byte-identical. In ``docker`` / ``modal`` it shares ``bash``'s ``_EXECUTOR``
+    memo (the **same** container / remote sandbox per session — a tool-written file is visible to ``bash``
+    and vice-versa) and returns the executor's created backend via
+    :meth:`~decode.sandbox.executor.SandboxExecutor.file_backend`.
+
+    Called from the file tools, which Pydantic AI runs in a worker thread, so it bridges to the executor's
+    async ``file_backend`` via :func:`anyio.from_thread.run` (the same sync→async bridge the LSP enricher
+    uses). A non-sandbox / start-less executor (the ``none`` :class:`LocalExecutor`, a fake) yields
+    ``None`` — duck-typed like :func:`warm_executor` / :func:`close_executor`, so the seam stays optional.
+    """
+    if settings.sandbox_mode == "none":
+        return None
+    executor = _get_executor()
+    file_backend = getattr(executor, "file_backend", None)
+    if file_backend is None:
+        return None
+    return anyio.from_thread.run(file_backend, cwd)
+
+
+def bash_description(base: str) -> str:
+    """Compose the model-facing ``bash`` description for the active ``SANDBOX_MODE`` (ADR-0012 §2).
+
+    ``none`` returns ``base`` **unchanged** (byte-identical to before sandboxing — the caller detects the
+    no-op and leaves the ``ToolDefinition`` untouched). ``docker`` AND ``modal`` append the **same**
+    unified :data:`_SANDBOX_DESCRIPTION_SUFFIX`: ADR-0012 collapsed the two backends onto one fresh-exec
+    ``SandboxExecutor`` shape, so the model is told one set of rules (the isolated ``/workspace``
+    Workspace shared by ``bash`` + the file tools; fresh-exec ``cd``/``export`` reset; fs persists)
+    regardless of which backend is active.
+    """
+    if settings.sandbox_mode == "none":
+        return base
+    return f"{base}\n\n{_SANDBOX_DESCRIPTION_SUFFIX}"
 
 
 async def bash(

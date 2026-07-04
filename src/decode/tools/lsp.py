@@ -44,6 +44,7 @@ import logging
 from pydantic_ai import ApprovalRequired, ModelRetry, RunContext
 
 from decode.agent.deps import AgentDeps
+from decode.config.settings import settings
 from decode.services import lsp as lsp_service
 from decode.services.lsp import UNAVAILABLE, Diagnostic, Location
 from decode.tools import files
@@ -72,6 +73,16 @@ _UNAVAILABLE_MESSAGE = (
     "fall back to `read`/`grep`."
 )
 
+# The friendly note when the workspace is a **modal** sandbox (ADR-0012 §7): ``ty`` runs host-side and
+# cannot reach the remote Workspace filesystem, so code intelligence is best-effort-disabled — same
+# ModelRetry-to-`read`/`grep` fallback as the unavailable case, but named so the model is not surprised
+# (ADR-0007's best-effort posture; ty-inside-the-sandbox is the recorded upgrade path). ``none`` +
+# ``docker`` are unaffected (docker's mount is a real host path ``ty`` opens).
+_MODAL_UNAVAILABLE_MESSAGE = (
+    "code intelligence is unavailable in the modal sandbox (the language server cannot reach the "
+    "remote workspace); fall back to `read`/`grep`."
+)
+
 
 async def lsp(
     ctx: RunContext[AgentDeps],
@@ -96,6 +107,12 @@ async def lsp(
     if needs_approval(ctx):
         logger.debug("lsp requires approval (op=%r, path=%r)", op, path)
         raise ApprovalRequired
+
+    if settings.sandbox_mode == "modal":
+        # ty is host-side and cannot reach the remote modal Workspace fs (ADR-0012 §7); disable cleanly
+        # with a friendly note BEFORE path/op checks (deps.cwd is the empty host workspace here).
+        logger.debug("lsp disabled in the modal sandbox (op=%r, path=%r)", op, path)
+        raise ModelRetry(_MODAL_UNAVAILABLE_MESSAGE)
 
     if op not in _VALID_OPS:
         raise ModelRetry(f"Unknown op {op!r}; valid ops are: {', '.join(_VALID_OPS)}.")

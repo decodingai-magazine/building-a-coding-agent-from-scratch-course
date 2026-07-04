@@ -22,22 +22,27 @@ def test_select_unknown_mode_falls_back_to_the_host_local_executor():
     assert isinstance(select_executor("bogus"), LocalExecutor)
 
 
-def test_select_docker_returns_an_inert_docker_executor():
-    from decode.sandbox.docker_executor import DockerExecutor
+def test_select_docker_returns_an_inert_sandbox_executor_over_a_docker_backend():
+    from decode.sandbox.docker_backend import DockerBackend
+    from decode.sandbox.executor import SandboxExecutor
 
     executor = select_executor("docker")
 
-    assert isinstance(executor, DockerExecutor)
-    # Inert construction: the keeper container + shell spin up lazily on the first run() (ADR-0011 §2).
-    assert executor._container_id is None
-    assert executor._shell is None
+    assert isinstance(executor, SandboxExecutor)
+    assert isinstance(executor._backend, DockerBackend)
+    # Inert construction: the keeper container spins up lazily on the first run() (ADR-0012 §2).
+    assert executor._created is False
+    assert executor._backend._container_id is None
 
 
-def test_select_modal_returns_an_inert_modal_executor():
-    from decode.sandbox.modal_executor import ModalExecutor
+def test_select_modal_returns_an_inert_sandbox_executor_over_a_modal_backend():
+    from decode.sandbox.executor import SandboxExecutor
+    from decode.sandbox.modal_backend import ModalBackend
 
     executor = select_executor("modal")
 
-    assert isinstance(executor, ModalExecutor)
-    # Inert construction: the remote sandbox is created (and modal imported) lazily on first run() (§3).
-    assert executor._sandbox is None
+    assert isinstance(executor, SandboxExecutor)
+    assert isinstance(executor._backend, ModalBackend)
+    # Inert construction: the remote sandbox is created (and modal imported) lazily on first run().
+    assert executor._created is False
+    assert executor._backend._sandbox is None

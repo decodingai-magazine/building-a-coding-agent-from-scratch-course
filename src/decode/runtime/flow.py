@@ -215,21 +215,96 @@ def _reap_runtime_executor() -> None:
         loop.close()
 
 
+def _start_runtime_executor(executor: Any, workspace: Path) -> None:
+    """Eagerly start the installed sandbox ``executor`` against ``workspace`` — best-effort (ADR-0012 §2).
+
+    The headless mirror of :func:`decode.tools.bash.warm_executor`: the docker Credential-Proxy flow
+    brings the worker up before the first ``bash`` so its CA is trusted. The ``@flow`` body is sync and
+    ``start`` is async, so it runs on a **dedicated** short-lived loop (like :func:`_reap_runtime_executor`
+    — never :func:`asyncio.run`, which would reset the thread's current loop and orphan ``run_sync``'s).
+    Fresh-exec makes this loop-agnostic: only the container id is captured here, and every later ``exec``
+    / ``docker rm -f`` spawns its own subprocess. A warm-up failure is logged, never raised — the first
+    ``bash`` retries the create lazily and renders any persistent failure to the model.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(executor.start(workspace))
+    except Exception:
+        logger.warning(
+            "[sandbox] headless sandbox warm-up failed; degrading to lazy start", exc_info=True
+        )
+    finally:
+        loop.close()
+
+
+def _warm_headless_executor(workspace: Path) -> None:
+    """Eagerly warm the headless sandbox executor against ``workspace`` — best-effort (ADR-0012 §2,6).
+
+    The headless mirror of the REPL's warm-up (:func:`decode.tools.bash.warm_executor`): it selects the
+    sandbox executor by ``SANDBOX_MODE`` and starts it against the Workspace so ``bash`` *and* the file
+    tools share one live container / remote sandbox. Runs ``warm_executor`` on a **dedicated** short-lived
+    loop (like :func:`_start_runtime_executor` — never :func:`asyncio.run`, which would reset the thread's
+    current loop and orphan ``run_sync``'s). **Idempotent**: on the proxy path the executor
+    :func:`_sandbox_proxy` already installed + started is found and its ``start`` is a no-op; on the
+    non-proxy sandbox path it does the lazy select + start. A warm-up failure is logged, never raised — the
+    first ``bash`` / file op retries the create lazily. ``warm_executor`` is a no-op in ``none`` mode.
+    """
+    from decode.tools.bash import warm_executor
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(warm_executor(workspace))
+    except Exception:
+        logger.warning(
+            "[sandbox] headless sandbox warm-up failed; degrading to lazy start", exc_info=True
+        )
+    finally:
+        loop.close()
+
+
+def _prepare_headless_tool_scope(repo: str | None = None, local: bool = False) -> Path:
+    """The headless agent tool scope: the prepared+warmed Workspace in a sandbox mode, else cwd (§3,6).
+
+    ``none`` → the launch cwd (``deps.cwd == harness_home``, byte-identical). A sandbox mode → the
+    isolated Workspace: :func:`~decode.sandbox.workspace.prepare_workspace_or_empty` ensures
+    ``.decode/sandbox`` and, when ``repo`` is given (``--repo`` / ``SANDBOX_REPO``, resolved by the cli),
+    ``git clone``s it at HEAD (``local`` → a fast local clone; ADR-0012 §3) — degrading to an empty
+    Workspace on a clone failure rather than crashing the headless run. Then :func:`_warm_headless_executor`
+    starts the executor against it (idempotent w.r.t. the :func:`_sandbox_proxy` path, which already cloned
+    + warmed the same Workspace). Returned as ``deps.cwd`` so the file/search tools + ``bash`` operate
+    inside the Workspace while harness artifacts stay at ``Path.cwd()``. The sandbox import stays lazy so
+    ``none`` pulls in no sandbox module (ADR-0012 §9).
+    """
+    if settings.sandbox_mode == "none":
+        return Path.cwd()
+    from decode.sandbox.workspace import prepare_workspace_or_empty
+
+    workspace, _clone_error = prepare_workspace_or_empty(Path.cwd(), repo=repo, local=local)
+    _warm_headless_executor(workspace)
+    return workspace
+
+
 @contextmanager
-def _sandbox_proxy() -> Iterator[None]:
+def _sandbox_proxy(repo: str | None = None, local: bool = False) -> Iterator[None]:
     """Run the docker Credential Proxy for a headless flow span, tear it down on exit (ADR-0011 §6).
 
-    Engaged **only** when ``settings.sandbox_mode == "docker"`` **and**
-    ``settings.sandbox_credential_proxy_enabled`` — otherwise a pure no-op that yields immediately,
-    imports nothing, and touches no seam, so every ``none`` / ``modal`` / proxy-disabled headless flow
-    stays byte-unchanged and the REPL never imports :mod:`decode.sandbox.proxy` or kitaru. When engaged
-    it (1) resolves the credential map host-side from :data:`~decode.sandbox.proxy.DEFAULT_PROXY_RULES`,
-    (2) starts a ``mitmproxy`` addon container on a per-run docker network, (3) installs a proxy-wired
-    :class:`~decode.sandbox.docker_executor.DockerExecutor` as ``bash``'s executor for the flow span
-    (the task-074 seam via :func:`decode.tools.bash.install_executor`), and (4) tears it all down.
+    Engaged when ``settings.sandbox_mode == "docker"`` **and** either
+    ``settings.sandbox_credential_proxy_enabled`` **or** ``settings.sandbox_git_token`` is set (the
+    one-knob GitHub path, ADR-0012 §10) — otherwise a pure no-op that yields immediately, imports
+    nothing, and touches no seam, so every ``none`` / ``modal`` / proxy-disabled headless flow stays
+    byte-unchanged and the REPL never imports :mod:`decode.sandbox.proxy` or kitaru. When engaged
+    it (1) resolves the credential map host-side from :data:`~decode.sandbox.proxy.DEFAULT_PROXY_RULES`
+    (prepending :func:`~decode.sandbox.proxy.github_token_rules` built from ``sandbox_git_token`` when
+    set), (2) starts a ``mitmproxy`` addon container on a per-run docker network, (3) installs a proxy-wired
+    ``SandboxExecutor(DockerBackend(...))`` as ``bash``'s executor for the flow span (the seam via
+    :func:`decode.tools.bash.install_executor`) and eagerly starts it against the Workspace
+    (``prepare_workspace_or_empty`` — cloning ``repo`` at HEAD when given so the worker's ``bash`` sees
+    the repo before the first command; the flow body's :func:`_prepare_headless_tool_scope` then reuses
+    this same populated Workspace, ADR-0012 §3), and (4) tears it all down.
 
-    Teardown order is load-bearing and loop-independent (ADR-0011 §4): reap the **worker** first
-    (:func:`_reap_runtime_executor` — ``docker rm -f`` + reset the bash seam), THEN
+    Teardown order is load-bearing and loop-independent (ADR-0011 §4; trivial under ADR-0012 fresh-exec):
+    reap the **worker** first (:func:`_reap_runtime_executor` — ``docker rm -f`` + reset the bash seam),
+    THEN
     :meth:`~decode.sandbox.proxy.DockerCredentialProxy.stop` the proxy container + remove the network
     (``docker network rm`` fails while the worker is still attached). ``proxy.stop()`` runs even if
     ``proxy.start()`` raised partway, so a half-built proxy still cleans up. Mirrors
@@ -237,28 +312,58 @@ def _sandbox_proxy() -> Iterator[None]:
     on exit) and nests **inside** ``_config_from_secret_store`` so a proxy rule reads config already
     hydrated from the Kitaru secret.
     """
-    if not (settings.sandbox_mode == "docker" and settings.sandbox_credential_proxy_enabled):
+    # `ponytail:` a NON-EMPTY ``SANDBOX_GIT_TOKEN`` auto-engages the proxy (the one-knob GitHub path —
+    # same token modal direct-injects), so docker headless git-auth needs no separate proxy flag; the
+    # flag still enables the proxy for any OTHER ``DEFAULT_PROXY_RULES`` credential. Gate on the resolved
+    # VALUE, mirroring modal's ``if token:`` — an explicit ``SANDBOX_GIT_TOKEN=`` parses to
+    # ``SecretStr("")`` (not ``None``), which must inject NOTHING and leave the proxy down, not engage it
+    # and prepend empty ``Bearer ``/``Basic base64("x-access-token:")`` garbage headers.
+    token = (
+        settings.sandbox_git_token.get_secret_value()
+        if settings.sandbox_git_token is not None
+        else ""
+    )
+    proxy_wanted = settings.sandbox_credential_proxy_enabled or bool(token)
+    if not (settings.sandbox_mode == "docker" and proxy_wanted):
         yield
         return
     # Lazy imports: only an enabled docker headless flow pulls in the sandbox proxy (REPL stays clean).
-    from decode.sandbox.docker_executor import DockerExecutor
+    from decode.sandbox.docker_backend import DockerBackend
+    from decode.sandbox.executor import SandboxExecutor
     from decode.sandbox.proxy import (
         DEFAULT_PROXY_RULES,
         DockerCredentialProxy,
         build_credential_map,
+        github_token_rules,
     )
+    from decode.sandbox.workspace import prepare_workspace_or_empty
     from decode.tools.bash import install_executor
 
-    proxy = DockerCredentialProxy(build_credential_map(DEFAULT_PROXY_RULES))
+    # GitHub rules (from the token) go FIRST so ``api.github.com`` precedes ``github.com`` in the map
+    # (parent-domain matching); any explicit ``DEFAULT_PROXY_RULES`` on the same host then override. Only
+    # a non-empty token contributes rules (an empty one never reaches here — the gate above bailed).
+    rules = list(DEFAULT_PROXY_RULES)
+    if token:
+        rules = github_token_rules(token) + rules
+    proxy = DockerCredentialProxy(build_credential_map(rules))
     try:
         proxy.start()
-        install_executor(
-            DockerExecutor(
+        executor = SandboxExecutor(
+            DockerBackend(
                 network=proxy.network,
                 proxy_env=proxy.worker_proxy_env,
                 ca_cert_host_path=proxy.ca_cert_host_path,
             )
         )
+        install_executor(executor)
+        # Eagerly bring the worker up against the Workspace so its CA is trusted before the first bash,
+        # cloning ``repo`` at HEAD when given (--repo/SANDBOX_REPO, ADR-0012 §3) so the worker sees the
+        # repo from the first command; a clone failure degrades to an empty Workspace, never crashing.
+        # Run on a fresh loop: the sync flow body cannot ``await``, and fresh-exec means the container id
+        # is loop-agnostic (later ``exec`` / ``docker rm -f`` spawn their own subprocesses), so warming
+        # here is safe. The flow body's ``_prepare_headless_tool_scope`` then reuses this populated tree.
+        workspace, _clone_error = prepare_workspace_or_empty(Path.cwd(), repo=repo, local=local)
+        _start_runtime_executor(executor, workspace)
         try:
             yield
         finally:
@@ -310,17 +415,22 @@ def _build_runtime_agent(
     )
 
 
-def _build_headless_deps() -> AgentDeps:
-    """Construct the headless :class:`~decode.agent.deps.AgentDeps` (ADR-0008 §2).
+def _build_headless_deps(cwd: Path | None = None) -> AgentDeps:
+    """Construct the headless :class:`~decode.agent.deps.AgentDeps` (ADR-0008 §2; ADR-0012 §6).
 
-    ``cwd`` is the launch directory; ``emit`` only logs (no TUI); the gate is in **BYPASS** so
-    every gated tool runs inline (no ``ApprovalRequired`` → no Kitaru wait); and both decision
-    resolvers are the headless deny defaults so ``ask_user`` / ``exit_plan_mode`` map to a
-    ``ModelRetry`` instead of hanging. ``active_agent`` defaults (via the dataclass factory) to the
-    full-tool ``build`` persona — the same persona the interactive default uses.
+    ``cwd`` is the agent's **tool scope** — the isolated Workspace in a sandbox mode (passed from
+    :func:`_prepare_headless_tool_scope`), else the launch directory; ``harness_home`` is always the
+    launch cwd, so harness artifacts (memory injection, skills) stay anchored there while the file/search
+    tools + ``bash`` operate in the Workspace. ``cwd=None`` defaults to the launch cwd (the ``none``-mode
+    equal-roots case, byte-identical). ``emit`` only logs (no TUI); the gate is in **BYPASS** so every
+    gated tool runs inline (no ``ApprovalRequired`` → no Kitaru wait); and both decision resolvers are the
+    headless deny defaults so ``ask_user`` / ``exit_plan_mode`` map to a ``ModelRetry`` instead of hanging.
+    ``active_agent`` defaults (via the dataclass factory) to the full-tool ``build`` persona.
     """
+    home = Path.cwd()
     return AgentDeps(
-        cwd=Path.cwd(),
+        cwd=cwd or home,
+        harness_home=home,
         emit=_headless_emit,
         gate=PermissionGate(mode=PermissionMode.BYPASS),
         resolve_permission=_deny_permission_resolver,
@@ -344,7 +454,9 @@ def _capture_runtime_output(output: str) -> str:
 
 
 @flow
-def run_agent_task(task: str, model: str | None = None) -> str:
+def run_agent_task(
+    task: str, model: str | None = None, repo: str | None = None, local: bool = False
+) -> str:
     """Run ``task`` to completion through the durable agent and return its final text (ADR-0008 §1-2).
 
     Sync ``@flow``: build the durable agent (the patchable seam), construct the headless BYPASS
@@ -365,6 +477,12 @@ def run_agent_task(task: str, model: str | None = None) -> str:
     model is byte-unchanged — while a value overrides only the active provider's model id. Because it
     is a flow input, Kitaru can swap it on a what-if Replay (``run_agent_task.replay(..., model=…)``).
 
+    ``repo`` / ``local`` are the **Workspace clone** flow inputs (ADR-0012 §3), resolved by the cli
+    (``--repo`` > ``SANDBOX_REPO``): in a sandbox mode ``_prepare_headless_tool_scope`` ``git clone``s
+    ``repo`` at HEAD into ``/workspace`` (``local`` → a fast local clone). ``None`` (the default, and
+    ``none`` mode) → an empty Workspace, byte-unchanged. Threaded through the seams too, so the proxy
+    path clones the same Workspace the worker mounts, and a Replay reuses the recorded source.
+
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store`, so ``build_agent`` reads config hydrated from the Kitaru secret;
     off (the default) it is a no-op and behaviour is byte-unchanged. It nests
@@ -377,9 +495,10 @@ def run_agent_task(task: str, model: str | None = None) -> str:
     Modal sandbox on completion **and** on error. A no-op in ``none`` mode.
     """
     try:
-        with _config_from_secret_store(), _sandbox_proxy():
+        with _config_from_secret_store(), _sandbox_proxy(repo, local):
+            tool_scope = _prepare_headless_tool_scope(repo, local)
             durable_agent = _build_runtime_agent(model)
-            deps = _build_headless_deps()
+            deps = _build_headless_deps(tool_scope)
             result = durable_agent.run_sync(task, deps=deps)
         output = result.output
         if not isinstance(output, str):
@@ -468,8 +587,8 @@ def _build_hitl_runtime_agent(
     return _to_hitl_durable_agent(build_agent(flow_mode=True, model=model))
 
 
-def _build_hitl_deps() -> AgentDeps:
-    """Construct the headless **gating** deps for the HITL flow (ADR-0008 §3).
+def _build_hitl_deps(cwd: Path | None = None) -> AgentDeps:
+    """Construct the headless **gating** deps for the HITL flow (ADR-0008 §3; ADR-0012 §6).
 
     Unlike the bypass deps (:func:`_build_headless_deps`), the gate runs in
     :attr:`~decode.permissions.types.PermissionMode.DEFAULT` (a *gating* mode) and
@@ -479,10 +598,14 @@ def _build_hitl_deps() -> AgentDeps:
     adapter turns it into a durable approval wait). ``resolve_user_question`` is the durable
     :func:`flow_resolve_user_question` bridge so ``ask_user`` / ``exit_plan_mode`` pause on a wait.
     ``resolve_permission`` stays the deny safety-net: the adapter resolves approvals natively from
-    ``ApprovalRequired`` under ``run_sync``, so this resolver is never reached.
+    ``ApprovalRequired`` under ``run_sync``, so this resolver is never reached. ``cwd`` is the tool scope
+    (the Workspace in a sandbox mode, else the launch cwd) and ``harness_home`` the artifact root, the
+    same Harness-Home split as :func:`_build_headless_deps` (ADR-0012 §6).
     """
+    home = Path.cwd()
     return AgentDeps(
-        cwd=Path.cwd(),
+        cwd=cwd or home,
+        harness_home=home,
         emit=_headless_emit,
         gate=PermissionGate(mode=PermissionMode.DEFAULT),
         resolve_permission=_deny_permission_resolver,
@@ -492,7 +615,9 @@ def _build_hitl_deps() -> AgentDeps:
 
 
 @flow
-def run_agent_task_hitl(task: str, model: str | None = None) -> str:
+def run_agent_task_hitl(
+    task: str, model: str | None = None, repo: str | None = None, local: bool = False
+) -> str:
     """Run ``task`` headlessly with **durable HITL** approvals + ``ask_user`` waits (ADR-0008 §3).
 
     The gating complement of :func:`run_agent_task`: same ``build_agent()``, but under a gating gate
@@ -507,7 +632,9 @@ def run_agent_task_hitl(task: str, model: str | None = None) -> str:
     :func:`_capture_runtime_output`; use :func:`run_hitl_agent_task` to launch and read it back.
 
     ``model`` is the **Model Override** (ADR-0010 §2), threaded to the HITL seam on the same terms as
-    :func:`run_agent_task` (``None`` → ``settings.<provider>_model``, byte-unchanged).
+    :func:`run_agent_task` (``None`` → ``settings.<provider>_model``, byte-unchanged). ``repo`` / ``local``
+    are the **Workspace clone** flow inputs, threaded identically so ``decode run --hitl --repo`` clones
+    the repo into ``/workspace`` (ADR-0012 §3); ``None`` / ``none`` mode → an empty Workspace.
 
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store` (the sleeper nests inside it), so ``build_agent`` reads config
@@ -517,9 +644,10 @@ def run_agent_task_hitl(task: str, model: str | None = None) -> str:
     (:func:`_reap_runtime_executor`, ADR-0011 §4) on completion, error, or the deny-return path.
     """
     try:
-        with _config_from_secret_store(), _sandbox_proxy():
+        with _config_from_secret_store(), _sandbox_proxy(repo, local):
+            tool_scope = _prepare_headless_tool_scope(repo, local)
             durable_agent = _build_hitl_runtime_agent(model)
-            deps = _build_hitl_deps()
+            deps = _build_hitl_deps(tool_scope)
             # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a
             # ``sleep`` in this run pauses on a flow-scope ``kitaru.wait`` (ADR-0008 §4) while a later
             # in-process interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).
@@ -581,7 +709,9 @@ def _load_runtime_output(exec_id: str) -> str:
     )
 
 
-def run_hitl_agent_task(task: str, model: str | None = None) -> HitlRunResult:
+def run_hitl_agent_task(
+    task: str, model: str | None = None, repo: str | None = None, local: bool = False
+) -> HitlRunResult:
     """Launch the HITL flow and return its result or its paused execution id (ADR-0008 §3).
 
     On the local Kitaru stack ``flow.run(...)`` runs the execution in-process and returns once it has
@@ -593,8 +723,9 @@ def run_hitl_agent_task(task: str, model: str | None = None) -> HitlRunResult:
     ``model`` is the **Model Override** (ADR-0010 §2), forwarded to the ``@flow`` as a flow input:
     ``None`` (the default) reads ``settings.<provider>_model``, byte-unchanged; a value overrides only
     the active provider's model id. It is exposed as ``decode run --hitl --model`` (ADR-0010 §4).
+    ``repo`` / ``local`` are the **Workspace clone** flow inputs (ADR-0012 §3), forwarded the same way.
     """
-    handle = run_agent_task_hitl.run(task=task, model=model)
+    handle = run_agent_task_hitl.run(task=task, model=model, repo=repo, local=local)
     status = handle.status
     if status.is_finished and status.is_successful:
         return HitlRunResult(

@@ -90,6 +90,19 @@ async def test_web_fetch_requires_approval_when_not_approved(tmp_path: Path, moc
     handler.assert_not_called()
 
 
+@pytest.mark.parametrize("mode", ["docker", "modal"])
+async def test_web_fetch_stays_gated_in_a_sandbox_mode(tmp_path: Path, mocker, mode: str):
+    # ADR-0012 §7: web_fetch is host-side (it reaches the host network), so it stays GATED even in a
+    # sandbox mode — its behaviour is identical to none mode (no sandbox routing, still defers).
+    mocker.patch.object(web_module.settings, "sandbox_mode", mode)
+    handler = mocker.Mock(side_effect=AssertionError("must not hit the network unapproved"))
+    _mock_transport(handler, mocker)
+
+    with pytest.raises(ApprovalRequired):
+        await web_module.web_fetch(_ctx(tmp_path, approved=False), url="https://example.com")
+    handler.assert_not_called()
+
+
 # --- HTML -> Markdown conversion ------------------------------------------------------------
 
 

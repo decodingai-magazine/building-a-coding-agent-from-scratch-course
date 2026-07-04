@@ -230,9 +230,9 @@ class Settings(BaseSettings):
     # secret-store config source, NOT the deferred sandbox Credential Proxy (header injection).
     runtime_secret_store_config: bool = False
 
-    # --- Sandboxing (ADR-0011) ---
-    # The ``bash`` execution boundary; settings only here — no executor readers yet (they land in
-    # tasks 072-075). ``sandbox_mode`` selects the ``CommandExecutor`` the ``bash`` ``run`` seam uses
+    # --- Sandboxing (ADR-0012; ADR-0011 §1,§5-7 retained) ---
+    # The ``bash`` execution boundary; the sandbox executor + its docker/modal backends read these
+    # settings. ``sandbox_mode`` selects the ``CommandExecutor`` the ``bash`` ``run`` seam uses
     # for the whole process (chosen once at startup, fixed for the session). The default ``none`` keeps
     # today's ``LocalExecutor`` (host subprocess), so every existing ``.env``/test is byte-unchanged.
     # The cli startup guard (task 071) exits with a friendly line — in both the REPL and the headless
@@ -243,22 +243,49 @@ class Settings(BaseSettings):
     # ``modal.Image.from_registry(...)``. Must include ``bash``. The default is astral's uv variant
     # of python-slim — python 3.12 + ``uv`` preinstalled — so BOTH sandboxes come preconfigured to
     # run python via ``uv`` (skill payloads say ``uv run .decode/skills/<name>/scripts/…``, and a
-    # per-session ``pip install uv`` bootstrap would cost seconds on every launch). Read by 072/073.
+    # per-session ``pip install uv`` bootstrap would cost seconds on every launch). git is NOT in the
+    # slim base, so each backend adds it on top (modal bakes an ``apt_install("git")`` layer; docker
+    # installs it into the fresh container at create) — a model ``git`` command in the Workspace works.
     sandbox_image: str = "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
-    # The HOST directory bind-mounted at the docker Worker's ``/workspace`` — the sandbox's writable
-    # scratch, cwd-relative like every ``.decode`` path (created on first use). The project tree is
-    # deliberately NOT mounted: model-chosen ``bash`` can only touch this scratch (plus the read-only
-    # ``skills_dir`` mount), while the file tools keep working on the real tree host-side. Read by 072.
+    # The git identity preconfigured in the sandbox (``git config --global user.name`` / ``user.email``),
+    # so a model ``git commit`` in the Workspace succeeds instead of erroring "Please tell me who you
+    # are". Defaults to the same ``decode`` / ``decode@localhost`` the hand-back stamps its own
+    # dirty-worktree capture commit with (``sandbox/handback.py``), so every decode-authored commit on
+    # the handed-back branch shares one identity. Override to author the model's commits as yourself
+    # (e.g. ``SANDBOX_GIT_USER_NAME="$(git config user.name)"``) or as a bot; set both empty to skip.
+    sandbox_git_user_name: str = "decode"
+    sandbox_git_user_email: str = "decode@localhost"
+    # The one git token for BOTH sandboxes' git push / ``gh pr create`` (ADR-0012 §10) — each backend
+    # honors it its own way (the deliberate **docker = Credential Proxy (cred-free) vs modal = direct
+    # injection** trade-off): **modal** injects it DIRECTLY as ``GITHUB_TOKEN`` (via ``modal.Secret`` +
+    # a baked git credential helper) so it is readable inside the remote sandbox; **docker** (headless
+    # only) feeds it to the Credential Proxy, which auto-engages when this is set NON-EMPTY and injects
+    # the auth header AFTER egress, so the worker holds no token — git is installed into that worker too,
+    # so its ``git push`` over the injected header has a client. Empty — unset (the default) or an
+    # explicit ``SANDBOX_GIT_TOKEN=`` — injects nothing (the proxy stays down); rely on the host-side git
+    # hand-back. Because modal keeps the token in the sandbox, use a **fine-grained PAT scoped to the
+    # target repo** (Contents + Pull requests), never a broad classic token.
+    sandbox_git_token: SecretStr | None = None
+    # The HOST directory bind-mounted at the docker Worker's ``/workspace``, cwd-relative like every
+    # ``.decode`` path. Under ADR-0012 it IS the isolated Workspace — a ``git clone`` of ``sandbox_repo``
+    # (or empty) — and the file tools operate on it THROUGH the backend seam (docker: pathlib on the
+    # mount), never on the host repo tree; skills are seeded in host-side by ``seed_skills``, not mounted.
     sandbox_workspace_dir: Path = Path(".decode/sandbox")
+    # The repo host-side cloned into the Workspace at its committed HEAD on launch (ADR-0012 §3): a
+    # URL or a local path, using the user's ambient git creds; empty (the default) → an empty
+    # Workspace. The ``--repo`` CLI flag overrides it and ``--local`` picks a fast local clone (task
+    # 082). Consumed only in a sandbox mode — ``--repo``/``SANDBOX_REPO`` with ``SANDBOX_MODE=none`` is
+    # a friendly startup error (task 082). ``workspace.prepare_workspace`` does the clone.
+    sandbox_repo: str = ""
     # Max lifetime (seconds) of a REMOTE (modal) sandbox before Modal reaps it; docker's session
     # container has no lifetime cap (it runs ``sleep infinity``). A non-positive value fails fast
-    # (Field gt=0). Read by 073.
+    # (Field gt=0).
     sandbox_timeout_s: float = Field(600.0, gt=0)
     # Enable the headless + docker-only Credential Proxy (ADR-0011 §6): a mitmproxy addon container that
     # injects tool credentials AFTER a request leaves the worker, so the worker never holds a secret.
-    # Default ``False`` (opt-in). Read by 075.
+    # Default ``False`` (opt-in).
     sandbox_credential_proxy_enabled: bool = False
-    # The mitmproxy addon container image the Credential Proxy runs. Read by 075.
+    # The mitmproxy addon container image the Credential Proxy runs.
     sandbox_proxy_image: str = "mitmproxy/mitmproxy"
 
     @classmethod

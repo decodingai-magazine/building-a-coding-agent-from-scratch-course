@@ -13,9 +13,9 @@ them). It lets a sandboxed **Worker** make authenticated tool calls while holdin
 * :class:`DockerCredentialProxy` — the **topology**: a ``mitmproxy/mitmproxy`` container running the
   mounted :mod:`decode.sandbox.proxy_addon` on a per-run docker network, holding the credential map in
   its own env and writing its CA to a host-shared dir. The worker (a proxy-wired
-  :class:`~decode.sandbox.docker_executor.DockerExecutor`) is pointed at it via ``http_proxy`` /
-  ``https_proxy`` and trusts its CA, so the addon injects the matching host's headers **after** a
-  request leaves the token-free worker.
+  ``SandboxExecutor(DockerBackend(...))``) is pointed at it via ``http_proxy`` / ``https_proxy`` and
+  trusts its CA, so the addon injects the matching host's headers **after** a request leaves the
+  token-free worker.
 
 **Built only inside the headless flow.** :func:`decode.runtime.flow._sandbox_proxy` imports this
 module lazily, only when ``sandbox_mode == "docker"`` **and** ``sandbox_credential_proxy_enabled``, so
@@ -30,6 +30,7 @@ holds a token — holds regardless, and is proven by scanning the worker's env i
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import logging
@@ -68,16 +69,67 @@ class SandboxProxyRule:
 # Ships EMPTY — the Credential Proxy is opt-in and an empty map is a passthrough proxy that injects
 # nothing. Populate it to route a sandboxed tool call through the proxy with a credential the worker
 # never holds; the ``{{ name.key }}`` template resolves host-side from a Kitaru secret at flow start.
-# Example — inject a GitHub token on every request to the GitHub API:
+#
+# Example — let the sandboxed agent push a branch AND open a PR straight to GitHub while holding NO
+# token (results go remote → remote; nothing is synced back to the host first). TWO rules, because
+# git-over-HTTPS and the REST API want DIFFERENT auth — and the ``api.github.com`` rule MUST come first:
+# ``proxy_addon._match_host`` returns the FIRST match and ``github.com`` parent-matches ``api.github.com``,
+# so order decides which header wins for the API host.
 #
 #     DEFAULT_PROXY_RULES = [
+#         # PR / REST API (gh, curl → api.github.com): a Bearer PAT.
 #         SandboxProxyRule(
-#             name="github-auth",
+#             name="github-api",
 #             hosts=["api.github.com"],
 #             headers={"Authorization": "Bearer {{ github-token.value }}"},
 #         ),
+#         # git push over HTTPS (→ github.com): Basic base64("x-access-token:<PAT>") — GitHub's git
+#         # transport wants Basic, not Bearer (the actions/checkout http.extraheader format).
+#         SandboxProxyRule(
+#             name="github-git",
+#             hosts=["github.com"],
+#             headers={"Authorization": "Basic {{ github-basic.value }}"},
+#         ),
 #     ]
+#
+# then create the two host-side secrets (the worker holds neither) and run headless docker with an
+# HTTPS git remote:
+#     kitaru secrets set github-token --private --value=<PAT>
+#     kitaru secrets set github-basic --private --value="$(printf 'x-access-token:%s' <PAT> | base64 | tr -d '\n')"
+#     SANDBOX_CREDENTIAL_PROXY_ENABLED=true SANDBOX_MODE=docker decode run "…push a branch, open a PR…"
+#
+# `ponytail:` for exactly this GitHub push+PR case, ``SANDBOX_GIT_TOKEN`` is the one-knob shortcut:
+# :func:`github_token_rules` builds these same two rules from that single PAT and
+# ``_sandbox_proxy`` auto-engages the proxy when it is set (no Kitaru secret, no rule edit; the same
+# token modal direct-injects). ``DEFAULT_PROXY_RULES`` + Kitaru secrets remain for any OTHER host.
 DEFAULT_PROXY_RULES: list[SandboxProxyRule] = []
+
+
+def github_token_rules(token: str) -> list[SandboxProxyRule]:
+    """Build the GitHub push+PR proxy rules from one PAT — the ``SANDBOX_GIT_TOKEN`` convenience path.
+
+    The REST API (``api.github.com``, used by ``gh`` / the PR calls) wants a **Bearer** PAT; git push
+    over HTTPS (``github.com``) wants **Basic** ``base64("x-access-token:<PAT>")`` (GitHub's git
+    transport rejects Bearer — the actions/checkout ``http.extraheader`` format). The header values are
+    **literal** (already resolved), so :func:`build_credential_map` passes them through with no Kitaru
+    fetch. ``api.github.com`` comes **first** so :func:`proxy_addon._match_host` (first match;
+    ``github.com`` parent-matches ``api.github.com``) picks Bearer for the API host. The worker still
+    holds no token — the proxy injects these **after** egress (the docker cred-free posture, ADR-0012
+    §10); only the host-side *source* is the setting instead of a Kitaru secret.
+    """
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return [
+        SandboxProxyRule(
+            name="github-api",
+            hosts=["api.github.com"],
+            headers={"Authorization": f"Bearer {token}"},
+        ),
+        SandboxProxyRule(
+            name="github-git",
+            hosts=["github.com"],
+            headers={"Authorization": f"Basic {basic}"},
+        ),
+    ]
 
 
 def _resolve_templates(value: str, *, cache: dict[str, dict[str, str]]) -> str:
@@ -164,7 +216,7 @@ class DockerCredentialProxy:
 
     Uniquely-named per instance (a uuid suffix), so concurrent headless runs never collide on the
     network / container name. Access is CLI-only (no docker SDK), mirroring
-    :class:`~decode.sandbox.docker_executor.DockerExecutor`.
+    :class:`~decode.sandbox.docker_backend.DockerBackend`.
     """
 
     def __init__(self, credential_map: dict[str, dict[str, str]]) -> None:

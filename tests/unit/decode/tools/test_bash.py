@@ -245,7 +245,7 @@ def test_render_is_byte_identical_when_note_is_empty():
 
 
 def test_render_appends_a_non_empty_note_after_the_streams():
-    """A non-empty ``note`` (a Docker timeout shell-reset notice) is appended as the last section."""
+    """A non-empty ``note`` (a sandbox executor's out-of-band notice) is appended as the last section."""
     result = ExecResult(
         stdout="hi\n", stderr="", exit_code=0, timed_out=False, note="Note: the shell was reset."
     )

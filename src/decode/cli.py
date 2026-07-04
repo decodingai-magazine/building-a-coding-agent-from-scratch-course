@@ -62,6 +62,16 @@ _SANDBOX_MODAL_NO_CREDENTIALS_MESSAGE = (
     "(see .env.example)."
 )
 
+# The friendly line shown when a Workspace repo is requested (``--repo`` or ``SANDBOX_REPO``) while
+# ``SANDBOX_MODE=none`` (ADR-0012 §3). The clone-at-launch only makes sense in a sandbox mode — the
+# isolated Workspace does not exist in ``none`` — so this is a config error, refused the task-004 way
+# (one stderr line, non-zero exit, no traceback) in BOTH the REPL startup and the headless pre-flight.
+_SANDBOX_REPO_NONE_MODE_MESSAGE = (
+    "Decode: --repo/SANDBOX_REPO clones a repo into the isolated sandbox Workspace, which only exists "
+    "in a sandbox mode — set SANDBOX_MODE=docker or SANDBOX_MODE=modal, or drop --repo/SANDBOX_REPO "
+    "(see .env.example)."
+)
+
 # How long the ``docker info`` daemon-reachability probe may run before it is treated as unreachable.
 # Deliberately short — a healthy local daemon answers near-instantly, and startup must not hang on it.
 _DOCKER_PROBE_TIMEOUT_S = 5.0
@@ -198,6 +208,31 @@ def _sandbox_config_error() -> str | None:
     return None  # ``none`` (default): no probe, byte-identical to today's LocalExecutor path.
 
 
+def _resolve_sandbox_repo(repo_flag: str | None) -> str | None:
+    """Resolve the Workspace source repo: ``--repo`` flag > ``SANDBOX_REPO`` > None (ADR-0012 §3).
+
+    The single resolution point shared by the REPL and the headless entrypoints, so the precedence
+    can never drift. ``repo_flag`` is the ``--repo`` value (``None`` when the flag is absent, e.g. the
+    ``decode replay`` path which has no ``--repo``); the ``SANDBOX_REPO`` setting is the fallback.
+    Returns the resolved source (a URL or a local path) or ``None`` for "no repo → an empty Workspace".
+    An empty ``SANDBOX_REPO`` (the default ``""``) is treated as unset.
+    """
+    return repo_flag or settings.sandbox_repo or None
+
+
+def _sandbox_repo_config_error(repo: str | None) -> str | None:
+    """One friendly line if a repo is requested while ``SANDBOX_MODE=none``, else None (ADR-0012 §3).
+
+    A ``--repo`` / ``SANDBOX_REPO`` clones a repo into the isolated Workspace, which only exists in a
+    sandbox mode — so a resolved repo with ``sandbox_mode == "none"`` is a contradictory config,
+    refused the task-004 way (the caller echoes this to stderr and exits non-zero). ``repo`` is the
+    already-resolved source from :func:`_resolve_sandbox_repo`; ``None`` (no repo) is always fine.
+    """
+    if repo is not None and settings.sandbox_mode == "none":
+        return _SANDBOX_REPO_NONE_MODE_MESSAGE
+    return None
+
+
 def _uses_credentials_proxy() -> bool:
     """True when ``decode run`` sources the model key from the Kitaru Credentials Proxy (ADR-0008 §5).
 
@@ -286,13 +321,13 @@ def _secret_store_config_error() -> str | None:
         )
 
 
-def _runtime_config_preflight() -> str | None:
+def _runtime_config_preflight(repo: str | None = None) -> str | None:
     """The shared headless guard chain for ``decode run`` / ``decode replay``; a friendly line or None.
 
     Both headless entrypoints (``run`` builds a flow; ``replay`` re-executes downstream model calls, so
     it needs the same valid provider config) run this identical ordered chain before touching kitaru,
     returning the **first** friendly error line — or ``None`` when all pass. Order is load-bearing;
-    task 071 inserted the sandbox guard (step 3) into task 069's original chain:
+    task 071 inserted the sandbox guard (step 3) into task 069's original chain, task 082 the repo guard:
 
     1. **Per-provider config guard** (it builds a model) — skipped when a kitaru-backed source supplies
        the config: the Credentials Proxy (key from a secret) or the secret-store config source (whole
@@ -304,6 +339,10 @@ def _runtime_config_preflight() -> str | None:
        backend is unavailable (docker daemon down / modal creds absent). Presence/reachability only and
        kitaru-free; ``none`` (the default) runs no probe. Placed after the runtime gate (a disabled
        runtime still short-circuits first) and before the kitaru-backed pre-flights (it touches no secret).
+    3b. **Sandbox-repo guard** (``--repo`` / ``SANDBOX_REPO``, ADR-0012 §3) — a Workspace repo requested
+       while ``SANDBOX_MODE=none`` is a contradictory config; refused here too (pure config, no kitaru).
+       ``repo`` is the ``--repo`` flag value (``None`` for ``decode replay``, which has no such flag); it
+       is resolved against ``SANDBOX_REPO`` inside, so a bare ``SANDBOX_REPO`` in ``none`` mode still trips.
     4. **Secret-store config pre-flight** (``RUNTIME_SECRET_STORE_CONFIG``) — hydrate + validate the whole
        config from the Kitaru secret up front. Runs before the proxy pre-flight so, with both on, the
        proxy resolves its key from the now-hydrated secret — one coherent path, never two conflicting lines.
@@ -328,6 +367,11 @@ def _runtime_config_preflight() -> str | None:
     if sandbox_error is not None:
         logger.debug("sandbox backend %s unavailable; refusing to run", settings.sandbox_mode)
         return sandbox_error
+
+    repo_error = _sandbox_repo_config_error(_resolve_sandbox_repo(repo))
+    if repo_error is not None:
+        logger.debug("sandbox repo requested in none mode; refusing to run")
+        return repo_error
 
     if secret_store_on:
         secret_store_error = _secret_store_config_error()
@@ -366,13 +410,37 @@ def _runtime_config_preflight() -> str | None:
     help="Start in this permission mode (default / plan / edit / bypass); "
     "defaults to the agent's own default mode.",
 )
+@click.option(
+    "--repo",
+    "repo",
+    default=None,
+    metavar="URL-OR-PATH",
+    help="Clone this repo (a URL or a local path) into the isolated sandbox Workspace at launch; "
+    "overrides SANDBOX_REPO. Requires a sandbox mode (SANDBOX_MODE=docker|modal).",
+)
+@click.option(
+    "--local",
+    "local",
+    is_flag=True,
+    help="Use a fast local clone (git clone --local) when --repo is a local path.",
+)
 @click.pass_context
-def cli(ctx: click.Context, resume: str | None, agent: str, mode: str | None) -> None:
+def cli(
+    ctx: click.Context,
+    resume: str | None,
+    agent: str,
+    mode: str | None,
+    repo: str | None,
+    local: bool,
+) -> None:
     """Decode — a terminal coding agent you run in your terminal.
 
     Bare ``decode`` (no subcommand) launches the interactive REPL with the flags below — the
     behaviour is identical to the pre-runtime build. ``decode run "<task>"`` (ADR-0008) runs a
     single task headlessly through the durable runtime instead.
+
+    In a sandbox mode ``--repo <url-or-local-path>`` clones a repo into the isolated Workspace at
+    launch (overriding ``SANDBOX_REPO``); ``--local`` picks a fast local clone (ADR-0012 §3).
     """
     # A subcommand (e.g. ``run``) was invoked: let it handle everything. The REPL-only flags and
     # startup guards below apply solely to the bare ``decode`` REPL path, so we return before them.
@@ -399,6 +467,16 @@ def cli(ctx: click.Context, resume: str | None, agent: str, mode: str | None) ->
     if sandbox_error is not None:
         logger.debug("sandbox backend %s unavailable; refusing to start", settings.sandbox_mode)
         click.echo(sandbox_error, err=True)
+        raise click.exceptions.Exit(1)
+
+    # Sandbox-repo startup guard (ADR-0012 §3): a Workspace clone (``--repo`` / ``SANDBOX_REPO``) only
+    # makes sense in a sandbox mode — the isolated Workspace does not exist in ``none`` — so a resolved
+    # repo with ``SANDBOX_MODE=none`` is a config error, refused with one friendly line (no traceback).
+    resolved_repo = _resolve_sandbox_repo(repo)
+    repo_error = _sandbox_repo_config_error(resolved_repo)
+    if repo_error is not None:
+        logger.debug("sandbox repo requested in none mode; refusing to start")
+        click.echo(repo_error, err=True)
         raise click.exceptions.Exit(1)
 
     # Unknown-agent startup guard (ADR-0003 §9): validate ``--agent`` against the catalog *before*
@@ -428,7 +506,9 @@ def cli(ctx: click.Context, resume: str | None, agent: str, mode: str | None) ->
     # named ``--resume <id>`` as that id, and no flag as None (a fresh session). run_app loads
     # the matching session log and seeds the conversation (ADR-0002 §9, task 014) and starts with
     # the selected ``agent`` persona (ADR-0003 §7,9), in ``--mode`` if given (else the agent default).
-    asyncio.run(run_app(resume=resume, agent=agent, mode=mode))
+    # ``resolved_repo`` / ``local`` thread the sandbox Workspace clone-at-launch (ADR-0012 §3); in
+    # ``none`` mode ``resolved_repo`` is guaranteed ``None`` (the guard above) so the REPL is unchanged.
+    asyncio.run(run_app(resume=resume, agent=agent, mode=mode, repo=resolved_repo, local=local))
 
 
 @cli.command("run")
@@ -451,7 +531,21 @@ def cli(ctx: click.Context, resume: str | None, agent: str, mode: str | None) ->
         "provider's configured model. Does not change the provider (set LLM_PROVIDER for that)."
     ),
 )
-def run(task: str, hitl: bool, model: str | None) -> None:
+@click.option(
+    "--repo",
+    "repo",
+    default=None,
+    metavar="URL-OR-PATH",
+    help="Clone this repo (a URL or a local path) into the isolated sandbox Workspace; overrides "
+    "SANDBOX_REPO. Requires a sandbox mode (SANDBOX_MODE=docker|modal).",
+)
+@click.option(
+    "--local",
+    "local",
+    is_flag=True,
+    help="Use a fast local clone (git clone --local) when --repo is a local path.",
+)
+def run(task: str, hitl: bool, model: str | None, repo: str | None, local: bool) -> None:
     """Run a single TASK headlessly through the durable runtime, then print the result (ADR-0008).
 
     The autonomous counterpart to the REPL: ``decode run "<task>"`` builds the same agent as the
@@ -489,25 +583,37 @@ def run(task: str, hitl: bool, model: str | None) -> None:
     first, then the proxy resolves its key from the now-hydrated secret), never two conflicting lines.
     ``kitaru`` is imported lazily here so the REPL path never loads it.
     """
-    # The shared headless guard chain (provider-config / runtime / secret-store / proxy), byte-identical
-    # to ``decode replay`` — extracted into one helper so the two headless entrypoints cannot drift. It
-    # returns the first friendly line (or None); a disabled runtime / missing key / bad secret exits
-    # non-zero here, before any flow is built.
-    config_error = _runtime_config_preflight()
+    # The shared headless guard chain (provider-config / runtime / sandbox / secret-store / proxy),
+    # byte-identical to ``decode replay`` — extracted into one helper so the two headless entrypoints
+    # cannot drift. It returns the first friendly line (or None); a disabled runtime / missing key / bad
+    # secret / a ``--repo`` in ``none`` mode exits non-zero here, before any flow is built. ``repo`` is
+    # the ``--repo`` flag: the guard resolves it against ``SANDBOX_REPO`` (ADR-0012 §3).
+    config_error = _runtime_config_preflight(repo=repo)
     if config_error is not None:
         click.echo(config_error, err=True)
         raise click.exceptions.Exit(1)
 
+    # Resolve the Workspace source once (--repo > SANDBOX_REPO > none) and thread it — with ``local`` —
+    # into the flow so the headless ``prepare_workspace`` clones the repo into ``/workspace`` (ADR-0012
+    # §3). Guaranteed ``None`` in ``none`` mode by the guard above, so a non-sandbox run is unchanged.
+    resolved_repo = _resolve_sandbox_repo(repo)
+
     # Lazy import: keep kitaru (and its heavy zenml/temporalio stack) off the REPL path entirely —
     # only ``decode run`` pays the import cost. The flow runs on the local Kitaru stack, offline.
     if hitl:
-        _run_hitl(task, model)
+        _run_hitl(task, model, resolved_repo, local)
         return
 
     from decode.runtime import run_agent_task
     from decode.runtime.flow import _load_runtime_output
 
-    logger.debug("decode run starting (task=%r, model=%r)", task, model)
+    logger.debug(
+        "decode run starting (task=%r, model=%r, repo=%r, local=%s)",
+        task,
+        model,
+        resolved_repo,
+        local,
+    )
     # Under the ``"calls"`` default (ADR-0010 §3) the bypass flow ends in several terminal per-call
     # checkpoints, so Kitaru's ``.wait()`` cannot auto-extract a single return value
     # (``_MultipleTerminalStepsOutputError`` — verified in task 068). The flow instead saves its final
@@ -515,11 +621,45 @@ def run(task: str, hitl: bool, model: str | None) -> None:
     # same mechanism the HITL path uses. ``run(...)`` runs to completion in-process on the local stack
     # (bypass never pauses), so the handle is finished here. ``model`` is the Model Override threaded as
     # a flow input (ADR-0010 §2,4): ``None`` (no ``--model``) reads the provider's configured model.
-    handle = run_agent_task.run(task=task, model=model)
+    # ``repo`` / ``local`` are flow inputs too, so the Workspace clone rides into the durable run.
+    handle = run_agent_task.run(task=task, model=model, repo=resolved_repo, local=local)
     click.echo(
         _load_runtime_output(handle.exec_id)
     )  # stdout: only the clean agent answer (pipe-safe)
     _echo_replay_anchor(handle.exec_id, model)  # stderr: exec_id + a paste-ready decode replay hint
+    # Git hand-back (ADR-0012 §8): ship the Workspace back as a decode/<exec_id> branch host-side after
+    # the flow completed (its ``finally`` already ran the modal export sweep via ``close_executor``). A
+    # best-effort no-op in ``none`` mode / no-repo; its outcome line goes to stderr (stdout stays clean).
+    _auto_ship_headless(resolved_repo, handle.exec_id)
+
+
+def _auto_ship_headless(repo: str | None, exec_id: str) -> None:
+    """Ship the Workspace back after a headless ``decode run --repo`` completes — best-effort (ADR-0012 §8).
+
+    The headless counterpart to the REPL exit / ``/ship`` hand-back: it secures the sandbox Workspace at
+    ``.decode/sandbox`` onto a deterministic ``decode/<exec_id>`` Session Branch and pushes it to the
+    ``--repo`` origin, host-side (no credential ever enters the sandbox). The run's ``exec_id`` is the
+    session id, so the branch is traceable back to the durable execution.
+
+    A **no-op when ``repo`` is None** (no ``--repo``/``SANDBOX_REPO``, and ``none`` mode, where the
+    resolved repo is guaranteed None) — returning *before* importing the hand-back keeps the REPL/``none``
+    path free of any sandbox module (ADR-0012 §9). Otherwise the modal export already ran in the flow's
+    ``finally`` (``_reap_runtime_executor`` → ``close_executor``), so the local Workspace is populated for
+    the host-side git. Fully **best-effort**: any failure is logged, never raised (a completed run must
+    still exit 0), and the one outcome line naming the branch goes to **stderr** so stdout stays
+    pipe-clean; a skip (unchanged/non-git Workspace → ``branch=None``) prints nothing.
+    """
+    if repo is None:
+        return
+    from decode.sandbox.handback import ship_workspace
+
+    try:
+        result = ship_workspace(Path.cwd(), repo=repo, session_id=exec_id)
+    except Exception:
+        logger.warning("headless sandbox hand-back failed; continuing", exc_info=True)
+        return
+    if result.branch is not None:
+        click.echo(f"Decode: {result.message}", err=True)
 
 
 def _echo_replay_anchor(exec_id: str, model: str | None) -> None:
@@ -535,7 +675,7 @@ def _echo_replay_anchor(exec_id: str, model: str | None) -> None:
     click.echo(f"replay it with a change:  decode replay {exec_id} --model {model_hint}", err=True)
 
 
-def _run_hitl(task: str, model: str | None) -> None:
+def _run_hitl(task: str, model: str | None, repo: str | None, local: bool) -> None:
     """Drive the HITL Durable Flow and print the result, or the pause + how to resolve it (ADR-0008 §3).
 
     A finished run prints the agent's final text on stdout, then echoes its ``exec_id`` + a note that
@@ -543,12 +683,19 @@ def _run_hitl(task: str, model: str | None) -> None:
     replay`` because it re-asks every wait on the local stack (ADR-0010 §5,7). A run that paused on an
     unresolved durable wait prints the execution id and the ``kitaru executions`` commands an operator
     uses to inspect and resolve it out-of-band, then resume — exit stays zero (a pause is a normal HITL
-    outcome, not an error). ``model`` is the Model Override, threaded to the HITL flow (ADR-0010 §2).
+    outcome, not an error). ``model`` is the Model Override, threaded to the HITL flow (ADR-0010 §2);
+    ``repo`` / ``local`` thread the sandbox Workspace clone into the HITL run too (ADR-0012 §3).
     """
     from decode.runtime import run_hitl_agent_task
 
-    logger.debug("decode run --hitl starting (task=%r, model=%r)", task, model)
-    result = run_hitl_agent_task(task, model)
+    logger.debug(
+        "decode run --hitl starting (task=%r, model=%r, repo=%r, local=%s)",
+        task,
+        model,
+        repo,
+        local,
+    )
+    result = run_hitl_agent_task(task, model, repo, local)
     if result.paused:
         click.echo(
             f"Decode: the task paused on a durable human-in-the-loop wait (execution "
