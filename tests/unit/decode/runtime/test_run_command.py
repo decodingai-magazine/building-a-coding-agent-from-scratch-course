@@ -9,6 +9,8 @@ exit that never builds a flow.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from click.testing import CliRunner
 from pydantic import SecretStr, ValidationError
@@ -183,6 +185,77 @@ def test_run_command_prints_the_agents_output(monkeypatch, _provider_ok):
 
     assert result.exit_code == 0
     assert "the headless answer" in result.output
+
+
+# --- task 083: auto-ship the Workspace after a headless `decode run --repo` completes (ADR-0012 §8) --
+
+
+def test_run_invokes_the_auto_ship_with_the_run_exec_id(monkeypatch, _provider_ok):
+    """After the bypass run prints its output, the auto-ship fires with the run's exec_id as session id."""
+    _patch_seam(monkeypatch, "done")
+    calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        cli_mod, "_auto_ship_headless", lambda repo, exec_id: calls.append((repo, exec_id))
+    )
+
+    result = CliRunner().invoke(cli, ["run", "list the files"])
+
+    assert result.exit_code == 0
+    # Wired once, with the resolved repo (None in none mode) and a real exec_id string.
+    assert len(calls) == 1
+    repo, exec_id = calls[0]
+    assert repo is None  # none mode → an empty Workspace, nothing to ship
+    assert isinstance(exec_id, str) and exec_id
+
+
+def test_auto_ship_headless_no_repo_is_a_silent_noop(mocker, capsys):
+    """No repo (none mode / no --repo) → the auto-ship ships nothing and prints nothing (byte-identical)."""
+    ship = mocker.patch("decode.sandbox.handback.ship_workspace")
+
+    cli_mod._auto_ship_headless(None, "exec-abc")
+
+    ship.assert_not_called()  # not even imported/called
+    assert capsys.readouterr().err == ""
+
+
+def test_auto_ship_headless_prints_the_outcome_on_stderr(mocker, capsys):
+    """A real ship echoes its outcome (branch + result) on **stderr** so stdout stays pipe-clean."""
+    from decode.sandbox.handback import ShipResult
+
+    ship = mocker.patch(
+        "decode.sandbox.handback.ship_workspace",
+        return_value=ShipResult(branch="decode/exec-abc", pushed=True, message="handed it back."),
+    )
+
+    cli_mod._auto_ship_headless("/src", "exec-abc")
+
+    ship.assert_called_once_with(Path.cwd(), repo="/src", session_id="exec-abc")
+    captured = capsys.readouterr()
+    assert captured.out == ""  # pipe-clean stdout
+    assert "handed it back." in captured.err  # the outcome lands on stderr
+
+
+def test_auto_ship_headless_skip_prints_nothing(mocker, capsys):
+    """A skip (branch=None: unchanged/non-git Workspace) prints nothing — no noise on a no-op run."""
+    from decode.sandbox.handback import ShipResult
+
+    mocker.patch(
+        "decode.sandbox.handback.ship_workspace",
+        return_value=ShipResult(branch=None, pushed=False, message="nothing to hand back."),
+    )
+
+    cli_mod._auto_ship_headless("/src", "exec-abc")
+
+    assert capsys.readouterr().err == ""
+
+
+def test_auto_ship_headless_swallows_errors(mocker, capsys):
+    """The auto-ship is best-effort: a hand-back error never propagates out of a completed run."""
+    mocker.patch("decode.sandbox.handback.ship_workspace", side_effect=RuntimeError("boom"))
+
+    cli_mod._auto_ship_headless("/src", "exec-abc")  # must not raise
+
+    assert "boom" not in capsys.readouterr().err  # the raw error is logged, not surfaced
 
 
 def test_run_command_disabled_runtime_guard_does_not_build_a_flow(monkeypatch, _provider_ok):

@@ -627,6 +627,39 @@ def run(task: str, hitl: bool, model: str | None, repo: str | None, local: bool)
         _load_runtime_output(handle.exec_id)
     )  # stdout: only the clean agent answer (pipe-safe)
     _echo_replay_anchor(handle.exec_id, model)  # stderr: exec_id + a paste-ready decode replay hint
+    # Git hand-back (ADR-0012 §8): ship the Workspace back as a decode/<exec_id> branch host-side after
+    # the flow completed (its ``finally`` already ran the modal export sweep via ``close_executor``). A
+    # best-effort no-op in ``none`` mode / no-repo; its outcome line goes to stderr (stdout stays clean).
+    _auto_ship_headless(resolved_repo, handle.exec_id)
+
+
+def _auto_ship_headless(repo: str | None, exec_id: str) -> None:
+    """Ship the Workspace back after a headless ``decode run --repo`` completes — best-effort (ADR-0012 §8).
+
+    The headless counterpart to the REPL exit / ``/ship`` hand-back: it secures the sandbox Workspace at
+    ``.decode/sandbox`` onto a deterministic ``decode/<exec_id>`` Session Branch and pushes it to the
+    ``--repo`` origin, host-side (no credential ever enters the sandbox). The run's ``exec_id`` is the
+    session id, so the branch is traceable back to the durable execution.
+
+    A **no-op when ``repo`` is None** (no ``--repo``/``SANDBOX_REPO``, and ``none`` mode, where the
+    resolved repo is guaranteed None) — returning *before* importing the hand-back keeps the REPL/``none``
+    path free of any sandbox module (ADR-0012 §9). Otherwise the modal export already ran in the flow's
+    ``finally`` (``_reap_runtime_executor`` → ``close_executor``), so the local Workspace is populated for
+    the host-side git. Fully **best-effort**: any failure is logged, never raised (a completed run must
+    still exit 0), and the one outcome line naming the branch goes to **stderr** so stdout stays
+    pipe-clean; a skip (unchanged/non-git Workspace → ``branch=None``) prints nothing.
+    """
+    if repo is None:
+        return
+    from decode.sandbox.handback import ship_workspace
+
+    try:
+        result = ship_workspace(Path.cwd(), repo=repo, session_id=exec_id)
+    except Exception:
+        logger.warning("headless sandbox hand-back failed; continuing", exc_info=True)
+        return
+    if result.branch is not None:
+        click.echo(f"Decode: {result.message}", err=True)
 
 
 def _echo_replay_anchor(exec_id: str, model: str | None) -> None:

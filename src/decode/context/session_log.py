@@ -74,6 +74,19 @@ class SessionLog:
 
     path: Path
 
+    @property
+    def session_id(self) -> str:
+        """The session id embedded in the log filename (``<timestamp>_<session_id>.jsonl``).
+
+        The single accessor for "which session is this?" — used by the task-083 git hand-back to name
+        its ``decode/<session-id>`` Session Branch (ADR-0012 §8). The filename is
+        ``{now:_FILENAME_TS_FORMAT}_{session_id}{_SUFFIX}`` and the timestamp format carries no ``_``,
+        so the id is exactly the stem's segment after the first ``_`` (falling back to the whole stem if
+        the format ever changes). Recovered from the filename rather than re-read from the header so it
+        needs no file I/O.
+        """
+        return self.path.stem.split("_", 1)[-1]
+
     @classmethod
     def create(
         cls,

@@ -38,6 +38,7 @@ import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -69,8 +70,13 @@ from decode.permissions.types import PermissionMode
 from decode.services.lsp.service import shutdown_all as shutdown_lsp_servers
 from decode.skills.loader import load_skills
 from decode.skills.payload import format_skill_payload
-from decode.tools.bash import close_executor, warm_executor
+from decode.tools.bash import close_executor, export_executor, warm_executor
 from decode.tui import render
+
+if TYPE_CHECKING:
+    # Typing only: a runtime import would pull the sandbox hand-back module into the ``none`` path and
+    # break its laziness (ADR-0012 §9). ``from __future__ import annotations`` keeps this a string.
+    from decode.sandbox.handback import ShipResult
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +100,10 @@ _COMPACT_COMMAND = "/compact"
 # MEMORY.md write-back the quit path runs, THEN the handler resets and a clear marker rides the
 # session log so ``--resume`` replays to the post-clear state.
 _CLEAR_COMMAND = "/clear"
+# The git hand-back command (ADR-0012 §8): ship the sandbox Workspace back as a decode/<session-id>
+# branch. Reserved among the slash commands (matched before ``parse_skill_command``) so a project skill
+# named ``ship`` can never shadow it, and idle-only like ``/compact`` / ``/clear``.
+_SHIP_COMMAND = "/ship"
 # The order Shift+Tab cycles the gate mode through (ADR-0003 §9): default -> edit -> plan ->
 # bypass -> back to default. A tuple so :func:`next_mode` is a pure index step.
 _MODE_CYCLE: tuple[PermissionMode, ...] = (
@@ -158,6 +168,15 @@ def is_clear_command(line: str) -> bool:
     return line.strip() == _CLEAR_COMMAND
 
 
+def is_ship_command(line: str) -> bool:
+    """True when ``line`` is the ``/ship`` command (ignoring surrounding whitespace).
+
+    Pure (mirrors :func:`is_clear_command`): exact match after a strip — ``"/ship"`` and ``"  /ship  "``
+    are the command; ``"/shipx"`` / ``"ship"`` / ``"/clear"`` are not.
+    """
+    return line.strip() == _SHIP_COMMAND
+
+
 def footer_hint(agent: str, mode: str) -> str:
     """The bottom-toolbar hint: the live agent + mode, then the interaction keys (plain text).
 
@@ -168,7 +187,7 @@ def footer_hint(agent: str, mode: str) -> str:
     """
     return (
         f"agent:{agent} mode:{mode} | Enter steer | Alt+Enter follow-up | "
-        "Esc abort | Shift+Tab mode | /agent /mode /compact /clear /quit"
+        "Esc abort | Shift+Tab mode | /agent /mode /compact /clear /ship /quit"
     )
 
 
@@ -261,6 +280,7 @@ class SlashCompleter(Completer):
             _MODE_COMMAND: "switch the permission mode (/mode <name>)",
             _COMPACT_COMMAND: "compact the conversation now",
             _CLEAR_COMMAND: "clear the conversation (summarizes to memory first)",
+            _SHIP_COMMAND: "ship the sandbox workspace back as a git branch",
             _QUIT_COMMAND: "exit decode",
         }
         self._meta.update(
@@ -434,6 +454,92 @@ async def _handle_clear_command(
     await extract_on_exit(handler.message_history, cwd)
     handler.clear()
     emit(_CLEAR_DONE)
+
+
+# The inline lines the ``/ship`` command renders. ``_SHIP_BUSY`` is the mid-turn guard (we never ship
+# while a turn holds the live Workspace); ``_SHIP_NO_WORKSPACE`` is the ``none``-mode / no-repo case
+# (there is no isolated Workspace to hand back). The success/skip/failure text comes from the
+# ShipResult's own message via :func:`_ship_outcome_line`.
+_SHIP_BUSY = "Decode - busy; try /ship again once the turn finishes."
+_SHIP_NO_WORKSPACE = "Decode - no sandbox workspace to ship."
+
+
+def _ship_outcome_line(result: ShipResult) -> str:
+    """Render a :class:`~decode.sandbox.handback.ShipResult` as one ``Decode - `` line (ADR-0012 §8).
+
+    The ShipResult owns the friendly, credential-free sentence (shipped / skipped / push-failed —
+    naming the branch and its ``.decode/sandbox`` location on a failure); this only adds the REPL's
+    ``Decode - `` prefix, matching the ``/compact`` / ``/clear`` confirmation style. Duck-typed on
+    ``.message`` so no runtime sandbox import is needed on the ``none`` path (§9).
+    """
+    return f"Decode - {result.message}"
+
+
+async def _handle_ship_command(
+    runner: Runner,
+    *,
+    harness_home: Path,
+    repo: str | None,
+    session_id: str,
+    emit: Callable[[str], None],
+) -> None:
+    """Ship the sandbox Workspace back as a ``decode/<session-id>`` branch — the ``/ship`` command (§8).
+
+    Idle-only, wired like ``/compact`` / ``/clear`` (busy → one line, never ship mid-turn — the running
+    leg holds the live Workspace). In ``none`` mode or with no ``--repo`` there is no isolated Workspace,
+    so it prints a friendly line and does nothing (no export, no sandbox import). Otherwise it (a) runs
+    the executor :func:`~decode.tools.bash.export_executor` **first** — the modal mid-session sweep so
+    ``/workspace`` is host-visible for the host-side git (a docker no-op, its mount is already live) —
+    then (b) runs the host-side :func:`~decode.sandbox.handback.ship_workspace` and prints the outcome
+    (the branch + push result, or a friendly skip/failure line). The hand-back import stays lazy so the
+    ``none`` path pulls in no sandbox module (§9).
+    """
+    if runner.phase is not Phase.IDLE:
+        emit(_SHIP_BUSY)
+        return
+    if settings.sandbox_mode == "none" or repo is None:
+        emit(_SHIP_NO_WORKSPACE)
+        return
+    # Sweep the live sandbox Workspace down to the host first (modal copy_to_local; docker no-op), so the
+    # host-side git below sees the final ``/workspace`` state (ADR-0012 §5,8).
+    await export_executor()
+    # Lazy import: only a sandbox-mode ``/ship`` pulls in the hand-back module (the ``none`` path never
+    # touches ``decode.sandbox`` — §9).
+    from decode.sandbox.handback import ship_workspace
+
+    result = ship_workspace(harness_home, repo=repo, session_id=session_id)
+    emit(_ship_outcome_line(result))
+
+
+def _ship_on_exit(
+    harness_home: Path,
+    *,
+    repo: str | None,
+    session_id: str,
+    emit: Callable[[str], None],
+) -> None:
+    """Ship the Workspace back on REPL exit — best-effort, non-fatal, silent no-op otherwise (§8).
+
+    The exit counterpart to the ``/ship`` command (task 083 AC5). Runs in the shutdown sequence *after*
+    ``close_executor`` (which already ran the modal export sweep), so it reads the final host Workspace
+    directly — no export here. **Silent no-op** in ``none`` mode / no-repo (returning before importing
+    the hand-back keeps the ``none`` path free of any sandbox module — §9) and on a skip (an unchanged /
+    non-git Workspace → ``branch=None``), so those sessions stay byte-identical (AC7). Only a real ship
+    (or a push failure) emits its one outcome line — which names the branch on failure. Fully
+    **best-effort**: any hand-back error is logged, never raised, so it can never block exit or mask the
+    ``Decode - bye.`` line — exactly like the memory / LSP / executor teardown steps beside it.
+    """
+    if settings.sandbox_mode == "none" or repo is None:
+        return
+    from decode.sandbox.handback import ship_workspace
+
+    try:
+        result = ship_workspace(harness_home, repo=repo, session_id=session_id)
+    except Exception:
+        logger.warning("sandbox hand-back on exit failed; continuing shutdown", exc_info=True)
+        return
+    if result.branch is not None:
+        emit(_ship_outcome_line(result))
 
 
 # The friendly inline line for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirrors the
@@ -1057,6 +1163,20 @@ async def run_app(
                 await _handle_clear_command(handler, runner, cwd=harness_home, emit=emit_line)
                 continue
 
+            # The git hand-back command (ADR-0012 §8), reserved like ``/compact`` / ``/clear`` (before
+            # the skill branch) so a ``ship`` skill can never shadow it: idle-only, it exports the live
+            # Workspace then ships it as a ``decode/<session-id>`` branch (a friendly line in
+            # ``none``/no-repo). ``session_log.session_id`` names the branch (ADR-0012 §8, task 083).
+            if is_ship_command(text):
+                await _handle_ship_command(
+                    runner,
+                    harness_home=harness_home,
+                    repo=repo,
+                    session_id=session_log.session_id,
+                    emit=emit_line,
+                )
+                continue
+
             # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved
             # ``/agent`` / ``/mode`` checks so a same-named built-in command always wins. A
             # resolved skill injects its body as the turn input through the existing submit
@@ -1107,5 +1227,12 @@ async def run_app(
         await close_executor()
     except Exception:
         logger.warning("sandbox teardown on exit failed; continuing shutdown", exc_info=True)
+
+    # On-exit git hand-back (ADR-0012 §8): ship the Workspace back as a decode/<session-id> Session
+    # Branch host-side, after ``close_executor`` has run the modal export sweep. Best-effort/non-fatal
+    # like the memory/LSP/executor steps above — never blocks exit, on failure its one line names the
+    # branch; a silent no-op in ``none`` mode / no-repo / unchanged (byte-identical, AC7). ``repo`` is
+    # the launch flag (None in ``none`` mode by the CLI guard); the branch is named from the SessionLog.
+    _ship_on_exit(harness_home, repo=repo, session_id=session_log.session_id, emit=emit_line)
 
     console.print(render.render_event(events.AssistantTextDelta(text="Decode - bye.")))
