@@ -53,6 +53,7 @@ from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
 from decode.memory.service import assemble_memory
 from decode.skills.catalog import assemble_skills_catalog
+from decode.tools.agent import set_main_agent
 from decode.tools.registry import register_tools
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,10 @@ def build_agent(
     )
     register_tools(agent)
     _register_instructions(agent)
+    # Install this Agent as the subagent-spawn seam (ADR-0013 §6): the ``agent`` tool re-enters it for
+    # every Explore child, so the child reuses this Agent's model + client (no per-child rebuild) and
+    # one ``agent.override(model=…)`` covers parent + children. Mirrors the established seam idiom.
+    set_main_agent(agent)
     logger.debug("built agent on llm_provider=%s", settings.llm_provider)
     return agent
 

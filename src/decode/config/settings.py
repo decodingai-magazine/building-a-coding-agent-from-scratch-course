@@ -138,6 +138,17 @@ class Settings(BaseSettings):
     # indefinitely; a larger request is capped to this value (never rejected for being large).
     sleep_max_s: float = 60.0
 
+    # --- Subagents: the ``agent`` tool + Explore-subagent runner caps (ADR-0013 §7,8) ---
+    # ``subagent_max_parallel`` caps how many read-only Explore children run at once, enforced by a
+    # per-running-loop ``asyncio.Semaphore`` (keep modest — fan-out multiplies model calls against the
+    # Gemini free-tier limits). ``subagent_max_requests`` is each child's
+    # ``UsageLimits(request_limit=…)`` runaway cap. ``subagent_result_max_bytes`` caps the child's
+    # returned report through the shared ``truncate()`` idiom (``tools/truncate.py``). All ``Field(gt=0)``
+    # like the LSP / sandbox timeouts — a non-positive value is a misconfiguration and fails fast.
+    subagent_max_parallel: int = Field(4, gt=0)
+    subagent_max_requests: int = Field(25, gt=0)
+    subagent_result_max_bytes: int = Field(16_000, gt=0)
+
     # --- Memory caps (task 012/013) ---
     memory_max_lines: int = 200
     memory_max_bytes: int = 25_000

@@ -39,6 +39,7 @@ from pydantic_ai.tools import ToolDefinition
 
 from decode.agent.deps import AgentDeps
 from decode.permissions.types import ToolKind
+from decode.tools import agent as agent_module
 from decode.tools import askuser as askuser_module
 from decode.tools import bash as bash_module
 from decode.tools import files
@@ -144,6 +145,16 @@ TOOL_SPECS: list[ToolSpec] = [
         name=skills_module.SKILL_TOOL_NAME,
         func=skills_module.skill,
         kind=ToolKind.OTHER,
+    ),
+    # The Agent tool (task 088 / ADR-0013): spawns a read-only Explore subagent as an in-process
+    # nested agent.run(). READ_ONLY — it can only cause reads, so it runs inline, never raises
+    # ApprovalRequired, and the gate auto-allows it in every mode (like the read-only file tools). It
+    # joins KNOWN_TOOL_NAMES automatically (derived from TOOL_KIND) so build/plan/code-reviewer may
+    # list it; explore never does (recursion default-deny — its children would omit it anyway).
+    ToolSpec(
+        name=agent_module.AGENT_TOOL_NAME,
+        func=agent_module.agent,
+        kind=ToolKind.READ_ONLY,
     ),
 ]
 

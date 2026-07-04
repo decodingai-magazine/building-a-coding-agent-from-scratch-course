@@ -41,7 +41,7 @@ def test_build_agent_has_the_full_tool_set_and_default_mode():
     assert build.mode is PermissionMode.DEFAULT
     expected = {
         "read", "glob", "grep", "lsp", "write", "edit", "bash", "todo_write", "web_fetch",
-        "ask_user", "enter_plan_mode", "exit_plan_mode", "sleep", "skill",
+        "ask_user", "enter_plan_mode", "exit_plan_mode", "sleep", "skill", "agent",
     }  # fmt: skip
     assert set(build.tools) == expected
     assert build.prompt.strip()
@@ -56,6 +56,7 @@ def test_plan_agent_is_plan_mode_and_read_only():
         "exit_plan_mode",
         "ask_user",
         "skill",
+        "agent",  # a primary may spawn read-only Explore subagents (ADR-0013 §4)
     }
     for mutating in ("write", "edit", "bash"):
         assert mutating not in plan.tools
@@ -98,7 +99,7 @@ def test_code_reviewer_carries_the_git_allow_rule():
     reviewer = loader.load_agent("code-reviewer")
 
     assert reviewer.mode is PermissionMode.DEFAULT
-    assert set(reviewer.tools) == _READ_ONLY_TOOLS | {"bash", "ask_user", "skill"}
+    assert set(reviewer.tools) == _READ_ONLY_TOOLS | {"bash", "ask_user", "skill", "agent"}
     assert "bash(git *)" in reviewer.allow
     assert Rule(tool_name="bash", pattern="git *") in reviewer.allow_rules
 

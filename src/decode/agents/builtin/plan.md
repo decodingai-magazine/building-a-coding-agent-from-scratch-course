@@ -12,6 +12,7 @@ tools:
   - exit_plan_mode
   - ask_user
   - skill
+  - agent
 mode: plan
 ---
 You are the plan agent. Your job is to research and design — not to mutate anything.

@@ -82,3 +82,24 @@ def _reset_sandbox_executor():
     bash.reset_executor()
     yield
     bash.reset_executor()
+
+
+@pytest.fixture(autouse=True)
+def _reset_subagent_seam():
+    """Hermeticity guard — clear the subagent-spawn main-Agent seam around every test (ADR-0013 §6).
+
+    ``decode.tools.agent`` holds the running Agent in a set-once module seam (``set_main_agent``, called
+    by every ``build_agent``) and caches one concurrency semaphore per running loop. Without a reset a
+    test that built an agent would leave the seam pointing at a stale Agent for the next test that
+    exercises the ``agent`` tool, and a re-sized ``subagent_max_parallel`` would not take effect. Reset
+    before AND after every test so each starts from a clean seam. Registered at the rootdir conftest
+    (like :func:`_reset_sandbox_executor`) so it applies in any collection order; importing the module
+    pulls in no kitaru, keeping the REPL-safety invariant intact.
+    """
+    from decode.tools import agent
+
+    agent.reset_main_agent()
+    agent._reset_semaphores()
+    yield
+    agent.reset_main_agent()
+    agent._reset_semaphores()
