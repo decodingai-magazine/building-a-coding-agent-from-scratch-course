@@ -35,10 +35,12 @@ Wired in incrementally (079 docker, 080 modal, 081 the file-tool seam, 082 the C
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import tarfile
 from pathlib import Path
@@ -191,14 +193,61 @@ def tar_dir(directory: Path) -> bytes:
     return buffer.getvalue()
 
 
+def _make_tree_writable(directory: Path) -> None:
+    """Add owner-write across ``directory`` so a re-:func:`extract_tar` can overwrite read-only files.
+
+    ``tar.extractall`` opens each target in ``"wb"``, which raises ``PermissionError`` when the
+    destination already holds a **read-only** file — exactly a ``git clone``'s ``.git`` loose objects,
+    which git writes mode 0444 (content-addressed and immutable). Walking top-down and OR-ing owner-write
+    into every existing **non-symlink** path — owner-``rwx`` on directories, so the walk can still descend
+    into and rewrite the entries beneath a read-only dir; a symlink is skipped in :func:`_add_owner_write`
+    so a link escaping the tree never has its out-of-tree target chmod'd — lets the overwrite land; the
+    ``filter="data"`` pass then re-normalizes each written member's mode and git re-derives object
+    modes, so the swept ``.git`` stays a valid repo. Best-effort per path: a chmod failure is left for
+    ``extractall`` to surface as the real error rather than masked here.
+    """
+    for root, dirnames, filenames in os.walk(directory):
+        base = Path(root)
+        for name in dirnames:
+            _add_owner_write(base / name, stat.S_IRWXU)
+        for name in filenames:
+            _add_owner_write(base / name, stat.S_IWUSR)
+
+
+def _add_owner_write(path: Path, bits: int) -> None:
+    """OR ``bits`` into ``path``'s mode; swallow ``OSError`` (best-effort — let ``extractall`` surface it).
+
+    **Skips symlinks.** ``Path.chmod``/``Path.stat`` FOLLOW symlinks (there is no ``lchmod`` on
+    macOS/Linux) and ``os.walk(followlinks=False)`` still yields a symlink's NAME at its level, so
+    chmod'ing a symlink that escapes the Workspace would OR owner-write into an OUT-OF-TREE host target —
+    a containment breach under the "clone + run untrusted code" threat model (git stores arbitrary link
+    targets). A symlink never needs owner-write for the extract anyway (the ``data`` filter neutralizes
+    incoming symlink members) and ``os.walk`` never recurses INTO a symlinked dir, so skipping the
+    symlink ENTRY at each level fully closes the surface — while the read-only ``.git`` fix still lands,
+    since git's loose objects are REGULAR files. The check rides inside the ``OSError`` suppression so a
+    rare ``lstat`` failure stays best-effort (left for ``extractall`` to surface), not a hard abort.
+    """
+    with contextlib.suppress(OSError):
+        if path.is_symlink():
+            return
+        path.chmod(path.stat().st_mode | bits)
+
+
 def extract_tar(data: bytes, directory: Path) -> None:
-    """Extract a :func:`tar_dir` archive into ``directory`` (created if missing).
+    """Extract a :func:`tar_dir` archive into ``directory`` (created if missing), overlaying it.
 
     The mirror of :func:`tar_dir` — reconstructs the packed tree under ``directory``. Uses the
     ``data`` extraction filter (Python 3.12+): it sanitizes member paths (no absolute paths, no ``..``
     escapes) *and* silences the unfiltered-``extractall`` ``DeprecationWarning`` that
     ``filterwarnings=["error"]`` would otherwise turn into a failure.
+
+    Before extracting it makes any existing destination tree owner-writable
+    (:func:`_make_tree_writable`), so the Modal end-of-session export sweep OVER a ``git clone`` — whose
+    ``.git`` loose objects are read-only (0444) — overwrites them instead of aborting with
+    ``PermissionError`` and sweeping nothing (ADR-0012 §5,8). Overwriting a content-addressed object with
+    identical bytes is safe.
     """
     directory.mkdir(parents=True, exist_ok=True)
+    _make_tree_writable(directory)
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tar:
         tar.extractall(directory, filter="data")
