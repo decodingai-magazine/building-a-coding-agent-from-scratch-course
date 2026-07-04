@@ -2,6 +2,9 @@
 
 **Status:** Accepted
 **Date:** 2026-06-25
+**Partially superseded by [ADR-0013](0013-explore-subagents.md)** — §5's "main-agent only — no
+subagent spawning" clause only; the permission modes, tool kinds, rule engine, `prepare=`
+restriction, and instructions hook are retained and reused by ADR-0013.
 
 ## Context
 
