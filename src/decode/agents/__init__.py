@@ -9,8 +9,10 @@ files as *packaged data* (``importlib.resources``, so they ship in the wheel), v
 
 The loader (task 019) is **pure load + validate**; :func:`~decode.agents.select.select_agent`
 (task 020) wires a selected persona into the running session — setting ``deps.active_agent``,
-resetting the gate mode, and loading the agent's catalog rules (ADR-0003 §7). Subagent spawning is
-out of scope this milestone (the catalog is main-agent only).
+resetting the gate mode, and loading the agent's catalog rules (ADR-0003 §7). The catalog carries a
+**primary/subagent axis** (``AgentDef.subagent``): the primaries (Build / Plan / Code-Reviewer) are
+selectable as the main agent, while **Explore** is subagent-only — spawned via the ``agent`` tool as
+an in-process nested ``agent.run()``, never selected directly (ADR-0013).
 """
 
 from __future__ import annotations
