@@ -312,15 +312,28 @@ Tune it in `.env` — every setting is optional with a safe default:
 
 ## Sandboxing
 
-By default `decode` runs model-chosen `bash` commands as a **host subprocess** in your working directory — fast, and byte-identical to every earlier milestone. When you want a boundary around those commands, set the **Sandbox Mode** (`SANDBOX_MODE`) and `decode` runs them inside a **Sandbox** instead, behind one execution seam. The design and the full isolation-backend comparison are recorded in [`docs/adr/0011-sandboxing-and-credential-proxy.md`](docs/adr/0011-sandboxing-and-credential-proxy.md).
+By default `decode` runs model-chosen `bash` commands as a **host subprocess** in your working directory, and the file tools (`read` / `write` / `edit` / `glob` / `grep`) edit that directory directly — fast, and byte-identical to every earlier milestone. Set the **Sandbox Mode** (`SANDBOX_MODE=docker` or `modal`) and `decode` instead gives the agent a **fully isolated Workspace**: its *whole* tool scope — the file tools **and** `bash` — operates inside a `git clone` of a repo you point it at, contained behind one execution seam, while decode's own artifacts (sessions, memory, logs, the permission file) stay put in your launch directory. The design is in [`docs/adr/0012-isolated-workspace.md`](docs/adr/0012-isolated-workspace.md), which supersedes the additive `bash`-only sandbox of [ADR-0011](docs/adr/0011-sandboxing-and-credential-proxy.md).
 
-| `SANDBOX_MODE` | Where `bash` runs | Semantics |
+| `SANDBOX_MODE` | Where the tools run | The Workspace |
 |---|---|---|
-| `none` (default) | a host subprocess, pinned to your working directory | today's behavior — **zero change**; no Docker or Modal needed |
-| `docker` | one session-persistent **local** container over the project's `.decode/sandbox/` scratch | a **persistent shell**: `cd` / `export` / `pip install` carry across `bash` calls; `/workspace` is the host-visible `.decode/sandbox/` scratch — the repo tree is **not** mounted (repo files stay with the host-side file tools), and `.decode/skills/` rides in read-only so skill scripts run. A timeout kills+restarts the shell (cwd resets to `/workspace`, env cleared) and the reply says so |
-| `modal` | one session-persistent **remote** `modal.Sandbox`, skills-seeded scratch | nothing runs on your machine; `/workspace` starts **empty except your project's `.decode/skills/`** (seeded so skill scripts run remotely — nothing else is synced) — the model fetches other code via `git clone` / `git fetch`; filesystem changes persist across calls but `cd` / `env` reset per call; a sandbox that outlives its `SANDBOX_TIMEOUT_S` lifetime mid-session is replaced on the next `bash` and the reply says the filesystem was reset |
+| `none` (default) | a host subprocess + direct-pathlib file tools, in your working directory | there is none — today's behavior, **zero change**; no Docker or Modal needed |
+| `docker` | one session-persistent **local** container | `/workspace` is a **live bind mount** of the host `.decode/sandbox/` — the file tools and `bash` share it, always truthful (a `bash` write shows up in `read`, a `rm` in `glob`) |
+| `modal` | one session-persistent **remote** `modal.Sandbox` | nothing runs on your machine; `/workspace` is **bootstrap-uploaded** once at launch, file ops go straight against the remote filesystem, and it's exported back to the host on exit / `/ship` |
 
-The mode is chosen **once at startup** and fixed for the session, and the sandbox **starts eagerly at launch**: a `Decode - starting <mode> sandbox …` progress line prints, then the banner carries a `sandbox:<mode>` segment — so `docker ps` shows the container before any `bash` runs and the first command skips the start latency (a failed warm-up degrades to lazy with one friendly line). The `bash` tool description adapts per mode so the model knows the live rules (docker's persistent shell vs modal's remote scratch) and is never surprised at runtime. `bash` stays gated exactly as before — the Sandbox is defense-in-depth *beneath* the same approval prompt.
+Both sandbox modes are **one unified executor**: the Workspace is a `git clone` of `--repo` (or `SANDBOX_REPO`) — or an empty scratch if you give none — and each `bash`/tool exec is **fresh** (the filesystem persists across calls, but `cd` / `export` don't — chain them: `cd /workspace/app && …`). The sandbox **starts eagerly at launch** (a `Decode - starting <mode> sandbox …` line, then a `sandbox:<mode>` banner segment — so `docker ps` shows the container before any `bash` runs), and `bash` stays gated exactly as before — the Sandbox is defense-in-depth *beneath* the same approval prompt.
+
+**Work on any repo, and get a branch back.** Point `decode` at a repo and it clones it into the Workspace at launch; when you finish it pushes your work back as a branch — with your own git credentials, and no secret ever inside the sandbox:
+
+```bash
+# clone a repo into an isolated docker Workspace and work on it:
+SANDBOX_MODE=docker decode --repo git@github.com:you/project.git
+#   … the agent reads, edits, and runs bash entirely inside /workspace …
+/ship          # or just quit — decode pushes a `decode/<session-id>` branch back to the repo
+```
+
+- **`--repo <url-or-path>`** clones a URL or a local path (add **`--local`** for a fast `git clone --local` of a local path) at its committed `HEAD`, using your **ambient git credentials** (SSH agent / credential helper). A bad repo degrades to an empty Workspace with one friendly line, never a crash; `--repo` without a sandbox mode is a friendly config error. It also works headless: `SANDBOX_MODE=docker decode run --repo <url> "<task>"`.
+- **Hand-back on exit or `/ship`.** decode commits any uncommitted model work (your model's own commits are preserved, never rewritten), points a deterministic **`decode/<session-id>`** branch at the result, and `git push`es it: `--repo <URL>` lands the branch on the **remote**, `--repo <local path>` in the **local source repo**. Every git command runs **host-side** — no credential ever enters the sandbox (the same guarantee the Credential Proxy below upholds).
+- **Never lose results.** If the push can't reach the origin, the branch still exists locally in `.decode/sandbox` and decode names it so you can push it yourself. An unchanged Workspace (nothing committed, nothing dirty) is skipped. Turning a pushed branch into a PR (`gh pr create`) is planned for a later milestone.
 
 **Startup guard.** Like the provider-key guard, a selected backend that isn't available fails with one friendly line and a non-zero exit (never a traceback), in both the REPL and the headless `decode run` / `decode replay` pre-flight:
 
@@ -332,6 +345,7 @@ Those account tokens (`modal token set`, i.e. `MODAL_TOKEN_ID` / `MODAL_TOKEN_SE
 Tune it in `.env` — every setting is optional with a safe default:
 
 - `SANDBOX_MODE` (default `none`) — `none` / `docker` / `modal`.
+- `SANDBOX_REPO` (default empty) — the repo (URL or local path) cloned into the Workspace at launch; the `--repo` flag overrides it and `--local` picks a fast local clone. Empty means an empty Workspace. The **hand-back needs no extra variable** — it reuses `--repo` / `SANDBOX_REPO` and your ambient git credentials.
 - `SANDBOX_IMAGE` (default `ghcr.io/astral-sh/uv:python3.12-bookworm-slim`) — the **Worker** image (`docker` pulls it; `modal` maps it via `Image.from_registry`). Must include `bash`; the default is astral's `uv` variant of python-slim, so both sandboxes come **preconfigured with `uv`** and skill scripts run via `uv run` out of the box.
 - `SANDBOX_TIMEOUT_S` (default `600.0`) — max lifetime of a **remote** (modal) Sandbox before Modal reaps it (docker's session container has no lifetime cap).
 
