@@ -16,6 +16,7 @@ import pytest
 from decode.sandbox.workspace import (
     extract_tar,
     prepare_workspace,
+    prepare_workspace_or_empty,
     seed_skills,
     tar_dir,
     workspace_dir,
@@ -25,6 +26,13 @@ from decode.sandbox.workspace import (
 def _git(cwd: Path, *args: str) -> None:
     """Run ``git <args>`` in ``cwd``, raising on a non-zero exit (test setup helper)."""
     subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True)
+
+
+def _git_out(cwd: Path, *args: str) -> str:
+    """Run ``git <args>`` in ``cwd`` and return its stripped stdout (test assertion helper)."""
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 def _make_git_repo(path: Path, *, filename: str = "README.md", content: str = "hello\n") -> Path:
@@ -42,6 +50,21 @@ def _make_git_repo(path: Path, *, filename: str = "README.md", content: str = "h
     _git(path, "add", filename)
     _git(path, "commit", "-q", "-m", "initial commit")
     return path
+
+
+def _commit_change(repo: Path, *, filename: str, content: str) -> str:
+    """Commit a new file in ``repo`` (models the agent working in the Workspace); return the new HEAD.
+
+    A clone does not inherit the source's *local* git config, so identity + signing are configured
+    locally here (never the developer's global config) to keep the commit hermetic.
+    """
+    _git(repo, "config", "user.email", "test@decode.local")
+    _git(repo, "config", "user.name", "decode test")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / filename).write_text(content, encoding="utf-8")
+    _git(repo, "add", filename)
+    _git(repo, "commit", "-q", "-m", "workspace change")
+    return _git_out(repo, "rev-parse", "HEAD")
 
 
 # --- workspace_dir --------------------------------------------------------------------------------
@@ -115,6 +138,101 @@ def test_prepare_workspace_raises_on_clone_failure(tmp_path):
     # A non-existent local source fails fast (GIT_TERMINAL_PROMPT=0 → no hang) → RuntimeError.
     with pytest.raises(RuntimeError, match="git clone"):
         prepare_workspace(tmp_path / "home", repo=str(tmp_path / "does-not-exist"))
+
+
+# --- prepare_workspace: the cloned Workspace is a real repo — the task-083 hand-back substrate --------
+
+
+def test_cloned_workspace_is_a_real_repo_at_decode_sandbox_with_origin_recoverable(tmp_path):
+    """The clone lands at ``.decode/sandbox`` as a REAL repo whose origin + cloned HEAD 083 can recover.
+
+    ADR-0012 §8 substrate: because :func:`prepare_workspace` does a real ``git clone``, the Workspace's
+    own git recovers everything the hand-back needs — no sidecar file. The origin remote points at the
+    source (where to push), and the cloned HEAD is recoverable so 083 can tell "unchanged vs cloned".
+    """
+    source = _make_git_repo(tmp_path / "source")
+    source_head = _git_out(source, "rev-parse", "HEAD")
+
+    workspace = prepare_workspace(tmp_path / "home", repo=str(source))
+
+    # Host-visible, at the canonical .decode/sandbox path, and a real clone (a working .git).
+    assert workspace == workspace_dir(tmp_path / "home")
+    assert workspace == (tmp_path / "home" / ".decode" / "sandbox").resolve()
+    assert (workspace / ".git").is_dir()
+    # (a) origin recoverable → 083 knows where to push.
+    assert _git_out(workspace, "remote", "get-url", "origin") == str(source)
+    # (b) cloned HEAD recoverable → 083 can tell "unchanged vs cloned HEAD". The remote-tracking ref
+    #     stays pinned at the cloned commit even after the agent commits, so it is the durable anchor.
+    assert _git_out(workspace, "rev-parse", "HEAD") == source_head
+    assert _git_out(workspace, "rev-parse", "origin/HEAD") == source_head
+
+
+@pytest.mark.parametrize("local", [False, True], ids=["plain-clone", "local-clone"])
+def test_origin_head_pins_the_cloned_commit_so_083_detects_workspace_changes(local, tmp_path):
+    """``origin/HEAD`` stays pinned at the cloned commit after an in-Workspace commit — 083's signal.
+
+    ADR-0012 §8 substrate the task-083 hand-back keys off: on a FRESH clone ``HEAD == origin/HEAD``
+    (the Workspace is unchanged-vs-cloned → nothing to ship, skip the hand-back), and after the agent
+    commits inside the Workspace ``HEAD`` moves while ``origin/HEAD`` stays PINNED at the cloned commit
+    — so ``HEAD != origin/HEAD`` is the durable "the Workspace changed" signal (a remote-tracking ref
+    only moves on fetch/pull, never on a local commit). Both a plain and a ``--local`` clone must set
+    the ``refs/remotes/origin/HEAD`` anchor for that comparison to exist; ``--local`` is the specific
+    risk (a hardlink clone could omit it), so it is asserted for both.
+    """
+    source = _make_git_repo(tmp_path / "source")
+    cloned_head = _git_out(source, "rev-parse", "HEAD")
+
+    workspace = prepare_workspace(tmp_path / "home", repo=str(source), local=local)
+
+    # The anchor ref exists (the --local risk), and on the fresh clone HEAD == origin/HEAD ⇒ unchanged.
+    assert _git_out(workspace, "symbolic-ref", "refs/remotes/origin/HEAD").startswith(
+        "refs/remotes/origin/"
+    )
+    assert _git_out(workspace, "rev-parse", "HEAD") == cloned_head
+    assert _git_out(workspace, "rev-parse", "origin/HEAD") == cloned_head
+
+    # The agent commits inside the Workspace → HEAD advances, origin/HEAD stays pinned ⇒ changed.
+    worked_head = _commit_change(workspace, filename="CHANGE.md", content="agent work\n")
+
+    assert worked_head != cloned_head
+    assert _git_out(workspace, "rev-parse", "HEAD") == worked_head
+    assert _git_out(workspace, "rev-parse", "origin/HEAD") == cloned_head  # pinned, not advanced
+    assert _git_out(workspace, "rev-parse", "HEAD") != _git_out(
+        workspace, "rev-parse", "origin/HEAD"
+    )
+
+
+# --- prepare_workspace_or_empty: the launch-time degrade policy (task 082) -------------------------
+
+
+def test_prepare_workspace_or_empty_returns_the_clone_and_no_error_on_success(tmp_path):
+    source = _make_git_repo(tmp_path / "source")
+
+    workspace, error = prepare_workspace_or_empty(tmp_path / "home", repo=str(source))
+
+    assert error is None
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_prepare_workspace_or_empty_degrades_to_empty_on_a_clone_failure(tmp_path):
+    """A clone failure never raises — it returns the empty Workspace + the git error text (ADR-0012 §3)."""
+    workspace, error = prepare_workspace_or_empty(
+        tmp_path / "home", repo=str(tmp_path / "does-not-exist")
+    )
+
+    # Degraded, not raised: the caller (REPL / headless) surfaces ``error`` and starts empty.
+    assert error is not None
+    assert "git clone" in error
+    assert workspace == workspace_dir(tmp_path / "home")
+    assert list(workspace.iterdir()) == []  # a valid empty scratch
+
+
+def test_prepare_workspace_or_empty_repo_none_is_the_empty_workspace_no_error(tmp_path):
+    workspace, error = prepare_workspace_or_empty(tmp_path, repo=None)
+
+    assert error is None
+    assert workspace == workspace_dir(tmp_path)
+    assert list(workspace.iterdir()) == []
 
 
 # --- prepare_workspace: git argv wiring (hermetic — subprocess.run patched) ------------------------

@@ -17,6 +17,9 @@ local git repos — no daemon, no remote.
   sessions, so re-cloning would blow away in-progress work. Cloning uses the user's **ambient** git
   credentials (SSH agent / credential helper / cached creds); the interactive terminal prompt is
   disabled so a missing credential fails fast instead of hanging on an invisible prompt.
+* :func:`prepare_workspace_or_empty` — the launch-time wrapper (task 082) that degrades a clone
+  failure to an empty Workspace + a message instead of raising, so a bad ``--repo`` never crashes the
+  REPL / headless launch. The one degrade policy both the TUI and the headless flow share.
 * :func:`seed_skills` — copy the project's ``.decode/skills`` (the Workspace's sibling under
   ``.decode/``) into ``<workspace>/.decode/skills`` so cwd-relative skill-script paths resolve inside
   the Workspace. Replaces the docker read-only mount and the modal ``add_local_dir`` seeding
@@ -26,8 +29,8 @@ local git repos — no daemon, no remote.
   §5 rejects it — an mtime delta cannot propagate a remote ``rm``), so these are the only transport
   helpers here: no marker, delta, or size-cap machinery.
 
-Nothing imports this module yet — it lands as a pure addition (079-082 wire it in), so the existing
-suite stays byte-green.
+Wired in incrementally (079 docker, 080 modal, 081 the file-tool seam, 082 the CLI ``--repo`` /
+``--local`` clone-at-launch): the helpers stay backend-free so they unit-test with plain local git.
 """
 
 from __future__ import annotations
@@ -73,8 +76,19 @@ def prepare_workspace(harness_home: Path, *, repo: str | None = None, local: boo
       Workspace is the docker mount source / the modal bootstrap source and persists across sessions;
       re-cloning would discard in-progress work.
 
-    Returns the Workspace path. A clone failure raises :class:`RuntimeError` (the launch-time
-    degrade-to-empty policy is task 082's concern, above this helper).
+    Returns the Workspace path. A clone failure raises :class:`RuntimeError`; callers that want the
+    launch-time degrade-to-empty policy use :func:`prepare_workspace_or_empty`.
+
+    **Substrate for the task-083 git hand-back (ADR-0012 §8).** Because this is a *real* ``git clone``,
+    the Workspace's own git recovers everything the hand-back needs — **no sidecar file** (``ponytail:``
+    prefer git-native recovery over a marker):
+
+    * the **origin** (where to push) — ``git -C <workspace> remote get-url origin`` returns the source
+      the clone was made from (``git clone`` sets ``origin`` automatically, URL or local path);
+    * the **cloned HEAD** (to tell "unchanged vs worked") — the remote-tracking ref
+      ``git -C <workspace> rev-parse origin/HEAD`` (or the current branch's ``@{upstream}``) stays
+      pinned at the commit that was cloned even after the agent commits, so ``HEAD == origin/HEAD``
+      means the Workspace is unchanged-vs-cloned and the hand-back can be skipped.
     """
     workspace = workspace_dir(harness_home)
     if repo is None:
@@ -84,6 +98,28 @@ def prepare_workspace(harness_home: Path, *, repo: str | None = None, local: boo
         return workspace
     _git_clone(repo, workspace, local=local)
     return workspace
+
+
+def prepare_workspace_or_empty(
+    harness_home: Path, *, repo: str | None = None, local: bool = False
+) -> tuple[Path, str | None]:
+    """Prepare the Workspace, degrading to an **empty** one if the clone fails (ADR-0012 §3).
+
+    The launch-time wrapper around :func:`prepare_workspace`: a ``git clone`` failure (a bad URL, a
+    missing credential, a network stall) must never crash the launch — an empty Workspace is a valid
+    scratch, so decode starts anyway. Returns ``(workspace_path, error)`` where ``error`` is ``None`` on
+    success and the git failure text on a degrade; the path is the same ``.decode/sandbox`` either way
+    (only its *contents* differ). The failure is logged here; the caller surfaces ``error`` the way its
+    surface allows — the REPL renders one friendly TUI line, the headless flow just carries the log line
+    — so both entry paths share one degrade policy without duplicating the ``try``/``except``.
+    """
+    try:
+        return prepare_workspace(harness_home, repo=repo, local=local), None
+    except RuntimeError as exc:
+        logger.warning(
+            "[sandbox] workspace clone of %r failed; degrading to an empty workspace", repo
+        )
+        return workspace_dir(harness_home), str(exc)
 
 
 def _git_clone(repo: str, workspace: Path, *, local: bool) -> None:

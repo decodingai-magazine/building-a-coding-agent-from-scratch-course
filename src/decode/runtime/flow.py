@@ -262,27 +262,30 @@ def _warm_headless_executor(workspace: Path) -> None:
         loop.close()
 
 
-def _prepare_headless_tool_scope() -> Path:
+def _prepare_headless_tool_scope(repo: str | None = None, local: bool = False) -> Path:
     """The headless agent tool scope: the prepared+warmed Workspace in a sandbox mode, else cwd (§3,6).
 
     ``none`` → the launch cwd (``deps.cwd == harness_home``, byte-identical). A sandbox mode → the
-    isolated Workspace: :func:`~decode.sandbox.workspace.prepare_workspace` ensures ``.decode/sandbox``
-    (empty this task — ``--repo`` lands in 082), then :func:`_warm_headless_executor` starts the executor
-    against it (idempotent w.r.t. the :func:`_sandbox_proxy` path). Returned as ``deps.cwd`` so the
-    file/search tools + ``bash`` operate inside the Workspace while harness artifacts stay at ``Path.cwd()``.
-    The sandbox import stays lazy so ``none`` pulls in no sandbox module (ADR-0012 §9).
+    isolated Workspace: :func:`~decode.sandbox.workspace.prepare_workspace_or_empty` ensures
+    ``.decode/sandbox`` and, when ``repo`` is given (``--repo`` / ``SANDBOX_REPO``, resolved by the cli),
+    ``git clone``s it at HEAD (``local`` → a fast local clone; ADR-0012 §3) — degrading to an empty
+    Workspace on a clone failure rather than crashing the headless run. Then :func:`_warm_headless_executor`
+    starts the executor against it (idempotent w.r.t. the :func:`_sandbox_proxy` path, which already cloned
+    + warmed the same Workspace). Returned as ``deps.cwd`` so the file/search tools + ``bash`` operate
+    inside the Workspace while harness artifacts stay at ``Path.cwd()``. The sandbox import stays lazy so
+    ``none`` pulls in no sandbox module (ADR-0012 §9).
     """
     if settings.sandbox_mode == "none":
         return Path.cwd()
-    from decode.sandbox.workspace import prepare_workspace
+    from decode.sandbox.workspace import prepare_workspace_or_empty
 
-    workspace = prepare_workspace(Path.cwd())  # repo=None this task (082 wires --repo/SANDBOX_REPO)
+    workspace, _clone_error = prepare_workspace_or_empty(Path.cwd(), repo=repo, local=local)
     _warm_headless_executor(workspace)
     return workspace
 
 
 @contextmanager
-def _sandbox_proxy() -> Iterator[None]:
+def _sandbox_proxy(repo: str | None = None, local: bool = False) -> Iterator[None]:
     """Run the docker Credential Proxy for a headless flow span, tear it down on exit (ADR-0011 §6).
 
     Engaged **only** when ``settings.sandbox_mode == "docker"`` **and**
@@ -293,7 +296,9 @@ def _sandbox_proxy() -> Iterator[None]:
     (2) starts a ``mitmproxy`` addon container on a per-run docker network, (3) installs a proxy-wired
     ``SandboxExecutor(DockerBackend(...))`` as ``bash``'s executor for the flow span (the seam via
     :func:`decode.tools.bash.install_executor`) and eagerly starts it against the Workspace
-    (``prepare_workspace`` — no repo this task, ADR-0012 §3), and (4) tears it all down.
+    (``prepare_workspace_or_empty`` — cloning ``repo`` at HEAD when given so the worker's ``bash`` sees
+    the repo before the first command; the flow body's :func:`_prepare_headless_tool_scope` then reuses
+    this same populated Workspace, ADR-0012 §3), and (4) tears it all down.
 
     Teardown order is load-bearing and loop-independent (ADR-0011 §4; trivial under ADR-0012 fresh-exec):
     reap the **worker** first (:func:`_reap_runtime_executor` — ``docker rm -f`` + reset the bash seam),
@@ -316,7 +321,7 @@ def _sandbox_proxy() -> Iterator[None]:
         DockerCredentialProxy,
         build_credential_map,
     )
-    from decode.sandbox.workspace import prepare_workspace
+    from decode.sandbox.workspace import prepare_workspace_or_empty
     from decode.tools.bash import install_executor
 
     proxy = DockerCredentialProxy(build_credential_map(DEFAULT_PROXY_RULES))
@@ -330,11 +335,14 @@ def _sandbox_proxy() -> Iterator[None]:
             )
         )
         install_executor(executor)
-        # Eagerly bring the worker up against the Workspace so its CA is trusted before the first bash
-        # (no repo this task — 082 wires --repo/SANDBOX_REPO). Run on a fresh loop: the sync flow body
-        # cannot ``await``, and fresh-exec means the container id is loop-agnostic (later ``exec`` /
-        # ``docker rm -f`` spawn their own subprocesses), so warming here is safe.
-        _start_runtime_executor(executor, prepare_workspace(Path.cwd()))
+        # Eagerly bring the worker up against the Workspace so its CA is trusted before the first bash,
+        # cloning ``repo`` at HEAD when given (--repo/SANDBOX_REPO, ADR-0012 §3) so the worker sees the
+        # repo from the first command; a clone failure degrades to an empty Workspace, never crashing.
+        # Run on a fresh loop: the sync flow body cannot ``await``, and fresh-exec means the container id
+        # is loop-agnostic (later ``exec`` / ``docker rm -f`` spawn their own subprocesses), so warming
+        # here is safe. The flow body's ``_prepare_headless_tool_scope`` then reuses this populated tree.
+        workspace, _clone_error = prepare_workspace_or_empty(Path.cwd(), repo=repo, local=local)
+        _start_runtime_executor(executor, workspace)
         try:
             yield
         finally:
@@ -425,7 +433,9 @@ def _capture_runtime_output(output: str) -> str:
 
 
 @flow
-def run_agent_task(task: str, model: str | None = None) -> str:
+def run_agent_task(
+    task: str, model: str | None = None, repo: str | None = None, local: bool = False
+) -> str:
     """Run ``task`` to completion through the durable agent and return its final text (ADR-0008 §1-2).
 
     Sync ``@flow``: build the durable agent (the patchable seam), construct the headless BYPASS
@@ -446,6 +456,12 @@ def run_agent_task(task: str, model: str | None = None) -> str:
     model is byte-unchanged — while a value overrides only the active provider's model id. Because it
     is a flow input, Kitaru can swap it on a what-if Replay (``run_agent_task.replay(..., model=…)``).
 
+    ``repo`` / ``local`` are the **Workspace clone** flow inputs (ADR-0012 §3), resolved by the cli
+    (``--repo`` > ``SANDBOX_REPO``): in a sandbox mode ``_prepare_headless_tool_scope`` ``git clone``s
+    ``repo`` at HEAD into ``/workspace`` (``local`` → a fast local clone). ``None`` (the default, and
+    ``none`` mode) → an empty Workspace, byte-unchanged. Threaded through the seams too, so the proxy
+    path clones the same Workspace the worker mounts, and a Replay reuses the recorded source.
+
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store`, so ``build_agent`` reads config hydrated from the Kitaru secret;
     off (the default) it is a no-op and behaviour is byte-unchanged. It nests
@@ -458,8 +474,8 @@ def run_agent_task(task: str, model: str | None = None) -> str:
     Modal sandbox on completion **and** on error. A no-op in ``none`` mode.
     """
     try:
-        with _config_from_secret_store(), _sandbox_proxy():
-            tool_scope = _prepare_headless_tool_scope()
+        with _config_from_secret_store(), _sandbox_proxy(repo, local):
+            tool_scope = _prepare_headless_tool_scope(repo, local)
             durable_agent = _build_runtime_agent(model)
             deps = _build_headless_deps(tool_scope)
             result = durable_agent.run_sync(task, deps=deps)
@@ -578,7 +594,9 @@ def _build_hitl_deps(cwd: Path | None = None) -> AgentDeps:
 
 
 @flow
-def run_agent_task_hitl(task: str, model: str | None = None) -> str:
+def run_agent_task_hitl(
+    task: str, model: str | None = None, repo: str | None = None, local: bool = False
+) -> str:
     """Run ``task`` headlessly with **durable HITL** approvals + ``ask_user`` waits (ADR-0008 §3).
 
     The gating complement of :func:`run_agent_task`: same ``build_agent()``, but under a gating gate
@@ -593,7 +611,9 @@ def run_agent_task_hitl(task: str, model: str | None = None) -> str:
     :func:`_capture_runtime_output`; use :func:`run_hitl_agent_task` to launch and read it back.
 
     ``model`` is the **Model Override** (ADR-0010 §2), threaded to the HITL seam on the same terms as
-    :func:`run_agent_task` (``None`` → ``settings.<provider>_model``, byte-unchanged).
+    :func:`run_agent_task` (``None`` → ``settings.<provider>_model``, byte-unchanged). ``repo`` / ``local``
+    are the **Workspace clone** flow inputs, threaded identically so ``decode run --hitl --repo`` clones
+    the repo into ``/workspace`` (ADR-0012 §3); ``None`` / ``none`` mode → an empty Workspace.
 
     When ``settings.runtime_secret_store_config`` is on (ADR-0008 §5) the whole run executes inside
     :func:`_config_from_secret_store` (the sleeper nests inside it), so ``build_agent`` reads config
@@ -603,8 +623,8 @@ def run_agent_task_hitl(task: str, model: str | None = None) -> str:
     (:func:`_reap_runtime_executor`, ADR-0011 §4) on completion, error, or the deny-return path.
     """
     try:
-        with _config_from_secret_store(), _sandbox_proxy():
-            tool_scope = _prepare_headless_tool_scope()
+        with _config_from_secret_store(), _sandbox_proxy(repo, local):
+            tool_scope = _prepare_headless_tool_scope(repo, local)
             durable_agent = _build_hitl_runtime_agent(model)
             deps = _build_hitl_deps(tool_scope)
             # The durable sleeper is installed only for the span of ``run_sync`` and reset on exit, so a
@@ -668,7 +688,9 @@ def _load_runtime_output(exec_id: str) -> str:
     )
 
 
-def run_hitl_agent_task(task: str, model: str | None = None) -> HitlRunResult:
+def run_hitl_agent_task(
+    task: str, model: str | None = None, repo: str | None = None, local: bool = False
+) -> HitlRunResult:
     """Launch the HITL flow and return its result or its paused execution id (ADR-0008 §3).
 
     On the local Kitaru stack ``flow.run(...)`` runs the execution in-process and returns once it has
@@ -680,8 +702,9 @@ def run_hitl_agent_task(task: str, model: str | None = None) -> HitlRunResult:
     ``model`` is the **Model Override** (ADR-0010 §2), forwarded to the ``@flow`` as a flow input:
     ``None`` (the default) reads ``settings.<provider>_model``, byte-unchanged; a value overrides only
     the active provider's model id. It is exposed as ``decode run --hitl --model`` (ADR-0010 §4).
+    ``repo`` / ``local`` are the **Workspace clone** flow inputs (ADR-0012 §3), forwarded the same way.
     """
-    handle = run_agent_task_hitl.run(task=task, model=model)
+    handle = run_agent_task_hitl.run(task=task, model=model, repo=repo, local=local)
     status = handle.status
     if status.is_finished and status.is_successful:
         return HitlRunResult(

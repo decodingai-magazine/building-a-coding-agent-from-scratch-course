@@ -4,8 +4,8 @@ These cover the task-074 additions to :mod:`decode.tools.bash` and :mod:`decode.
 
 * ``_get_executor()`` selects the executor by ``SANDBOX_MODE`` on first use, lazily, and memoizes it;
 * ``reset_executor()`` re-arms selection; ``close_executor()`` reaps a sandbox executor and resets;
-* ``bash_description()`` + the registry ``prepare`` compose the mode-specific tool description
-  (``none`` byte-identical, ``docker`` / ``modal`` append their sandbox-semantics paragraph);
+* ``bash_description()`` + the registry ``prepare`` compose the tool description (``none``
+  byte-identical; ``docker`` AND ``modal`` append the SAME unified sandbox paragraph — ADR-0012 §2);
 * end to end, a ``bash`` call in docker mode routes through the *selected* executor's ``run`` (a fake
   records it) and renders its :class:`ExecResult` — the seam swap, with no real infra;
 * the ``none`` path imports no sandbox executor module, and a docker-mode REPL agent imports no kitaru.
@@ -326,33 +326,31 @@ def test_bash_description_none_is_identity(monkeypatch):
     assert bash_mod.bash_description("BASE") == "BASE"
 
 
-def test_bash_description_docker_appends_the_fresh_exec_paragraph(monkeypatch):
+def test_bash_description_docker_appends_the_unified_sandbox_paragraph(monkeypatch):
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
 
     out = bash_mod.bash_description("BASE")
 
-    assert out.startswith("BASE\n\n")
+    assert out == f"BASE\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
     assert "/workspace" in out
+    assert "isolated Workspace" in out  # /workspace IS the isolated Workspace (ADR-0012 §2)
+    assert "git clone of your repo" in out  # ...a clone of --repo, or an empty scratch
     assert (
         "do NOT carry over" in out
     )  # fresh-exec: cd/export do not persist across calls (ADR-0012)
-    assert "separate streams" in out  # docker exec keeps stdout/stderr split (no merge)
-    assert ".decode/sandbox" in out  # /workspace is the scratch — the model is told
-    assert "NOT mounted" in out  # ...and that the project tree is out of reach via bash
-
-
-def test_bash_description_modal_appends_the_remote_sandbox_paragraph(monkeypatch):
-    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "modal")
-
-    out = bash_mod.bash_description("BASE")
-
-    assert out.startswith("BASE\n\n")
-    assert "remote Modal sandbox" in out  # runs off the local machine
-    assert "do NOT carry over" in out  # fresh-exec: cd/export reset per call
-    assert (
-        "exported back to the host" in out
-    )  # the workspace is swept home at session end (ADR-0012)
     assert "separate streams" in out  # stdout/stderr kept split
+
+
+def test_bash_description_modal_appends_the_same_unified_paragraph(monkeypatch):
+    """ADR-0012 §2: modal gets the SAME unified paragraph as docker (one fresh-exec shape)."""
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "modal")
+    modal_out = bash_mod.bash_description("BASE")
+
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    docker_out = bash_mod.bash_description("BASE")
+
+    # The whole point of the task: docker == modal == base + the ONE unified paragraph.
+    assert modal_out == docker_out == f"BASE\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
 
 
 # --- registry prepare: the description reaches the tool definition per mode --------------------
@@ -376,7 +374,7 @@ async def test_bash_prepare_docker_appends_the_paragraph(monkeypatch):
     result = await prepare(_AgentCtx("build"), td)  # type: ignore[arg-type]
 
     assert result is not td  # a replaced copy, not the passed object
-    assert result.description == f"BASE\n\n{bash_mod._DOCKER_DESCRIPTION_SUFFIX}"
+    assert result.description == f"BASE\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
 
 
 async def test_bash_prepare_still_hides_bash_when_the_agent_omits_it(monkeypatch):
@@ -434,7 +432,7 @@ async def _bash_description_via_agent(mode: str, monkeypatch, cwd: Path) -> str:
 
 
 async def test_agent_bash_description_docker_is_none_plus_the_paragraph(monkeypatch, tmp_path):
-    """The model-facing bash description: docker == none + the docker paragraph (proves none is base).
+    """The model-facing bash description: docker == none + the unified paragraph (proves none is base).
 
     Capturing the description the model actually receives proves the end-to-end wiring (registry
     ``prepare`` → the model schema). ``docker == none + suffix`` transitively proves the ``none``-mode
@@ -444,15 +442,17 @@ async def test_agent_bash_description_docker_is_none_plus_the_paragraph(monkeypa
     docker_desc = await _bash_description_via_agent("docker", monkeypatch, tmp_path)
 
     assert "/workspace" not in none_desc  # none carries no sandbox paragraph
-    assert "SANDBOX_MODE" not in none_desc
-    assert docker_desc == f"{none_desc}\n\n{bash_mod._DOCKER_DESCRIPTION_SUFFIX}"
+    assert "isolated Workspace" not in none_desc
+    assert docker_desc == f"{none_desc}\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
 
 
-async def test_agent_bash_description_modal_is_none_plus_the_paragraph(monkeypatch, tmp_path):
+async def test_agent_bash_description_modal_equals_docker(monkeypatch, tmp_path):
+    """ADR-0012 §2: the description the model sees is IDENTICAL for docker and modal (one paragraph)."""
     none_desc = await _bash_description_via_agent("none", monkeypatch, tmp_path)
+    docker_desc = await _bash_description_via_agent("docker", monkeypatch, tmp_path)
     modal_desc = await _bash_description_via_agent("modal", monkeypatch, tmp_path)
 
-    assert modal_desc == f"{none_desc}\n\n{bash_mod._MODAL_DESCRIPTION_SUFFIX}"
+    assert modal_desc == docker_desc == f"{none_desc}\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
 
 
 # --- end to end: a bash call routes through the SELECTED executor (the seam swap) --------------

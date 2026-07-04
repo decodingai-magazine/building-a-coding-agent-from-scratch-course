@@ -875,3 +875,116 @@ def test_cli_provider_guard_precedes_the_sandbox_guard(mocker):
     assert "SANDBOX_MODE=docker" not in result.output
     docker_probe.assert_not_called()
     run_app.assert_not_awaited()
+
+
+# --- task 082: the Workspace repo resolution + the none-mode guard (ADR-0012 §3) ---------------
+#
+# ``_resolve_sandbox_repo`` (--repo > SANDBOX_REPO > None) and ``_sandbox_repo_config_error`` (a repo
+# requested while SANDBOX_MODE=none is a config error) are the decidable helpers; the CLI-level tests
+# below prove the exit code + no-traceback behaviour and the flag threading into ``run_app``.
+
+
+def test_resolve_sandbox_repo_flag_wins_over_the_setting(mocker):
+    mocker.patch.object(cli_mod.settings, "sandbox_repo", "https://from.env/repo.git")
+
+    assert cli_mod._resolve_sandbox_repo("/flag/repo") == "/flag/repo"
+
+
+def test_resolve_sandbox_repo_falls_back_to_the_setting(mocker):
+    mocker.patch.object(cli_mod.settings, "sandbox_repo", "https://from.env/repo.git")
+
+    assert cli_mod._resolve_sandbox_repo(None) == "https://from.env/repo.git"
+
+
+def test_resolve_sandbox_repo_none_when_neither_is_set(mocker):
+    mocker.patch.object(cli_mod.settings, "sandbox_repo", "")  # the default (unset)
+
+    assert cli_mod._resolve_sandbox_repo(None) is None
+
+
+def test_sandbox_repo_config_error_repo_in_none_mode_returns_the_message(mocker):
+    mocker.patch.object(cli_mod.settings, "sandbox_mode", "none")
+
+    msg = cli_mod._sandbox_repo_config_error("/some/repo")
+
+    assert msg is not None
+    assert "--repo/SANDBOX_REPO" in msg
+    assert "SANDBOX_MODE=docker" in msg
+    assert ".env.example" in msg
+
+
+def test_sandbox_repo_config_error_repo_in_a_sandbox_mode_returns_none(mocker):
+    """Presence of a repo is fine in a sandbox mode — that is the whole point (no error)."""
+    mocker.patch.object(cli_mod.settings, "sandbox_mode", "docker")
+
+    assert cli_mod._sandbox_repo_config_error("/some/repo") is None
+
+
+def test_sandbox_repo_config_error_no_repo_returns_none(mocker):
+    mocker.patch.object(cli_mod.settings, "sandbox_mode", "none")
+
+    assert cli_mod._sandbox_repo_config_error(None) is None
+
+
+def test_cli_repo_and_local_flags_are_documented():
+    """``decode --help`` documents ``--repo`` and ``--local`` (discoverability)."""
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "--repo" in result.output
+    assert "--local" in result.output
+
+
+def test_cli_repo_in_none_mode_exits_nonzero_with_a_friendly_line(mocker):
+    """``--repo`` while ``SANDBOX_MODE=none`` → one friendly stderr line + non-zero exit, no REPL, no traceback."""
+    # sandbox_mode is pinned none by the autouse fixture — a repo is contradictory there.
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["--repo", "/some/repo"])
+
+    assert result.exit_code != 0
+    assert "--repo/SANDBOX_REPO" in result.output
+    assert "SANDBOX_MODE=docker" in result.output  # names the fix
+    assert "Traceback" not in result.output
+    assert "Decode:" in result.output
+    run_app.assert_not_awaited()  # short-circuited before the REPL
+
+
+def test_cli_sandbox_repo_env_in_none_mode_exits_nonzero(mocker):
+    """A bare ``SANDBOX_REPO`` (no ``--repo`` flag) in ``none`` mode also trips the guard."""
+    mocker.patch.object(cli_mod.settings, "sandbox_repo", "https://from.env/repo.git")
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code != 0
+    assert "--repo/SANDBOX_REPO" in result.output
+    run_app.assert_not_awaited()
+
+
+def test_cli_repo_threaded_to_run_app_in_a_sandbox_mode(mocker):
+    """``--repo`` + a docker mode (probe patched reachable) → the resolved repo reaches ``run_app``."""
+    mocker.patch.object(cli_mod.settings, "sandbox_mode", "docker")
+    mocker.patch("decode.cli._docker_daemon_reachable", return_value=True)
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["--repo", "/some/repo", "--local"])
+
+    assert result.exit_code == 0
+    run_app.assert_awaited_once()
+    assert run_app.await_args.kwargs.get("repo") == "/some/repo"
+    assert run_app.await_args.kwargs.get("local") is True
+
+
+def test_cli_no_repo_passes_none_to_run_app(mocker):
+    """No ``--repo`` (and no ``SANDBOX_REPO``) → ``run_app`` gets ``repo=None`` (an empty Workspace)."""
+    mocker.patch.object(cli_mod.settings, "sandbox_mode", "docker")
+    mocker.patch("decode.cli._docker_daemon_reachable", return_value=True)
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code == 0
+    run_app.assert_awaited_once()
+    assert run_app.await_args.kwargs.get("repo") is None
+    assert run_app.await_args.kwargs.get("local") is False

@@ -13,8 +13,9 @@ OS sandbox + classifier are M8).
 is now **live** (ADR-0011 §4): the cached ``_get_executor()`` seam selects by ``SANDBOX_MODE`` on
 first use — ``none`` keeps the host :class:`~decode.tools.exec.LocalExecutor` (byte-identical to
 before), ``docker`` / ``modal`` lazily swap in the sandbox executor from :mod:`decode.sandbox`.
-``bash`` itself stays infra-agnostic; the model is told the active mode's semantics through the
-mode-specific tool **description** (:func:`bash_description`, wired via the registry ``prepare=``).
+``bash`` itself stays infra-agnostic; the model is told the sandbox semantics through the tool
+**description** (:func:`bash_description`, wired via the registry ``prepare=``) — one unified
+sandbox paragraph for ``docker`` AND ``modal`` (ADR-0012 §2 fresh-exec), nothing for ``none``.
 
 **Timeout.** The wall-clock limit defaults to ``settings.bash_timeout_s`` and the model may
 request a shorter one via the optional ``timeout`` argument; a model-supplied value is
@@ -65,33 +66,24 @@ BASH_TOOL_NAME = "bash"
 _EXECUTOR: CommandExecutor = LocalExecutor()
 _executor_selected = False
 
-# The model-facing description paragraphs appended to the ``bash`` tool docstring per SANDBOX_MODE
-# (ADR-0011 §4; ADR-0012 §2 fresh-exec). ``none`` appends nothing (byte-identical). ``docker`` /
-# ``modal`` tell the model the sandbox's live semantics so it is never surprised (docker's fresh-exec
-# container + shared /workspace; the empty remote scratch with no local tree). Composed onto the base
-# description by :func:`bash_description` and installed on the tool via the registry's ``prepare=``.
-_DOCKER_DESCRIPTION_SUFFIX = (
-    "Sandbox (SANDBOX_MODE=docker): commands run inside a local Docker container. The working "
-    "directory /workspace is a scratch area backed by the project's .decode/sandbox/ directory on the "
-    "host — the project tree itself is NOT mounted, so repo files are reachable only through the "
-    "read/write/edit tools (which run on the host), never through bash; to work with code inside the "
-    "sandbox, fetch it (e.g. `git clone`) or generate it under /workspace. The project's "
-    ".decode/skills/ directory (if it exists) is seeded at /workspace/.decode/skills, so skill scripts "
-    "can be run directly. Filesystem changes and installations (e.g. `git clone`, `pip install`) "
-    "persist across bash calls (one container per session), but each command runs as a fresh shell, so "
-    "`cd` and `export` do NOT carry over between calls — use absolute paths or chain them in one call "
-    "(e.g. `cd /workspace/app && <command>`). If a command times out, only that command is killed; the "
-    "container and its filesystem survive. stdout and stderr are captured as separate streams."
-)
-_MODAL_DESCRIPTION_SUFFIX = (
-    "Sandbox (SANDBOX_MODE=modal): commands run in a remote Modal sandbox, not on the local machine. "
-    "The working directory /workspace is the sandbox's isolated workspace, backed by the project's "
-    ".decode/sandbox/ directory on the host. Filesystem changes and installations (e.g. `git clone`, "
-    "`pip install`) persist across bash calls (one sandbox per session), but each command runs as a "
-    "fresh process, so shell `cd` and `export` do NOT carry over between calls — use absolute paths or "
-    "chain them in one call (e.g. `cd /workspace/app && <command>`). If a command times out, only that "
-    "command is killed; the sandbox and its filesystem survive. The workspace is exported back to the "
-    "host when the session ends. stdout and stderr are captured as separate streams."
+# The ONE model-facing description paragraph appended to the ``bash`` tool docstring in a sandbox mode
+# (ADR-0012 §2 fresh-exec; supersedes ADR-0011's two per-mode suffixes). ``none`` appends nothing
+# (byte-identical). ``docker`` AND ``modal`` share this single paragraph because ADR-0012 collapsed the
+# two backends onto ONE fresh-exec ``SandboxExecutor`` shape — same rules for both: /workspace is the
+# isolated Workspace (a clone of the user's repo, or an empty scratch); the file tools operate on that
+# SAME tree; the filesystem persists across calls but each command is a fresh shell (cd/export do not
+# carry over); a timeout kills only that command. Composed onto the base description by
+# :func:`bash_description` and installed on the tool via the registry's ``prepare=``.
+_SANDBOX_DESCRIPTION_SUFFIX = (
+    "Sandbox: commands run inside an isolated sandbox, not on the host machine. The working directory "
+    "/workspace is the isolated Workspace — a git clone of your repo when one was supplied "
+    "(--repo/SANDBOX_REPO), otherwise an empty scratch — and it is the SAME tree the "
+    "read/write/edit/glob/grep tools operate on, so a file you create with bash is visible to those "
+    "tools and vice-versa. The filesystem persists across bash calls (one sandbox per session), but "
+    "each command runs as a fresh shell, so `cd` and `export` do NOT carry over between calls — use "
+    "absolute paths or chain them in one call (e.g. `cd /workspace/app && <command>`). If a command "
+    "times out, only that command is killed; the sandbox and its filesystem survive. stdout and stderr "
+    "are captured as separate streams."
 )
 
 
@@ -239,19 +231,18 @@ def active_backend(cwd: Path) -> SandboxBackend | None:
 
 
 def bash_description(base: str) -> str:
-    """Compose the model-facing ``bash`` description for the active ``SANDBOX_MODE`` (ADR-0011 §4).
+    """Compose the model-facing ``bash`` description for the active ``SANDBOX_MODE`` (ADR-0012 §2).
 
-    ``none`` returns ``base`` **unchanged** (byte-identical to before this task — the caller detects the
-    no-op and leaves the ``ToolDefinition`` untouched). ``docker`` / ``modal`` append the matching
-    sandbox-semantics paragraph so the model is told the live rules (docker's fresh-exec container +
-    shared ``/workspace``; the empty remote scratch with no local tree) instead of being surprised.
+    ``none`` returns ``base`` **unchanged** (byte-identical to before sandboxing — the caller detects the
+    no-op and leaves the ``ToolDefinition`` untouched). ``docker`` AND ``modal`` append the **same**
+    unified :data:`_SANDBOX_DESCRIPTION_SUFFIX`: ADR-0012 collapsed the two backends onto one fresh-exec
+    ``SandboxExecutor`` shape, so the model is told one set of rules (the isolated ``/workspace``
+    Workspace shared by ``bash`` + the file tools; fresh-exec ``cd``/``export`` reset; fs persists)
+    regardless of which backend is active.
     """
-    mode = settings.sandbox_mode
-    if mode == "docker":
-        return f"{base}\n\n{_DOCKER_DESCRIPTION_SUFFIX}"
-    if mode == "modal":
-        return f"{base}\n\n{_MODAL_DESCRIPTION_SUFFIX}"
-    return base
+    if settings.sandbox_mode == "none":
+        return base
+    return f"{base}\n\n{_SANDBOX_DESCRIPTION_SUFFIX}"
 
 
 async def bash(

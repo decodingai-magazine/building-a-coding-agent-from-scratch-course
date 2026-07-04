@@ -410,12 +410,13 @@ async def _bash_description_the_model_sees(mode: str, monkeypatch, cwd: Path) ->
 
 
 async def test_bash_description_adapts_per_mode(monkeypatch, tmp_path: Path) -> None:
-    """The model-facing ``bash`` description: ``none`` is the base; ``docker`` / ``modal`` append a paragraph.
+    """The model-facing ``bash`` description: ``none`` is the base; ``docker`` == ``modal`` append ONE paragraph.
 
     Capturing the description the model actually receives proves the end-to-end wiring (the registry
-    ``prepare`` → the model schema, ADR-0011 §4). ``docker``/``modal`` == ``none`` + their suffix
+    ``prepare`` → the model schema, ADR-0012 §2). ``docker``/``modal`` == ``none`` + the unified suffix
     transitively proves the ``none``-mode description is byte-identical to the untouched base (no sandbox
-    paragraph leaks into ``none``), and each sandbox paragraph states that mode's live semantics.
+    paragraph leaks into ``none``); the ONE paragraph is shared because the two backends collapsed onto a
+    single fresh-exec ``SandboxExecutor`` shape.
     """
     none_desc = await _bash_description_the_model_sees("none", monkeypatch, tmp_path)
     docker_desc = await _bash_description_the_model_sees("docker", monkeypatch, tmp_path)
@@ -423,18 +424,12 @@ async def test_bash_description_adapts_per_mode(monkeypatch, tmp_path: Path) -> 
 
     # none carries NO sandbox paragraph (byte-identical to the base description) ...
     assert "/workspace" not in none_desc
-    assert "SANDBOX_MODE" not in none_desc
-    # ... docker / modal are exactly none + their sandbox-semantics paragraph ...
-    assert docker_desc == f"{none_desc}\n\n{bash_mod._DOCKER_DESCRIPTION_SUFFIX}"
-    assert modal_desc == f"{none_desc}\n\n{bash_mod._MODAL_DESCRIPTION_SUFFIX}"
-    # ... and each paragraph tells the model that mode's reality.
-    assert (
-        "do NOT carry over" in docker_desc
-    )  # docker's fresh-exec: cd/export do not persist (ADR-0012)
-    # modal's paragraph names the remote sandbox and the session-end export sweep (ADR-0012 §5).
-    assert "remote Modal sandbox" in modal_desc
-    assert "exported back to the host" in modal_desc
-    assert "do NOT carry over" in modal_desc  # modal is fresh-exec too
+    assert "isolated Workspace" not in none_desc
+    # ... docker AND modal are exactly none + the SAME unified sandbox paragraph (ADR-0012 §2) ...
+    assert docker_desc == modal_desc == f"{none_desc}\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
+    # ... and that one paragraph tells the model the isolated-Workspace + fresh-exec reality.
+    assert "isolated Workspace" in docker_desc  # /workspace IS the Workspace (a clone, or empty)
+    assert "do NOT carry over" in docker_desc  # fresh-exec: cd/export do not persist (ADR-0012)
 
 
 # ================================================================================================

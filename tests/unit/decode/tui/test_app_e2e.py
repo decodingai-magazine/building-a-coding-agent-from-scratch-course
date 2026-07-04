@@ -1280,7 +1280,13 @@ async def test_run_app_sandbox_write_lands_in_workspace_and_memory_at_harness_ho
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setattr(app_mod.settings, "sandbox_mode", "docker")
-    monkeypatch.setattr("decode.sandbox.workspace.prepare_workspace", lambda home: workspace)
+    # deps.cwd resolves via ``workspace_dir`` (the path) and the clone via ``prepare_workspace`` — patch
+    # both to the test Workspace so the split is exercised without a real ``.decode/sandbox`` (082 kwargs).
+    monkeypatch.setattr("decode.sandbox.workspace.workspace_dir", lambda home: workspace)
+    monkeypatch.setattr(
+        "decode.sandbox.workspace.prepare_workspace",
+        lambda home, *, repo=None, local=False: workspace,
+    )
     monkeypatch.setattr(app_mod, "warm_executor", AsyncMock())  # no real container
     monkeypatch.setattr(app_mod, "close_executor", AsyncMock())
     monkeypatch.setattr(
@@ -1315,3 +1321,92 @@ async def test_run_app_sandbox_write_lands_in_workspace_and_memory_at_harness_ho
     session_file = next(sessions_dir.glob("*.jsonl"))
     header = json.loads(session_file.read_text(encoding="utf-8").splitlines()[0])
     assert header["cwd"] == str(tmp_path)
+
+
+def _make_local_git_repo(path: Path) -> Path:
+    """Create a local git repo at ``path`` with one committed file (hermetic --repo fixture)."""
+    import subprocess
+
+    path.mkdir(parents=True, exist_ok=True)
+    for args in (
+        ("init", "-q"),
+        ("config", "user.email", "t@decode.local"),
+        ("config", "user.name", "t"),
+        ("config", "commit.gpgsign", "false"),
+    ):
+        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
+    (path / "README.md").write_text("cloned-hello\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-q", "-m", "init"], check=True, capture_output=True
+    )
+    return path
+
+
+async def test_run_app_repo_clones_into_the_workspace_and_shows_progress(
+    monkeypatch, tmp_path, sessions_dir
+):
+    """ADR-0012 §3 REPL wiring: ``run_app(repo=…)`` clones the repo into the Workspace + shows progress.
+
+    Drives the REAL ``run_app`` in docker mode with a hermetic LOCAL git repo as ``--repo`` (no network,
+    no daemon — ``warm_executor`` is stubbed). The proof: the "cloning" progress line renders, the
+    "starting docker sandbox" line renders, and the repo actually lands as a REAL clone at the host
+    ``.decode/sandbox`` (README present, a working ``.git``) — the substrate task 083 ships from.
+    """
+    from unittest.mock import AsyncMock
+
+    from decode.sandbox.workspace import workspace_dir
+
+    monkeypatch.chdir(tmp_path)  # Harness Home = the launch cwd = tmp_path
+    source = _make_local_git_repo(tmp_path / "source")
+    monkeypatch.setattr(app_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(app_mod, "warm_executor", AsyncMock())  # no real container
+    monkeypatch.setattr(app_mod, "close_executor", AsyncMock())
+
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        await _wait_for(buf, "cloning")
+        await _wait_for(buf, "sandbox:docker")  # the banner names the active sandbox
+        send("/quit")
+
+    output = await _drive_run_app(monkeypatch, agent, script=script, repo=str(source), local=True)
+
+    # The progress lines rendered (a repo clone is slow, so the user sees it happening) — the repo
+    # path may soft-wrap under the console width, so assert the stable prefix + the starting line.
+    assert "cloning" in output
+    assert "starting docker sandbox" in output
+    # ... and the repo actually cloned into the host-visible Workspace at .decode/sandbox.
+    workspace = workspace_dir(tmp_path)
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "cloned-hello\n"
+    assert (workspace / ".git").is_dir()
+
+
+async def test_run_app_repo_clone_failure_degrades_to_empty_workspace(
+    monkeypatch, tmp_path, sessions_dir
+):
+    """A bad ``--repo`` never crashes the launch — one friendly line, and an empty Workspace (§3)."""
+    from unittest.mock import AsyncMock
+
+    from decode.sandbox.workspace import workspace_dir
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(app_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(app_mod, "warm_executor", AsyncMock())
+    monkeypatch.setattr(app_mod, "close_executor", AsyncMock())
+
+    agent = _build_chat_agent()
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        await _wait_for(buf, "empty workspace")  # the friendly degrade line
+        await _wait_for(buf, "sandbox:docker")  # ...and the session still starts
+        send("/quit")
+
+    output = await _drive_run_app(
+        monkeypatch, agent, script=script, repo=str(tmp_path / "nope"), local=True
+    )
+
+    assert "could not clone" in output  # the friendly degrade line, not a traceback
+    assert "empty workspace" in output
+    workspace = workspace_dir(tmp_path)
+    assert list(workspace.iterdir()) == []  # degraded to a valid empty scratch

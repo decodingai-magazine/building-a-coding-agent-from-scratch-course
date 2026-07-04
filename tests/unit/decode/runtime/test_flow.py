@@ -255,7 +255,10 @@ def test_prepare_headless_tool_scope_prepares_and_warms_the_workspace_in_a_sandb
 
     workspace = tmp_path / ".decode" / "sandbox"
     monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
-    monkeypatch.setattr("decode.sandbox.workspace.prepare_workspace", lambda home: workspace)
+    monkeypatch.setattr(
+        "decode.sandbox.workspace.prepare_workspace",
+        lambda home, *, repo=None, local=False: workspace,
+    )
     warm = AsyncMock()
     monkeypatch.setattr("decode.tools.bash.warm_executor", warm)
 
@@ -263,3 +266,51 @@ def test_prepare_headless_tool_scope_prepares_and_warms_the_workspace_in_a_sandb
 
     assert scope == workspace  # returned as deps.cwd
     warm.assert_awaited_once_with(workspace)  # eagerly started against the Workspace
+
+
+def test_prepare_headless_tool_scope_threads_repo_and_local_to_the_clone(monkeypatch, tmp_path):
+    """A sandbox mode with ``--repo`` / ``--local``: the resolved repo + local flag reach the clone (§3)."""
+    from unittest.mock import AsyncMock
+
+    workspace = tmp_path / ".decode" / "sandbox"
+    captured: dict[str, object] = {}
+
+    def _fake_prepare(home, *, repo=None, local=False):
+        captured["home"] = home
+        captured["repo"] = repo
+        captured["local"] = local
+        return workspace
+
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr("decode.sandbox.workspace.prepare_workspace", _fake_prepare)
+    monkeypatch.setattr("decode.tools.bash.warm_executor", AsyncMock())
+
+    scope = flow_mod._prepare_headless_tool_scope("/some/repo", True)
+
+    assert scope == workspace
+    assert captured["repo"] == "/some/repo"  # the resolved --repo threaded to the clone
+    assert captured["local"] is True  # ...and the --local flag too
+
+
+def test_prepare_headless_tool_scope_degrades_to_empty_on_a_clone_failure(monkeypatch, tmp_path):
+    """A clone failure degrades to an empty Workspace instead of crashing the headless run (§3)."""
+    from unittest.mock import AsyncMock
+
+    workspace = tmp_path / ".decode" / "sandbox"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(
+        "decode.sandbox.workspace.prepare_workspace",
+        lambda home, *, repo=None, local=False: (_ for _ in ()).throw(
+            RuntimeError("git clone failed")
+        ),
+    )
+    monkeypatch.setattr("decode.sandbox.workspace.workspace_dir", lambda home, *_a, **_k: workspace)
+    warm = AsyncMock()
+    monkeypatch.setattr("decode.tools.bash.warm_executor", warm)
+
+    scope = flow_mod._prepare_headless_tool_scope("/broken/repo")
+
+    # Degraded to the empty Workspace path (never raised), and still warmed against it.
+    assert scope == workspace
+    warm.assert_awaited_once_with(workspace)

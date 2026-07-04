@@ -798,6 +798,8 @@ async def run_app(
     resume: str | None = None,
     agent: str = _DEFAULT_AGENT,
     mode: str | None = None,
+    repo: str | None = None,
+    local: bool = False,
 ) -> None:
     """Run the REPL until ``Ctrl-D`` or ``/quit``, routing input into the harness.
 
@@ -823,6 +825,12 @@ async def run_app(
     selected agent's default mode; otherwise it **overrides** that default (applied *after*
     ``select_agent``, which resets the gate to the agent's default). The CLI validated it, so an
     unknown value here is logged and ignored (never crashes the launch).
+
+    ``repo`` / ``local`` are the sandbox Workspace clone-at-launch (``--repo`` / ``--local``,
+    resolved against ``SANDBOX_REPO`` by the cli; ADR-0012 §3). In a sandbox mode a ``repo`` is
+    ``git clone``d into the isolated Workspace (``local`` → a fast local clone), degrading to an
+    empty Workspace on a clone failure. The CLI guards ``--repo`` in ``none`` mode, so here ``repo``
+    is ``None`` whenever ``SANDBOX_MODE=none`` and the plain REPL stays byte-identical.
 
     The single input loop has three control surfaces, all on the **one** input surface (ADR-0003
     §9): the ``/agent`` / ``/mode`` slash commands (parsed before submit) and the Shift+Tab mode
@@ -863,14 +871,17 @@ async def run_app(
     gate = PermissionGate(user_rules=rules.load_rule_set(permissions_file))
 
     # In a sandbox mode the agent's whole tool scope becomes the isolated Workspace (ADR-0012 §3,6):
-    # ``deps.cwd`` = a ``git clone`` at ``.decode/sandbox`` (empty this task — ``--repo`` lands in 082),
+    # ``deps.cwd`` = ``.decode/sandbox`` (a ``git clone`` of ``--repo`` / ``SANDBOX_REPO``, else empty),
     # so the file/search tools + ``bash`` operate there while harness artifacts stay at Harness Home.
-    # ``none`` keeps ``cwd == harness_home`` — byte-identical. The sandbox import stays lazy (§9).
+    # Only the Workspace PATH is resolved here (deps needs it below); the actual clone + eager warm-up
+    # run together in the sandbox block further down, where ``emit_line`` exists to show progress. The
+    # path is stable, so cloning into it after ``deps`` is built is fine. ``none`` keeps
+    # ``cwd == harness_home`` — byte-identical. The sandbox import stays lazy (§9).
     tool_scope = harness_home
     if settings.sandbox_mode != "none":
-        from decode.sandbox.workspace import prepare_workspace
+        from decode.sandbox.workspace import workspace_dir
 
-        tool_scope = prepare_workspace(harness_home)
+        tool_scope = workspace_dir(harness_home)
 
     deps = AgentDeps(
         cwd=tool_scope,
@@ -939,20 +950,35 @@ async def run_app(
     )
     runner = Runner(handler, on_event=_on_event)
 
-    # Eager sandbox warm-up (ADR-0011 §4): bring the docker/modal sandbox up NOW — visibly —
-    # instead of invisibly mid-first-turn (the container shows in ``docker ps`` from launch and the
-    # first bash skips the start latency). The progress line prints BEFORE the await because a cold
-    # image pull is slow — a silent hang here would be the exact confusion this fixes. A failure
-    # degrades to the lazy path (the memo is kept, so the first ``bash`` retries and its rendered
-    # infra-failure result carries any persistent problem to the model); the config-level failures
-    # were already caught by the CLI preflight. ``none`` skips the whole block — byte-identical.
+    # Eager sandbox block (ADR-0011 §4; ADR-0012 §3): clone the Workspace, then bring the docker/modal
+    # sandbox up NOW — visibly — instead of invisibly mid-first-turn (the container shows in ``docker
+    # ps`` from launch and the first bash skips the start latency). Every progress line prints BEFORE
+    # its (slow) await — a cold image pull / a large clone would otherwise hang silently. ``none`` skips
+    # the whole block — byte-identical.
     if settings.sandbox_mode != "none":
-        # Warm the executor against the resolved Workspace — now ``deps.cwd`` IS the Workspace
-        # (``prepare_workspace(harness_home)`` above), the single tree both ``bash`` and the file tools
-        # operate on (ADR-0012 §4,6), so it is passed verbatim (never re-derived — that would double-nest
-        # a ``.decode/sandbox`` under it). The progress line prints BEFORE the await because a cold image
-        # pull is slow. A failure degrades to the lazy path (memo kept; the first op retries).
+        from decode.sandbox.workspace import prepare_workspace_or_empty
+
+        # (1) Clone the repo into the Workspace host-side (ADR-0012 §3). The "cloning" progress line only
+        # prints when a clone will actually happen — a repo is requested AND the Workspace is still empty
+        # (a non-empty Workspace is reused, never re-cloned). A clone failure degrades to an empty
+        # Workspace + one friendly line (never a crash); ``deps.cwd`` is unchanged (same stable path).
+        if repo is not None and not any(deps.cwd.iterdir()):
+            emit_line(f"Decode - cloning {repo} into the workspace…")
+        _workspace, clone_error = prepare_workspace_or_empty(harness_home, repo=repo, local=local)
+        if clone_error is not None:
+            emit_line(
+                f"Decode: could not clone {repo} ({clone_error}); starting with an empty workspace."
+            )
+
+        # (2) Warm the executor against the resolved Workspace — ``deps.cwd`` IS the Workspace (the
+        # single tree both ``bash`` and the file tools operate on, ADR-0012 §4,6), passed verbatim
+        # (never re-derived — that would double-nest a ``.decode/sandbox``). For modal the warm-up also
+        # uploads the Workspace, so it gets its own progress line before the (slow) await. A warm-up
+        # failure degrades to the lazy path (memo kept; the first op retries), config-level failures
+        # having already been caught by the CLI preflight.
         emit_line(f"Decode - starting {settings.sandbox_mode} sandbox ({settings.sandbox_image})…")
+        if settings.sandbox_mode == "modal":
+            emit_line("Decode - uploading the workspace to the modal sandbox…")
         try:
             await warm_executor(deps.cwd)
         except Exception as exc:
