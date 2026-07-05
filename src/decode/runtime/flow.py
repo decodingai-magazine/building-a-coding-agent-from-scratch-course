@@ -34,6 +34,27 @@ handle that:
 
 **Kitaru imports stay inside this package** so importing :mod:`decode.cli` (the REPL path) never
 imports kitaru — the ``run`` subcommand imports :mod:`decode.runtime` lazily.
+
+**Opik tracing — one Trace per run (ADR-0014 §4-5).** Each flow body calls
+:func:`decode.observability.init_tracing` INSIDE the ``with _config_from_secret_store()`` block (so a
+secret-store-hydrated ``OPIK_API_KEY`` is honored — ADR-0008 §5) and wraps ``run_sync`` in
+:func:`decode.observability.root_span` (``decode_run`` / ``decode_run_hitl``,
+``thread_id = kitaru.current_execution_id()``) so the run's model/tool spans group under one Opik
+Thread keyed on the Kitaru exec_id. ``init_tracing`` is idempotent and presence-based: with no
+``OPIK_API_KEY`` it is a silent no-op, ``root_span`` is a ``nullcontext``, and the headless run is
+**byte-identical** (zero spans, unchanged stdout). Activation surfaces ONLY via ``init_tracing``'s one
+INFO log line (the log file) — never stdout, so a piped ``decode run`` prints exactly the answer.
+
+*Honest ceiling — run-level nesting is best-effort under a real provider.* Global
+:func:`logfire.instrument_pydantic_ai` emits every model/tool span with tokens regardless of thread,
+so tokens are always captured. But under ``checkpoint_strategy="calls"`` (the default) a real provider
+runs each model call in its own ``asyncio.run`` loop on a worker thread
+(:func:`decode.agent.factory._flow_mode_http_client`), and OTel context propagates via contextvars —
+which do NOT cross into those worker-thread loops — so some model spans may export as **sibling**
+traces rather than nested under the run root. Offline the ``FunctionModel`` path runs in-process on one
+loop, so nesting holds fully (proven in ``tests/integration/test_opik_headless_trace.py``); the
+sibling-under-a-real-provider caveat is documented, not asserted, mirroring the ADR-0008/0013 honest
+scoping.
 """
 
 from __future__ import annotations
@@ -47,11 +68,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from kitaru import checkpoint, flow, save
+from kitaru import checkpoint, current_execution_id, flow, save
 from kitaru.adapters.pydantic_ai import KitaruAgent, wait_for_input
 from kitaru.adapters.pydantic_ai._toolset import _ToolApprovalDenied
 from pydantic_ai import DeferredToolRequests
 
+from decode import observability
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
 from decode.config.settings import reload_settings, set_secret_hydration_active, settings
@@ -496,10 +518,16 @@ def run_agent_task(
     """
     try:
         with _config_from_secret_store(), _sandbox_proxy(repo, local):
+            # Opik tracing (ADR-0014 §4-5): init INSIDE the flow, AFTER _config_from_secret_store so a
+            # secret-store-hydrated OPIK_API_KEY is honored; idempotent + a silent no-op without a key.
+            observability.init_tracing()
             tool_scope = _prepare_headless_tool_scope(repo, local)
             durable_agent = _build_runtime_agent(model)
             deps = _build_headless_deps(tool_scope)
-            result = durable_agent.run_sync(task, deps=deps)
+            # One root span per run, keyed on the Kitaru exec_id so the model/tool spans group under one
+            # Opik Thread; a nullcontext (byte-identical) when tracing is off.
+            with observability.root_span("decode_run", thread_id=current_execution_id()):
+                result = durable_agent.run_sync(task, deps=deps)
         output = result.output
         if not isinstance(output, str):
             # Defensive: under BYPASS every tool runs inline, so a run never resolves to a deferred
@@ -645,6 +673,9 @@ def run_agent_task_hitl(
     """
     try:
         with _config_from_secret_store(), _sandbox_proxy(repo, local):
+            # Opik tracing (ADR-0014 §4-5): init INSIDE the flow, AFTER _config_from_secret_store so a
+            # secret-store-hydrated OPIK_API_KEY is honored; idempotent + a silent no-op without a key.
+            observability.init_tracing()
             tool_scope = _prepare_headless_tool_scope(repo, local)
             durable_agent = _build_hitl_runtime_agent(model)
             deps = _build_hitl_deps(tool_scope)
@@ -653,7 +684,12 @@ def run_agent_task_hitl(
             # in-process interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).
             with _durable_sleeper():
                 try:
-                    result = durable_agent.run_sync(task, deps=deps)
+                    # One root span per run, keyed on the Kitaru exec_id (a nullcontext when tracing is
+                    # off). A denied approval unwinds it exactly once before the except catches below.
+                    with observability.root_span(
+                        "decode_run_hitl", thread_id=current_execution_id()
+                    ):
+                        result = durable_agent.run_sync(task, deps=deps)
                 except _ToolApprovalDenied:
                     # The operator rejected a tool approval. The adapter raises out of ``run_sync`` (it
                     # has no feed-back-to-model path), so the run stops here — the denied tool never ran.
