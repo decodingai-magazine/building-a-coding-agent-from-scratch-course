@@ -41,7 +41,7 @@ def test_build_agent_has_the_full_tool_set_and_default_mode():
     assert build.mode is PermissionMode.DEFAULT
     expected = {
         "read", "glob", "grep", "lsp", "write", "edit", "bash", "todo_write", "web_fetch",
-        "ask_user", "enter_plan_mode", "exit_plan_mode", "sleep", "skill",
+        "ask_user", "enter_plan_mode", "exit_plan_mode", "sleep", "skill", "agent",
     }  # fmt: skip
     assert set(build.tools) == expected
     assert build.prompt.strip()
@@ -56,18 +56,33 @@ def test_plan_agent_is_plan_mode_and_read_only():
         "exit_plan_mode",
         "ask_user",
         "skill",
+        "agent",  # a primary may spawn read-only Explore subagents (ADR-0013 §4)
     }
     for mutating in ("write", "edit", "bash"):
         assert mutating not in plan.tools
 
 
-def test_explore_agent_is_read_only_default_mode():
+def test_explore_agent_is_a_read_only_default_mode_subagent():
+    # ADR-0013 §3: explore is demoted to a subagent with a minimal read-only toolset — exactly
+    # ``read`` / ``glob`` / ``grep`` / ``lsp`` (no ``web_fetch`` / ``todo_write`` / ``ask_user`` /
+    # ``skill``: a subagent cannot ask, and child bookkeeping/fetching is out of scope).
     explore = loader.load_agent("explore")
 
     assert explore.mode is PermissionMode.DEFAULT
-    assert set(explore.tools) == _READ_ONLY_TOOLS | {"ask_user", "skill"}
-    for mutating in ("write", "edit", "bash"):
-        assert mutating not in explore.tools
+    assert explore.subagent is True
+    assert explore.tools == ("read", "glob", "grep", "lsp")
+    for excluded in ("web_fetch", "todo_write", "ask_user", "skill", "write", "edit", "bash"):
+        assert excluded not in explore.tools
+
+
+def test_only_explore_is_a_subagent():
+    # The primary/subagent axis (ADR-0013 §3): explore is the one subagent; the other three
+    # built-ins stay primaries (``subagent is False``) selectable as the main agent.
+    agents = loader.load_builtin_agents()
+
+    assert agents["explore"].subagent is True
+    for primary in ("build", "plan", "code-reviewer"):
+        assert agents[primary].subagent is False
 
 
 def test_all_builtin_personas_expose_the_lsp_tool():
@@ -84,7 +99,7 @@ def test_code_reviewer_carries_the_git_allow_rule():
     reviewer = loader.load_agent("code-reviewer")
 
     assert reviewer.mode is PermissionMode.DEFAULT
-    assert set(reviewer.tools) == _READ_ONLY_TOOLS | {"bash", "ask_user", "skill"}
+    assert set(reviewer.tools) == _READ_ONLY_TOOLS | {"bash", "ask_user", "skill", "agent"}
     assert "bash(git *)" in reviewer.allow
     assert Rule(tool_name="bash", pattern="git *") in reviewer.allow_rules
 
@@ -125,6 +140,37 @@ def test_load_builtin_agents_is_independent_per_call():
     assert first is not second
 
 
+# --- load_primary_agent (ADR-0013 §3) -------------------------------------------------------
+
+
+def test_load_primary_agent_returns_a_primary():
+    build = loader.load_primary_agent("build")
+
+    assert build.name == "build"
+    assert build.subagent is False
+
+
+def test_load_primary_agent_rejects_the_explore_subagent_listing_only_primaries():
+    # A subagent cannot be selected as the main agent — the friendly line offers only the primaries
+    # (build / code-reviewer / plan), never the subagent-only explore.
+    with pytest.raises(ValueError) as excinfo:
+        loader.load_primary_agent("explore")
+
+    message = str(excinfo.value)
+    assert "explore" in message  # names what the user tried
+    assert "subagent" in message  # explains why it was rejected
+    assert "available agents: build, code-reviewer, plan" in message
+
+
+def test_load_primary_agent_unknown_name_lists_only_primaries():
+    with pytest.raises(ValueError) as excinfo:
+        loader.load_primary_agent("nope")
+
+    message = str(excinfo.value)
+    assert "nope" in message
+    assert "available agents: build, code-reviewer, plan" in message
+
+
 # --- frontmatter / body parsing -------------------------------------------------------------
 
 
@@ -163,6 +209,36 @@ def test_parse_agent_file_rejects_an_unknown_tool():
     text = "---\nname: demo\ndescription: x\ntools: [read, nope]\nmode: default\n---\nBody.\n"
 
     with pytest.raises(ValueError, match="nope"):
+        loader.parse_agent_file(text)
+
+
+def test_parse_agent_file_reads_the_subagent_flag():
+    text = (
+        "---\nname: demo\ndescription: x\ntools: [read]\nmode: default\nsubagent: true\n---\nB.\n"
+    )
+
+    agent = loader.parse_agent_file(text)
+
+    assert agent.subagent is True
+
+
+def test_parse_agent_file_defaults_subagent_to_false_when_absent():
+    text = "---\nname: demo\ndescription: x\ntools: [read]\nmode: default\n---\nBody.\n"
+
+    agent = loader.parse_agent_file(text)
+
+    assert agent.subagent is False
+
+
+def test_parse_agent_file_rejects_a_non_bool_subagent():
+    # Present-but-not-a-bool is a catalog authoring error surfaced loudly (mirrors the ``allow`` /
+    # ``deny`` list validation) — ``not-a-bool`` parses to a YAML string, not a boolean.
+    text = (
+        "---\nname: demo\ndescription: x\ntools: [read]\nmode: default\n"
+        "subagent: not-a-bool\n---\nBody.\n"
+    )
+
+    with pytest.raises(ValueError, match="subagent"):
         loader.parse_agent_file(text)
 
 

@@ -9,6 +9,7 @@ request is issued just by building the agent — every provider constructs offli
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import SecretStr
@@ -27,6 +28,21 @@ from decode.agents.loader import load_agent
 from decode.entities.agent_def import AgentDef
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
+from decode.tools import agent as agent_tool_module
+
+
+class _StubSpawnAgent:
+    """A stand-in main Agent for the ``agent`` tool's spawn seam (ADR-0013 §6).
+
+    The tool-visibility tests drive ``TestModel(call_tools='all')`` to enumerate the offered schema —
+    which now includes ``agent``. Calling ``agent`` for real would spawn an Explore child whose
+    read-only tools a bare TestModel would drive with dummy args (``lsp`` then fails its op validation).
+    Patching ``_require_main_agent`` to return this stub folds a fixed report instead, so the child is
+    never spawned and the visibility assertions stay about ``prepare=``, not about sub-runs.
+    """
+
+    async def run(self, prompt, *, deps, usage_limits):
+        return SimpleNamespace(output="explored")
 
 
 async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
@@ -328,11 +344,13 @@ async def test_plan_agent_run_omits_write_edit_and_bash_from_the_visible_tools(t
 
     A bare ``TestModel`` calls **every** tool in the schema it is offered, so the set of tools it
     actually called == the visible tool schema for the run. Asserting the mutating tools are never
-    called is the spike-confirmed proof that ``prepare= -> None`` hid them (ADR-0003 §6).
+    called is the spike-confirmed proof that ``prepare= -> None`` hid them (ADR-0003 §6). The visible
+    ``agent`` tool (ADR-0013 §4) IS called; its spawn seam is stubbed so no real Explore child runs.
     """
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
+    mocker.patch.object(agent_tool_module, "_require_main_agent", return_value=_StubSpawnAgent())
     agent = build_agent()
     plan = load_agent("plan")
 
@@ -353,6 +371,7 @@ async def test_build_agent_run_offers_the_full_mutating_tool_set(tmp_path, mocke
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
+    mocker.patch.object(agent_tool_module, "_require_main_agent", return_value=_StubSpawnAgent())
     agent = build_agent()
     build = load_agent("build")
 
@@ -368,6 +387,7 @@ async def test_tool_visibility_follows_the_active_agent_per_run_without_rebuild(
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
+    mocker.patch.object(agent_tool_module, "_require_main_agent", return_value=_StubSpawnAgent())
     agent = build_agent()  # built ONCE
     plan = load_agent("plan")
     build = load_agent("build")

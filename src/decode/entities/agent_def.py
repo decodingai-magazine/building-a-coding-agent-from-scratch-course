@@ -37,8 +37,12 @@ class AgentDef:
     is the :class:`~decode.permissions.types.PermissionMode` the gate resets to on selection.
     ``allow`` / ``deny`` are optional agent-scoped Permission Rule *strings* (``Tool(pattern)`` or
     bare ``Tool``), parsed once at construction into :attr:`allow_rules` / :attr:`deny_rules`.
-    ``prompt`` is the system-prompt body. Construction validates every field and raises
-    :class:`ValueError` with a clear message on the first problem.
+    ``prompt`` is the system-prompt body. ``subagent`` places the persona on the primary/subagent
+    axis (ADR-0013 §3): ``False`` (the default) is a **primary** — selectable as the main agent via
+    ``--agent`` / ``/agent``; ``True`` is a **subagent** — spawnable only via the Agent tool, never
+    selected as the main agent (a deliberately non-colliding name — :attr:`mode` is the permission
+    mode). Construction validates every field and raises :class:`ValueError` with a clear message on
+    the first problem.
     """
 
     name: str
@@ -48,6 +52,7 @@ class AgentDef:
     prompt: str
     allow: tuple[str, ...] = ()
     deny: tuple[str, ...] = ()
+    subagent: bool = False
     allow_rules: tuple[Rule, ...] = field(default=(), init=False)
     deny_rules: tuple[Rule, ...] = field(default=(), init=False)
 

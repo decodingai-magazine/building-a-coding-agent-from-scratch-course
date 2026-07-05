@@ -48,6 +48,35 @@ def test_agent_def_allow_and_deny_default_to_empty():
     assert agent.deny == ()
 
 
+def test_agent_def_subagent_defaults_to_false():
+    # No ``subagent`` key → a primary persona, selectable as the main agent (ADR-0013 §3). The
+    # default keeps every existing persona a primary with no other change.
+    agent = AgentDef(
+        name="build",
+        description="read the codebase",
+        tools=("read",),
+        mode=PermissionMode.DEFAULT,
+        prompt="Build.",
+    )
+
+    assert agent.subagent is False
+
+
+def test_agent_def_carries_the_subagent_flag_when_set():
+    # A subagent-only persona (explore) declares ``subagent: true`` — it may only be spawned via
+    # the Agent tool, never selected as the main agent (ADR-0013 §3).
+    agent = AgentDef(
+        name="explore",
+        description="read the codebase",
+        tools=("read",),
+        mode=PermissionMode.DEFAULT,
+        prompt="Explore.",
+        subagent=True,
+    )
+
+    assert agent.subagent is True
+
+
 def test_agent_def_is_frozen_and_hashable():
     agent = AgentDef(
         name="explore",

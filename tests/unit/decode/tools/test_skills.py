@@ -224,13 +224,16 @@ def test_skill_is_a_known_tool_name():
     assert "skill" in KNOWN_TOOL_NAMES
 
 
-def test_all_four_builtin_agents_list_skill():
+def test_all_primary_builtin_agents_list_skill():
+    # ADR-0004 §4: the skill dispatcher is available to every *primary* persona. The explore
+    # subagent deliberately omits it — read-only by construction, skill is not needed (ADR-0013 §2).
     from decode.agents.loader import load_builtin_agents
 
     agents = load_builtin_agents()
     assert set(agents) == {"build", "plan", "explore", "code-reviewer"}
-    for agent in agents.values():
-        assert "skill" in agent.tools, f"{agent.name} must list the skill dispatcher (ADR-0004 §4)"
+    for name in ("build", "plan", "code-reviewer"):
+        assert "skill" in agents[name].tools, f"{name} must list the skill dispatcher (ADR-0004 §4)"
+    assert "skill" not in agents["explore"].tools  # subagent excludes skill (ADR-0013 §2)
 
 
 async def test_agent_omitting_skill_hides_the_dispatcher():

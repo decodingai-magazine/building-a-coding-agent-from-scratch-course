@@ -48,6 +48,8 @@ def test_registry_lists_the_expected_tools():
         "sleep",
         # The ungated skill dispatcher (task 026 / ADR-0004 §7).
         "skill",
+        # The READ_ONLY Agent tool — spawns a read-only Explore subagent (task 088 / ADR-0013).
+        "agent",
     }
 
 

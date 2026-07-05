@@ -60,6 +60,14 @@ _SANDBOX_ENV_VARS = (
     "SANDBOX_PROXY_IMAGE",
 )
 
+# Subagent tuning vars introduced by ADR-0013 (task 088). Cleared in default tests so a developer's
+# real environment cannot leak into the assertions.
+_SUBAGENT_ENV_VARS = (
+    "SUBAGENT_MAX_PARALLEL",
+    "SUBAGENT_MAX_REQUESTS",
+    "SUBAGENT_RESULT_MAX_BYTES",
+)
+
 
 def test_defaults(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -496,6 +504,48 @@ def test_env_example_lists_every_sandbox_var():
     """Drift guard: each sandbox setting has a matching line in .env.example (AGENTS.md gate)."""
     env_example = (Path(__file__).parents[4] / ".env.example").read_text()
     for var in _SANDBOX_ENV_VARS:
+        assert var in env_example, f"{var} missing from .env.example"
+
+
+# --- Subagents (ADR-0013 §7,8, task 088) -------------------------------------------------------
+
+
+def test_subagent_defaults(monkeypatch):
+    for var in _SUBAGENT_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    assert s.subagent_max_parallel == 4  # concurrent-children cap (Gemini free-tier friendly)
+    assert s.subagent_max_requests == 25  # per-child UsageLimits(request_limit=…) runaway cap
+    assert s.subagent_result_max_bytes == 16_000  # the child-report truncation cap
+
+
+def test_reads_subagent_vars_from_process_env(monkeypatch):
+    monkeypatch.setenv("SUBAGENT_MAX_PARALLEL", "8")
+    monkeypatch.setenv("SUBAGENT_MAX_REQUESTS", "50")
+    monkeypatch.setenv("SUBAGENT_RESULT_MAX_BYTES", "32000")
+    s = Settings(_env_file=None)
+    assert s.subagent_max_parallel == 8
+    assert s.subagent_max_requests == 50
+    assert s.subagent_result_max_bytes == 32000
+
+
+@pytest.mark.parametrize(
+    "var", ["SUBAGENT_MAX_PARALLEL", "SUBAGENT_MAX_REQUESTS", "SUBAGENT_RESULT_MAX_BYTES"]
+)
+@pytest.mark.parametrize("bad", ["0", "-1"])
+def test_rejects_non_positive_subagent_caps(monkeypatch, var, bad):
+    """Each subagent cap <= 0 fails fast at load, not deep in a fan-out (Field(gt=0))."""
+    for name in _SUBAGENT_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(var, bad)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_env_example_lists_every_subagent_var():
+    """Drift guard: each subagent setting has a matching line in .env.example (AGENTS.md gate)."""
+    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
+    for var in _SUBAGENT_ENV_VARS:
         assert var in env_example, f"{var} missing from .env.example"
 
 

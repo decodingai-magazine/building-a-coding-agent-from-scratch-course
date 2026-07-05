@@ -310,6 +310,33 @@ Tune it in `.env` — every setting is optional with a safe default:
 - `LSP_DIAGNOSTICS_ON_EDIT=false` turns off only the post-edit diagnostics; the `lsp` tool still works.
 - `LSP_REQUEST_TIMEOUT_S` (default `10.0`) — per-request wall-clock timeout.
 
+## Explore subagents
+
+For a big question that spans many files — *"how does the permission gate decide?"*, *"trace how a
+`bash` call reaches the sandbox"* — the agent can spawn **Explore subagents** instead of pulling the
+whole codebase into its own context. It calls the model-facing **`agent` tool** with a scoped prompt;
+each call runs a **read-only** child that reads the code and hands back **one compressed report**, so
+the parent pays for the answer, not the raw file bytes. The design and trade-offs are recorded in
+[`docs/adr/0013-explore-subagents.md`](docs/adr/0013-explore-subagents.md).
+
+- **Read-only by construction.** A child gets only the read tools — `read` / `glob` / `grep` / `lsp`
+  — never `write` / `edit` / `bash` / `web_fetch`, so it can explore but cannot change anything or
+  reach the network. The `agent` tool is itself read-only, so like `read` it **auto-allows**: no
+  approval prompt, for the spawn or its child.
+- **Parallel fan-out.** When the model issues several `agent(...)` calls in one turn, they run
+  **concurrently** — N investigations at once — so a broad question is answered in one parallel sweep
+  instead of a serial crawl.
+- **Silent until done.** A child's own steps don't stream to the TUI; you see the spawn as a tool
+  call and then its folded report, not a running commentary. Transcripts are ephemeral, so
+  `decode --resume` carries only the spawn call and the report.
+
+Tune it in `.env` — every setting is optional with a safe default:
+
+- `SUBAGENT_MAX_PARALLEL` (default `4`) — how many children run at once (kept modest, because fan-out
+  multiplies model calls against the provider's free-tier rate limits).
+- `SUBAGENT_MAX_REQUESTS` (default `25`) — each child's model-request budget, a runaway cap.
+- `SUBAGENT_RESULT_MAX_BYTES` (default `16000`) — the size cap on the report a child hands back.
+
 ## Sandboxing
 
 By default `decode` runs model-chosen `bash` commands as a **host subprocess** in your working directory, and the file tools (`read` / `write` / `edit` / `glob` / `grep`) edit that directory directly — fast, and byte-identical to every earlier milestone. Set the **Sandbox Mode** (`SANDBOX_MODE=docker` or `modal`) and `decode` instead gives the agent a **fully isolated Workspace**: its *whole* tool scope — the file tools **and** `bash` — operates inside a `git clone` of a repo you point it at, contained behind one execution seam, while decode's own artifacts (sessions, memory, logs, the permission file) stay put in your launch directory. The design is in [`docs/adr/0012-isolated-workspace.md`](docs/adr/0012-isolated-workspace.md), which supersedes the additive `bash`-only sandbox of [ADR-0011](docs/adr/0011-sandboxing-and-credential-proxy.md).

@@ -11,6 +11,7 @@ tools:
   - bash
   - ask_user
   - skill
+  - agent
 mode: default
 allow:
   - bash(git *)

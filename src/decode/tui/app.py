@@ -335,7 +335,7 @@ def agent_switch_confirmation(name: str, mode: str) -> str:
 
 
 # The inline usage lines shown when ``/agent`` / ``/mode`` are typed with no argument.
-_AGENT_USAGE = "Decode - usage: /agent <name> (build / plan / explore / code-reviewer)."
+_AGENT_USAGE = "Decode - usage: /agent <name> (build / plan / code-reviewer)."
 _MODE_USAGE = "Decode - usage: /mode <name> (default / plan / edit / bypass)."
 
 

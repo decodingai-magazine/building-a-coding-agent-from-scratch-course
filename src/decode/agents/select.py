@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from decode.agents.loader import load_agent
+from decode.agents.loader import load_primary_agent
 from decode.permissions.rules import RuleSet
 
 if TYPE_CHECKING:
@@ -38,11 +38,12 @@ def select_agent(name: str, *, deps: AgentDeps, gate: PermissionGate) -> AgentDe
     agent's catalog ``allow`` / ``deny`` rules as the gate's active-agent rule source (merged as a
     union with the user rules — a deny from either source wins). Replacing the agent rule set means
     the prior agent's rules never linger across a switch. Returns the resolved
-    :class:`~decode.entities.agent_def.AgentDef`. Raises :class:`ValueError` (listing the available
-    agents) when ``name`` is not a built-in — and the caller's ``deps`` / ``gate`` are left untouched
-    because the load happens before any mutation.
+    :class:`~decode.entities.agent_def.AgentDef`. Raises :class:`ValueError` (listing the **primary**
+    agents) when ``name`` is not a built-in *or* names a subagent (explore) — a subagent is spawnable
+    only via the Agent tool, never selected as the main agent (ADR-0013 §3). The caller's ``deps`` /
+    ``gate`` are left untouched on failure because the load happens before any mutation.
     """
-    agent = load_agent(name)
+    agent = load_primary_agent(name)
     deps.active_agent = agent
     gate.set_mode(agent.mode)
     gate.set_agent_rules(RuleSet(allow=list(agent.allow_rules), deny=list(agent.deny_rules)))
