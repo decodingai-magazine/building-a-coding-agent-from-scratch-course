@@ -162,3 +162,16 @@ $ git status --porcelain                   → only AGENTS.md, README.md, docs/a
 - `code-review` plugin is enabled but the diff is zero-code (README/AGENTS/ADR/task prose); its regression value doesn't apply here — the doc-vs-code audit + live probe cover the accuracy dimension instead. Noted for transparency.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-05 18:20 — Acceptance Review
+
+**VERDICT: ACCEPT** (feature-level; full AC-cluster evidence in the `tasks/095` acceptance log)
+
+Verified from the user's POV as part of the opik-observability feature review on PR #27. The docs let a
+real user succeed unaided: the README "Monitoring / Observability (Opik)" section covers enable /
+self-host / what-you-see / no-op / M13, the AGENTS.md E2E row + headless note match the shipped startup
+line and behavior (checked live), the ADR-0013 §9 + Consequences closure is genuinely append-only
+(`+7/-1`, the `-1` a line-wrap; every original word preserved), and the 4 glossary rows
+(Trace/Span/Thread (Opik)/Observability) are drift-free against the shipped identifiers. Terminology is
+glossary-verbatim throughout. One non-blocking prose nit (README headline vs the headless sibling
+caveat) recorded in the `tasks/095` log for the PR Reviewer. Hand off to the PR Reviewer.

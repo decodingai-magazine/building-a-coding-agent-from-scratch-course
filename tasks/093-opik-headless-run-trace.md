@@ -200,3 +200,15 @@ $ uv run pytest tests/unit/decode/runtime/test_flow_tracing.py tests/integration
 - Active-path stdout cleanliness under a REAL provider (the "no stdout pollution" scope note) is explicitly out of scope for 093 and belongs to the 095 capstone/live smoke; the default inactive path (AC4) is pipe-clean by construction.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-05 18:20 — Acceptance Review
+
+**VERDICT: ACCEPT** (feature-level; full AC-cluster evidence in the `tasks/095` acceptance log)
+
+Verified from the user's POV as part of the opik-observability feature review on PR #27. Confirmed each
+headless `decode run` opens one `decode_run` / `decode_run_hitl` root span keyed on the Kitaru exec_id
+(`runtime/flow.py:523,529`), that `init_tracing()` runs INSIDE the flow AFTER `_config_from_secret_store()`
+(so a secret-store `OPIK_API_KEY` is honored), and that activation surfaces only in the log so a piped
+run stays pipe-clean. The two Tester notes ruled ACCEPTABLE for M10: the HITL pause/resume span split
+and the real-provider sibling-span ceiling are both documented (`flow.py:48-57`, ADR-0014, AGENTS.md)
+and tokens ride every span regardless. Hand off to the PR Reviewer.

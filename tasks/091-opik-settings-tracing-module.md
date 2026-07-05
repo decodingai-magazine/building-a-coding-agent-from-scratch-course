@@ -296,3 +296,13 @@ idempotent, with reset) in a fresh process (Probe C) with zero network. Not take
   realistic input (the `changeme` regression that mattered is dead); noting only for completeness.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-05 18:20 — Acceptance Review
+
+**VERDICT: ACCEPT** (feature-level; full AC-cluster evidence in the `tasks/095` acceptance log)
+
+Verified from the user's POV as part of the opik-observability feature review on PR #27. The settings /
+module / dependency foundation is sound: the 4 settings fields + defaults confirmed live
+(`config/settings.py:138-144`; `OPIK_PROJECT_NAME` flows into the startup line), the `.env.example`
+block is fully commented so a copied `.env` cannot activate a bogus key (the `changeme` regression is
+dead), and `logfire` is the only new top-level dependency (`uv.lock` 155 pkgs). Hand off to the PR Reviewer.

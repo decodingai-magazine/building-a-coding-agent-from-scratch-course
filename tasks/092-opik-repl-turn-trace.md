@@ -383,3 +383,14 @@ regression pair; both tests assert the spec's exception case (close exactly once
 no leaked span) and are mutation-proven non-vacuous. Full suite green (1484 unit + 112 integration,
 0 warnings), git hygiene clean, no production code touched. The non-blocking `--resume` thread-continuity
 note (prior issue #2) remains a PA / future concern. Hand off to PA for acceptance review.
+
+### [PA] 2026-07-05 18:20 — Acceptance Review
+
+**VERDICT: ACCEPT** (feature-level; full AC-cluster evidence in the `tasks/095` acceptance log)
+
+Verified from the user's POV as part of the opik-observability feature review on PR #27. Confirmed the
+per-turn `chat_turn` root span keyed on the session id is wired at `agent/loop.py:190` (wraps the whole
+`while True`, so a gated approve/resume + follow-up ride one trace), the startup line prints once when
+active / never when inactive (live), and both the abort and exception close-once lifecycle paths carry
+committed regressions. Prior Tester issue #2 (`--resume` → new Thread) ruled ACCEPTABLE for M10:
+out-of-scope by design and honestly disclosed in README + AGENTS.md. Hand off to the PR Reviewer.

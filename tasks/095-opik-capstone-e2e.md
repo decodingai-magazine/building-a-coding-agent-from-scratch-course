@@ -215,3 +215,56 @@ ORDER B (reversed):                     22 passed, 1 skipped
 - None blocking. Notes for the record (PASS-with-note, not FAILs): (1) the always-run span tests fake activation via `tracing._active=True` + direct `instrument_pydantic_ai` rather than calling `init_tracing()` — honestly documented (docstring §33-36), sound rationale (a real `logfire.configure` would replace the `capfire` exporter and could flush to the network), matches 092/093; the real `init_tracing()` IS exercised in the no-op guard test (mutation-proofed) and the live smoke. (2) SWE pre-checked the AC boxes; I re-verified all five as genuinely passing, so the `[x]` marks are accurate. (3) Hygiene clean — `git status` shows only the 095 set (capstone file, `test_flow_tracing.py`, `tasks/095`); `docs/` and `tasks/future/` untouched.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-05 18:20 — Acceptance Review (feature: opik-observability, tasks 091-095)
+
+**VERDICT: ACCEPT**
+
+Feature-level user-POV review of the whole Opik monitoring feature on PR #27. Walked the user story
+end to end — "set `OPIK_API_KEY`, relaunch, every turn/run is one Opik trace grouped by session; unset
+→ byte-identical" — reading the shipped code, the README + AGENTS.md contract, and the grooming
+artifacts, and exercising the surface with my own eyes (not just the Tester logs).
+
+**Concrete evidence per AC-cluster**
+- **Enablement + byte-identical no-op** — live `printf '/quit' | GEMINI_API_KEY=fake OPIK_API_KEY=fake
+  uv run decode` prints `Decode - Opik tracing on (project 'decode').` before the banner; key unset →
+  0 occurrences, no line. `OPIK_PROJECT_NAME=my-team` → `project 'my-team'` (the custom name flows
+  through). Settings `config/settings.py:138-144` = the 4 ADR fields/defaults; `.env.example:57-70`
+  fully commented (the `changeme` regression is dead). Capstone
+  `test_untraced_turn_is_a_noop_zero_spans_and_byte_identical_events` mutation-proofs the guard.
+- **One Trace per turn, grouped by session** — `agent/loop.py:190` wraps the whole `while True` in
+  `root_span("chat_turn", thread_id=self._session_id)`; capstone flagship + full-tree tests prove root
+  + nested chat/tool spans + two-turns-one-thread; abort + exception close-once regressions present.
+- **One Trace per headless run, grouped by exec_id** — `runtime/flow.py:523,529` init AFTER
+  secret-store hydration + `root_span("decode_run"/"decode_run_hitl",
+  thread_id=current_execution_id())`; hydration-ordering + inactive-zero-spans mutation-proofed.
+- **Tokens + cost** — `gen_ai.usage.input_tokens > 0` on LLM spans (hermetic + the Tester's real-Gemini
+  probe: 18007 tokens, `request.model=gemini-2.5-flash`, `system=google-gla`); cost is Opik server-side
+  for priced models, honestly qualified in docs, with the `OpikSpanProcessor` escape hatch (ADR-0014 §8).
+- **Subagent closure (ADR-0013 §9)** — capstone flagship nests child model+tool spans in the parent
+  `chat_turn` trace with child tokens; ADR-0013 §9 + Consequences carry the append-only closure.
+- **Docs + grooming artifacts** — README Monitoring section + AGENTS.md E2E row/headless note; ADR-0014
+  Accepted, 5-section Nygard + coloured Mermaid, decisions realized 1:1; 4 glossary rows
+  (Trace/Span/Thread (Opik)/Observability) drift-free vs shipped identifiers.
+- **Hygiene** — re-ran `test_observability_capstone.py -rs` → 4 passed, 1 skipped (live smoke, clean
+  skip reason); diff scoped to the feature only (no `docs/notes/`, no stray files, `logfire` the sole
+  new top-level dep).
+
+**Product-judgment rulings (all ACCEPTABLE for M10 — documented ceilings, disclosed in the user-facing
+contract, core value preserved)**
+1. `--resume` → new Opik Thread — out of scope by design; disclosed in README + AGENTS.md.
+2. HITL pause closes the run span, resume opens a fresh one under the same Thread — inherent to durable
+   pause/resume; grouped by exec_id; disclosed in the AGENTS.md row.
+3. Live-export half unproven without real creds — the skipif IS the groomed AC; the Gemini-attr half is
+   proven against a real provider; cost is server-side with a documented escape hatch. Honest, not a gap.
+4. Headless real-provider sibling spans under `checkpoint_strategy="calls"` — documented ceiling
+   (`flow.py:48-57`, ADR-0014 Consequences, AGENTS.md row); tokens ride every span regardless, so the
+   value is preserved.
+
+**Non-blocking note (not a reject; for the PR Reviewer's eye)** — the README headline "One Trace per
+`decode run`" does not restate the headless real-provider sibling caveat that the AGENTS.md row and
+ADR-0014 do; accurate for the REPL + offline path and honestly qualified elsewhere, so a prose-softening
+nit at most.
+
+All acceptance criteria verified from the user's perspective. User satisfaction guaranteed. Hand off to
+the PR Reviewer.
