@@ -138,6 +138,19 @@ def test_init_tracing_uses_url_override_base_when_set(monkeypatch, mock_logfire)
     assert kwargs["endpoint"] == "http://localhost:5173/api/v1/private/otel/v1/traces"
 
 
+def test_init_tracing_strips_a_trailing_slash_from_the_url_override(monkeypatch, mock_logfire):
+    """A trailing-slash ``opik_url_override`` must not produce a ``//v1/traces`` (task-091 review)."""
+    monkeypatch.setattr(settings, "opik_api_key", SecretStr("k"), raising=False)
+    monkeypatch.setattr(
+        settings, "opik_url_override", "http://localhost:5173/api/v1/private/otel/", raising=False
+    )
+
+    init_tracing()
+
+    kwargs = mock_logfire.exporter_cls.call_args.kwargs
+    assert kwargs["endpoint"] == "http://localhost:5173/api/v1/private/otel/v1/traces"
+
+
 def test_init_tracing_logs_one_info_line_naming_project_and_target(
     monkeypatch, mock_logfire, caplog
 ):

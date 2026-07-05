@@ -68,7 +68,9 @@ def init_tracing() -> bool:
     key = settings.opik_api_key.get_secret_value()
     if not key:
         return False
-    base = settings.opik_url_override or _CLOUD_OTLP_BASE
+    # ``rstrip("/")`` the base so a trailing-slash ``opik_url_override`` (e.g. ".../otel/") can't
+    # produce a ``//v1/traces`` double slash (pre-approved from the 091 review).
+    base = (settings.opik_url_override or _CLOUD_OTLP_BASE).rstrip("/")
     exporter = OTLPSpanExporter(
         endpoint=f"{base}/v1/traces",
         headers={
