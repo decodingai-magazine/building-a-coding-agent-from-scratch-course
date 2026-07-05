@@ -127,6 +127,22 @@ class Settings(BaseSettings):
     # --- Logging ---
     log_level: str = "INFO"
 
+    # --- Observability: Opik (ADR-0014) ---
+    # Presence-based tracing, like every prior optional surface (sandbox/runtime): set ``opik_api_key``
+    # (the presence trigger + the OTLP ``Authorization`` header) and decode emits one Trace per turn
+    # (REPL) / per run (``decode run``) — every LLM + tool call with tokens and (for priced models) cost.
+    # Empty (the default) → ``observability.init_tracing()`` is a silent no-op and decode is
+    # byte-identical (no spans, no network). Export is configured PROGRAMMATICALLY from these fields —
+    # never via global ``OTEL_*`` env vars — so kitaru→zenml's own OpenTelemetry SDK is untouched
+    # (ADR-0014 §2). No readers yet: 092/093 wire the seam.
+    opik_api_key: SecretStr = SecretStr("")
+    opik_workspace: str = "default"  # the ``Comet-Workspace`` OTLP header
+    opik_project_name: str = "decode"  # the ``projectName`` OTLP header (Opik groups traces by it)
+    # The OTLP **base** URL. ``None`` → Comet cloud base
+    # (``https://www.comet.com/opik/api/v1/private/otel``); set to a self-hosted Opik base, e.g.
+    # ``http://localhost:5173/api/v1/private/otel``. The exporter appends ``/v1/traces``.
+    opik_url_override: str | None = None
+
     # --- Tool execution / output truncation (tasks 006/008/010) ---
     bash_timeout_s: float = 120.0
     max_output_lines: int = 2000
