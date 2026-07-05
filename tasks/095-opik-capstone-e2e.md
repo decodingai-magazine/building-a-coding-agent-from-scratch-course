@@ -1,7 +1,7 @@
 ---
 id: 095-opik-capstone-e2e
 feature: opik-observability
-status: pending
+status: done
 ---
 
 # Opik observability — capstone (hermetic span-tree + subagent nesting + live smoke)
@@ -45,18 +45,18 @@ test utility in this repo).
 
 ## Acceptance Criteria
 
-- [ ] **Hermetic:** the span-tree slice passes with no key/network and proves — turn root span with
+- [x] **Hermetic:** the span-tree slice passes with no key/network and proves — turn root span with
   `thread_id`=session id, nested chat/tool spans, tokens on the LLM span, subagent child spans nested
   in the parent turn with child token usage, compaction nesting, and the zero-spans no-op path (each
   mutation-proof: e.g. removing the root span or the activation guard fails a test).
-- [ ] **Subagent closure:** an explicit assertion that a child `agent(...)` run's spans are children
+- [x] **Subagent closure:** an explicit assertion that a child `agent(...)` run's spans are children
   of the parent turn's root (ADR-0013 §9 fulfilled) with child token counts present.
-- [ ] **Live smoke:** SKIPs cleanly when `OPIK_API_KEY` is unset (7-style `-rs` skip reason) and PASSes
+- [x] **Live smoke:** SKIPs cleanly when `OPIK_API_KEY` is unset (7-style `-rs` skip reason) and PASSes
   (presence: spans exported, tokens on the Gemini span, cost present-or-tokens-only) when creds are in
   `.env`.
-- [ ] Hermetic under `filterwarnings=["error"]` run alone (no leaked async tasks, no unclosed spans;
+- [x] Hermetic under `filterwarnings=["error"]` run alone (no leaked async tasks, no unclosed spans;
   `logfire.testing` provider isolation clean); `make ci` green infra-less (live smoke skipped).
-- [ ] The module docstring documents the feature end to end, naming REAL vs FAKED boundaries.
+- [x] The module docstring documents the feature end to end, naming REAL vs FAKED boundaries.
 
 ## Out of scope
 
@@ -65,3 +65,153 @@ test utility in this repo).
 - Any Opik-side (server) content assertion beyond export-succeeded + span-attribute presence.
 
 ## Log
+
+### [SWE] 2026-07-05 16:10 — Implementation
+
+**Files modified**
+- `tests/integration/test_observability_capstone.py` — NEW; the Opik-observability capstone. Module
+  docstring is the milestone's living doc (REAL vs FAKED boundaries). 4 always-run hermetic tests +
+  1 skipif-guarded live smoke.
+- `tests/unit/decode/runtime/test_flow_tracing.py` — added the 093-QA follow-up (1 test) + an
+  `active_tracing` fixture + extended `_reset_tracing_state` to save/restore global instrumentation.
+- No product code (all shipped in 091-094); no new deps (`uv lock --check` unchanged, 155 pkgs).
+
+**Tests**
+- Unit: 1491 passing, 0 failing (`make pre-commit` — +1 vs 093's 1490).
+- Integration: 120 passing, 1 skipped (`make integration-tests` — +4 hermetic vs 116; live smoke skips).
+- Both slices under `filterwarnings=["error"]`, no key, no network. Cross-file leak check (capstone +
+  both opik trace files + flow_tracing, BOTH orders) → 22 passed each way — no global tracing-state leak.
+
+**Test inventory (what each proves)**
+- `test_observability_capstone.py`
+  - `test_subagent_child_spans_nest_in_the_parent_turn_trace_with_child_token_usage` — **the flagship
+    (the one assertion no other file makes)**: a parent turn fans out `agent(...)`; the child model AND
+    tool (glob) spans nest INSIDE the parent turn's `chat_turn` trace, with the CHILD's
+    `gen_ai.usage.input_tokens` > 0 on the child LLM span. Closes ADR-0013 §9. Child/parent told apart
+    structurally (a child span descends through the parent's `agent` `running tool` span).
+  - `test_full_turn_is_one_chat_turn_tree_with_nested_spans_and_usage` — the integrated living-doc tree:
+    one `chat_turn` root (`thread_id` = the REAL `SessionLog.session_id`, wired as run_app does) →
+    nested `chat`/`running tool` spans → tokens on the LLM span; render path exercised on every event.
+  - `test_in_turn_compaction_nests_under_the_turn_root` — an in-turn compaction summarizer call rides
+    free under the same global instrumentation and nests under the turn root.
+  - `test_untraced_turn_is_a_noop_zero_spans_and_byte_identical_events` — the no-op mutation-proof:
+    real `init_tracing()` returns **False** with no key AND the identical turn emits ZERO spans; then
+    the same turn traced-ON emits spans yet the emitted event stream is byte-identical (tracing is
+    transparent). Fails if the `if not key: return False` guard is dropped.
+  - `test_live_opik_export_smoke` — skipif both keys unset; ONE real Gemini turn + real Opik OTLP
+    export; asserts no OTLP-exporter ERROR logged (export succeeded) + `gen_ai.usage.*`/`request.model`/
+    `system` on the real Gemini leaf span. Cost is Opik server-side (UI), out of scope here.
+- `test_flow_tracing.py::test_bypass_flow_raise_with_tracing_active_closes_decode_run_span_once` — the
+  093-QA follow-up: a raising model leg with tracing active closes the `decode_run` span EXACTLY once
+  (one exported span, `logfire.level_num==17`, `exception` event) and the error propagates unchanged.
+
+**Acceptance criteria**
+- [x] Hermetic slice proves root/nesting/tokens/subagent/compaction/no-op, each mutation-proof —
+  `test_observability_capstone.py` (4 tests); the flagship span tree verified by hand (parent vs CHILD
+  classification, child tokens 53/57 > 0).
+- [x] Subagent closure explicit — the flagship asserts child model+tool spans share the root trace_id,
+  `parent is not None`, and child `gen_ai.usage.input_tokens` > 0 (ADR-0013 §9).
+- [x] Live smoke SKIPs cleanly (`-rs`: "OPIK_API_KEY and GEMINI_API_KEY must both be set …") and its
+  PASS path is structurally sound (see Notes for the real-Gemini attribute proof).
+- [x] Hermetic passes run alone under `filterwarnings=["error"]` (4 passed, 1 skip) + full suite green;
+  `make ci` links all green (uv lock --check, format-check, lint-check, 1491 unit, 120 integration).
+- [x] Module docstring documents the feature end-to-end, naming REAL (`build_agent`, `Runner`/
+  `AgentTurnHandler`, gate, `render_event`, `SessionLog`, global `instrument_pydantic_ai`,
+  `init_tracing`) vs FAKED (`FunctionModel`, `logfire.testing` exporter, fake key).
+
+**Evidence**
+```
+$ uv run pytest tests/integration/test_observability_capstone.py tests/unit/decode/runtime/test_flow_tracing.py -rs -q
+....s.......                                                              [100%]
+SKIPPED [1] …:630: OPIK_API_KEY and GEMINI_API_KEY must both be set for the live Opik export smoke
+11 passed, 1 skipped
+
+$ make pre-commit          # format-check + lint-check + unit
+1491 passed in 109.84s
+$ make integration-tests
+120 passed, 1 skipped in 365.59s
+$ uv lock --check
+Resolved 155 packages in 2ms
+
+# manual e2e — ONE REAL Gemini turn through the real stack, tracing active (in-memory tap, no OPIK):
+chat_turn roots: 1 | thread_id: 00000000-0000-0000-0000-0000000000e5
+real Gemini chat spans: ['chat gemini-2.5-flash']
+  gen_ai.usage.input_tokens = 18007
+  gen_ai.request.model = 'gemini-2.5-flash'
+  gen_ai.system       = 'google-gla'
+```
+
+**Notes**
+- **End-to-end proof (Step 7).** I have a real `GEMINI_API_KEY` but NO `OPIK_API_KEY`, so the live Opik
+  smoke SKIPS. To de-risk the half the skip hides, I drove ONE real Gemini turn through the real stack
+  with tracing active (in-memory tap, no export) — output above. It confirms my live-smoke attribute
+  assertions are exactly right against a **real** provider: `gen_ai.usage.input_tokens` > 0,
+  `gen_ai.request.model == 'gemini-2.5-flash'`, `gen_ai.system == 'google-gla'` (all truthy). Only the
+  OPIK-export "no error logged" half is unproven on this machine — left to the Tester if they hold an
+  OPIK key; it is structurally sound (real `init_tracing()` builds the OTLP exporter; `force_flush`
+  pushes; caplog scans `opentelemetry.exporter.*` for ERROR). Cost hygiene: the live smoke is ONE turn.
+- **`logfire.force_flush()` returns `False` even on a clean flush** (verified empirically): logfire's
+  internal `CheckSuppressInstrumentationProcessorWrapper.force_flush()` returns False, so the return
+  value is NOT a reliable success signal. The live smoke therefore asserts the task's stated
+  alternative — **no OTLP-exporter ERROR logged** — and only records `force_flush()`'s bool. Documented
+  in the test docstring.
+- **093-QA follow-up folded in** (pre-approved): the raise-unwind-with-tracing-active test in
+  `test_flow_tracing.py`, adapting the 093 Tester's "PROBE 1" template. Its `active_tracing` fixture +
+  the `_reset_tracing_state` instrumentation save/restore are new there; the existing 6 tests still pass.
+- **No architectural fork.** All names, thread_id sources, REAL/FAKED boundaries, and the escape-hatch
+  cost framing were fixed by ADR-0014 + ADR-0013 §9 + the task. `docs/` untouched (PA-owned).
+- Task kept in `tasks/` with `status: in-progress` (091-093 convention: archive move + `status: done`
+  happen in the commit step, after Tester PASS). NOT COMMITTED — handing to the Tester first.
+
+### [Tester] 2026-07-05 17:40 — QA
+
+**Test summary**
+- Format / lint / pre-commit: PASS (`make pre-commit` → format-check + lint-check + 1491 unit passed in 109.10s)
+- Unit tests: 1491 passed / 0 failed
+- Integration tests: 120 passed / 0 failed / 1 skipped (live smoke — OPIK_API_KEY absent)
+- Warnings: 0 (`filterwarnings=["error"]`; capstone alone → 4 passed, 1 skipped, no warnings)
+- `uv lock --check`: 155 packages, no drift (no new deps)
+
+**E2E adversarial pass** (test-only task → mutation-testing the new assertions for non-vacuousness; each mutation reverted byte-exact and re-confirmed green)
+- Happy path: `pytest tests/integration/test_observability_capstone.py -rs` → 4 passed, 1 skipped; skip reason renders under `-rs`: "OPIK_API_KEY and GEMINI_API_KEY must both be set for the live Opik export smoke" (PASS)
+- Break path 1 (flagship teeth — root span): `root_span` forced to `nullcontext` w/ instrumentation on → flagship RED at `len(roots)==1` (`0==1`; pydantic-ai spans still emit, zero `chat_turn` roots → shared-trace invariant collapses). Load-bearing (PASS/caught)
+- Break path 2 (flagship teeth — child tokens): child-tokens assertion pointed at `gen_ai.usage.input_tokens_BOGUS` → RED `[None,None,None,None]`. Assertion genuinely reads the real attr (PASS/caught)
+- Break path 2b (independent span-tree proof): dumped the real tree — one trace, `chat_turn(sid=1,pid=None,thread_id=session)` → parent `agent run(3)` → parent `chat(50t)` + two `agent`-tool `running tool(7,9)` → each CHILD `agent run` → child `chat(53t,57t)` + child `glob running tool`. `_descends_through_tool` partition genuine (parent spans child=False, child spans child=True). ADR-0013 §9 closure real, not vacuous (PASS)
+- Break path 3 (no-op teeth, half 1 — init False): invert guard `if not key:`→`if key:` → RED at `assert init_tracing() is False` (`True is False`) (PASS/caught)
+- Break path 3b (no-op teeth, half 2 — zero spans): instrument on the no-key path while keeping `return False` → RED at `assert exported_spans == []` (6 spans leak) while `is False` stays green → both halves independently mutation-proof (PASS/caught)
+- Break path 4 (093 follow-up teeth): flip expected error level 17→9 → RED (`assert 17 == 9`); span genuinely records the exception (error level + `exception` event); combined w/ `pytest.raises` + `_exception_carries` it targets close-once-plus-record-exception (PASS/caught)
+- Isolation: capstone + `test_opik_repl_trace` + `test_opik_headless_trace` + `test_flow_tracing`, BOTH orders (forward + reverse) → 22 passed, 1 skipped each way; no-op test's `_active is False` sentinel holds even after active-tracing files run first (no tracing-state leak). NB: no `pytest-randomly` installed → deterministic order, so two explicit orders is the right isolation check (PASS)
+- Live smoke structural review (OPIK_API_KEY genuinely absent from env + `.env` — verified quietly, never printed; GEMINI present): (a) skip renders cleanly; (b) "export succeeded" scans `opentelemetry.exporter.*` at ERROR — confirmed the OTLP-HTTP exporter logs failures via `getLogger("opentelemetry.exporter.otlp.proto.http.trace_exporter").error("Failed to export span batch code: %s…")`, so a 401/dead endpoint WOULD be caught; (c) the three attr keys it reads (`gen_ai.request.model`/`gen_ai.system`/`gen_ai.usage.input_tokens`) are real keys the instrumentation emits (hermetic dump: `'function:…'`/`'function'`/50). Real-Opik-export half unproven-on-this-machine — the skipif contract IS the AC → not a FAIL
+
+**Acceptance criteria**
+- [x] PASS — Hermetic slice proves root+thread_id / nested chat+tool / tokens / subagent child nesting+tokens / compaction nesting / zero-spans no-op, each mutation-proof — 4 hermetic tests pass alone under `filterwarnings=["error"]` (no key/network); break paths 1–3b above prove the root span, child-token, and activation-guard (both halves) assertions all have teeth
+- [x] PASS — Subagent closure explicit (ADR-0013 §9) — flagship `test_subagent_child_spans_nest_in_the_parent_turn_trace_with_child_token_usage` asserts child model+tool spans share the root `trace_id`, `parent is not None`, child `input_tokens > 0`; span-tree dump confirms child `chat(53t,57t)` + child `glob` descend through the parent's `agent` `running tool`, all in the one `chat_turn` trace
+- [x] PASS — Live smoke SKIPs cleanly (`-rs` reason at :630) and its PASS path is structurally sound (right logger, real attr keys, would catch a 401); real-Opik half honestly unproven on this machine (no OPIK key) — skipif contract is the AC
+- [x] PASS — Hermetic clean under `filterwarnings=["error"]` alone (4 passed, 0 warnings) + isolation clean both orders (22/22); `make ci` infra-less green: `uv lock --check` (155 pkgs), format-check, lint-check, 1491 unit, 120 integration (live smoke skipped)
+- [x] PASS — Module docstring names REAL (`build_agent`, `Runner`/`AgentTurnHandler`, gate, `render_event`, `SessionLog`, global `instrument_pydantic_ai`, `init_tracing`) vs FAKED (`FunctionModel`, `logfire.testing` exporter, fake key) end-to-end; honest disclosure that the hermetic slice forces `_active`+direct-instrument (not `init_tracing`) to avoid a network flush — a documented 092/093 fidelity trade
+
+**Evidence**
+```
+$ uv run pytest tests/integration/test_observability_capstone.py -rs -q
+....s
+SKIPPED [1] .../test_observability_capstone.py:630: OPIK_API_KEY and GEMINI_API_KEY must both be set for the live Opik export smoke
+4 passed, 1 skipped in 1.17s
+
+$ make pre-commit
+1491 passed in 109.10s
+$ make integration-tests
+120 passed, 1 skipped in 361.25s
+
+# span-tree dump (flagship scenario, hermetic): one trace, one chat_turn root
+chat_turn(1,pid=None,thread_id=…e5) → agent run(3) → chat(50t) · running tool(7)→CHILD agent run(11,110t)
+  → chat(15,53t) child · running tool(19,glob) child · chat(23,57t) child   [+ symmetric child 2: 53t/57t]
+
+# isolation, both orders
+ORDER A (capstone→repl→headless→flow):  22 passed, 1 skipped
+ORDER B (reversed):                     22 passed, 1 skipped
+```
+
+**Other issues found**
+- None blocking. Notes for the record (PASS-with-note, not FAILs): (1) the always-run span tests fake activation via `tracing._active=True` + direct `instrument_pydantic_ai` rather than calling `init_tracing()` — honestly documented (docstring §33-36), sound rationale (a real `logfire.configure` would replace the `capfire` exporter and could flush to the network), matches 092/093; the real `init_tracing()` IS exercised in the no-op guard test (mutation-proofed) and the live smoke. (2) SWE pre-checked the AC boxes; I re-verified all five as genuinely passing, so the `[x]` marks are accurate. (3) Hygiene clean — `git status` shows only the 095 set (capstone file, `test_flow_tracing.py`, `tasks/095`); `docs/` and `tasks/future/` untouched.
+
+**VERDICT: PASS**
