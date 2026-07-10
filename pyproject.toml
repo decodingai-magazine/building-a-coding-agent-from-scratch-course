@@ -42,6 +42,7 @@ dependencies = [
     "modal>=1.5.1",
     "anyio>=4.14.1",
     "kitaru[local,pydantic-ai,llm]>=0.18.0",  # durability runtime (ADR-0008); mcp extra dropped (conflicts pydantic-ai mcp)
+    "logfire>=4.37.0",
 ]
 
 # pydantic-ai (above) is the agent loop (ReAct) for src/decode/agent/; it pulls in

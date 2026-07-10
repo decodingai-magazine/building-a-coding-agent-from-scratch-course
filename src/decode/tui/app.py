@@ -49,6 +49,7 @@ from pydantic_ai.messages import ModelMessage
 from rich.console import Console
 from rich.text import Text
 
+from decode import observability
 from decode.agent.deps import AgentDeps, PermissionResolver, UserQuestionResolver
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
@@ -946,6 +947,13 @@ async def run_app(
     """
     console = console or Console()
 
+    # Opik tracing (ADR-0014 §4-5): configure ONCE, early — before the agent is built, so the global
+    # ``instrument_pydantic_ai`` covers it and every downstream Agent (memory write-back, compaction,
+    # subagents). Presence-based (``OPIK_API_KEY``): a silent no-op returning ``False`` when unset, so a
+    # no-key REPL is byte-identical. The on/off result is captured here; the one startup console line is
+    # emitted near the banner below, where ``emit_line`` (the render path) exists.
+    opik_tracing_active = observability.init_tracing()
+
     # Capture the startup persona name now: ``agent`` is rebound below to the built Pydantic AI
     # Agent, so the persona string must be saved before that shadows it (one Agent runs every
     # persona — ADR-0003 §7 — and the persona rides ``deps.active_agent``, not the Agent object).
@@ -1051,6 +1059,9 @@ async def run_app(
         agent,
         deps=deps,
         session_log=session_log,
+        # The Opik Thread id for this session's per-turn root spans (ADR-0014 §4): the session-log id
+        # groups every turn's ``chat_turn`` trace under one conversation thread. Inert when tracing is off.
+        session_id=session_log.session_id,
         message_history=resumed_history,
         compaction_model_or_settings=settings,
     )
@@ -1092,6 +1103,12 @@ async def run_app(
             emit_line(
                 f"Decode: sandbox startup failed ({exc}); will retry on the first bash command."
             )
+
+    # One tracing line near the banner when Opik is active (ADR-0014 §1,4), styled like the sandbox
+    # lines and naming the configured project. Emitted through the render path (never ``print``); a
+    # no-op when tracing is off, so a no-key launch is byte-identical.
+    if opik_tracing_active:
+        emit_line(f"Decode - Opik tracing on (project '{settings.opik_project_name}').")
 
     # Which provider/model this session is talking to (the active model id lives in a per-provider
     # settings field — same mapping as factory._build_model's branches).

@@ -68,6 +68,15 @@ _SUBAGENT_ENV_VARS = (
     "SUBAGENT_RESULT_MAX_BYTES",
 )
 
+# Observability: Opik vars introduced by ADR-0014 (task 091). Cleared in default tests so a
+# developer's real environment cannot leak into the assertions.
+_OPIK_ENV_VARS = (
+    "OPIK_API_KEY",
+    "OPIK_WORKSPACE",
+    "OPIK_PROJECT_NAME",
+    "OPIK_URL_OVERRIDE",
+)
+
 
 def test_defaults(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -547,6 +556,74 @@ def test_env_example_lists_every_subagent_var():
     env_example = (Path(__file__).parents[4] / ".env.example").read_text()
     for var in _SUBAGENT_ENV_VARS:
         assert var in env_example, f"{var} missing from .env.example"
+
+
+# --- Observability: Opik (ADR-0014, task 091) --------------------------------------------------
+
+
+def test_opik_defaults(monkeypatch):
+    for var in _OPIK_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    assert s.opik_api_key.get_secret_value() == ""  # presence trigger — empty == tracing off
+    assert s.opik_workspace == "default"
+    assert s.opik_project_name == "decode"
+    assert s.opik_url_override is None  # None == Comet cloud OTLP base
+
+
+def test_reads_opik_vars_from_process_env(monkeypatch):
+    monkeypatch.setenv("OPIK_API_KEY", "opik-secret-123")
+    monkeypatch.setenv("OPIK_WORKSPACE", "my-workspace")
+    monkeypatch.setenv("OPIK_PROJECT_NAME", "my-project")
+    monkeypatch.setenv("OPIK_URL_OVERRIDE", "http://localhost:5173/api/v1/private/otel")
+    s = Settings(_env_file=None)
+    assert s.opik_api_key.get_secret_value() == "opik-secret-123"
+    assert s.opik_workspace == "my-workspace"
+    assert s.opik_project_name == "my-project"
+    assert s.opik_url_override == "http://localhost:5173/api/v1/private/otel"
+
+
+def test_loads_opik_vars_from_a_dotenv_file(tmp_path, monkeypatch):
+    for var in _OPIK_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    env = tmp_path / ".env"
+    env.write_text(
+        "OPIK_API_KEY=sk-opik-dotenv\n"
+        "OPIK_WORKSPACE=ws-dotenv\n"
+        "OPIK_PROJECT_NAME=proj-dotenv\n"
+        "OPIK_URL_OVERRIDE=https://opik.example.com/api/v1/private/otel\n"
+    )
+    s = Settings(_env_file=str(env))
+    assert s.opik_api_key.get_secret_value() == "sk-opik-dotenv"
+    assert s.opik_workspace == "ws-dotenv"
+    assert s.opik_project_name == "proj-dotenv"
+    assert s.opik_url_override == "https://opik.example.com/api/v1/private/otel"
+
+
+def test_opik_api_key_not_in_repr():
+    s = Settings(_env_file=None, opik_api_key="topsecretopik")
+    assert "topsecretopik" not in repr(s)
+
+
+def test_env_example_lists_every_opik_var():
+    """Drift guard: each Opik setting has a matching line in .env.example (AGENTS.md gate)."""
+    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
+    for var in _OPIK_ENV_VARS:
+        assert var in env_example, f"{var} missing from .env.example"
+
+
+def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):
+    """A copied .env.example must NOT set a truthy OPIK_API_KEY (presence-based silent-no-op default).
+
+    The Opik block ships fully commented out, so loading .env.example verbatim as the .env file leaves
+    ``opik_api_key`` empty — tracing stays off. Guards the task-091 regression where an uncommented
+    ``OPIK_API_KEY=changeme`` would make a copied .env try to trace against Comet with a bogus token.
+    """
+    for var in _OPIK_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    env_example = Path(__file__).parents[4] / ".env.example"
+    s = Settings(_env_file=str(env_example))
+    assert s.opik_api_key.get_secret_value() == ""
 
 
 # --- Kitaru secret-store config source (ADR-0008 §5, task 064) ----------------------------------

@@ -136,9 +136,21 @@ async def _drive_run_app(
     return buf.getvalue()
 
 
+def _visible(text: str) -> str:
+    """Collapse all whitespace runs to single spaces so a needle survives Rich's soft-wrapping.
+
+    Rich wraps console output at the ``Console`` width (100 here), inserting newlines mid-phrase — so a
+    long line (e.g. a degrade message embedding a long ``tmp_path``) can split ``empty workspace`` into
+    ``empty`` + newline + ``workspace``. A raw substring check then never matches, environment-specific
+    on ``tmp_path`` length. Normalising both sides makes the assertion about *content*, not layout.
+    """
+    return " ".join(text.split())
+
+
 async def _wait_for(buf: io.StringIO, needle: str) -> None:
     """Poll the output buffer until ``needle`` appears (or the surrounding timeout fires)."""
-    while needle not in buf.getvalue():
+    target = _visible(needle)
+    while target not in _visible(buf.getvalue()):
         await asyncio.sleep(0.005)
 
 
@@ -1409,7 +1421,7 @@ async def test_run_app_repo_clone_failure_degrades_to_empty_workspace(
         monkeypatch, agent, script=script, repo=str(tmp_path / "nope"), local=True
     )
 
-    assert "could not clone" in output  # the friendly degrade line, not a traceback
-    assert "empty workspace" in output
+    assert "could not clone" in _visible(output)  # the friendly degrade line, not a traceback
+    assert "empty workspace" in _visible(output)  # wrap-insensitive: a long tmp_path soft-wraps it
     workspace = workspace_dir(tmp_path)
     assert list(workspace.iterdir()) == []  # degraded to a valid empty scratch

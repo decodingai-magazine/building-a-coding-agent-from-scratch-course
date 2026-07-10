@@ -121,7 +121,9 @@ and the current Pydantic AI docs, because they shape the design:
    is never added to the cache-disable set. Documented ceilings: nested child model calls are **not**
    individual replay anchors, a `decode replay --model` swap does not reach inside a child, and child
    token spend is invisible until Opik lands (M10). Child model = parent model (`AgentDef` has no
-   `model` field, by design).
+   `model` field, by design). **Closed by M10 (ADR-0014):** child token spend is now visible in Opik
+   traces — the child `agent.run()` nests inside the parent turn's `chat_turn` trace (same asyncio task
+   / contextvars), so per-child token usage rides its own spans.
 
 10. **Discipline (unchanged).** `filterwarnings=["error"]`, UTC-aware datetimes, full annotations incl.
     `-> None`, library code logs (never `print()`), infra imported-not-abstracted, `tests/` mirror
@@ -180,6 +182,9 @@ flowchart TD
 - **Seams left for later:** a second subagent + a validated `subagent_type` param; bridging children's
   events to the TUI (live sub-progress); usage threading + per-child cost once Opik lands (M10); a
   deployed-stack proof that a headless subagent replays.
+- **Per-child cost is now delivered (M10, ADR-0014).** The "per-child cost once Opik lands" seam above is
+  closed: an Explore child's `agent.run()` nests inside the parent turn's Opik trace, so per-child token
+  spend shows on its own spans. The remaining seams stay open.
 - **Risks to confirm during implementation:** (a) the module semaphore's event-loop affinity — created
   per running loop so it is safe under both the single REPL loop and Kitaru's per-call loops; (b) that
   re-entering the same `Agent` object *concurrently* (parallel children) does not interfere under the

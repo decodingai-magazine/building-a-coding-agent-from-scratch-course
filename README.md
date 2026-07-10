@@ -467,6 +467,39 @@ That whole boundary — authenticated request out, empty-token env in the Worker
 
 This sandbox **Credential Proxy** (a *tool* credential for the Worker) is distinct from the [credentials proxy](#credentials-proxy-keep-the-model-key-out-of-the-flow-payload) above, which keeps the *model* key out of the flow payload by hydrating `Settings` — different secret, different mechanism.
 
+## Monitoring / Observability (Opik)
+
+Set one variable and `decode` sends a **Trace** of every turn to [Opik](https://www.comet.com/opik) — so you can see what a turn actually did: which model and tool calls happened, with what inputs and outputs, how much latency, how many tokens, and (for priced models) what it cost. It's **monitoring, not evaluation**. The design and trade-offs are recorded in [`docs/adr/0014-opik-observability.md`](docs/adr/0014-opik-observability.md).
+
+**Turn it on** — presence-based, like every other optional surface. Set `OPIK_API_KEY` in `.env` (or your shell):
+
+```bash
+# get a free key at comet.com, then:
+OPIK_API_KEY=your-comet-key
+# optional grouping (defaults shown):
+# OPIK_WORKSPACE=default        # the Comet workspace
+# OPIK_PROJECT_NAME=decode      # the project traces are grouped under
+```
+
+On launch the REPL prints one line — `Decode - Opik tracing on (project 'decode').` — and every turn is traced. **Leave `OPIK_API_KEY` unset** (the default) and tracing is a **silent no-op**: no line, no spans, no network — `decode` is byte-identical to a build without it.
+
+**What you get:**
+
+- **One Trace per REPL turn** (root **Span** `chat_turn`); the Opik UI groups a session's traces into one **Thread** keyed on the session id. A gated tool's approve/resume leg and any follow-up stay in the *same* trace, so turn latency honestly includes the time you spent at the approval prompt. (`decode --resume` mints a fresh session id, so a resumed conversation starts a **new** Thread.)
+- **One Trace per `decode run`** (headless), grouped into a Thread keyed on the Kitaru execution id. The activation line goes only to the log, so a piped `decode run` prints **exactly the answer** on stdout.
+- **Every LLM and tool call is a Span** with its inputs/outputs, latency, and tokens (`gen_ai.usage.*`). Opik estimates **cost** server-side for priced models (Gemini yes; open models via OpenRouter/Modal may be tokens-only).
+- **Subagents ride along.** An Explore subagent's child run nests inside the parent turn's trace, so **per-child token spend is now visible** (this closes a gap left open when subagents shipped in M9).
+- **Memory write-back and compaction ride along too** — they're pydantic-ai agents like the main loop, so one global instrumentation call covers them with no extra wiring; each shows up as its own small trace (or nested, when it runs inside a turn).
+
+**Self-host Opik** instead of Comet cloud by pointing the exporter at your instance's OTLP base:
+
+```bash
+# the exporter appends /v1/traces; a trailing slash is fine. Unset = Comet cloud.
+OPIK_URL_OVERRIDE=http://localhost:5173/api/v1/private/otel
+```
+
+Export is configured **from these settings** (never via global `OTEL_*` env vars), so it never disturbs any other OpenTelemetry SDK in the process. Evaluations and experiments built *on top of* these traces are a later milestone (M13).
+
 ## Develop
 
 All verbs run at the repo root via the [`Makefile`](Makefile) (wrapping `uv`):
