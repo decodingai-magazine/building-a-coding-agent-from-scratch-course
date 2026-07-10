@@ -187,7 +187,9 @@ class AgentTurnHandler:
         next_prompt: str | None = ctx.prompt
         pending_results: DeferredToolResults | None = None
 
-        with observability.root_span("chat_turn", thread_id=self._session_id):
+        with observability.root_span(
+            "chat_turn", thread_id=self._session_id, input=ctx.prompt
+        ) as span:
             while True:
                 # --- model-request boundary: drain steering, then make the request (§4) ---
                 steering = yield Boundary.MODEL_REQUEST
@@ -221,6 +223,9 @@ class AgentTurnHandler:
                 # follow-up (§4, §9; ADR-0006 §3-7) ---
                 self._persist_turn()
                 await self._maybe_auto_compact()
+                # Record the final assistant text as the root span's output (ADR-0014 §4) so Opik shows
+                # it on the trace + Thread; overwritten by a later leg if a follow-up continues the turn.
+                observability.record_output(span, output)
                 follow_ups = yield Boundary.WOULD_STOP
                 if not follow_ups:
                     return

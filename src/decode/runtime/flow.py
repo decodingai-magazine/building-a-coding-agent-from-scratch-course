@@ -526,8 +526,11 @@ def run_agent_task(
             deps = _build_headless_deps(tool_scope)
             # One root span per run, keyed on the Kitaru exec_id so the model/tool spans group under one
             # Opik Thread; a nullcontext (byte-identical) when tracing is off.
-            with observability.root_span("decode_run", thread_id=current_execution_id()):
+            with observability.root_span(
+                "decode_run", thread_id=current_execution_id(), input=task
+            ) as span:
                 result = durable_agent.run_sync(task, deps=deps)
+                observability.record_output(span, result.output)
         output = result.output
         if not isinstance(output, str):
             # Defensive: under BYPASS every tool runs inline, so a run never resolves to a deferred
@@ -687,9 +690,10 @@ def run_agent_task_hitl(
                     # One root span per run, keyed on the Kitaru exec_id (a nullcontext when tracing is
                     # off). A denied approval unwinds it exactly once before the except catches below.
                     with observability.root_span(
-                        "decode_run_hitl", thread_id=current_execution_id()
-                    ):
+                        "decode_run_hitl", thread_id=current_execution_id(), input=task
+                    ) as span:
                         result = durable_agent.run_sync(task, deps=deps)
+                        observability.record_output(span, result.output)
                 except _ToolApprovalDenied:
                     # The operator rejected a tool approval. The adapter raises out of ``run_sync`` (it
                     # has no feed-back-to-model path), so the run stops here — the denied tool never ran.

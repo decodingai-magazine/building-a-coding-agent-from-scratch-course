@@ -30,6 +30,7 @@ from decode.observability import tracing
 from decode.observability.tracing import (
     init_tracing,
     is_tracing_active,
+    record_output,
     reset_tracing,
     root_span,
 )
@@ -215,6 +216,41 @@ def test_root_span_opens_logfire_span_when_active(fake_opik_key, mock_logfire, m
 
     span_fn.assert_called_once_with("chat_turn", thread_id="sess-9")
     assert result is span_fn.return_value
+
+
+def test_root_span_sets_input_attribute_so_opik_populates_trace_input(
+    fake_opik_key, mock_logfire, mocker
+):
+    """The turn/run input rides as the ``input`` span attribute (Opik buckets it into trace INPUT)."""
+    span_fn = mocker.patch("decode.observability.tracing.logfire.span")
+    init_tracing()
+
+    root_span("chat_turn", thread_id="s1", input="what can you do?")
+
+    span_fn.assert_called_once_with("chat_turn", thread_id="s1", input="what can you do?")
+
+
+def test_root_span_omits_input_attribute_when_empty(fake_opik_key, mock_logfire, mocker):
+    """An empty/None input is not set as an attribute (nothing to show — keep the span clean)."""
+    span_fn = mocker.patch("decode.observability.tracing.logfire.span")
+    init_tracing()
+
+    root_span("chat_turn", thread_id="s1", input="")
+
+    span_fn.assert_called_once_with("chat_turn", thread_id="s1")
+
+
+def test_record_output_sets_output_only_for_non_empty_text(mocker):
+    """``record_output`` sets the ``output`` attribute for real text and no-ops otherwise (ADR-0014 §4)."""
+    span = mocker.Mock()
+
+    record_output(None, "text")  # tracing off (nullcontext yielded None) — must not raise
+    record_output(span, "")  # empty output — nothing to record
+    record_output(span, 123)  # non-str output — skip rather than store a bad attribute
+    span.set_attribute.assert_not_called()
+
+    record_output(span, "the turn is done")
+    span.set_attribute.assert_called_once_with("output", "the turn is done")
 
 
 # --- logfire.testing in-memory: a real span is emitted when active -----------------------------

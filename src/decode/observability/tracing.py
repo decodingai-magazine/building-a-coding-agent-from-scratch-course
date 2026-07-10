@@ -7,13 +7,15 @@ every pydantic-ai Agent (the main loop, memory write-back, compaction, and subag
 a **silent no-op** and decode is byte-identical (ADR-0014 §1, the presence-based enablement every prior
 optional surface follows).
 
-The four-function public surface (ADR-0014 §5):
+The public surface (ADR-0014 §5):
 
 * :func:`init_tracing` — presence-based + idempotent; the seam 092/093 call from ``run_app`` and the
   headless ``@flow`` bodies. No call site is wired yet (this task is settings + module only).
 * :func:`is_tracing_active` — cheap read of the module flag.
 * :func:`root_span` — the ``logfire.span`` wrapper 092/093 open per turn / per run (a ``nullcontext``
-  when tracing is off), carrying the Opik Thread id.
+  when tracing is off), carrying the Opik Thread id + the turn/run ``input``.
+* :func:`record_output` — sets the paired ``output`` attribute on that root span at turn/run end, so
+  Opik populates the trace's OUTPUT and the Thread view has messages to render.
 * :func:`reset_tracing` — clears the module flag for test hermeticity (mirrors ``bash.reset_executor``
   / ``agent.reset_main_agent``).
 
@@ -95,18 +97,45 @@ def is_tracing_active() -> bool:
     return _active
 
 
-def root_span(name: str, *, thread_id: str | None = None) -> AbstractContextManager[Any]:
+def root_span(
+    name: str, *, thread_id: str | None = None, input: str | None = None
+) -> AbstractContextManager[Any]:
     """Open a root span named ``name`` when tracing is active, else a ``nullcontext`` (ADR-0014 §4,5).
 
     The thin wrapper 092/093 open around a REPL turn (``AgentTurnHandler.__call__``) or a headless run
-    (the ``@flow`` body): when active it is ``logfire.span(name, thread_id=thread_id)`` — ``thread_id``
-    rides as a span attribute that Opik maps to a conversation Thread (the session id for the REPL, the
-    Kitaru exec_id for a run). When tracing is off it is a no-op :func:`contextlib.nullcontext`, so the
-    call sites open it unconditionally with no ``if`` at the caller.
+    (the ``@flow`` body): when active it is ``logfire.span(name, thread_id=thread_id, input=input)`` —
+    ``thread_id`` rides as a span attribute that Opik maps to a conversation Thread (the session id for
+    the REPL, the Kitaru exec_id for a run). When tracing is off it is a no-op
+    :func:`contextlib.nullcontext`, so the call sites open it unconditionally with no ``if`` at the caller.
+
+    ``input`` (the turn prompt / the run task) is set as the span's ``input`` attribute so Opik's OTLP
+    ingest buckets it into the **trace's** ``input`` field. This matters twice: the trace summary shows
+    the user's message, and the Thread view — which Opik builds from **trace-level** input/output — has
+    a message to render (without it a whole conversation renders as blank ``-`` rows). Opik's mapping is
+    a prefix match on the attribute key (``input`` → INPUT, ``output`` → OUTPUT); the paired
+    :func:`record_output` sets the ``output`` half at the end of the turn/run.
     """
-    if _active:
-        return logfire.span(name, thread_id=thread_id)
-    return nullcontext()
+    if not _active:
+        return nullcontext()
+    attributes: dict[str, Any] = {"thread_id": thread_id}
+    if isinstance(input, str) and input:
+        attributes["input"] = input
+    return logfire.span(name, **attributes)
+
+
+def record_output(span: Any, output: object) -> None:
+    """Set the ``output`` attribute on a root ``span`` so Opik populates the **trace's** OUTPUT (ADR-0014 §4).
+
+    The mirror of ``root_span``'s ``input``: Opik buckets any ``output``-prefixed span attribute into the
+    trace OUTPUT field the Thread view reads, so the turn's/run's final assistant text shows on both the
+    trace and its Thread message. A no-op when ``span`` is ``None`` (tracing off — ``root_span`` returned
+    a ``nullcontext``) or ``output`` is not non-empty text, so call sites invoke it unconditionally with
+    whatever they already hold. pydantic-ai's own spans (``agent run`` / ``chat …`` / ``running tool``)
+    get their I/O for free from the global instrumentation; only these manually-opened roots need it set.
+    """
+    if span is None or not isinstance(output, str) or not output:
+        return
+    span.set_attribute("output", output)
 
 
 def reset_tracing() -> None:

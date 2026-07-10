@@ -178,7 +178,7 @@ def test_bypass_flow_inits_tracing_then_opens_decode_run_root_keyed_on_exec_id(m
 
     assert flow_mod._load_runtime_output(handle.exec_id) == "all done"
     init_mock.assert_called_once_with()
-    root_mock.assert_called_once_with("decode_run", thread_id=handle.exec_id)
+    root_mock.assert_called_once_with("decode_run", thread_id=handle.exec_id, input="do the thing")
 
 
 def test_hitl_flow_inits_tracing_then_opens_decode_run_hitl_root_keyed_on_exec_id(mocker):
@@ -197,7 +197,9 @@ def test_hitl_flow_inits_tracing_then_opens_decode_run_hitl_root_keyed_on_exec_i
     assert result.paused is False
     assert result.output == "hitl done"
     init_mock.assert_called_once_with()
-    root_mock.assert_called_once_with("decode_run_hitl", thread_id=result.exec_id)
+    root_mock.assert_called_once_with(
+        "decode_run_hitl", thread_id=result.exec_id, input="do the thing under HITL"
+    )
 
 
 def test_inactive_bypass_flow_never_opens_a_real_span(mocker):

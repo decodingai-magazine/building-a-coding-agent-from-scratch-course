@@ -227,6 +227,10 @@ async def test_single_turn_is_one_chat_turn_root_with_nested_model_and_tool_span
     root = roots[0]
     assert root["parent"] is None, "the chat_turn span must be the trace root"
     assert root["attributes"]["thread_id"] == _SESSION_ID
+    # The root carries the turn's input + final output so Opik populates the TRACE-level input/output
+    # (what the Thread view renders as the user/assistant message pair — ADR-0014 §4).
+    assert root["attributes"]["input"] == "read the notes file"
+    assert root["attributes"]["output"] == "the turn is done"
     trace_id = root["context"]["trace_id"]
 
     model_spans = _model_spans(spans)

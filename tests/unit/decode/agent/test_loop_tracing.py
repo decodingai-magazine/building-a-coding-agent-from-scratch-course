@@ -48,7 +48,7 @@ class _SpanRecorder:
         self.exits = 0
 
     def __call__(
-        self, name: str, *, thread_id: str | None = None
+        self, name: str, *, thread_id: str | None = None, input: str | None = None
     ) -> contextlib.AbstractContextManager[None]:
         self.calls.append((name, thread_id))
         return self._span()

@@ -60,6 +60,37 @@ Facts verified against the installed packages + official docs before deciding:
   calls `agen.aclose()` deterministically in `finally`, so one `AgentTurnHandler.__call__` == one turn
   == one root span.
 
+### Terminology — how pydantic-ai, logfire, OpenTelemetry, and Opik fit
+
+The four names in this ADR are **four layers of one pipeline**, not four alternatives — recorded here
+because "why OTLP and not the Opik SDK?" is the natural first misread (they are not opposed):
+
+| Layer | What it is | In decode |
+|---|---|---|
+| **pydantic-ai** | the LLM framework whose Agents make the calls — the thing being observed | main loop, memory write-back, compaction, subagents |
+| **logfire** | **Pydantic's** instrumentation SDK — a thin wrapper *around* OpenTelemetry | `instrument_pydantic_ai()`, `configure()`, `span()` in `tracing.py` |
+| **OpenTelemetry (OTel)** | the vendor-neutral standard + SDK for traces/metrics/logs; the wire format is **OTLP** | `OTLPSpanExporter`, `BatchSpanProcessor`, the `gen_ai.*` span attributes |
+| **Opik** | the backend that ingests the spans and prices them | the OTLP endpoint the exporter POSTs to |
+
+- **OpenTelemetry** is the common language. A **span** is one unit of work (an LLM or tool call) with a
+  name, timing, and key-value **attributes**; spans nest into a **trace** (one REPL turn) via
+  async-context propagation; **OTLP** is the protocol that ships them. The standardized attribute names
+  (`gen_ai.usage.*`, `gen_ai.request.model`, `gen_ai.system` — OTel's **GenAI semantic conventions**)
+  are exactly what Opik reads to surface tokens + cost with no glue code. Because OTel's `TracerProvider`
+  is **process-global**, two libraries both configuring it collide — this is the root cause of the
+  kitaru→zenml conflict that forces settings-driven (not global-`OTEL_*`-env) export (sub-decision 2).
+- **logfire** *is* OTel underneath (`logfire.span` → an OTel span; `configure()` → an OTel provider). We
+  use the **library, not Pydantic's hosted platform** — `send_to_logfire=False` borrows only its
+  instrumentation and redirects spans to Opik. It earns its place two ways: (a)
+  `instrument_pydantic_ai()` is a **one-call global** integration (Pydantic makes both libraries), vs.
+  hand-writing spans at every call site with raw OTel; (b) installing `logfire` transitively brings the
+  OTLP exporter + OTel SDK, so the whole pipeline arrives with **one** top-level dep.
+- **"OTLP" is Opik's own documented transport** for the logfire/pydantic-ai recipe
+  (comet.com/docs/opik/integrations/pydantic-ai) — **not** a bypass of the Opik SDK. The narrow choice
+  we actually made is `OTLPSpanExporter` **over** the opik SDK's `OpikSpanProcessor`: both are Opik
+  paths, but the exporter ships free with logfire while `OpikSpanProcessor` needs the whole `opik`
+  package as a 2nd dep for no coverage gain (kept as the one-line escape hatch in sub-decision 8).
+
 ## Decision
 
 **Mechanism = the official logfire integration, globally instrumented, exported programmatically to
@@ -101,9 +132,20 @@ Sub-decisions (all recorded so they are not re-litigated):
      when inside a turn) via the same global instrumentation — no wiring.
    * **Subagents nest inside the parent turn's trace** (same task/contextvars), closing ADR-0013 §9's
      "child token spend invisible until Opik lands (M10)".
+   * **Root-span input/output are set explicitly** (post-091 fix, verified live). pydantic-ai's own
+     spans (`agent run` / `chat …` / `running tool`) get their I/O for free from the global
+     instrumentation, but our **manually-opened** `chat_turn` / `decode_run[_hitl]` roots start blank —
+     and Opik derives a **trace's** input/output from its ROOT span, never from descendants. So the roots
+     carry the turn/run **input** (the prompt / task) as an `input` attribute and, at turn/run end, the
+     final assistant text as an `output` attribute via `observability.record_output(span, …)`. Opik's
+     OTLP ingest buckets these by a **prefix match on the attribute key** (`input*` → INPUT, `output*` →
+     OUTPUT — verified in opik's `GeneralMappingRules`). This is load-bearing for **Threads**: the Thread
+     view is built from **trace-level** input/output (`first_message.input` / `last_message.output`), so
+     without it a whole conversation renders as blank `-` rows even though the nested LLM spans have I/O.
 5. **Init seam = `observability.init_tracing()`**, idempotent (process-global `logfire.configure`), called
    from `run_app` (REPL) and inside each `@flow` body (headless). One small module
-   (`observability/tracing.py`) holds `init_tracing` / `is_tracing_active` / `root_span` / `reset_tracing`.
+   (`observability/tracing.py`) holds `init_tracing` / `is_tracing_active` / `root_span` /
+   `record_output` / `reset_tracing`.
 6. **Deps = `logfire` only.** It brings `opentelemetry-exporter-otlp-proto-http`; not `logfire[httpx]`,
    not `opik`. Watch: logfire's OTel/protobuf pins must co-resolve with kitaru→zenml + modal at lock time.
 7. **Test isolation.** An autouse `_no_opik_tracing` fixture blanks `opik_api_key` so ordinary tests
