@@ -118,7 +118,7 @@ class FakeLanguageServer:
             result = result(message)  # a per-request responder (e.g. URI-aware diagnostics)
         self.stdout.feed_data(frame({"jsonrpc": "2.0", "id": msg_id, "result": result}))
 
-    # --- the subprocess surface the client's shutdown path drives ---
+    # subprocess surface the client's shutdown path drives
     def terminate(self) -> None:
         self._exit()
 

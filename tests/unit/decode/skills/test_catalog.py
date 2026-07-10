@@ -1,12 +1,9 @@
-"""Unit tests for :func:`decode.skills.catalog.assemble_skills_catalog` (ADR-0004 §1,§9).
+"""Unit tests for :func:`decode.skills.catalog.assemble_skills_catalog` (ADR-0004 §1,9).
 
-``assemble_skills_catalog`` is the always-present, cheap "menu" half of progressive disclosure: it
-reads the merged catalog via :func:`decode.skills.loader.load_skills` and formats each skill as a
-``- <name> — <description>`` markdown list item under a one-line cue telling the model to call
-``skill("<name>")`` to load the full instructions. Ordering is stable (sorted by name). It returns
-``""`` when there are no skills, so the instructions hook contributes nothing (no empty header) —
-exactly the ``assemble_memory`` contract. These tests pin the two built-ins, a project override, the
-sorted order, and the empty-catalog edge.
+The always-present tier-1 "menu": one ``- <name> — <description>`` bullet per skill under a
+``skill("<name>")`` cue, sorted by name, ``""`` when empty. Pins the two built-ins, a project
+override, the sorted order, the no-resource-paths rule, the empty edge, and that newlines in a
+name/description cannot inject a fake bullet.
 """
 
 from pathlib import Path

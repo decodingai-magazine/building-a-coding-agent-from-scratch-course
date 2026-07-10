@@ -1,18 +1,10 @@
-"""Unit tests for the gated ``web_fetch`` tool (``decode.tools.web``).
+"""Unit tests for the gated ``web_fetch`` tool (``decode.tools.web``) — ADR-0002 §3,7,10.
 
-ADR-0002 §3,7,10: ``web_fetch`` does a single ``httpx.AsyncClient`` GET under
-``settings.web_fetch_timeout_s``, follows redirects, converts an HTML response to Markdown
-(``<script>`` / ``<style>`` removed) to cut tokens, passes text/plain through as-is, caps the
-response size, and gates on approval (raises :class:`pydantic_ai.ApprovalRequired` until
-approved). Anything the network can throw at it — a non-2xx status, a timeout, a connection
-error, or non-text content — becomes a model-readable :class:`pydantic_ai.ModelRetry` instead
-of crashing the REPL.
-
-**No real network.** Every test stubs HTTP via :class:`httpx.MockTransport` (built into httpx —
-no extra test dependency) patched onto the tool's transport seam, so the suite is hermetic under
-``filterwarnings=["error"]``. The tool functions are driven directly with a hand-built
-:class:`RunContext` (mirroring ``test_bash.py``), plus one run **through a real agent** with a
-``FunctionModel`` that streams a real-URL ``web_fetch`` call and an approving resolver.
+Covers gating, HTML→Markdown conversion (script/style stripped), text passthrough, redirects,
+the size cap, the configured timeout, and mapping every failure (bad status, timeout,
+connection error, non-text content, bad URL, conversion blow-up) to a model-readable
+``ModelRetry``. No real network: HTTP is stubbed with :class:`httpx.MockTransport` patched onto
+the tool's transport seam; the through-the-agent runs use a scripted ``FunctionModel``.
 """
 
 import contextlib
@@ -77,7 +69,7 @@ def _html_response(html: str, *, status: int = 200) -> Callable[[httpx.Request],
     return handler
 
 
-# --- gating: web_fetch defers to the gate (raises ApprovalRequired until the run is approved) -
+# gating
 
 
 async def test_web_fetch_requires_approval_when_not_approved(tmp_path: Path, mocker):
@@ -103,7 +95,7 @@ async def test_web_fetch_stays_gated_in_a_sandbox_mode(tmp_path: Path, mocker, m
     handler.assert_not_called()
 
 
-# --- HTML -> Markdown conversion ------------------------------------------------------------
+# HTML -> Markdown conversion
 
 
 async def test_web_fetch_converts_html_to_markdown(tmp_path: Path, mocker):
@@ -163,7 +155,7 @@ async def test_web_fetch_follows_redirects_to_the_final_url(tmp_path: Path, mock
     assert "https://example.com/final" in out
 
 
-# --- text/plain passthrough -----------------------------------------------------------------
+# text/plain passthrough
 
 
 async def test_web_fetch_passes_plain_text_through_unchanged(tmp_path: Path, mocker):
@@ -194,7 +186,7 @@ async def test_web_fetch_treats_other_text_content_as_text(tmp_path: Path, mocke
     assert body in out
 
 
-# --- size cap -------------------------------------------------------------------------------
+# size cap
 
 
 async def test_web_fetch_caps_oversized_responses(tmp_path: Path, mocker):
@@ -214,7 +206,7 @@ async def test_web_fetch_caps_oversized_responses(tmp_path: Path, mocker):
     assert out.count("A") < 500
 
 
-# --- deeply nested HTML: conversion failure becomes a model-readable ModelRetry -------------
+# deeply nested HTML: conversion failure becomes a ModelRetry
 
 
 def _deeply_nested_html(depth: int = 600) -> str:
@@ -249,7 +241,7 @@ async def test_web_fetch_unexpected_conversion_error_returns_model_retry(tmp_pat
         await web_module.web_fetch(_ctx(tmp_path), url="https://example.com/bad-html")
 
 
-# --- error mapping: every failure becomes a model-readable ModelRetry -----------------------
+# error mapping
 
 
 @pytest.mark.parametrize("status", [404, 500])
@@ -319,7 +311,7 @@ async def test_web_fetch_non_http_url_returns_model_retry(tmp_path: Path, mocker
     handler.assert_not_called()
 
 
-# --- timeout is the configured setting ------------------------------------------------------
+# timeout is the configured setting
 
 
 async def test_web_fetch_uses_the_configured_timeout(tmp_path: Path, mocker):
@@ -340,7 +332,7 @@ async def test_web_fetch_uses_the_configured_timeout(tmp_path: Path, mocker):
     assert set(timeout.values()) == {12.5}
 
 
-# --- through a real agent: forced web_fetch call, approved ----------------------------------
+# through a real agent: forced web_fetch call, approved
 
 
 def _agent(mocker):

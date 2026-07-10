@@ -1,18 +1,14 @@
 """The command-executor seam — the one real abstraction in the tool layer (ADR-0002 §7,10).
 
-``bash`` (task 008) does not spawn subprocesses itself; it asks a :class:`CommandExecutor` to
-run a command and hands back the result. M1 ships exactly one implementation,
-:class:`LocalExecutor` (a local ``asyncio`` subprocess); **M8 swaps in a Docker / Modal
-sandbox behind this same ``run`` method** without touching ``bash`` (ADR-0002 §7, AGENTS.md:
-"Sandbox is the one real abstraction"). Keep this module **infra-agnostic** — it knows about a
-command string, a working directory, a timeout, and the four fields of an :class:`ExecResult`.
-It knows nothing about bash, the agent, truncation, or permissions.
+``bash`` asks a :class:`CommandExecutor` to run a command; :class:`LocalExecutor` is the host
+implementation and the sandbox executors swap in behind the same ``run`` method. Keep this
+module **infra-agnostic**: a command string, a working directory, a timeout, and an
+:class:`ExecResult` — nothing about bash, the agent, truncation, or permissions.
 
-**Timeout = no leaked processes.** :class:`LocalExecutor` launches the child in its **own
-process group** (``start_new_session=True``) and, on timeout, signals the *whole group* (not
-just the immediate child) so a command that spawned children — ``sh -c 'sleep 100 & ...'`` —
-does not leave orphans behind. It escalates ``SIGTERM`` → ``SIGKILL`` after a short grace
-window, then returns the partial output captured so far with ``timed_out=True``.
+**Timeout = no leaked processes.** The child runs in its **own process group**
+(``start_new_session=True``); on timeout the *whole group* is signalled (``SIGTERM`` →
+``SIGKILL`` after a short grace window) so spawned children die too, and the partial output
+captured so far is returned with ``timed_out=True``.
 """
 
 from __future__ import annotations
@@ -27,8 +23,7 @@ from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
-# Grace period between SIGTERM and the SIGKILL escalation when a timed-out group ignores the
-# polite signal. Deliberately short — a runaway command is already over its deadline.
+# Grace between SIGTERM and SIGKILL for a timed-out group — deliberately short.
 _KILL_GRACE_S = 2.0
 
 
@@ -36,18 +31,13 @@ _KILL_GRACE_S = 2.0
 class ExecResult:
     """The outcome of running one command (ADR-0002 §7).
 
-    ``stdout`` / ``stderr`` are the captured streams decoded as UTF-8 (undecodable bytes are
-    replaced, never crash). ``exit_code`` is the process exit status (``-N`` for "killed by
-    signal N", mirroring :class:`asyncio.subprocess.Process`). ``timed_out`` is ``True`` when
-    the executor had to terminate the process for exceeding its deadline — in which case
-    ``stdout`` / ``stderr`` hold whatever partial output was captured before the kill.
-
-    ``note`` is an **optional** out-of-band message about the *execution*, not the command's own
-    output — appended to the model-facing reply by ``bash._render`` when non-empty (ADR-0011 §2).
-    :class:`LocalExecutor` (host subprocess, the ``none`` default) never sets it, so its default
-    ``""`` keeps ``none``-mode rendering **byte-identical** to before this field existed. The Docker
-    sandbox executor (M8) uses it to tell the model when a timeout killed and reset the persistent
-    shell (cwd/env cleared), which is state the command output alone would not reveal.
+    ``stdout`` / ``stderr`` are UTF-8-decoded (undecodable bytes replaced, never crash).
+    ``exit_code`` mirrors :class:`asyncio.subprocess.Process` (``-N`` = killed by signal N).
+    ``timed_out=True`` means the executor terminated the process at its deadline — the streams
+    hold whatever partial output was captured before the kill. ``note`` is an optional
+    out-of-band execution notice appended by ``bash._render`` when non-empty (ADR-0011 §2);
+    :class:`LocalExecutor` never sets it, so its ``""`` default keeps ``none``-mode rendering
+    **byte-identical** to before the field existed.
     """
 
     stdout: str
@@ -58,12 +48,7 @@ class ExecResult:
 
 
 class CommandExecutor(Protocol):
-    """The seam ``bash`` runs commands through (ADR-0002 §7; M8 swaps the implementation).
-
-    One method: :meth:`run` a command string in ``cwd`` with a wall-clock ``timeout_s`` and
-    return an :class:`ExecResult`. M1 has :class:`LocalExecutor`; M8 adds a sandboxed executor
-    (Docker / Modal) behind this identical signature so ``bash`` is unaffected.
-    """
+    """The seam ``bash`` runs commands through (ADR-0002 §7): one ``run`` method, swappable implementation."""
 
     async def run(self, command: str, *, cwd: Path, timeout_s: float) -> ExecResult:
         """Run ``command`` in ``cwd``, terminating it after ``timeout_s`` seconds."""
@@ -73,26 +58,20 @@ class CommandExecutor(Protocol):
 class LocalExecutor:
     """Run a command as a local ``asyncio`` subprocess in its own process group (§7).
 
-    The command is executed via the shell (``asyncio.create_subprocess_shell``) so the model
-    can use pipes, redirects, and ``&&`` like a real terminal. The child starts a new session
-    (``start_new_session=True``) so it leads its own process group; on timeout the executor
-    signals the whole group, which is what stops a command's *children* from outliving it.
+    Executed via the shell (pipes, redirects, ``&&`` work); ``start_new_session=True`` makes
+    the child lead its own group so a timeout can kill its children too.
     """
 
     async def run(self, command: str, *, cwd: Path, timeout_s: float) -> ExecResult:
         """Run ``command`` in ``cwd``; on timeout kill its process group and return partial output.
 
-        Returns an :class:`ExecResult`. A normal exit fills ``exit_code`` and leaves
-        ``timed_out`` ``False``; a timeout terminates the whole process group (SIGTERM, then
-        SIGKILL after :data:`_KILL_GRACE_S`), sets ``timed_out`` ``True``, and returns whatever
-        output was captured before the kill.
+        A timeout terminates the whole group (SIGTERM, then SIGKILL after :data:`_KILL_GRACE_S`),
+        sets ``timed_out`` ``True``, and returns whatever output was captured before the kill.
 
-        **Why a non-cancelled ``communicate()``.** ``communicate()`` reads the child's pipes
-        into in-memory buffers; *cancelling* it (e.g. ``asyncio.wait_for``) discards those
-        buffers, so output the child flushed *before* the deadline would be lost. We instead run
-        ``communicate()`` as a task and :func:`asyncio.wait` on it with a timeout (which does not
-        cancel on expiry); on timeout we kill the group and ``await`` the *same* task so it
-        drains the partial output the child already wrote.
+        ``communicate()`` runs as a task that is **never cancelled**: cancelling it (e.g.
+        ``asyncio.wait_for``) would discard the buffered partial output, so we
+        :func:`asyncio.wait` with a timeout instead and, after killing the group, ``await`` the
+        *same* task to drain what the child already wrote.
         """
         process = await asyncio.create_subprocess_shell(
             command,
@@ -101,9 +80,6 @@ class LocalExecutor:
             cwd=cwd,
             start_new_session=True,  # own process group: kill it as a unit, children included
         )
-        # Run communicate() as a task we never cancel — cancelling would throw away the partial
-        # output buffered before a timeout. asyncio.wait() lets the timeout lapse without killing
-        # the read, so the same task keeps draining once we signal the process group.
         comm = asyncio.ensure_future(process.communicate())
         done, _ = await asyncio.wait({comm}, timeout=timeout_s)
         if not done:
@@ -130,13 +106,10 @@ class LocalExecutor:
     ) -> tuple[bytes, bytes]:
         """Kill the timed-out child's whole process group and drain its partial output.
 
-        SIGTERM the group first (polite stop); if it has not exited within
-        :data:`_KILL_GRACE_S`, SIGKILL the group (children included) so nothing is orphaned.
-        ``comm`` is the **already-running** ``communicate()`` task from :meth:`run` — we
-        ``await`` it (rather than re-invoking ``communicate()``, which would return empty bytes)
-        so the partial ``(stdout, stderr)`` the child buffered before the kill is returned.
-        Signalling the *group* (negative pid) — not just the immediate child — is what guarantees
-        a command's spawned children die with it.
+        SIGTERM the group first; SIGKILL after :data:`_KILL_GRACE_S`. ``comm`` is the
+        **already-running** ``communicate()`` task — awaiting it (not re-invoking
+        ``communicate()``, which would return empty bytes) yields the buffered partial output;
+        signalling the *group* is what guarantees spawned children die with the command.
         """
         _signal_group(process, signal.SIGTERM)
         done, _ = await asyncio.wait({comm}, timeout=_KILL_GRACE_S)
@@ -148,10 +121,9 @@ class LocalExecutor:
 def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
     """Send ``sig`` to the child's entire process group; tolerate an already-dead process.
 
-    With ``start_new_session=True`` the child's PID is its process-group id, so
-    ``os.killpg(pid, sig)`` reaches the child and every descendant in one call. A
-    :class:`ProcessLookupError` (the group already exited) or :class:`PermissionError` is
-    swallowed — there is nothing left to kill.
+    With ``start_new_session=True`` the child's PID is its group id, so ``os.killpg`` reaches
+    every descendant in one call; :class:`ProcessLookupError` / :class:`PermissionError` are
+    swallowed — nothing left to kill.
     """
     if process.returncode is not None:
         return

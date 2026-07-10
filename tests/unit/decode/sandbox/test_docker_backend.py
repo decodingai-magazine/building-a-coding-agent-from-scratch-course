@@ -1,15 +1,10 @@
 """Hermetic unit tests for the Docker sandbox backend (``decode.sandbox.docker_backend``, ADR-0012 §2,4).
 
-These exercise the parts of :class:`DockerBackend` that need **no docker daemon**: the fresh-exec argv
-(``docker run`` + a fresh ``docker exec`` per call, proxy wiring off/on), the exec timeout that kills
-only the ``docker exec`` client (a real ``sleep`` child stands in — no daemon), the daemon-lost /
-spawn-failure rendering (exit-125, never a crash), and the **pathlib file ops on the bind-mounted
-Workspace** (which are truthful against a plain tmp dir — the whole point of the mount). The real
-end-to-end contract (a live container, filesystem persistence, container teardown) lives in the
-``@skipif``-guarded ``tests/integration/test_docker_executor.py``.
-
-Fresh-exec means there is **no** persistent shell, so the retired marker/``$?`` protocol,
-read-until-marker loop, and loop-free shell-teardown tests are gone with the code they tested.
+No docker daemon: subprocess spawns are faked (a real ``sleep`` child stands in for the exec-timeout
+kill), and the pathlib file ops run against a plain tmp dir — truthful, since the bind mount IS the
+Workspace. Fresh-exec means no persistent shell, so the retired marker/``$?`` protocol tests are gone
+with the code. The live-container contract is the ``@skipif``-guarded
+``tests/integration/test_docker_executor.py``.
 """
 
 from __future__ import annotations
@@ -43,7 +38,7 @@ def _fake_proc(mocker, *, stdout=b"", stderr=b"", returncode=0):
     return proc
 
 
-# --- docker run argv (byte-identical off the proxy path) --------------------------------------
+# docker run argv (byte-identical off the proxy path)
 
 
 def test_run_args_mount_the_workspace_without_proxy_wiring():
@@ -94,7 +89,7 @@ def test_proxy_wiring_defaults_to_none_so_construction_is_inert():
     assert backend._workspace is None
 
 
-# --- create: start the keeper container (no daemon — docker run is faked) ----------------------
+# create: start the keeper container (no daemon — docker run is faked)
 
 
 async def test_create_starts_the_container_and_caches_the_id(mocker, tmp_path):
@@ -180,7 +175,7 @@ async def test_create_reaps_the_worker_and_drops_the_id_when_ca_trust_fails(mock
     assert backend._container_id is None  # the id is dropped after the reap
 
 
-# --- create: git install (the slim base ships none) -------------------------------------------
+# create: git install (the slim base ships none)
 
 
 async def test_create_installs_and_configures_git_for_a_default_worker(mocker, tmp_path):
@@ -256,7 +251,7 @@ async def test_create_installs_git_on_a_proxy_wired_worker(mocker, tmp_path):
     assert list(git_argv) == ["docker", "exec", "container123", "sh", "-c", _git_setup_command()]
 
 
-# --- exec: a fresh ``docker exec`` per call ---------------------------------------------------
+# exec: a fresh ``docker exec`` per call
 
 
 async def test_exec_runs_a_fresh_docker_exec_with_separate_streams(mocker):
@@ -354,7 +349,7 @@ async def test_exec_timeout_kills_only_the_client_process_group(mocker):
     assert result.note == ""  # fresh-exec: only the command died, no session-level reset note
 
 
-# --- file ops on the bind mount (truthful against a plain tmp dir) -----------------------------
+# file ops on the bind mount (truthful against a plain tmp dir)
 
 
 async def test_file_ops_round_trip_on_the_workspace(tmp_path):
@@ -476,7 +471,7 @@ async def test_file_ops_allow_the_root_new_nested_paths_and_in_workspace_symlink
     assert await backend.read_bytes("inside_link") == b"real"
 
 
-# --- destroy: docker rm -f, loop-free + idempotent --------------------------------------------
+# destroy: docker rm -f, loop-free + idempotent
 
 
 async def test_destroy_force_removes_the_container(mocker):

@@ -1,27 +1,10 @@
 """Assemble the project memory block injected into the agent's instructions (ADR-0002 §8).
 
-:func:`assemble_memory` is the bridge between :func:`decode.memory.files.discover_memory_files`
-and the dynamic ``@agent.instructions`` hook in :mod:`decode.agent.factory`. It:
-
-#. reads each discovered file (root-most → cwd-most, so the cwd-most has the final word);
-#. prefixes each with a **provenance header** — ``# From <absolute path>`` — so the model can
-   tell where a rule came from (and a human reading the prompt can too);
-#. **caps ``MEMORY.md`` only** at ``settings.memory_max_lines`` lines AND
-   ``settings.memory_max_bytes`` bytes, whichever bites first, appending a **visible truncation
-   note** so the model knows there is more it cannot see.
-
-Why cap ``MEMORY.md`` but not ``AGENTS.md``: ``AGENTS.md`` is project-authored and trusted to be
-deliberately sized; ``MEMORY.md`` (the single harness file ``cwd/.decode/MEMORY.md``, Fix 1) is
-**model-maintained** (task 013 appends to it every session) and can grow without bound, so it is
-the file that needs a budget. Caps are config-driven
-(``settings.memory_max_*``) — the same single-config-reader rule the rest of the package follows.
-
-**Missing / unreadable files are skipped, not errors.** A file can vanish or become unreadable
-between discovery and read (or be a broken symlink); memory is best-effort context, never a hard
-dependency, so a bad file is dropped and assembly continues. An empty discovery (or every file
-unreadable) returns ``""`` — the factory then injects nothing beyond the static base prompt.
-
-Sync, like discovery: local file reads, sequential tool layer (ADR-0002 §7,10).
+:func:`assemble_memory` reads the discovered files (root-most → cwd-most, so the most
+specific wins), prefixes each with a ``# From <absolute path>`` provenance header, and caps
+``MEMORY.md`` only — it is model-maintained and can grow without bound, while ``AGENTS.md``
+is project-authored and trusted. Missing / unreadable files are skipped, never errors —
+memory is best-effort context; an empty assembly returns ``""``.
 """
 
 from __future__ import annotations
@@ -35,22 +18,19 @@ from decode.memory.files import MEMORY_FILENAMES, discover_memory_files
 
 logger = logging.getLogger(__name__)
 
-# The model-maintained memory file (task 013 writes to it). It is the only discovered file we
-# cap, because it is the only one that grows on its own. ``AGENTS.md`` is project-authored.
+# The model-maintained file — the only one that grows on its own, so the only one capped.
 _CAPPED_FILENAME = "MEMORY.md"
 
-# Sanity check: the file we cap is one we actually discover. Guards against a rename drift
-# between this module and ``files.MEMORY_FILENAMES`` silently disabling the cap.
+# Guards against a rename drift vs ``files.MEMORY_FILENAMES`` silently disabling the cap.
 assert _CAPPED_FILENAME in MEMORY_FILENAMES
 
 
 def assemble_memory(cwd: Path) -> str:
     """Read the discovered memory files and return the prompt block to inject (ADR-0002 §8).
 
-    Files are read root-most → cwd-most (discovery order) and joined with a blank line between
-    them, each under a ``# From <abs path>`` provenance header. ``MEMORY.md`` is clipped to the
-    configured line/byte budget with a visible truncation note; ``AGENTS.md`` is passed through
-    whole. Missing / unreadable files are skipped. Returns ``""`` when nothing readable is found.
+    Each file appears under a ``# From <abs path>`` provenance header; ``MEMORY.md`` is
+    clipped to the configured budget with a visible truncation note. Returns ``""`` when
+    nothing readable is found.
     """
     blocks: list[str] = []
     for path in discover_memory_files(cwd):
@@ -65,11 +45,7 @@ def assemble_memory(cwd: Path) -> str:
 
 
 def _read_text(path: Path) -> str | None:
-    """Read ``path`` as UTF-8, returning ``None`` (not raising) if it cannot be read.
-
-    A file that vanished, turned into a directory, or holds undecodable bytes between discovery
-    and read is dropped — memory is best-effort context, never a hard dependency.
-    """
+    """Read ``path`` as UTF-8, returning ``None`` (never raising) when it cannot be read."""
     try:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -78,13 +54,10 @@ def _read_text(path: Path) -> str | None:
 
 
 def _cap(content: str) -> str:
-    """Clip ``content`` to the configured line AND byte budget, with a visible truncation note.
+    """Clip ``content`` to the configured line AND byte budgets (whichever bites first).
 
-    The cut applies ``settings.memory_max_lines`` first (keep at most that many whole lines),
-    then ``settings.memory_max_bytes`` (snap back to the last whole line that fits) — whichever
-    bites first. A line is never split. When anything is dropped, a ``[memory truncated …]`` note
-    is appended so the model knows the file continues beyond what it can see. Content that fits
-    both budgets is returned unchanged (no note).
+    A line is never split; a visible ``[memory truncated …]`` note is appended when anything
+    is dropped. Content that fits both budgets is returned unchanged.
     """
     max_lines = settings.memory_max_lines
     max_bytes = settings.memory_max_bytes
@@ -108,19 +81,9 @@ def clip_lines_to_budget(
 ) -> str:
     """Clip ``lines`` to a line AND byte budget, keeping whole lines from one end (ADR-0002 §8).
 
-    The shared core of the two memory budgeters — :func:`_cap` here (``keep="head"``: clip a
-    file's leading lines so the model reads the start) and
-    :func:`decode.memory.extract.append_session_summary` (``keep="tail"``: drop the oldest
-    ``MEMORY.md`` lines so the freshest survive). Both cap by line count first, then drop whole
-    lines until the UTF-8 byte length is within ``max_bytes``; a line is never split, and at least
-    one whole line is always kept (the truncation note, if any, flags that there is more).
-
-    ``keep`` is the *only* axis they differ on:
-
-    * ``"head"`` keeps the first ``max_lines`` lines and drops from the **tail** to hit the byte
-      budget — so the *first* line always survives.
-    * ``"tail"`` keeps the last ``max_lines`` lines and drops from the **front** — so the *last*
-      line always survives.
+    The shared core of the two memory budgeters: ``keep="head"`` keeps the first ``max_lines``
+    and drops from the tail to fit ``max_bytes``; ``keep="tail"`` keeps the last ``max_lines``
+    and drops from the front. A line is never split; at least one line is always kept.
     """
     if keep == "head":
         kept = lines[:max_lines]

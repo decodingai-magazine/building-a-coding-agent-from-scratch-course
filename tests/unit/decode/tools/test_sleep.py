@@ -1,15 +1,9 @@
-"""Unit tests for the ungated ``sleep`` control tool (``decode.tools.sleep``).
+"""Unit tests for the ungated ``sleep`` control tool (``decode.tools.sleep``) — ADR-0003 §8.
 
-ADR-0003 §8: ``sleep`` is a one-line ``await asyncio.sleep(...)`` **capped** at
-``settings.sleep_max_s`` so a model can never stall a turn forever, and it **rejects** a
-non-negative-violating ``seconds`` — a negative value or ``nan`` (which would defeat the cap, since
-``min(nan, …)`` is ``nan`` and ``asyncio.sleep(nan)`` never returns) — with a model-readable
-:class:`pydantic_ai.ModelRetry`. It is ungated (touches no filesystem, never raises
-``ApprovalRequired``).
-
-These tests pin that contract with **no real wait**: ``asyncio.sleep`` is patched to an awaitable
-no-op so we can assert the exact (capped) duration the tool would have slept, and ``sleep_max_s`` is
-patched to a short value so the cap is exercised deterministically.
+Covers the ``sleep_max_s`` cap, the negative/``nan`` rejection (``min(nan, cap)`` is ``nan``,
+which would defeat the cap), and the mode-aware ``_SLEEPER`` seam (interactive vs durable). No
+real wait: ``asyncio.sleep`` / ``kitaru.wait`` are patched so the exact capped duration is
+asserted deterministically.
 """
 
 import math
@@ -119,15 +113,9 @@ async def test_sleep_name_constant_is_sleep():
     assert sleep_module.SLEEP_TOOL_NAME == "sleep"
 
 
-# ---------------------------------------------------------------------------
-# The mode-aware ``_SLEEPER`` seam: durable (flow) mode (ADR-0008 §4, task 060)
-#
-# In flow mode the Headless Runtime installs the durable sleeper, which pauses on a flow-scope
-# ``kitaru.wait`` instead of ``asyncio.sleep``. These tests patch ``kitaru.wait`` (the network/runtime
-# boundary) so they assert the contract with no real wait and no flow: the cap and the
-# negative/``nan`` rejection still fire (and fire BEFORE the wait), the wait gets the **capped**
-# timeout (never the raw request), and installing then resetting the seam restores ``asyncio.sleep``.
-# ---------------------------------------------------------------------------
+# durable (flow) mode: the Headless Runtime installs a durable sleeper that pauses on a flow-scope
+# ``kitaru.wait`` instead of ``asyncio.sleep``. Tests patch ``kitaru.wait`` (the runtime boundary)
+# so the cap + negative/nan rejection are asserted with no real wait and no flow.
 
 
 @pytest.fixture

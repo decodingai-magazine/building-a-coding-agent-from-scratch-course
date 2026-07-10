@@ -1,22 +1,10 @@
-"""Opik tracing wired into the headless flow seams, on the real local stack (ADR-0014 §4-5, task 093).
+"""Opik tracing wired into the headless flow seams — bypass + HITL (ADR-0014 §4-5, task 093).
 
-Mirrors the two touched ``runtime/flow.py`` seams 1:1 — ``run_agent_task`` (bypass) and
-``run_agent_task_hitl`` (HITL) — through the **real** Kitaru ``@flow`` + adapter offline (a scripted
-``FunctionModel`` agent injected via the ``_build_runtime_agent`` / ``_build_hitl_runtime_agent`` seam,
-the model boundary the only stub). Three wiring points per flow:
-
-* ``observability.init_tracing()`` is called INSIDE the flow body, **before** the root span opens;
-* the run is wrapped in ``observability.root_span("decode_run" / "decode_run_hitl",
-  thread_id=current_execution_id())`` — the ``thread_id`` equals the returned ``handle.exec_id``;
-* ``init_tracing`` runs **after** ``_config_from_secret_store()`` — proven on the real local stack by a
-  run whose ``OPIK_API_KEY`` exists ONLY in a Kitaru secret the flow hydrates, with the logfire/OTLP
-  boundary mocked so no network happens: the exporter is still built with the secret-sourced key (AC3).
-
-The span *shape* (nesting, tokens, inactive-zero-spans) is the ``logfire.testing`` capstone in
-:mod:`tests.integration.test_opik_headless_trace`; here the concern is the flow seams themselves. The
-autouse ``isolated_kitaru_store`` (rootdir, gated to this runtime package) redirects the ZenML store
-under ``tmp_path``; ``reset_tracing`` is cleared around every test so the module ``_active`` flag never
-leaks (the AC3 run flips it via the real ``init_tracing``).
+Drives the real Kitaru ``@flow`` offline with a scripted ``FunctionModel`` agent injected via the
+``_build_runtime_agent`` / ``_build_hitl_runtime_agent`` seams. Each flow must call ``init_tracing()``
+before opening its root span (``thread_id`` = the run's exec_id), and init must run AFTER
+``_config_from_secret_store()`` — proven with an ``OPIK_API_KEY`` living only in a Kitaru secret and
+the logfire/OTLP boundary mocked (no network). Span *shape* is the integration capstone's concern.
 """
 
 from __future__ import annotations
@@ -157,14 +145,11 @@ def _exception_carries(exc: BaseException, message: str) -> bool:
     return False
 
 
-# ================================================================================================
 # Seam mirror — each flow calls init_tracing() then opens the correctly-named root span whose
 # thread_id is the run's exec_id (patched observability seam; the run itself is the real flow).
-# ================================================================================================
 
 
 def test_bypass_flow_inits_tracing_then_opens_decode_run_root_keyed_on_exec_id(mocker):
-    """AC1 (seam): ``run_agent_task`` calls ``init_tracing()`` then opens ``decode_run`` (thread_id=exec_id)."""
     init_mock = mocker.patch("decode.observability.init_tracing", return_value=True)
 
     def _root(*args, **kwargs):
@@ -182,7 +167,6 @@ def test_bypass_flow_inits_tracing_then_opens_decode_run_root_keyed_on_exec_id(m
 
 
 def test_hitl_flow_inits_tracing_then_opens_decode_run_hitl_root_keyed_on_exec_id(mocker):
-    """AC2 (seam): ``run_agent_task_hitl`` calls ``init_tracing()`` then opens ``decode_run_hitl``."""
     init_mock = mocker.patch("decode.observability.init_tracing", return_value=True)
 
     def _root(*args, **kwargs):
@@ -203,7 +187,6 @@ def test_hitl_flow_inits_tracing_then_opens_decode_run_hitl_root_keyed_on_exec_i
 
 
 def test_inactive_bypass_flow_never_opens_a_real_span(mocker):
-    """AC4 (seam): with no key, ``root_span`` returns a nullcontext (the run is untraced, byte-identical)."""
     # The real init_tracing (no key via the autouse conftest) + the real root_span run here.
     span_fn = mocker.patch("decode.observability.tracing.logfire.span")
     monkeypatch_seam(mocker, "_build_runtime_agent", _bypass_durable("untraced"))
@@ -246,11 +229,9 @@ def test_bypass_flow_raise_with_tracing_active_closes_decode_run_span_once(activ
     assert "exception" in [e.get("name") for e in (root.get("events") or [])]
 
 
-# ================================================================================================
 # AC3 — init_tracing() runs AFTER _config_from_secret_store(): the OPIK_API_KEY lives ONLY in the
 # hydrated Kitaru secret, yet the flow's in-body init still builds the exporter with it (boundary
 # mocked → no network). This is the ordering proof (an init before hydration would see no key).
-# ================================================================================================
 
 
 @pytest.fixture
@@ -298,7 +279,6 @@ def test_init_tracing_runs_after_secret_store_hydration(
 def test_init_tracing_secret_key_never_appears_in_the_flow_payload(
     monkeypatch, mocker, runtime_secret_name, mock_logfire_boundary
 ):
-    """AC3 corollary: the secret-sourced OPIK key rides the trace config, never the serialized payload."""
     secret_value = "opik-key-not-in-payload-7c21"
     create_secret(runtime_secret_name, {"OPIK_API_KEY": secret_value}, private=True)
     monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
@@ -315,7 +295,7 @@ def test_init_tracing_secret_key_never_appears_in_the_flow_payload(
     assert secret_value not in run.config.model_dump_json()
 
 
-# --- helper ------------------------------------------------------------------------------------
+# helper
 
 
 def monkeypatch_seam(mocker, seam_name: str, durable: KitaruAgent) -> None:
@@ -326,7 +306,6 @@ def monkeypatch_seam(mocker, seam_name: str, durable: KitaruAgent) -> None:
 def test_hydration_logs_do_not_carry_the_opik_secret_value(
     monkeypatch, mocker, runtime_secret_name, mock_logfire_boundary, caplog
 ):
-    """The activation is surfaced via a log line only (no stdout); the raw OPIK key never reaches the logs."""
     secret_value = "opik-key-never-logged-1a2b"
     create_secret(runtime_secret_name, {"OPIK_API_KEY": secret_value}, private=True)
     monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")

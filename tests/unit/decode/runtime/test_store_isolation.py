@@ -2,12 +2,8 @@
 
 The runtime tests must never read or write a developer's real ZenML store/server — every secret /
 execution op has to hit the per-test ``tmp_path`` SQLite store the autouse ``isolated_kitaru_store``
-fixture pins. These two tests make that invariant explicit (it is otherwise only implied by the
-fixture's internal ``_assert_store_isolated_under`` guard): if the isolation ever regresses — the
-autouse fixture stops applying, or the per-test re-pin stops taking effect — they fail loudly here
-instead of silently polluting real infra (which on a developer box is a live ZenML server, not a
-file). The faithful cross-file adverse-order reproduction lives in
-``tests/integration/test_runtime_store_isolation.py``.
+fixture pins. These fail loudly if that isolation ever regresses; the cross-file adverse-order
+reproduction lives in ``tests/integration/test_runtime_store_isolation.py``.
 """
 
 from __future__ import annotations
@@ -26,7 +22,6 @@ pytestmark = [
 
 
 def test_active_store_is_the_per_test_tmp_sqlite_store(isolated_kitaru_store: Path) -> None:
-    """The active ZenML store is a SQLite file under this test's ``tmp_path`` — never the real one."""
     from zenml.config.global_config import GlobalConfiguration
 
     url = str(GlobalConfiguration().store_configuration.url)
@@ -39,7 +34,6 @@ def test_active_store_is_the_per_test_tmp_sqlite_store(isolated_kitaru_store: Pa
 def test_secret_round_trips_only_within_the_isolated_store(
     isolated_kitaru_store: Path, runtime_secret_name: str
 ) -> None:
-    """A created secret is readable back from the isolated tmp store (a real round-trip, offline)."""
     create_secret(runtime_secret_name, {"GEMINI_API_KEY": "isolated-only"}, private=True)
 
     assert get_secret(runtime_secret_name).values["GEMINI_API_KEY"] == "isolated-only"

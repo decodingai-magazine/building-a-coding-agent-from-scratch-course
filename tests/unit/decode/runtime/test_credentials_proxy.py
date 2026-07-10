@@ -2,15 +2,9 @@
 
 These run on the **real** local Kitaru stack (offline, no server) so the secrets round-trip is the
 genuine one, not a mock: a secret is created with :func:`kitaru.create_secret` and read back through
-the live ``build_agent(flow_mode=True)`` → ``_build_model`` → ``get_secret`` seam. The verify-first
-finding (task log) is that this explicit-handle path round-trips fully offline on kitaru 0.18, so it
-is what ships (not the env-injection fallback).
-
-The payload test then proves the AGENTS.md invariant *"secrets never reach the model or the sandbox
-payload"*: even when the proxy resolves a raw key inside the flow body, the serialized flow arguments
-(``run.config.parameters``) carry only non-secret inputs — the task string, the Model Override
-(``model=None`` here), and the Workspace clone inputs (``repo``/``local``, ADR-0012 §3) — never a
-credential (a model id / repo path is not a secret, ADR-0010 §2).
+the live ``build_agent(flow_mode=True)`` seam — the explicit-handle path that round-trips offline on
+kitaru 0.18 (the verify-first finding). The payload test proves the AGENTS.md *"secrets never reach
+the model or the sandbox payload"* invariant on the persisted flow arguments.
 """
 
 from __future__ import annotations

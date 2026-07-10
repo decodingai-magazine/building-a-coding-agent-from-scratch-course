@@ -72,7 +72,7 @@ def _commit_change(repo: Path, *, filename: str, content: str) -> str:
     return _git_out(repo, "rev-parse", "HEAD")
 
 
-# --- workspace_dir --------------------------------------------------------------------------------
+# workspace_dir
 
 
 def test_workspace_dir_resolves_under_harness_home(tmp_path):
@@ -94,7 +94,7 @@ def test_workspace_dir_creation_is_idempotent(tmp_path):
     assert marker.read_text(encoding="utf-8") == "stay"
 
 
-# --- prepare_workspace: clone / empty / reuse -----------------------------------------------------
+# prepare_workspace: clone / empty / reuse
 
 
 def test_prepare_workspace_clones_committed_head_into_empty_workspace(tmp_path):
@@ -145,7 +145,7 @@ def test_prepare_workspace_raises_on_clone_failure(tmp_path):
         prepare_workspace(tmp_path / "home", repo=str(tmp_path / "does-not-exist"))
 
 
-# --- prepare_workspace: the cloned Workspace is a real repo — the task-083 hand-back substrate --------
+# prepare_workspace: the cloned Workspace is a real repo — the task-083 hand-back substrate
 
 
 def test_cloned_workspace_is_a_real_repo_at_decode_sandbox_with_origin_recoverable(tmp_path):
@@ -207,7 +207,7 @@ def test_origin_head_pins_the_cloned_commit_so_083_detects_workspace_changes(loc
     )
 
 
-# --- prepare_workspace_or_empty: the launch-time degrade policy (task 082) -------------------------
+# prepare_workspace_or_empty: the launch-time degrade policy (task 082)
 
 
 def test_prepare_workspace_or_empty_returns_the_clone_and_no_error_on_success(tmp_path):
@@ -220,7 +220,6 @@ def test_prepare_workspace_or_empty_returns_the_clone_and_no_error_on_success(tm
 
 
 def test_prepare_workspace_or_empty_degrades_to_empty_on_a_clone_failure(tmp_path):
-    """A clone failure never raises — it returns the empty Workspace + the git error text (ADR-0012 §3)."""
     workspace, error = prepare_workspace_or_empty(
         tmp_path / "home", repo=str(tmp_path / "does-not-exist")
     )
@@ -240,7 +239,7 @@ def test_prepare_workspace_or_empty_repo_none_is_the_empty_workspace_no_error(tm
     assert list(workspace.iterdir()) == []
 
 
-# --- prepare_workspace: git argv wiring (hermetic — subprocess.run patched) ------------------------
+# prepare_workspace: git argv wiring (hermetic — subprocess.run patched)
 
 
 def _capture_git(mocker) -> dict[str, object]:
@@ -279,7 +278,7 @@ def test_prepare_workspace_omits_local_flag_by_default(mocker, tmp_path):
     assert "--local" not in captured["cmd"]
 
 
-# --- seed_skills ----------------------------------------------------------------------------------
+# seed_skills
 
 
 def test_seed_skills_copies_project_skills_into_the_workspace(tmp_path):
@@ -320,7 +319,7 @@ def test_seed_skills_is_idempotent(tmp_path):
     ) == "body"
 
 
-# --- tar_dir / extract_tar ------------------------------------------------------------------------
+# tar_dir / extract_tar
 
 
 def _file_tree(root: Path) -> list[str]:
@@ -476,7 +475,7 @@ def test_extract_tar_keeps_the_data_filter_traversal_guard(tmp_path):
         extract_tar(_one_member_tar("link", linkname="/etc/passwd"), dest)
 
 
-# --- git_config_pairs: the sandbox git identity (user.name / user.email) ------------------------
+# git_config_pairs: the sandbox git identity (user.name / user.email)
 
 
 def test_git_config_pairs_returns_the_default_decode_identity():

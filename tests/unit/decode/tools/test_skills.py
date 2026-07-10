@@ -1,23 +1,10 @@
-"""Unit tests for the ungated ``skill`` dispatcher (``decode.tools.skills``; ADR-0004 §2,§7).
+"""Unit tests for the ungated ``skill`` dispatcher (``decode.tools.skills``) — ADR-0004 §2,7.
 
-The dispatcher is the model-facing, on-demand half of progressive disclosure: ``skill(name)``
-returns the named skill's full ``body`` as the tool result. It mirrors the ungated control tools
-(``sleep`` / ``enter_plan_mode``): :class:`~decode.permissions.types.ToolKind.OTHER`, it never raises
-:class:`pydantic_ai.ApprovalRequired` (loading instructions is harmless, so it never reaches the
-permission gate), and an unknown ``name`` is a model mistake mapped to a model-readable
-:class:`pydantic_ai.ModelRetry` listing the available skills — never a crash.
-
-Two layers of test, mirroring ``test_orchestration.py``:
-
-* **direct** — call ``skill`` with a hand-built ``RunContext`` to pin: the built-in ``commit`` body
-  comes back, an unknown name raises ``ModelRetry`` listing the names, and a project override
-  (``<cwd>/.decode/skills/commit/SKILL.md``) wins;
-* **loop-driven** — drive ``skill`` through the *real* ``build_agent`` + ``AgentTurnHandler`` + gate
-  (model swapped for a scripted ``FunctionModel``, no network) so the **ungated** contract holds end
-  to end: a scripted ``skill("commit")`` returns the body and emits NO ``PermissionRequested`` (even
-  in plan mode), while a mutation the skill *describes* (a ``bash`` ``git commit``) still rides its
-  own gate — asked in default mode, denied in plan mode. This is the ADR-0004 §7 invariant with
-  ``commit`` as the worked example.
+Direct tests pin the built-in ``commit`` body, the project override, the resource trailer, the
+harness-home split, and the ``ModelRetry`` (listing names) on an unknown skill. Loop-driven
+tests ride the real ``build_agent`` + ``AgentTurnHandler`` + gate (scripted ``FunctionModel``,
+no network) to prove the §7 invariant: the dispatcher is ungated (no ``PermissionRequested``,
+even in plan mode) while the mutation a skill *describes* still rides its own gate.
 """
 
 import json
@@ -44,7 +31,7 @@ from decode.skills.payload import format_skill_payload
 from decode.tools import KNOWN_TOOL_NAMES, skills
 from decode.tools.registry import TOOL_SPECS
 
-# --- direct-call harness (mirrors tests/unit/decode/tools/test_orchestration.py) --------------
+# direct-call harness
 
 
 async def _deny_permission_resolver(request: PermissionRequest) -> PermissionDecision:
@@ -77,7 +64,7 @@ def _write_project_skill(cwd: Path, *, name: str, body: str) -> Path:
     return path
 
 
-# --- direct: name + signature ---------------------------------------------------------------
+# direct: name + signature
 
 
 def test_skill_tool_name_is_stable():
@@ -92,7 +79,7 @@ def test_skill_takes_ctx_and_name_only_no_args():
     assert params == ["ctx", "name"]
 
 
-# --- harness-home split (ADR-0012 §6): skills are a harness artifact → read from harness_home --------
+# harness-home split: skills are a harness artifact, read from harness_home
 
 
 async def test_skill_dispatcher_reads_harness_home_not_the_workspace_cwd(tmp_path):
@@ -124,7 +111,7 @@ async def test_skill_dispatcher_reads_harness_home_not_the_workspace_cwd(tmp_pat
         await skills.skill(ctx, "ghost")  # a Workspace-only skill is invisible to the dispatcher
 
 
-# --- direct: happy path + override + unknown ------------------------------------------------
+# direct: happy path + override + unknown
 
 
 async def test_skill_returns_the_builtin_commit_body(tmp_path):
@@ -167,7 +154,7 @@ async def test_skill_returns_a_project_only_skill(tmp_path):
     assert result == "Ship it to staging first."
 
 
-# --- direct: the resource trailer (ADR-0004 §1,§5; task 033) ---------------------------------
+# direct: the resource trailer
 
 
 def _add_resource(cwd: Path, *, name: str, relpath: str = "references/x.md") -> Path:
@@ -210,7 +197,7 @@ async def test_skill_resourceless_project_skill_returns_body_only(tmp_path):
     assert result == "Ship it to staging first."  # body verbatim, no trailer
 
 
-# --- registry + agents wiring ----------------------------------------------------------------
+# registry + agents wiring
 
 
 def test_skill_is_registered_as_an_other_kind_spec():
@@ -258,7 +245,7 @@ async def test_agent_omitting_skill_hides_the_dispatcher():
     assert await prepare(_Ctx(load_agent("build")), tool_def) is tool_def  # type: ignore[arg-type]
 
 
-# --- loop-driven harness (mirrors tests/unit/decode/tools/test_orchestration.py) --------------
+# loop-driven harness
 
 
 @pytest.fixture

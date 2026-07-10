@@ -363,7 +363,6 @@ def _engage_proxy(monkeypatch, tmp_path) -> None:
 
 
 def test_sandbox_proxy_context_installs_the_seam_then_tears_it_all_down(monkeypatch, tmp_path):
-    """The real ``_sandbox_proxy()`` installs + starts a proxy-wired worker, then reaps everything."""
     _engage_proxy(monkeypatch, tmp_path)
     captured: dict[str, object] = {}
 

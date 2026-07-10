@@ -1,67 +1,18 @@
-"""The Kitaru runtime capstone: the headless durable flow end to end, OFFLINE (ADR-0008, task 062).
+"""Kitaru runtime capstone (ADR-0008): the headless durable flow end to end, OFFLINE.
 
-This is the living proof for the Kitaru-runtime feature (ADR-0008, tasks 057-062) — and it doubles as
-documentation, in the style of :mod:`tests.integration.test_milestone1_capstone` (swap only the model
-boundary) and :mod:`tests.integration.test_lsp_capstone` (patch the seam, no subprocess). It drives
-the **real** :func:`decode.agent.factory.build_agent` + the real Kitaru ``@flow`` + the real
-``KitaruAgent`` adapter through scripted headless runs on a **local** Kitaru stack — *no Kitaru
-server, no network, no* ``GEMINI_API_KEY`` — swapping out only two boundaries:
+Proves durability (058), replay-from-cache + the model-swap replay (058 / ADR-0010), HITL
+named waits (059), the durable capped sleep (060), and the Credentials Proxy (061) through
+the REAL ``@flow`` + ``KitaruAgent`` adapter + real ``build_agent`` tool registry, on a LOCAL
+Kitaru/ZenML stack redirected under tmp_path. Swapped/faked: only the runtime seam
+(``_build_runtime_agent`` / ``_build_hitl_runtime_agent``) is patched to inject scripted
+FunctionModel agents — no Kitaru server, no network, no GEMINI_API_KEY.
 
-* the **runtime seam** (task 058's :func:`decode.runtime.flow._build_runtime_agent` /
-  :func:`decode.runtime.flow._build_hitl_runtime_agent`) — patched to inject an agent built on a
-  scripted :class:`~pydantic_ai.models.function.FunctionModel` instead of a real provider model;
-* the **model** itself (the ``FunctionModel`` walks a canned tool/text script).
-
-Everything else is real: the flat tool registry, the bypass / gating permission gates, the durable
-``KitaruAgent`` checkpoints, the flow-scope ``kitaru.wait`` HITL bridge, the durable ``sleep`` timer,
-the Credentials-Proxy ``get_secret`` round-trip, and the local ZenML store the checkpoints persist to.
-The store is redirected under ``tmp_path`` (so the repo's home / ``.kitaru`` are never touched) and the
-process ``cwd`` is moved there too, so any file a tool writes stays in the sandbox.
-
-The four runtime sub-features, each asserted through the real flow:
-
-1. **Durability (058)** — :func:`test_durability_runs_the_real_flow_to_completion`: a multi-step task
-   runs to completion via ``run_agent_task.run(task)`` and returns the scripted final text (read back
-   from the ``_capture_runtime_output`` artifact — ``.wait()`` no longer auto-extracts under the
-   terminal sink, task 068); the durable, checkpointed execution is recorded; a fresh re-run is a *new*
-   execution. It also proves the
-   **real** agent loop ran (the scripted tool sequence wrote a real file inline under BYPASS) and the
-   interactive ``Runner`` / ``agent/loop.py`` path was **not** used (a spy asserts neither was built).
-2. **Replay (058, AC2)** — :func:`test_replay_serves_a_finished_model_checkpoint_from_cache`: a
-   ``flow.replay(...)`` of a finished run serves the finished **model** checkpoints from cache — the
-   model's call-count does **not** increase for the cached turn. (Verified empirically on the installed
-   kitaru 0.18 local stack; see the module note below.)
-3. **HITL (059)** — :func:`test_hitl_pauses_on_named_waits_and_injected_answers_drive_the_tools`: the
-   scripted agent calls ``ask_user`` and then a gated ``write`` in one conversation; each pauses on a
-   **named** durable wait; an injected answer / verdict becomes the tool result / lets the write run.
-4. **Durable sleep (060)** — :func:`test_durable_sleep_uses_the_capped_timer`: a ``sleep`` in flow mode
-   pauses on a flow-scope ``kitaru.wait`` named ``"sleep"`` with the **capped** timeout (a spy asserts
-   the value; no real wall-clock wait); the interactive ``asyncio.sleep`` seam is restored on exit.
-5. **Credentials proxy (061)** — :func:`test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload`:
-   with the proxy enabled and a real Kitaru secret, the model is built from the **secret-sourced** key,
-   and the serialized flow payload carries only the task — never the raw key.
-
-**Module note — the replay reality, verified first (task 062 de-risk).** The grooming flagged that
-task 059's local in-process stack could not drive a true deployed-flow replay. Probing the installed
-SDK split the question in two:
-
-* **Finished *model* checkpoints DO replay from cache on the local stack.** ``flow.replay(exec_id,
-  from_=<a downstream checkpoint>)`` of a finished ``"calls"``-strategy run serves the upstream model
-  checkpoints from the original execution's cache — the ``FunctionModel`` is *not* re-invoked
-  (deterministic across runs). So AC2's "a replay serves a finished checkpoint from cache (the model is
-  not re-called for it)" is **real** here, and :func:`test_replay_serves_a_finished_model_checkpoint_from_cache`
-  asserts it for real (the model leg-count does not increase).
-* **A *wait* answer does NOT replay from cache on the local stack.** A HITL ``ask_user`` wait is opted
-  out of its per-call checkpoint precisely so its wait lands at flow scope (ADR-0008 §3), so it is never
-  cached — a replay **re-creates** (re-asks) the wait rather than reusing the saved answer. AC3's "a
-  replay reuses the answer without re-asking" therefore needs a *deployed* stack (deferred to step 12);
-  on the local stack what is provable is the **deterministic wait name** — the key a deployed replay
-  *would* reuse the answer by — and :func:`test_replay_re_asks_a_wait_on_the_local_stack` documents the
-  re-ask reality with that stable name. (The AC3 wording is corrected accordingly in the task log.)
-
-These tests are **synchronous** (the Kitaru ``@flow`` is sync — ``KitaruAgent.run_sync`` bridges the
-async agent internally), so they do not run under pytest-asyncio's loop; like the task 058-061 unit
-tests they boot the real ZenML stack and scope its two unrelated third-party deprecation warnings.
+Replay reality (verified on kitaru 0.18): finished MODEL checkpoints DO replay from cache on
+the local stack (AC2 asserted for real); a WAIT answer does NOT — it lands at flow scope,
+uncached, so a replay re-asks it under its deterministic name (answer reuse needs a deployed
+stack, deferred to step 12). Tests are synchronous (the ``@flow`` is sync), scope two
+third-party deprecation warnings, and the real-wire smoke is skipif-guarded on the local
+kitaru+zenml stack being importable (skips, never fails, on a stripped environment).
 """
 
 from __future__ import annotations
@@ -125,13 +76,11 @@ except Exception:  # pragma: no cover - only on an incompatible environment
 _CAPTURE_CHECKPOINT = "_capture_runtime_output"
 
 
-# ================================================================================================
 # Hermeticity — run the LIVE Kitaru flow offline under ``tmp_path`` and release every straggler.
 # Mirrors the task-059 fix in ``tests/unit/decode/runtime/conftest.py`` verbatim: a live ``@flow``
 # leaves ZenML's SQLite engine + the ``run_sync`` event loop behind, which ``filterwarnings=["error"]``
 # turns into errors when they are finalized during a later test. We dispose + close + ``gc.collect``
 # them inside this fixture's scope so the capstone is hermetic in isolation.
-# ================================================================================================
 
 
 @pytest.fixture(autouse=True)
@@ -182,13 +131,11 @@ def _close_idle_event_loop() -> None:
         asyncio.set_event_loop(None)
 
 
-# ================================================================================================
 # The inline wait resolver — the hermetic stand-in for ``kitaru executions input`` (task 059).
 # Resolves each durable Kitaru wait on the flow thread so a wait-paused run never blocks, by forcing
 # Kitaru's own local interactive-input seam on. Copied from the task-059 conftest (ADR-0008 §3): a
 # background ``KitaruClient.input`` thread races SQLite, and post-timeout ``resume`` needs a deployed
 # flow the in-process local stack lacks, so the local interactive seam is the offline-safe path.
-# ================================================================================================
 
 
 class WaitRecorder:
@@ -242,10 +189,8 @@ def inline_wait_resolver(monkeypatch: pytest.MonkeyPatch) -> WaitRecorder:
     return recorder
 
 
-# ================================================================================================
 # Scripted agents — a real decode agent (full tool registry) on a ``FunctionModel``. A shared
 # ``counter`` lets a test prove a replay served a turn from cache (the model leg-count does not move).
-# ================================================================================================
 
 
 def _real_agent(model_fn: Any, *, name: str) -> Agent[AgentDeps, str | DeferredToolRequests]:
@@ -307,9 +252,7 @@ def _steps(exec_id: str) -> list[str]:
     return list(Client().get_pipeline_run(exec_id).steps)
 
 
-# ================================================================================================
 # 1. Durability (058) — a multi-step task runs to completion through the REAL flow + agent loop.
-# ================================================================================================
 
 
 def test_durability_runs_the_real_flow_to_completion(monkeypatch, mocker, tmp_path):
@@ -364,9 +307,7 @@ def test_durability_runs_the_real_flow_to_completion(monkeypatch, mocker, tmp_pa
     assert rerun.exec_id != handle.exec_id
 
 
-# ================================================================================================
 # 2. Replay (058, AC2) — a replay serves a FINISHED MODEL checkpoint from cache (model not re-called).
-# ================================================================================================
 
 
 def test_replay_serves_a_finished_model_checkpoint_from_cache(monkeypatch):
@@ -409,10 +350,8 @@ def test_replay_serves_a_finished_model_checkpoint_from_cache(monkeypatch):
     )
 
 
-# ================================================================================================
 # 2b. Model-swap Replay (ADR-0010 §5, task 070) — the INVERSE of the cache proof above: a replay
 # with a swapped Model Override RE-EXECUTES the anchored turn with the NEW model.
-# ================================================================================================
 
 
 def test_model_swap_replay_re_executes_downstream_turns(monkeypatch, tmp_path):
@@ -492,9 +431,7 @@ def test_model_swap_replay_re_executes_downstream_turns(monkeypatch, tmp_path):
     assert replay.exec_id != handle.exec_id
 
 
-# ================================================================================================
 # 3. HITL (059) — ask_user + a gated write pause on NAMED durable waits; injected answers drive them.
-# ================================================================================================
 
 
 def test_hitl_pauses_on_named_waits_and_injected_answers_drive_the_tools(
@@ -548,9 +485,7 @@ def test_hitl_pauses_on_named_waits_and_injected_answers_drive_the_tools(
     assert inline_wait_resolver.names[1].startswith("approve_write")
 
 
-# ================================================================================================
 # 4. HITL replay reality (AC3, corrected) — the wait is RE-ASKED on the local stack, not reused.
-# ================================================================================================
 
 
 def test_replay_re_asks_a_wait_on_the_local_stack(monkeypatch):
@@ -609,9 +544,7 @@ def _install_recorder(monkeypatch: pytest.MonkeyPatch, recorder: WaitRecorder) -
     monkeypatch.setattr(runner_mod, "poll_interactive_wait_condition_input", recorder.resolve)
 
 
-# ================================================================================================
 # 5. Durable sleep (060) — ``sleep`` in flow mode is a flow-scope ``kitaru.wait`` with the CAPPED timeout.
-# ================================================================================================
 
 
 def test_durable_sleep_uses_the_capped_timer(monkeypatch, inline_wait_resolver):
@@ -658,9 +591,7 @@ def test_durable_sleep_uses_the_capped_timer(monkeypatch, inline_wait_resolver):
     assert sleep_module._SLEEPER is sleep_module._interactive_sleep
 
 
-# ================================================================================================
 # 6. Credentials proxy (061) — the model key comes from a Kitaru secret; the raw key is off the payload.
-# ================================================================================================
 
 _SECRET_NAME = "decode-capstone-creds"
 _KITARU_RAW_KEY = "KITARU-RAW-GEMINI-KEY-capstone-7f3a"
@@ -719,9 +650,7 @@ def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypa
     assert _SETTINGS_RAW_KEY not in run.config.model_dump_json()
 
 
-# ================================================================================================
 # Optional guarded real-local test — the real wire on a real local stack; SKIPS when unavailable.
-# ================================================================================================
 
 
 @pytest.mark.skipif(

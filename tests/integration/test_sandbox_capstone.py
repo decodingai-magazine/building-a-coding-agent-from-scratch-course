@@ -1,74 +1,19 @@
-"""The isolated-Workspace capstone: the whole ADR-0012 feature end to end (tasks 078-085).
+"""Isolated-Workspace capstone (ADR-0012, tasks 078-085): the whole feature end to end.
 
-This is the **living proof** for the isolated Workspace — and it doubles as documentation, in the
-style of :mod:`tests.integration.test_milestone1_capstone` (swap only the boundary),
-:mod:`tests.integration.test_runtime_capstone` (patch the seam, ``skipif`` the real stack), and
-:mod:`tests.integration.test_lsp_capstone` (a real-wire smoke guarded on a binary probe). It replaces
-the ADR-0011-era ``SANDBOX_MODE`` capstone (host file tools on the real repo + ``bash`` in a scratch)
-with the ADR-0012 model. It has two parts — an **always-run offline slice** and four
-**``skipif``-guarded real-infra smokes** — so ``make ci`` stays green on a machine with no Docker / no
-Modal (the smokes SKIP, never fail).
-
-**The feature in one paragraph.** In a sandbox mode (``docker`` / ``modal``) the agent's *whole* tool
-scope — the file/search tools **and** ``bash`` — is an isolated ``/workspace`` (ADR-0012 §1-4): a
-``git clone`` of a user-supplied ``--repo`` (or an empty scratch), backed by the host
-``.decode/sandbox`` directory. The two ADR-0011 executors collapse into **one**
-:class:`~decode.sandbox.executor.SandboxExecutor` (create → ``exec bash -lc <cmd>`` per call → destroy;
-**fresh-exec** — the filesystem persists, ``cd`` / ``export`` do not) over a thin
-:class:`~decode.sandbox.executor.SandboxBackend` Protocol that carries **exec + file ops + lifecycle**.
-``DockerBackend`` (079) runs ``docker exec`` and does file ops as pathlib on a bind mount; ``ModalBackend``
-(080) runs ``sb.exec`` and does file ops via the ``SandboxFilesystem`` API with one bootstrap upload + one
-export sweep. The file tools route their byte transport through that same seam (081, the "swap the set"
-pattern), so a tool-written file is visible to ``bash`` and vice-versa; ``glob`` / ``grep`` execute in the
-sandbox (``find`` / ``grep`` via ``exec``). decode's *own* artifacts stay at **Harness Home** (the launch
-cwd) — ``.decode/sessions``, ``MEMORY.md`` / ``AGENTS.md``, the permission file, the skills catalog —
-while only ``deps.cwd`` moves into the Workspace (§6). Results survive via a host-side **git hand-back**
-(083, §8): the harness secures the final Workspace onto a ``decode/<session-id>`` Session Branch and
-pushes it — **every git command host-side**, so no credential ever enters the sandbox. ``none`` mode stays
-byte-identical to M1. The Credential Proxy (ADR-0011 §6) and replay-safety ``{"cache": False}`` bash
-checkpoint (§5) are retained.
-
-**Part 1 — the always-run offline slice (no docker, no modal, no network, no ``GEMINI_API_KEY``).**
-Like the M1 capstone it swaps only the boundaries; everything structural is real:
-
-* **REAL** — the ADR-0002 run seam via the ``none``-mode :class:`~decode.tools.exec.LocalExecutor` (a real
-  ``echo`` round-trips through the real :func:`~decode.agent.factory.build_agent` registry + the real
-  :class:`~decode.permissions.gate.PermissionGate` to an :class:`~decode.tools.exec.ExecResult`); the
-  **real** :class:`~decode.sandbox.executor.SandboxExecutor` driving a **fake backend** (so the fresh-exec
-  ``create → exec bash -lc`` contract and the file-tool ⇄ ``bash`` shared-backend seam are exercised with
-  no daemon); the real ``SANDBOX_MODE`` → executor-class selection; the real per-mode ``bash`` description;
-  the real file-tool containment path-math + ``glob`` / ``grep`` parity (real ``find`` / ``grep`` on a host
-  dir); the real host-side git hand-back against **local** repos; the real
-  :func:`~decode.sandbox.proxy.build_credential_map`; and the real replay-safety wiring in
-  :func:`decode.runtime.flow._build_runtime_agent`.
-* **FAKED** — the model is a scripted :class:`~pydantic_ai.models.function.FunctionModel`
-  (``GEMINI_API_KEY`` is faked only so ``build_agent`` constructs); the ``SandboxBackend`` is a recording /
-  local-exec double injected at the :func:`decode.sandbox.select_executor` (``bash``) and
-  :func:`decode.tools.files._active_backend` (file tools) seams (so no container / remote sandbox is
-  touched); ``kitaru.get_secret`` is patched for the credential map; the LSP server call is stubbed for the
-  Modal-off posture; and the bypass ``KitaruAgent`` build is spied so the replay-safety kwarg is asserted
-  without booting a flow.
-
-**Part 2 — the ``skipif``-guarded real-infra smokes.** Each SKIPS (never fails) when its infra is absent,
-using the **same** predicates as the executors' own integration tests (a ``docker info`` probe; the
-``modal`` credential-presence check): a real ``SandboxExecutor(DockerBackend())`` clone-Workspace
-round-trip + host-side hand-back push; a real ``SandboxExecutor(ModalBackend())`` isolated-Workspace
-round-trip (bootstrap + direct file ops + export) and a real Modal max-lifetime revival; and the real
-docker Credential-Proxy boundary. Each reaps its container / sandbox / network in a ``finally`` so the
-suite is hermetic under ``filterwarnings=["error"]`` and leaves no infra litter. The exhaustive
-per-backend matrices live in ``test_docker_executor.py`` / ``test_modal_executor.py`` /
-``test_workspace_clone.py`` / ``test_credential_proxy.py`` / ``test_handback.py``; this capstone is the
-integrated proof they hang together.
-
-**A bug this capstone surfaced (now fixed).** The capstone was the first export-over-a-real-clone, and
-it caught a limitation the exhaustive matrices missed: the modal export sweep
-(:func:`decode.sandbox.workspace.extract_tar`) could not overwrite a ``git clone``'s **read-only ``.git``
-loose objects** (mode 0444) — ``extractall`` aborted with ``PermissionError``, so a modal session's
-export-over-a-clone brought nothing down and the modal git hand-back to a ``--repo`` origin captured no
-work (docker is unaffected — its bind mount is live, no extract). ``extract_tar`` now makes the
-destination tree owner-writable before extracting, so the sweep lands over a clone.
-:func:`test_modal_export_over_a_clone_round_trips_git` pins the fix hermetically (agent work + a valid
-``.git`` survive the sweep).
+Proves that in a sandbox mode the agent's whole tool scope — file/search tools AND ``bash``
+— is one isolated ``/workspace`` (a ``--repo`` clone or empty scratch, backed by the host
+``.decode/sandbox``), driven by ONE fresh-exec SandboxExecutor over the SandboxBackend seam;
+harness artifacts stay at Harness Home; results ship back via the host-side git hand-back;
+``none`` mode stays byte-identical to M1. Offline vs real split: Part 1 always runs offline
+(REAL executor / gate / registry / file-tool seams / hand-back / credential map; FAKED: a
+scripted FunctionModel, recording / local-exec SandboxBackend doubles, patched
+``kitaru.get_secret``, a stubbed LSP call, a spied KitaruAgent build — no daemon, no
+network, no GEMINI_API_KEY); Part 2 is skipif-guarded real-infra smokes (docker probe /
+modal creds — SKIP, never fail) that reap all infra in ``finally``. The exhaustive matrices
+live in the per-backend files; this capstone is the integrated proof they hang together. A
+bug it surfaced: the modal export sweep could not overwrite a clone's read-only ``.git``
+objects — ``extract_tar`` now makes the tree writable first
+(:func:`test_modal_export_over_a_clone_round_trips_git` pins the fix).
 """
 
 from __future__ import annotations
@@ -121,10 +66,8 @@ from decode.tools.exec import ExecResult, LocalExecutor
 _BASH = bash_mod.BASH_TOOL_NAME
 
 
-# ================================================================================================
 # Hermeticity fixtures — a faked key so ``build_agent`` constructs offline. (The rootdir conftest
 # already pins ``SANDBOX_MODE=none`` and resets the ``bash`` executor memo around every test.)
-# ================================================================================================
 
 
 @pytest.fixture(autouse=True)
@@ -147,11 +90,9 @@ def no_lsp_enrichment(mocker) -> None:
     mocker.patch("decode.tools.files._enrich", new=lambda base, cwd, path: base)
 
 
-# ================================================================================================
 # Shared SandboxBackend doubles (mirroring tests/unit/decode/tools/test_files_sandbox.py) + scripted
 # drivers — a REAL decode agent (full ``build_agent`` registry) on a scripted FunctionModel, driven
 # through the REAL interactive gated loop so the run seam + permission gate are exercised.
-# ================================================================================================
 
 
 class _RecordingBackend:
@@ -372,14 +313,10 @@ async def _drive_one_gated_bash_turn(
     return returns, emitted
 
 
-# ================================================================================================
 # PART 1 — the always-run offline slice.
-# ================================================================================================
 
-# ------------------------------------------------------------------------------------------------
 # 1. The one-seam fresh-exec contract — a command round-trips SandboxExecutor (over a fake backend)
 #    through the real ``bash`` registry + gate to a rendered ExecResult; ``none`` is byte-identical.
-# ------------------------------------------------------------------------------------------------
 
 
 async def test_none_mode_command_round_trips_the_run_seam_and_renders(tmp_path: Path) -> None:
@@ -445,10 +382,8 @@ def test_none_mode_rendering_is_byte_identical_with_an_empty_note() -> None:
     assert bash_mod._render(result, timeout_s=120.0) == "Exit code: 0.\n\nstdout:\nhi"
 
 
-# ------------------------------------------------------------------------------------------------
 # 2. File tools through the seam — read/write/edit route byte transport through the backend on logical
 #    paths; glob/grep execute in the sandbox; ``none`` is direct pathlib; containment is layered.
-# ------------------------------------------------------------------------------------------------
 
 
 async def test_file_tools_and_bash_share_one_session_backend(
@@ -589,9 +524,7 @@ def test_none_mode_file_tools_use_direct_pathlib_byte_identical(tmp_path: Path) 
     assert out == "Wrote 'host.txt' (7 characters)."
 
 
-# ------------------------------------------------------------------------------------------------
 # 3. Selection swap · harness-home split · unified description · workspace prep · LSP · web_fetch.
-# ------------------------------------------------------------------------------------------------
 
 
 def test_sandbox_mode_selects_the_matching_executor_class(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -785,9 +718,7 @@ async def test_web_fetch_stays_gated_in_every_mode(
         await web_fetch(_ctx(tmp_path, approved=False), "https://example.com")
 
 
-# ------------------------------------------------------------------------------------------------
 # 4. Git hand-back (offline, hermetic) — a local repo + a local ``--repo`` origin, NO network.
-# ------------------------------------------------------------------------------------------------
 
 
 def test_dirty_workspace_lands_on_a_local_branch_even_when_push_fails(tmp_path: Path) -> None:
@@ -899,10 +830,8 @@ def test_handback_git_runs_host_side_never_through_the_sandbox_seam(mocker, tmp_
         assert not hasattr(handback_module, seam)
 
 
-# ------------------------------------------------------------------------------------------------
 # 5. Credential map (retained) · replay-safety config · REPL-free (none imports no sandbox module;
 #    importing ``decode.cli`` imports no kitaru).
-# ------------------------------------------------------------------------------------------------
 
 _CRED_SECRET = "ghp_capstone_secret_token_value"
 
@@ -1041,9 +970,7 @@ def test_importing_the_cli_imports_no_kitaru() -> None:
     assert result.returncode == 0, result.stderr
 
 
-# ================================================================================================
 # The offline fixtures + git helpers the git-hand-back tests (§4) and the real smokes (Part 2) share.
-# ================================================================================================
 
 
 def _seed_tree(root: Path) -> None:
@@ -1114,10 +1041,8 @@ def _branch_exists(repo: Path, branch: str) -> bool:
     )
 
 
-# ================================================================================================
 # PART 2 — the skipif-guarded real-infra smokes. Each SKIPS (never fails) when its infra is absent,
 # and reaps its container / sandbox / network in a ``finally`` so the suite leaves no infra litter.
-# ================================================================================================
 
 
 def _docker_available() -> bool:

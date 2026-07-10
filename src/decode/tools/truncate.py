@@ -1,15 +1,10 @@
 """Shared output-truncation helper for tool results (ADR-0002 §7,10).
 
-Tool output that goes to the model is capped at **2000 lines OR 50 KB, whichever comes
-first** (the caps come from ``settings.max_output_lines`` / ``settings.max_output_bytes``),
-snapping to a **line boundary** so a line is never cut in half. On overflow the *full*
-original content is spilled to a temporary file and its path rides back in the result, so the
-model can ask to read more (and the user can open it) without us shipping a wall of text into
-the context window.
-
-This helper is deliberately **tool-agnostic** — :func:`decode.tools.files.read` uses it now,
-and ``bash`` (task 008) reuses it for command output. It only knows about text, line counts,
-byte counts, and a spill file; it knows nothing about files, commands, or the agent.
+Model-bound tool output is capped at **2000 lines OR 50 KB, whichever comes first**
+(``settings.max_output_lines`` / ``settings.max_output_bytes``), snapping to a **line boundary**
+so a line is never cut in half. On overflow the *full* original content is spilled to a temp
+file whose path rides back in the result. Deliberately tool-agnostic: text, line/byte counts,
+and a spill file only.
 """
 
 from __future__ import annotations
@@ -21,8 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# The temp-file name prefix for spilled overflow content, so a human eyeballing the temp dir
-# can tell what produced these files.
+# Spill-file naming, so a human eyeballing the temp dir can tell what produced these files.
 _SPILL_PREFIX = "decode-output-"
 _SPILL_SUFFIX = ".txt"
 
@@ -31,9 +25,8 @@ _SPILL_SUFFIX = ".txt"
 class Truncated:
     """The result of truncating tool output (ADR-0002 §7).
 
-    ``text`` is the (possibly shortened) content safe to hand the model. ``truncated`` says
-    whether anything was dropped. ``full_path`` is the temp file holding the *complete*
-    original content when (and only when) truncation happened — ``None`` otherwise.
+    ``text`` is the model-safe content; ``truncated`` whether anything was dropped;
+    ``full_path`` the temp file holding the complete original iff truncation happened.
     """
 
     text: str
@@ -42,11 +35,7 @@ class Truncated:
 
 
 def _line_offsets(content: str) -> list[int]:
-    """Byte offsets at which each line *ends* (one past its trailing ``\\n``, or end-of-text).
-
-    Used to snap a byte cap back to a whole-line boundary: the returned list is the set of
-    valid "keep up to here" cut points, each at the end of a complete line.
-    """
+    """Byte offsets at which each line *ends* — the valid "keep up to here" cut points for the byte cap."""
     offsets: list[int] = []
     cursor = 0
     encoded = content.encode("utf-8")
@@ -63,13 +52,10 @@ def _line_offsets(content: str) -> list[int]:
 def truncate(content: str, *, max_lines: int, max_bytes: int) -> Truncated:
     """Cap ``content`` at ``max_lines`` lines OR ``max_bytes`` bytes, whichever comes first.
 
-    The cut always snaps to a line boundary (a line is never split). If at least the first
-    line alone already exceeds ``max_bytes`` we still keep that one whole line — the model
-    needs *something* readable, and the full content is reachable via the spill file. When any
-    content is dropped, the *entire* original is written to a temp file and its path is
-    returned in :class:`Truncated`.
-
-    No truncation (fits both caps) → ``Truncated(content, truncated=False, full_path=None)``.
+    The cut always snaps to a line boundary; if even the first line exceeds ``max_bytes`` that
+    one whole line is kept regardless. When anything is dropped, the *entire* original is
+    written to a temp file named in :class:`Truncated`; no truncation →
+    ``Truncated(content, truncated=False, full_path=None)``.
     """
     encoded_len = len(content.encode("utf-8"))
     lines = content.splitlines(keepends=True)

@@ -1,9 +1,7 @@
 """decode-native value objects for the LSP Service (ADR-0007).
 
-The client maps every LSP wire result into one of these small, frozen objects so **raw LSP dicts
-never leak upward** into the ``lsp`` tool (task 052) or the Diagnostics Enricher (task 053). Line and
-column are **1-based** here — the client converts from LSP's 0-based wire basis at its boundary so the
-rest of decode (``read``'s ``cat -n``, ``grep``'s ``path:lineno``) stays uniformly 1-based.
+The client maps every LSP wire result into these frozen objects so raw LSP dicts never leak
+upward. Line and column are **1-based** — the client converts from the 0-based wire basis.
 """
 
 from __future__ import annotations
@@ -41,13 +39,10 @@ class Diagnostic:
 
 
 class Unavailable(enum.Enum):
-    """Sentinel signalling the Code Intelligence answer could not be produced (best-effort).
+    """Sentinel: the server could not answer at all (disabled, spawn/timeout/wire failure).
 
-    Returned (never raised) when the Language Server is disabled, could not be spawned, timed out,
-    closed its pipe, or sent a malformed frame. It is **distinct from ``None``** — ``None`` means the
-    server answered but found nothing (no definition / no hover), whereas :data:`UNAVAILABLE` means
-    "no answer at all", which the ``lsp`` tool maps to a ``ModelRetry`` telling the model to fall back
-    to ``read`` / ``grep`` (ADR-0007). A single-member enum is the typed-singleton sentinel pattern.
+    Returned, never raised. Distinct from ``None``, which means the server answered but found
+    nothing. A single-member enum is the typed-singleton sentinel pattern.
     """
 
     UNAVAILABLE = "unavailable"

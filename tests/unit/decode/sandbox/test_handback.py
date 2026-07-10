@@ -1,14 +1,10 @@
 """Host-side unit tests for the git hand-back (``decode.sandbox.handback``, ADR-0012 §8).
 
-Hermetic — **no docker daemon, no remote, no network**. Every path drives a real ``git`` against tiny
-**local** repos under ``tmp_path`` (git is a dev/CI dependency already): a source repo, a real clone of
-it at ``<home>/.decode/sandbox`` (the Workspace), and — for the push paths — the local source *is* the
-push origin, so a push lands there credential-free. Mirrors ``src/decode/sandbox/handback.py`` 1:1.
-
-The boundary test is the security crux (ADR-0012 §8, the Credential-Proxy invariant): every git command
-the hand-back runs is a **host** ``git`` subprocess against the local Workspace — never ``executor.run``
-/ ``backend.exec`` — and no credential is injected into a sandbox env. Reuses the 075 boundary-test
-style (record the subprocess calls, assert the seam is never crossed).
+Hermetic — **no docker daemon, no remote, no network**: every path drives a real ``git`` against
+tiny local repos under ``tmp_path`` (a source repo, a real clone at ``<home>/.decode/sandbox`` — the
+Workspace; for the push paths the local source *is* the origin, so pushes land credential-free). The
+boundary test is the security crux: every git command runs host-side, never through the
+executor/backend seam, and no credential enters a sandbox env.
 """
 
 from __future__ import annotations
@@ -96,7 +92,7 @@ def _branch_exists(repo: Path, branch: str) -> bool:
     )
 
 
-# --- never-lose-results: the local Session Branch exists even when the push fails (AC1) ------------
+# never-lose-results: the local Session Branch exists even when the push fails (AC1)
 
 
 def test_dirty_workspace_captured_on_local_branch_even_when_push_fails(tmp_path):
@@ -128,7 +124,6 @@ def test_dirty_workspace_captured_on_local_branch_even_when_push_fails(tmp_path)
 
 
 def test_dirty_workspace_auto_commit_message_names_the_session(tmp_path):
-    """The auto ``git add -A && git commit`` captures the dirt under a ``decode session <id>`` commit."""
     source = _make_git_repo(tmp_path / "source")
     home = tmp_path / "home"
     workspace = _clone_workspace(source, home)
@@ -141,7 +136,7 @@ def test_dirty_workspace_auto_commit_message_names_the_session(tmp_path):
     assert subject == "decode session feedface-0000"  # the full id rides in the commit message
 
 
-# --- push to a local-path origin lands the branch credential-free (AC3) ----------------------------
+# push to a local-path origin lands the branch credential-free (AC3)
 
 
 def test_push_to_local_origin_lands_the_branch(tmp_path):
@@ -164,11 +159,10 @@ def test_push_to_local_origin_lands_the_branch(tmp_path):
     assert "CHANGE.md" in _git_out(source, "ls-tree", "--name-only", "decode/deadbeef")
 
 
-# --- the model's own commits/branches are preserved, not rewritten (AC2) ---------------------------
+# the model's own commits/branches are preserved, not rewritten (AC2)
 
 
 def test_model_commits_and_branches_are_preserved(tmp_path):
-    """The Session Branch is created AT the model's HEAD — the model's branch/commits are untouched."""
     source = _make_git_repo(tmp_path / "source")
     home = tmp_path / "home"
     workspace = _clone_workspace(source, home)
@@ -186,11 +180,10 @@ def test_model_commits_and_branches_are_preserved(tmp_path):
     assert _git_out(workspace, "rev-parse", "decode/cafe0000") == model_head
 
 
-# --- an unchanged Workspace ships nothing (AC4) ---------------------------------------------------
+# an unchanged Workspace ships nothing (AC4)
 
 
 def test_unchanged_workspace_ships_nothing(tmp_path):
-    """A clean Workspace with ``HEAD == origin/HEAD`` (no work) is skipped: branch=None, nothing pushed."""
     source = _make_git_repo(tmp_path / "source")
     home = tmp_path / "home"
     _clone_workspace(source, home)  # fresh clone: clean AND HEAD == origin/HEAD
@@ -219,7 +212,7 @@ def test_committed_but_only_dirty_matters_for_change_detection(tmp_path):
     assert result.pushed is True
 
 
-# --- decode's own seeded .decode/ scaffolding is ignored, never shipped (ADR-0012 §5,8) -----------
+# decode's own seeded .decode/ scaffolding is ignored, never shipped (ADR-0012 §5,8)
 
 
 def test_seeded_decode_scaffolding_alone_is_unchanged(tmp_path):
@@ -241,7 +234,6 @@ def test_seeded_decode_scaffolding_alone_is_unchanged(tmp_path):
 
 
 def test_seeded_decode_scaffolding_is_not_shipped_with_user_work(tmp_path):
-    """The shipped branch carries the user's work but NOT decode's seeded ``.decode/`` scaffolding."""
     source = _make_git_repo(tmp_path / "source")
     home = tmp_path / "home"
     workspace = _clone_workspace(source, home)
@@ -259,11 +251,10 @@ def test_seeded_decode_scaffolding_is_not_shipped_with_user_work(tmp_path):
     assert ".decode/skills/greet/SKILL.md" not in shipped  # ... decode's scaffolding is NOT shipped
 
 
-# --- skip: no repo / not a git repo (AC4, byte-identical none/no-repo) -----------------------------
+# skip: no repo / not a git repo (AC4, byte-identical none/no-repo)
 
 
 def test_no_repo_ships_nothing(tmp_path):
-    """No ``--repo`` (repo=None) → a skipped ShipResult (branch=None): nothing to hand back."""
     home = tmp_path / "home"
     workspace_dir(home)  # a bare, repo-less Workspace scratch
 
@@ -274,7 +265,6 @@ def test_no_repo_ships_nothing(tmp_path):
 
 
 def test_non_git_workspace_ships_nothing(tmp_path):
-    """A Workspace that is not a git repo (a degraded empty-clone scratch) is skipped, not crashed."""
     home = tmp_path / "home"
     workspace = workspace_dir(home)
     (workspace / "notes.txt").write_text("scratch, no .git\n", encoding="utf-8")
@@ -285,11 +275,10 @@ def test_non_git_workspace_ships_nothing(tmp_path):
     assert result.pushed is False
 
 
-# --- re-ship fast-forwards the same deterministic ref ---------------------------------------------
+# re-ship fast-forwards the same deterministic ref
 
 
 def test_reship_fast_forwards_the_same_branch(tmp_path):
-    """A second ship of the same session fast-forwards the SAME ``decode/<id>`` ref (deterministic)."""
     source = _make_git_repo(tmp_path / "source")
     home = tmp_path / "home"
     workspace = _clone_workspace(source, home)
@@ -312,7 +301,7 @@ def test_reship_fast_forwards_the_same_branch(tmp_path):
     assert "step1.txt" in tree and "step2.txt" in tree
 
 
-# --- the security crux: all git host-side, never through the executor/backend seam (AC8) -----------
+# the security crux: all git host-side, never through the executor/backend seam (AC8)
 
 
 def test_git_runs_host_side_never_through_the_sandbox_seam(mocker, tmp_path):

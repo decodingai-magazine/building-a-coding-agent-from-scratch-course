@@ -1,16 +1,9 @@
-"""Unit tests for the gated ``bash`` tool (``decode.tools.bash``).
+"""Unit tests for the gated ``bash`` tool (``decode.tools.bash``) — ADR-0002 §3,7,10.
 
-ADR-0002 §3,7,10: ``bash`` runs a shell command through the executor seam under
-``ctx.deps.cwd``, gates on approval (raises :class:`pydantic_ai.ApprovalRequired` until
-approved — the human-in-the-loop *is* the safety gate; no dangerous-command classifier in v1),
-enforces ``settings.bash_timeout_s``, and truncates each stream through
-:mod:`decode.tools.truncate` (2000 lines / 50 KB, overflow → temp-file path).
-
-The tool functions are driven directly with a hand-built :class:`RunContext` (mirroring
-``test_files.py`` / ``test_noop.py``) over ``tmp_path``, plus one run **through a real agent**
-with ``TestModel(call_tools=["bash"])`` forcing the gated call and an approving resolver. All
-commands are real-but-tiny (``echo`` / ``printf`` / ``false`` / a short ``python`` sleep with a
-0.2s timeout / a >2000-line emitter) so the suite stays hermetic and fast — no network.
+Covers gating, stdout/stderr/exit-code capture, cwd, timeout (kill + partial output + child
+reaping + the clamped ceiling), truncation with temp-file spill, ``ExecResult.note`` rendering,
+and one run through a real agent (``TestModel(call_tools=["bash"])`` + an approving resolver).
+All commands are real-but-tiny so the suite stays hermetic and fast — no network.
 """
 
 import asyncio
@@ -57,7 +50,7 @@ def _ctx(
     return RunContext(deps=deps, model=None, usage=None, tool_call_approved=approved)  # type: ignore[arg-type]
 
 
-# --- gating: bash asks on every call (no classifier in v1) ----------------------------------
+# gating
 
 
 async def test_bash_requires_approval_when_not_approved(tmp_path: Path):
@@ -69,7 +62,7 @@ async def test_bash_requires_approval_when_not_approved(tmp_path: Path):
     assert not sentinel.exists()
 
 
-# --- output capture: stdout, stderr, exit code ----------------------------------------------
+# output capture
 
 
 async def test_bash_reports_stdout_and_exit_code(tmp_path: Path):
@@ -109,7 +102,7 @@ async def test_bash_empty_command_returns_model_retry(tmp_path: Path):
         await bash_module.bash(_ctx(tmp_path), command="   ")
 
 
-# --- timeout: kills the process, reports timed_out ------------------------------------------
+# timeout
 
 
 async def test_bash_times_out_and_tells_the_model(tmp_path: Path):
@@ -207,7 +200,7 @@ async def test_bash_rejects_non_positive_timeout(tmp_path: Path):
         await bash_module.bash(_ctx(tmp_path), command="echo hi", timeout=0)
 
 
-# --- truncation + temp-file overflow --------------------------------------------------------
+# truncation + temp-file overflow
 
 
 async def test_bash_truncates_long_output_and_spills_to_a_temp_file(tmp_path: Path, mocker):
@@ -231,7 +224,7 @@ async def test_bash_truncates_long_output_and_spills_to_a_temp_file(tmp_path: Pa
     assert "2499" in full  # the full stream is reachable, not just the truncated head
 
 
-# --- ExecResult.note rendering (ADR-0011 §2): sandbox executors append an out-of-band notice ------
+# ExecResult.note rendering
 
 
 def test_render_is_byte_identical_when_note_is_empty():
@@ -265,7 +258,7 @@ def test_render_includes_the_note_even_when_streams_are_empty():
     assert rendered.endswith("Note: reset.")
 
 
-# --- through a real agent: forced bash call, approved -----------------------------------------
+# through a real agent: forced bash call, approved
 
 
 def _agent(mocker):

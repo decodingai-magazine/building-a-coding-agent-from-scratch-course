@@ -1,24 +1,10 @@
 """The permission gate: the allow/ask/deny **policy** object (ADR-0003 §1,3,4).
 
-:class:`PermissionGate` answers one question — given a
-:class:`~decode.entities.permissions.PermissionRequest`, should the tool run? In Milestone 2 the
-gate is a **real decision**: :meth:`PermissionGate.check` evaluates, in precedence order,
-**deny rule → allow rule → mode decision → ask** and returns ALLOW / ASK / DENY (ADR-0003 §4). The
-mode is mutable via :meth:`set_mode`; the user rule set (loaded from ``.decode/settings.json``) is
-held on the gate and reloadable via :meth:`set_user_rules` (the always-allow flow persists a rule
-then reloads so the next identical call auto-allows).
-
-Two rule **sources** drive the gate: the **user** ``.decode/settings.json`` rules (loaded at
-startup, reloadable via :meth:`set_user_rules`) and the **active agent**'s catalog rules (loaded
-when an agent is selected, replaceable via :meth:`set_agent_rules`). The gate evaluates them as a
-**union** — a deny from *either* source beats an allow from *either* — by walking every source's
-deny list before any allow list. This is what makes the code-reviewer's catalog ``allow:
-["bash(git *)"]`` auto-allow ``git diff`` while a user ``deny`` can still tighten an agent allow.
-
-The gate is **policy only** — it does *not* prompt the user or own the terminal UI. On an ``ASK``
-the loop turns the verdict into the human's terminal allow/deny via the resolver on
-:class:`~decode.agent.deps.AgentDeps`; an ``ALLOW`` / ``DENY`` the gate decides directly runs (or
-refuses) the tool with no prompt.
+:meth:`PermissionGate.check` evaluates, in precedence order, deny rule → allow rule → mode
+decision → ask. Two rule sources — the user ``.decode/settings.json`` set and the active agent's
+catalog set — are evaluated as a union: every source's deny list is walked before any allow list,
+so a deny from either source beats an allow from either. The gate is policy only: it never
+prompts; an ``ASK`` is resolved by the TUI resolver on ``AgentDeps``.
 """
 
 from __future__ import annotations
@@ -39,11 +25,8 @@ _PLAN_DENY_REASON = "Plan mode is read-only — present your plan and call exit_
 class PermissionGate:
     """Decide allow/ask/deny for a tool call by rule + mode x kind (ADR-0003 §1,3,4).
 
-    Holds the active :class:`~decode.permissions.types.PermissionMode` (mutable via
-    :meth:`set_mode`; gate default ``DEFAULT``), a user :class:`~decode.permissions.rules.RuleSet`
-    (mutable via :meth:`set_user_rules`; empty by default), and the active-agent rule set (mutable
-    via :meth:`set_agent_rules`; empty until an agent is selected). One instance is shared for a
-    whole session.
+    Holds the active mode, the user rule set, and the active-agent rule set — each mutable via
+    its setter. One instance is shared for a whole session.
     """
 
     def __init__(
@@ -74,27 +57,14 @@ class PermissionGate:
         self._user_rules = user_rules
 
     def set_agent_rules(self, agent_rules: RuleSet) -> None:
-        """Replace the active-agent rule set (selecting an agent loads its catalog rules; §4,7).
-
-        Called by the agent-selection helper when an agent is selected: it loads that agent's
-        ``allow`` / ``deny`` catalog rules so e.g. the code-reviewer's ``bash(git *)`` takes effect
-        for the run, merged (union) with the user rules. Replacing in place means the prior agent's
-        rules never linger after a switch.
-        """
+        """Replace the active-agent rule set on agent selection — prior rules never linger (§4,7)."""
         logger.debug(
             "gate agent rules: %d allow, %d deny", len(agent_rules.allow), len(agent_rules.deny)
         )
         self._agent_rules = agent_rules
 
     def check(self, request: PermissionRequest) -> PermissionDecision:
-        """Return the gate's verdict for ``request`` (ADR-0003 §4): deny → allow → mode → ask.
-
-        1. A **deny** rule (any source) → DENY, with a reason citing the rule.
-        2. An **allow** rule (any source) → ALLOW.
-        3. Otherwise the **mode x kind** decision (the task-017 floor): BYPASS allows; read-only
-           allows under every mode; PLAN denies mutations; EDIT allows file edits; DEFAULT/EDIT
-           ASK for other mutations.
-        """
+        """Return the gate's verdict for ``request`` (ADR-0003 §4): deny → allow → mode → ask."""
         decision = self._decide_with_rules(request)
         logger.debug(
             "gate.check tool=%s kind=%s subject=%r mode=%s -> %s",
@@ -107,12 +77,7 @@ class PermissionGate:
         return decision
 
     def _decide_with_rules(self, request: PermissionRequest) -> PermissionDecision:
-        """Walk deny → allow across every rule source, then fall through to the mode (ADR-0003 §4).
-
-        Every source's **deny** list is checked before any **allow** list, so a deny from one
-        source beats an allow from another (the union semantics ADR-0003 §4 relies on): the user
-        ``.decode/settings.json`` rules and the active agent's catalog rules.
-        """
+        """Walk every source's deny list, then every allow list, then fall through to the mode."""
         sources = self._rule_sources()
         for rule_set in sources:
             denied = rule_set.matching_deny(request)
@@ -128,7 +93,7 @@ class PermissionGate:
         return (self._user_rules, self._agent_rules)
 
     def _decide_by_mode(self, kind: ToolKind) -> PermissionDecision:
-        """The pure mode x kind decision (the task-017 floor, below the rule layer)."""
+        """The pure mode x kind decision (below the rule layer)."""
         mode = self._mode
         if mode is PermissionMode.BYPASS:
             return PermissionDecision.allow(mode=mode)

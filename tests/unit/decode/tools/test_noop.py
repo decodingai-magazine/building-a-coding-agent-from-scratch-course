@@ -1,15 +1,8 @@
-"""Unit tests for the trivial gated ``noop`` tool (``support.noop_helper``).
+"""Unit tests for the trivial gated ``noop`` tool (``support.noop_helper``) — ADR-0002 §3,7.
 
-ADR-0002 §3,7: ``noop`` is the *one* gated tool task 005 ships to exercise the whole
-permission-gate-via-deferred-tools path end to end (real file/bash tools are 006-008). It
-echoes its input but **requires approval**: it raises
-:class:`pydantic_ai.ApprovalRequired` whenever the run context has not been approved, which
-is what makes a leg resolve to ``DeferredToolRequests`` so the gate can ask the human. It is a
-TEST-ONLY helper and lives under ``tests/support`` — the shipped ``decode`` package never
-registers it.
-
-These tests pin the tool's two states (unapproved → raises; approved → echoes) and its
-read-only registration, without going through the model.
+``noop`` is the TEST-ONLY gated echo tool (never registered by the shipped package). These
+tests pin its two states (unapproved → raises ``ApprovalRequired``; approved → echoes) and its
+not-read-only registration, without going through the model.
 """
 
 from pathlib import Path

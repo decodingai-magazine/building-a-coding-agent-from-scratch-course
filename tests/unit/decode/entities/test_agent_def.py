@@ -105,7 +105,7 @@ def test_agent_def_parses_allow_rules_into_rule_objects():
     assert agent.deny_rules == ()
 
 
-# --- validation -----------------------------------------------------------------------------
+# validation
 
 
 def test_agent_def_rejects_an_unknown_tool_name():

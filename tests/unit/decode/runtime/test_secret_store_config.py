@@ -1,16 +1,10 @@
 """The Kitaru secret-store config source through the real runtime seam (ADR-0008 §5, task 064).
 
-These run on the **real** local Kitaru stack (offline, no server) so the secret round-trip is the
-genuine one: a secret is created with :func:`kitaru.create_secret`, the headless flow hydrates the
-``settings`` singleton from it (the ``KitaruSecretSettingsSource`` activated for the flow's span),
-and a seam captures the config ``build_agent`` would see *inside* the flow. The model boundary is a
-scripted ``FunctionModel`` (no network).
-
-The invariants under test (all task-064 ACs): headless hydration is seen by ``build_agent``; the
-real process env overrides the secret; ``os.environ`` is never written; the singleton is restored on
-both success and error (no leak into a later in-process ``Settings``); the flow payload carries only
-``{"task"}`` and never the secret value (nor does the log); and the secret-store source composes
-coherently with the task-061 Credentials Proxy when both are on.
+These run on the **real** local Kitaru stack (offline, no server): a secret is created with
+:func:`kitaru.create_secret`, the headless flow hydrates the ``settings`` singleton from it, and a
+seam captures the config ``build_agent`` would see *inside* the flow. The model boundary is a
+scripted ``FunctionModel`` (no network). Covers hydration precedence, singleton restore on success
+and error, and the never-leak-a-secret payload/log invariants.
 """
 
 from __future__ import annotations
@@ -108,7 +102,6 @@ def _run_and_read(task: str) -> str:
 
 
 def test_headless_flow_hydrates_settings_seen_by_build_agent(monkeypatch, runtime_secret_name):
-    """``build_agent`` (the seam) sees provider/model/key hydrated from the secret, not the env."""
     create_secret(
         runtime_secret_name,
         {
@@ -138,7 +131,6 @@ def test_headless_flow_hydrates_settings_seen_by_build_agent(monkeypatch, runtim
 
 
 def test_real_env_overrides_kitaru_secret_in_flow(monkeypatch, runtime_secret_name):
-    """A var present in the real process env is NOT overridden by the Kitaru secret (precedence)."""
     create_secret(runtime_secret_name, {"GEMINI_MODEL": "gemini-from-secret"}, private=True)
     monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-from-env")  # real env wins
@@ -159,7 +151,6 @@ def test_real_env_overrides_kitaru_secret_in_flow(monkeypatch, runtime_secret_na
 
 
 def test_hydration_never_writes_os_environ(monkeypatch, runtime_secret_name):
-    """The hydrated values live only in ``Settings`` — ``os.environ`` is byte-unchanged."""
     create_secret(
         runtime_secret_name,
         {"GEMINI_MODEL": "gemini-from-secret", "GEMINI_API_KEY": "sk-secret-not-in-env"},
@@ -176,7 +167,6 @@ def test_hydration_never_writes_os_environ(monkeypatch, runtime_secret_name):
 
 
 def test_context_restores_settings_on_success(monkeypatch, runtime_secret_name):
-    """After the hydration context returns, the singleton is back to its pre-flow values."""
     create_secret(runtime_secret_name, {"GEMINI_MODEL": "gemini-from-secret"}, private=True)
     _enable_secret_store(monkeypatch)
     before_model = settings.gemini_model  # the default — GEMINI_MODEL was cleared from the env
@@ -189,7 +179,6 @@ def test_context_restores_settings_on_success(monkeypatch, runtime_secret_name):
 
 
 def test_context_restores_settings_on_error(monkeypatch, runtime_secret_name):
-    """On an error inside the context the singleton is still restored and the flag cleared (no leak)."""
     create_secret(runtime_secret_name, {"GEMINI_MODEL": "gemini-from-secret"}, private=True)
     _enable_secret_store(monkeypatch)
     before_model = settings.gemini_model
@@ -206,7 +195,6 @@ def test_context_restores_settings_on_error(monkeypatch, runtime_secret_name):
 
 
 def test_context_is_a_noop_when_flag_off(monkeypatch):
-    """With the setting off the context touches no settings and never activates the source."""
     monkeypatch.delenv("RUNTIME_SECRET_STORE_CONFIG", raising=False)
     reload_settings()
     assert settings.runtime_secret_store_config is False
@@ -220,7 +208,6 @@ def test_context_is_a_noop_when_flag_off(monkeypatch):
 
 
 def test_hydration_logs_field_names_not_secret_values(monkeypatch, caplog, runtime_secret_name):
-    """The hydration log line carries field NAMES only — never a secret value (payload/log invariant)."""
     sentinel = "SENTINEL-SECRET-VALUE-9f3a"
     create_secret(
         runtime_secret_name,
@@ -240,7 +227,6 @@ def test_hydration_logs_field_names_not_secret_values(monkeypatch, caplog, runti
 
 
 def test_flow_payload_carries_only_the_task_not_the_secret_value(monkeypatch, runtime_secret_name):
-    """The serialized flow arguments carry only the task — never a hydrated secret value."""
     sentinel = "SENTINEL-SECRET-VALUE-payload-7c21"
     create_secret(
         runtime_secret_name,
@@ -266,7 +252,6 @@ def test_flow_payload_carries_only_the_task_not_the_secret_value(monkeypatch, ru
 def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
     monkeypatch, runtime_secret_name
 ):
-    """Secret-store config + the 061 Credentials Proxy compose: model from secret, key via proxy, no leak."""
     raw_key = "RAW-KITARU-GEMINI-KEY-both-flags-1a2b"
     create_secret(
         runtime_secret_name,

@@ -1,15 +1,10 @@
 """The Credentials Proxy seam in :func:`decode.agent.factory.build_agent` (ADR-0008 §5, task 061).
 
-In **flow mode** with ``settings.runtime_credentials_proxy_enabled`` on, model construction resolves
-the provider API key through Kitaru secrets (``get_secret(...).get("<PROVIDER>_API_KEY")``) instead of
-reading the ``SecretStr`` from settings — so a (later, deployed) flow payload carries the secret
-*name*, not the raw key (the AGENTS.md "secrets never reach the model or the sandbox payload"
-invariant). Interactive runs and the default off-switch are byte-unchanged.
-
-These tests assert the *construction contract* offline — building the agent issues no model request,
-and ``kitaru.get_secret`` is patched so no real secret store is touched. The key the provider was
-constructed with is read back from the provider's client (verified attribute paths against the
-installed openai 2.43 / pydantic-ai 1.107 / google-genai SDKs).
+In flow mode with ``runtime_credentials_proxy_enabled`` on, model construction resolves the
+provider API key through Kitaru secrets instead of the settings ``SecretStr``; interactive runs
+and the default off-switch stay byte-unchanged. Asserted offline: building the agent issues no
+model request, ``kitaru.get_secret`` is patched, and the constructed key is read back off the
+provider's client (attribute paths verified against openai 2.43 / pydantic-ai 1.107 / google-genai).
 """
 
 from __future__ import annotations
@@ -86,11 +81,10 @@ def _patch_openrouter_settings(mocker, *, proxy_enabled: bool) -> None:
     )
 
 
-# --- the gate: proxy off (default) OR interactive → byte-unchanged settings read ---------------
+# the gate: proxy off (default) OR interactive → byte-unchanged settings read
 
 
 def test_flow_mode_with_proxy_disabled_reads_the_settings_key(mocker):
-    """Proxy OFF (the default) in flow mode → the gemini key still comes from settings, unchanged."""
     _patch_gemini_settings(mocker, proxy_enabled=False)
     get_secret = mocker.patch("kitaru.get_secret")
 
@@ -114,11 +108,10 @@ def test_interactive_mode_with_proxy_enabled_still_reads_the_settings_key(mocker
     get_secret.assert_not_called()
 
 
-# --- proxy on + flow mode → resolve from Kitaru, not from settings ----------------------------
+# proxy on + flow mode → resolve from Kitaru, not from settings
 
 
 def test_flow_mode_with_proxy_enabled_resolves_gemini_key_from_kitaru(mocker):
-    """Proxy ON in flow mode → the gemini key is the Kitaru secret's, and settings is NOT read."""
     _patch_gemini_settings(mocker, proxy_enabled=True)
     get_secret = mocker.patch(
         "kitaru.get_secret",
@@ -133,7 +126,6 @@ def test_flow_mode_with_proxy_enabled_resolves_gemini_key_from_kitaru(mocker):
 
 
 def test_flow_mode_with_proxy_enabled_resolves_openrouter_key_from_kitaru(mocker):
-    """Proxy ON in flow mode → the openrouter key is the Kitaru secret's (the second provider)."""
     _patch_openrouter_settings(mocker, proxy_enabled=True)
     get_secret = mocker.patch(
         "kitaru.get_secret",
@@ -148,7 +140,6 @@ def test_flow_mode_with_proxy_enabled_resolves_openrouter_key_from_kitaru(mocker
 
 
 def test_proxy_reads_the_provider_specific_secret_key_name(mocker):
-    """The proxy reads the env-var-style key for the active provider (``GEMINI_API_KEY``)."""
     _patch_gemini_settings(mocker, proxy_enabled=True)
     fake = _FakeSecret({"GEMINI_API_KEY": _KITARU_GEMINI_KEY, "OPENROUTER_API_KEY": "other"})
     mocker.patch("kitaru.get_secret", return_value=fake)
@@ -158,11 +149,10 @@ def test_proxy_reads_the_provider_specific_secret_key_name(mocker):
     assert _gemini_api_key(agent) == _KITARU_GEMINI_KEY
 
 
-# --- the invariant: the raw key is never logged -----------------------------------------------
+# the invariant: the raw key is never logged
 
 
 def test_proxy_does_not_log_the_raw_key(mocker, caplog):
-    """The resolved-handle path logs the secret + key *names*, never the raw key value."""
     _patch_gemini_settings(mocker, proxy_enabled=True)
     mocker.patch(
         "kitaru.get_secret",
@@ -177,11 +167,10 @@ def test_proxy_does_not_log_the_raw_key(mocker, caplog):
     assert "decode-llm-creds" in logged  # the secret *name* is fine to log
 
 
-# --- enabled-but-secret-missing → surface the error, never silently fall back -----------------
+# enabled-but-secret-missing → surface the error, never silently fall back
 
 
 def test_missing_secret_surfaces_kitaru_error_without_falling_back(mocker):
-    """A missing secret propagates Kitaru's ``KitaruRuntimeError`` — no silent settings fallback."""
     _patch_gemini_settings(mocker, proxy_enabled=True)
     mocker.patch(
         "kitaru.get_secret",
@@ -193,7 +182,6 @@ def test_missing_secret_surfaces_kitaru_error_without_falling_back(mocker):
 
 
 def test_secret_missing_the_provider_key_raises_a_clear_error(mocker):
-    """A secret that exists but lacks ``GEMINI_API_KEY`` raises a guidance error, not a silent None."""
     _patch_gemini_settings(mocker, proxy_enabled=True)
     mocker.patch("kitaru.get_secret", return_value=_FakeSecret({"OTHER_KEY": "x"}))
 
@@ -202,7 +190,6 @@ def test_secret_missing_the_provider_key_raises_a_clear_error(mocker):
 
 
 def test_resolve_key_via_proxy_returns_the_secret_value(mocker):
-    """The proxy resolver returns the raw key from the named secret (the unit-level contract)."""
     mocker.patch(
         "decode.agent.factory.settings.runtime_secret_name", "decode-llm-creds", create=False
     )
@@ -215,7 +202,6 @@ def test_resolve_key_via_proxy_returns_the_secret_value(mocker):
 
 
 def test_build_model_flow_mode_defaults_to_false(mocker):
-    """``_build_model()`` with no args is interactive (proxy never consulted) — the default seam."""
     _patch_gemini_settings(mocker, proxy_enabled=True)
     get_secret = mocker.patch("kitaru.get_secret")
 

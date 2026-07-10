@@ -1,20 +1,9 @@
 """The trivial gated ``noop`` tool — a **TEST-ONLY** helper (ADR-0002 §3,7).
 
-``noop`` was the single tool task 005 shipped to make the permission-gate-via-deferred-tools
-path real end to end *before any real tool existed* (the real file/bash/web tools are 006-011,
-which fully superseded it). It does nothing but echo its ``text`` argument — its job is to be
-*gated*: it raises :class:`pydantic_ai.ApprovalRequired` whenever the run has not been approved
-(``not ctx.tool_call_approved``). That is what makes a leg resolve to
-:class:`~pydantic_ai.DeferredToolRequests`, which the loop then routes through the gate and
-the human resolver; on the resume leg the same tool runs with ``tool_call_approved=True`` and
-returns its echo (or the framework returns the denial message to the model instead).
-
-``noop`` is **not** part of the shipped ``decode`` package — the flat
-:mod:`decode.tools.registry` never registers it, so the live Gemini agent never exposes it
-(AGENTS.md: remove scaffolding once the real thing lands). It lives here, under ``tests/support``,
-purely so the permission / loop / e2e tests can build a *minimal one-gated-tool* agent in
-isolation, without the read-only file tools — those tests register it explicitly on their own
-test agent via :func:`register_noop`.
+Echoes its ``text`` argument but raises :class:`pydantic_ai.ApprovalRequired` until the call is
+approved, so a leg resolves to ``DeferredToolRequests`` and routes through the gate — a stand-in
+for a mutating tool. Not part of the shipped package (the registry never registers it); the
+permission / loop / e2e tests build a minimal one-gated-tool agent via :func:`register_noop`.
 """
 
 from __future__ import annotations

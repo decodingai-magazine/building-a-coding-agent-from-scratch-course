@@ -1,40 +1,12 @@
-"""The ``lsp`` tool — model-callable Code Intelligence over the LSP Service (ADR-0007, the active channel).
+"""The ``lsp`` tool — model-callable Code Intelligence over the LSP Service (ADR-0007).
 
-``lsp`` is the **active** half of decode's LSP integration: a single model-callable tool that gives
-the agent the **semantic-graph** view text tools cannot (``read`` numbers lines, ``grep`` regex-
-matches, but neither can say "where is this symbol defined?"). It exposes four ops over the task-051
-LSP Service via one ``op`` argument — ``definition`` / ``references`` / ``hover`` / ``diagnostics`` —
-and returns model-readable strings:
-
-* ``definition`` → the target ``path:line:column`` (1-based), or ``"no definition found"``;
-* ``references`` → a counted newline list of ``path:line:column`` (1-based), or ``"no references found"``;
-* ``hover`` → the hover text/markdown, or ``"no hover info"``;
-* ``diagnostics`` → a counted ``severity path:line:column message`` list of **all** severities (the
-  tool is the explicit query surface — the *enricher*, task 053, is the errors-only one), or
-  ``"no diagnostics"``.
-
-**1-based line/column.** ``definition`` / ``references`` / ``hover`` take a symbol position the model
-read out of a ``read`` (``cat -n``) or ``grep`` (``path:lineno``) result, so the surface here is
-**1-based** — the service/client converts to LSP's 0-based wire basis at its one boundary. Those three
-ops **require** both ``line`` and ``column``; ``diagnostics`` needs only ``path`` (any line/column is
-ignored).
-
-**READ_ONLY, auto-allowed.** Reading code intelligence has no disk/exec side effect, so ``lsp`` is
-:class:`~decode.permissions.types.ToolKind.READ_ONLY`. Like ``read`` / ``grep`` / ``web_fetch`` it
-raises :class:`pydantic_ai.ApprovalRequired` until ``ctx.tool_call_approved`` is set, and the gate
-**auto-allows** it under every mode (read-only allows everywhere; ADR-0003 §4) — so it never surfaces
-a permission prompt.
-
-**Never crashes the loop.** Every recoverable problem maps to a model-readable
-:class:`pydantic_ai.ModelRetry`, never an exception into the loop: an unknown ``op`` (lists the four),
-a missing ``line``/``column`` for a position op, an out-of-tree or missing ``path``, and — crucially —
-the service reporting **unavailable** (no server, timeout, broken spawn, ``lsp_enabled == False``). The
-service distinguishes ``UNAVAILABLE`` ("no answer at all") from ``None`` / an empty list ("answered,
-found nothing"): only the former becomes a ``ModelRetry`` telling the model to fall back to
-``read`` / ``grep``; the latter is the plain ``"no X found"`` string, **not** a retry.
-
-Path safety reuses the file tools' containment helper (:func:`decode.tools.files._resolve_in_cwd`), so
-``lsp`` can never reach a symbol outside the project tree.
+Four ops via one ``op`` argument — ``definition`` / ``references`` / ``hover`` / ``diagnostics``
+— returning model-readable strings. Line/column are 1-based (the service converts to LSP's
+0-based wire basis); the three position ops require both, ``diagnostics`` needs only ``path``.
+READ_ONLY, so the gate auto-allows it in every mode. Every recoverable problem (unknown op,
+missing position, bad path, service UNAVAILABLE) maps to a :class:`pydantic_ai.ModelRetry` —
+UNAVAILABLE means "no answer at all" and points the model at ``read``/``grep``, while an empty
+answer is a plain ``"no X found"`` string. Path safety reuses the file tools' containment helper.
 """
 
 from __future__ import annotations
@@ -54,30 +26,22 @@ logger = logging.getLogger(__name__)
 
 LSP_TOOL_NAME = "lsp"
 
-# The ops that pinpoint a symbol: they need a 1-based ``line`` AND ``column`` (the model reads the
-# position out of a ``read``/``grep`` result). ``diagnostics`` is the odd one out — it needs only a
-# path — so it is kept separate and ``_VALID_OPS`` is the full four-op surface the model may pass.
+# Ops that pinpoint a symbol need a 1-based line AND column; ``diagnostics`` needs only a path.
 _POSITION_OPS = ("definition", "references", "hover")
 _VALID_OPS = (*_POSITION_OPS, "diagnostics")
 
-# LSP ``DiagnosticSeverity`` → a readable label for the model (1=Error … 4=Hint). The ``diagnostics``
-# op surfaces ALL severities (it is the explicit query surface), so every code gets a name; an
-# unexpected value falls back to ``severity<n>`` rather than crashing on a missing key.
+# LSP DiagnosticSeverity → readable label; unexpected values fall back to ``severity<n>``.
 _SEVERITY_LABELS = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 
-# The single ModelRetry message for the "unavailable" case — the Language Server could not answer
-# (no server, timeout, broken spawn, or ``lsp_enabled == False``). It points the model back at the
-# text tools so the turn still makes progress (ADR-0007 §6); it is NOT used for "found nothing".
+# ModelRetry message for the "unavailable" case (no answer at all — NOT "found nothing"); points
+# the model back at the text tools so the turn still makes progress (ADR-0007 §6).
 _UNAVAILABLE_MESSAGE = (
     "code intelligence is unavailable (the language server did not respond); "
     "fall back to `read`/`grep`."
 )
 
-# The friendly note when the workspace is a **modal** sandbox (ADR-0012 §7): ``ty`` runs host-side and
-# cannot reach the remote Workspace filesystem, so code intelligence is best-effort-disabled — same
-# ModelRetry-to-`read`/`grep` fallback as the unavailable case, but named so the model is not surprised
-# (ADR-0007's best-effort posture; ty-inside-the-sandbox is the recorded upgrade path). ``none`` +
-# ``docker`` are unaffected (docker's mount is a real host path ``ty`` opens).
+# The modal-sandbox note (ADR-0012 §7): host-side ``ty`` cannot reach the remote Workspace fs, so
+# code intelligence is best-effort-disabled; ``none`` + ``docker`` are unaffected.
 _MODAL_UNAVAILABLE_MESSAGE = (
     "code intelligence is unavailable in the modal sandbox (the language server cannot reach the "
     "remote workspace); fall back to `read`/`grep`."
@@ -109,8 +73,7 @@ async def lsp(
         raise ApprovalRequired
 
     if settings.sandbox_mode == "modal":
-        # ty is host-side and cannot reach the remote modal Workspace fs (ADR-0012 §7); disable cleanly
-        # with a friendly note BEFORE path/op checks (deps.cwd is the empty host workspace here).
+        # Disable cleanly BEFORE path/op checks — deps.cwd is the empty host workspace here.
         logger.debug("lsp disabled in the modal sandbox (op=%r, path=%r)", op, path)
         raise ModelRetry(_MODAL_UNAVAILABLE_MESSAGE)
 
@@ -133,13 +96,8 @@ async def lsp(
 
 
 def _resolve_target(ctx: RunContext[AgentDeps], path: str) -> None:
-    """Reject an out-of-tree, missing, or non-file ``path`` with a ModelRetry before any server call.
-
-    Reuses the file tools' containment helper (:func:`decode.tools.files._resolve_in_cwd`) so a path
-    escaping ``ctx.deps.cwd`` is refused exactly as ``read`` refuses it. A missing path or a directory
-    is a model mistake (not "code intelligence unavailable"), so it is reported as its own clear
-    :class:`pydantic_ai.ModelRetry` rather than being conflated with the server-unavailable case.
-    """
+    """Reject an out-of-tree, missing, or non-file ``path`` with a ModelRetry before any server call
+    (reuses the file tools' containment helper; a model mistake, distinct from server-unavailable)."""
     target = files._resolve_in_cwd(ctx.deps.cwd, path)
     if not target.exists():
         raise ModelRetry(f"No such file: {path!r}.")
@@ -201,5 +159,4 @@ def _format_diagnostic(path: str, diagnostic: Diagnostic) -> str:
 
 
 def _plural(word: str, count: int) -> str:
-    """``word`` pluralised by a naive trailing ``s`` (only the simple "reference"/"diagnostic" here)."""
     return word if count == 1 else f"{word}s"

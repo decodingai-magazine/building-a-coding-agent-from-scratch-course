@@ -1,13 +1,8 @@
-"""The canonical event union the harness emits and the TUI renders.
+"""The canonical event union the harness emits and the TUI renders (ADR-0002 §4-6).
 
-ADR-0002 §4-6: the runner streams *events* to the TUI (it never writes to the terminal
-itself). This module is the single contract for those events — one frozen dataclass per
-event kind, joined into a discriminated union (:data:`Event`) keyed on the ``kind``
-literal. The TUI's :func:`decode.tui.render.render_event` exhaustively matches on it.
-
-Kept deliberately narrow: only the events M1 actually produces. New event kinds are added
-here (and in the renderer) as later milestones need them. Each event is frozen + slotted
-so it is cheap, hashable, and safe to pass across the queue/stream boundary.
+One frozen dataclass per event kind, joined into the discriminated union :data:`Event` keyed on
+the ``kind`` literal; :func:`decode.tui.render.render_event` exhaustively matches on it. New
+event kinds are added here (and in the renderer) as milestones need them.
 """
 
 from __future__ import annotations
@@ -91,8 +86,7 @@ class ToolResult:
 class PermissionRequested:
     """The permission gate is asking the user to approve a tool call (ADR-0002 §3).
 
-    Surfaced at a deferred-tool boundary; the TUI prompts allow/deny. Wired to the real
-    gate in task 005 — here it is part of the contract so the union is complete.
+    Surfaced at a deferred-tool boundary; the TUI prompts allow/deny.
     """
 
     tool_call_id: str
@@ -105,7 +99,7 @@ class PermissionRequested:
 class AskUserRequested:
     """The agent asked the user a free-form question via the AskUser tool (ADR-0002 §7).
 
-    Surfaced at a deferred-tool boundary; the TUI collects the answer. Wired in task 011.
+    Surfaced at a deferred-tool boundary; the TUI collects the answer.
     """
 
     tool_call_id: str
@@ -117,7 +111,7 @@ class AskUserRequested:
 class TaskListUpdated:
     """The in-memory task list (TodoWrite) changed; the TUI redraws it (ADR-0002 §7).
 
-    ``tasks`` is the full current list of short task descriptions. Wired in task 009.
+    ``tasks`` is the full current list of short task descriptions.
     """
 
     tasks: tuple[str, ...] = field(default_factory=tuple)

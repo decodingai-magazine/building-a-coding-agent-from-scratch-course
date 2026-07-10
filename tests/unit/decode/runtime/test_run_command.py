@@ -75,11 +75,10 @@ def _recording_seam(monkeypatch, text):
     return captured
 
 
-# --- task 069: `decode run --model X` + surface the exec_id + paste-ready replay hint (ADR-0010 §4) --
+# task 069: `decode run --model X` + surface the exec_id + paste-ready replay hint (ADR-0010 §4)
 
 
 def test_run_help_documents_the_model_flag():
-    """``decode run --help`` documents ``--model`` and notes it overrides the provider's model id."""
     result = CliRunner().invoke(cli, ["run", "--help"])
 
     assert result.exit_code == 0
@@ -91,7 +90,6 @@ def test_run_help_documents_the_model_flag():
 def test_run_model_flag_threads_the_override_to_the_seam_and_prints_output(
     monkeypatch, _provider_ok
 ):
-    """``decode run --model X`` forwards ``model=X`` to the flow seam and prints the answer (AC1)."""
     captured = _recording_seam(monkeypatch, "the overridden answer")
 
     result = CliRunner().invoke(cli, ["run", "--model", "gemini-2.5-pro", "refactor the parser"])
@@ -102,7 +100,6 @@ def test_run_model_flag_threads_the_override_to_the_seam_and_prints_output(
 
 
 def test_run_without_model_passes_none_to_the_seam(monkeypatch, _provider_ok):
-    """``decode run`` with no ``--model`` forwards ``model=None`` (the provider's configured model) (AC2)."""
     captured = _recording_seam(monkeypatch, "the default answer")
 
     result = CliRunner().invoke(cli, ["run", "list the files"])
@@ -135,7 +132,6 @@ def test_run_exec_id_and_replay_hint_go_to_stderr_not_stdout(monkeypatch, _provi
 
 
 def test_run_replay_hint_uses_a_placeholder_when_no_model_given(monkeypatch, _provider_ok):
-    """Without ``--model`` the stderr replay hint uses a ``<model-id>`` placeholder for the operator (AC3)."""
     _recording_seam(monkeypatch, "answer")
 
     result = CliRunner().invoke(cli, ["run", "do the thing"])
@@ -146,7 +142,6 @@ def test_run_replay_hint_uses_a_placeholder_when_no_model_given(monkeypatch, _pr
 
 
 def test_run_model_does_not_bypass_the_disabled_runtime_guard(monkeypatch, _provider_ok):
-    """``--model`` never alters the guard chain: a disabled runtime still trips, no flow built (AC5)."""
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", False)
 
     def _tripwire(*_args, **_kwargs):
@@ -161,7 +156,6 @@ def test_run_model_does_not_bypass_the_disabled_runtime_guard(monkeypatch, _prov
 
 
 def test_run_model_does_not_bypass_the_provider_key_guard(monkeypatch):
-    """``--model`` present + a missing provider key → the same guard fires, no flow built (AC5)."""
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
@@ -178,7 +172,6 @@ def test_run_model_does_not_bypass_the_provider_key_guard(monkeypatch):
 
 
 def test_run_command_prints_the_agents_output(monkeypatch, _provider_ok):
-    """``decode run "<task>"`` runs the flow and prints the agent's final text, exiting zero."""
     _patch_seam(monkeypatch, "the headless answer")
 
     result = CliRunner().invoke(cli, ["run", "summarize the cli module"])
@@ -187,11 +180,10 @@ def test_run_command_prints_the_agents_output(monkeypatch, _provider_ok):
     assert "the headless answer" in result.output
 
 
-# --- task 083: auto-ship the Workspace after a headless `decode run --repo` completes (ADR-0012 §8) --
+# task 083: auto-ship the Workspace after a headless `decode run --repo` completes (ADR-0012 §8)
 
 
 def test_run_invokes_the_auto_ship_with_the_run_exec_id(monkeypatch, _provider_ok):
-    """After the bypass run prints its output, the auto-ship fires with the run's exec_id as session id."""
     _patch_seam(monkeypatch, "done")
     calls: list[tuple[object, object]] = []
     monkeypatch.setattr(
@@ -209,7 +201,6 @@ def test_run_invokes_the_auto_ship_with_the_run_exec_id(monkeypatch, _provider_o
 
 
 def test_auto_ship_headless_no_repo_is_a_silent_noop(mocker, capsys):
-    """No repo (none mode / no --repo) → the auto-ship ships nothing and prints nothing (byte-identical)."""
     ship = mocker.patch("decode.sandbox.handback.ship_workspace")
 
     cli_mod._auto_ship_headless(None, "exec-abc")
@@ -219,7 +210,6 @@ def test_auto_ship_headless_no_repo_is_a_silent_noop(mocker, capsys):
 
 
 def test_auto_ship_headless_prints_the_outcome_on_stderr(mocker, capsys):
-    """A real ship echoes its outcome (branch + result) on **stderr** so stdout stays pipe-clean."""
     from decode.sandbox.handback import ShipResult
 
     ship = mocker.patch(
@@ -236,7 +226,6 @@ def test_auto_ship_headless_prints_the_outcome_on_stderr(mocker, capsys):
 
 
 def test_auto_ship_headless_skip_prints_nothing(mocker, capsys):
-    """A skip (branch=None: unchanged/non-git Workspace) prints nothing — no noise on a no-op run."""
     from decode.sandbox.handback import ShipResult
 
     mocker.patch(
@@ -250,7 +239,6 @@ def test_auto_ship_headless_skip_prints_nothing(mocker, capsys):
 
 
 def test_auto_ship_headless_swallows_errors(mocker, capsys):
-    """The auto-ship is best-effort: a hand-back error never propagates out of a completed run."""
     mocker.patch("decode.sandbox.handback.ship_workspace", side_effect=RuntimeError("boom"))
 
     cli_mod._auto_ship_headless("/src", "exec-abc")  # must not raise
@@ -259,7 +247,6 @@ def test_auto_ship_headless_swallows_errors(mocker, capsys):
 
 
 def test_run_command_disabled_runtime_guard_does_not_build_a_flow(monkeypatch, _provider_ok):
-    """``RUNTIME_ENABLED=false`` → one friendly stderr line, non-zero exit, and no flow is built."""
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", False)
     built = {"seam": False}
 
@@ -278,7 +265,6 @@ def test_run_command_disabled_runtime_guard_does_not_build_a_flow(monkeypatch, _
 
 
 def test_run_command_provider_guard_fires_without_a_key(monkeypatch):
-    """A missing provider key trips the same guard as the REPL: friendly line, non-zero, no flow."""
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
@@ -294,7 +280,7 @@ def test_run_command_provider_guard_fires_without_a_key(monkeypatch):
     assert "GEMINI_API_KEY" in result.stderr
 
 
-# --- Credentials proxy: missing/incomplete Kitaru secret is a friendly line, not a traceback ----
+# Credentials proxy: missing/incomplete Kitaru secret is a friendly line, not a traceback
 # (task 061 QA blocker — User Story #3 "opt-in and safe by default"). The proxy-aware pre-flight
 # resolves the Kitaru secret BEFORE building the durable flow, so a missing/incomplete secret exits
 # with one friendly stderr line naming ``kitaru secrets set`` — never the ~30-frame KitaruRuntimeError
@@ -373,7 +359,6 @@ def test_run_command_proxy_no_settings_key_names_the_secret_not_the_settings_var
 def test_run_command_proxy_secret_missing_provider_key_is_friendly(
     monkeypatch, _proxy_on, runtime_secret_name
 ):
-    """Proxy ON + the secret exists but lacks ``GEMINI_API_KEY`` → a friendly line, non-zero, no flow."""
     from kitaru import create_secret
 
     create_secret(runtime_secret_name, {"SOME_OTHER_KEY": "x"}, private=True)
@@ -391,7 +376,6 @@ def test_run_command_proxy_secret_missing_provider_key_is_friendly(
 def test_run_hitl_proxy_missing_secret_is_a_friendly_line_not_a_traceback(
     monkeypatch, _proxy_on, runtime_secret_name
 ):
-    """``decode run --hitl`` shares the proxy-aware pre-flight: missing secret → friendly line, no flow."""
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr("leftover-from-the-repl"))
     _no_flow_tripwires(monkeypatch)
 
@@ -406,11 +390,6 @@ def test_run_hitl_proxy_missing_secret_is_a_friendly_line_not_a_traceback(
 def test_run_command_proxy_with_a_valid_secret_runs_the_flow(
     monkeypatch, _proxy_on, runtime_secret_name
 ):
-    """Proxy ON + a valid secret → the pre-flight passes and the flow runs, printing the output.
-
-    Confirms the proxy-aware guard does not block the happy path: with the Kitaru secret present, the
-    pre-flight resolves it, the flow is built (here the scripted seam), and the agent's text prints.
-    """
     from kitaru import create_secret
 
     create_secret(runtime_secret_name, {"GEMINI_API_KEY": "real-kitaru-key"}, private=True)
@@ -422,7 +401,7 @@ def test_run_command_proxy_with_a_valid_secret_runs_the_flow(
     assert "the proxied answer" in result.output
 
 
-# --- Secret-store config source: the `decode run` guard is RUNTIME_SECRET_STORE_CONFIG-aware --------
+# Secret-store config source: the `decode run` guard is RUNTIME_SECRET_STORE_CONFIG-aware
 # (task 064 follow-up). When the secret-store source is on, the provider config (key/model/tuning) is
 # hydrated from a Kitaru secret — but the cli's provider-config guard runs BEFORE the flow hydrates, so
 # without a pre-flight a key living only in the secret tripped the misleading ``set GEMINI_API_KEY``
@@ -499,7 +478,6 @@ def test_run_secret_store_missing_secret_is_a_friendly_line_not_a_traceback(
 def test_run_hitl_secret_store_missing_secret_is_a_friendly_line_not_a_traceback(
     monkeypatch, _secret_store_on, runtime_secret_name
 ):
-    """``decode run --hitl`` shares the secret-store pre-flight: missing secret → friendly line, no flow."""
     _no_flow_tripwires(monkeypatch)
 
     result = CliRunner().invoke(cli, ["run", "--hitl", "create config.toml"])
@@ -533,13 +511,12 @@ def test_run_secret_store_malformed_secret_is_a_friendly_line_not_a_traceback(
     assert runtime_secret_name in result.stderr
 
 
-# --- task 069 (AC5): `--model` never alters the proxy / secret-store guard chain, no flow built -----
+# task 069 (AC5): `--model` never alters the proxy / secret-store guard chain, no flow built
 
 
 def test_run_model_does_not_bypass_the_proxy_secret_guard(
     monkeypatch, _proxy_on, runtime_secret_name
 ):
-    """``--model`` present + proxy on + a missing Kitaru secret → friendly line, no flow built (AC5)."""
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
     _no_flow_tripwires(monkeypatch)
 
@@ -553,7 +530,6 @@ def test_run_model_does_not_bypass_the_proxy_secret_guard(
 def test_run_model_does_not_bypass_the_secret_store_guard(
     monkeypatch, _secret_store_on, runtime_secret_name
 ):
-    """``--model`` present + secret-store on + a missing secret → friendly line, no flow built (AC5)."""
     _no_flow_tripwires(monkeypatch)
 
     result = CliRunner().invoke(cli, ["run", "--model", "gemini-2.5-pro", "list the files"])
@@ -564,7 +540,7 @@ def test_run_model_does_not_bypass_the_secret_store_guard(
     assert runtime_secret_name in result.stderr
 
 
-# --- task 071: the sandbox backend guard shares the `decode run` pre-flight (ADR-0011 §1) -----------
+# task 071: the sandbox backend guard shares the `decode run` pre-flight (ADR-0011 §1)
 # The same ``_sandbox_config_error`` the REPL uses is wired into ``_runtime_config_preflight``, so
 # ``decode run`` refuses an unavailable sandbox backend the same friendly way — one stderr line,
 # non-zero exit, before any flow is built. The probes are PATCHED (no real docker daemon / modal
@@ -572,7 +548,6 @@ def test_run_model_does_not_bypass_the_secret_store_guard(
 
 
 def test_run_sandbox_docker_unreachable_is_a_friendly_line_no_flow(monkeypatch, _provider_ok):
-    """SANDBOX_MODE=docker + daemon unreachable → friendly stderr line, non-zero, no flow built."""
     monkeypatch.setattr(cli_mod.settings, "sandbox_mode", "docker")
     monkeypatch.setattr(cli_mod, "_docker_daemon_reachable", lambda: False)
     _no_flow_tripwires(monkeypatch)
@@ -586,7 +561,6 @@ def test_run_sandbox_docker_unreachable_is_a_friendly_line_no_flow(monkeypatch, 
 
 
 def test_run_sandbox_modal_missing_creds_is_a_friendly_line_no_flow(monkeypatch, _provider_ok):
-    """SANDBOX_MODE=modal + no creds → friendly stderr line, non-zero, no flow built, no modal import."""
     monkeypatch.setattr(cli_mod.settings, "sandbox_mode", "modal")
     monkeypatch.setattr(cli_mod, "_modal_credentials_present", lambda: False)
     _no_flow_tripwires(monkeypatch)
@@ -600,7 +574,6 @@ def test_run_sandbox_modal_missing_creds_is_a_friendly_line_no_flow(monkeypatch,
 
 
 def test_run_sandbox_none_default_runs_no_probe_and_runs_the_flow(monkeypatch, _provider_ok):
-    """SANDBOX_MODE=none (default) → no docker/modal probe fires and the flow runs as before."""
     calls = {"docker": 0, "modal": 0}
 
     def _docker() -> bool:
@@ -622,7 +595,7 @@ def test_run_sandbox_none_default_runs_no_probe_and_runs_the_flow(monkeypatch, _
     assert calls == {"docker": 0, "modal": 0}  # none mode probes nothing
 
 
-# --- task 082: the Workspace repo — threaded into the flow, guarded in none mode (ADR-0012 §3) ------
+# task 082: the Workspace repo — threaded into the flow, guarded in none mode (ADR-0012 §3)
 
 
 def _recording_flow_run(monkeypatch, text):
@@ -651,7 +624,6 @@ def _recording_flow_run(monkeypatch, text):
 
 
 def test_run_help_documents_the_repo_and_local_flags():
-    """``decode run --help`` documents ``--repo`` and ``--local`` (discoverability)."""
     result = CliRunner().invoke(cli, ["run", "--help"])
 
     assert result.exit_code == 0
@@ -660,7 +632,6 @@ def test_run_help_documents_the_repo_and_local_flags():
 
 
 def test_run_repo_and_local_threaded_into_the_flow(monkeypatch, _provider_ok):
-    """``decode run --repo X --local`` (docker) threads the resolved repo + local into the flow (§3)."""
     monkeypatch.setattr(cli_mod.settings, "sandbox_mode", "docker")
     monkeypatch.setattr(cli_mod, "_docker_daemon_reachable", lambda: True)
     captured = _recording_flow_run(monkeypatch, "the sandbox answer")
@@ -674,7 +645,6 @@ def test_run_repo_and_local_threaded_into_the_flow(monkeypatch, _provider_ok):
 
 
 def test_run_repo_falls_back_to_sandbox_repo_setting(monkeypatch, _provider_ok):
-    """No ``--repo`` but ``SANDBOX_REPO`` set (docker) → the setting is threaded into the flow (§3)."""
     monkeypatch.setattr(cli_mod.settings, "sandbox_mode", "docker")
     monkeypatch.setattr(cli_mod.settings, "sandbox_repo", "https://from.env/repo.git")
     monkeypatch.setattr(cli_mod, "_docker_daemon_reachable", lambda: True)
@@ -687,7 +657,6 @@ def test_run_repo_falls_back_to_sandbox_repo_setting(monkeypatch, _provider_ok):
 
 
 def test_run_no_repo_threads_none_into_the_flow(monkeypatch, _provider_ok):
-    """``decode run`` with no repo (none mode) → ``repo=None`` (an empty Workspace) into the flow."""
     captured = _recording_flow_run(monkeypatch, "answer")
 
     result = CliRunner().invoke(cli, ["run", "list the files"])
@@ -698,7 +667,6 @@ def test_run_no_repo_threads_none_into_the_flow(monkeypatch, _provider_ok):
 
 
 def test_run_repo_in_none_mode_is_a_friendly_line_no_flow(monkeypatch, _provider_ok):
-    """``decode run --repo`` while ``SANDBOX_MODE=none`` → friendly stderr line, non-zero, no flow (§3)."""
     _no_flow_tripwires(monkeypatch)
 
     result = CliRunner().invoke(cli, ["run", "--repo", "/some/repo", "do it"])
@@ -710,7 +678,6 @@ def test_run_repo_in_none_mode_is_a_friendly_line_no_flow(monkeypatch, _provider
 
 
 def test_run_sandbox_repo_env_in_none_mode_is_a_friendly_line_no_flow(monkeypatch, _provider_ok):
-    """A bare ``SANDBOX_REPO`` (no flag) in ``none`` mode also trips the headless guard, no flow built."""
     monkeypatch.setattr(cli_mod.settings, "sandbox_repo", "https://from.env/repo.git")
     _no_flow_tripwires(monkeypatch)
 
@@ -721,7 +688,6 @@ def test_run_sandbox_repo_env_in_none_mode_is_a_friendly_line_no_flow(monkeypatc
 
 
 def test_replay_sandbox_repo_env_in_none_mode_is_a_friendly_line(monkeypatch, _provider_ok):
-    """``decode replay`` shares the pre-flight: ``SANDBOX_REPO`` in ``none`` mode → friendly line, no replay."""
 
     def _tripwire(*_a, **_k):
         raise AssertionError("no replay may run when the sandbox-repo guard trips")

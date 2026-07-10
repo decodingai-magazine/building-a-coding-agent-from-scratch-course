@@ -1,46 +1,16 @@
-"""The Milestone 1 capstone: one scripted conversation through the FULL real stack.
+"""Milestone 1 capstone: one scripted six-step conversation through the FULL real stack.
 
-This is the milestone's living proof (task 015) — and it doubles as documentation. It drives a
-multi-step conversation through the **real** wiring, swapping out only the network boundary:
+Proves the whole M1 stack together: real build_agent (flat tool registry, deferred-tool /
+permission seam, memory-instructions hook), real Runner + AgentTurnHandler turn lifecycle,
+real render_event on every event, real SessionLog persist + ``--resume`` replay, and the real
+extract_on_exit MEMORY.md write-back. Swapped/faked: the model is a scripted FunctionModel
+(GEMINI_API_KEY faked so build_agent constructs), the summarizer a TestModel, and web_fetch's
+HTTP an httpx.MockTransport; the session log + memory file are redirected under tmp_path.
+Fully offline — no network, no API key, no skipif.
 
-* the real :func:`decode.agent.factory.build_agent` (so the real flat tool registry, the real
-  deferred-tool / permission seam, and the real memory-instructions hook are all exercised);
-* the real :class:`decode.harness.runner.Runner` + :class:`decode.agent.loop.AgentTurnHandler`
-  (so the real turn lifecycle — model-request legs, deferred pause/resume, gate routing, history
-  carry-over, per-turn persistence — runs);
-* the real :func:`decode.tui.render.render_event` on every emitted event (so the whole render
-  path is proven not to crash on any event kind the turn produces);
-* the real :class:`decode.context.session_log.SessionLog` + :func:`decode.context.session_log.load`
-  (so the JSONL log is written and ``--resume`` replay is proven);
-* the real :func:`decode.memory.extract.extract_on_exit` (so the on-exit ``MEMORY.md`` write-back
-  is proven).
-
-**No network.** The model is a scripted :class:`~pydantic_ai.models.function.FunctionModel`
-(``GEMINI_API_KEY`` is faked only so ``build_agent`` constructs), the summarizer is a second
-``FunctionModel``, and the ``web_fetch`` tool's HTTP is stubbed via :class:`httpx.MockTransport`
-on its transport seam. The session log dir and the memory file are redirected under ``tmp_path``,
-so the repo's real ``.decode/`` is never touched.
-
-The conversation, in order — each turn is one ``runner.submit`` driven to idle. Under the
-``default`` permission mode (ADR-0003 §1) the read-only tools (``read`` / ``todo_write`` /
-``web_fetch``) **auto-allow** — the gate decides without prompting, so they consume no human
-verdict — and only the two mutating ``write`` calls prompt:
-
-1. **read** a file the test wrote into the working tree (read-only → **auto-allowed**, no prompt);
-2. **write** a new file (mutating → asked → **approved**) — the file appears;
-3. **write** a second file (mutating → asked → **denied**) — the file does *not* appear and the
-   model is told (the denial comes back as the tool result);
-4. **todo_write** a small checklist (read-only → **auto-allowed**) — a ``TaskListUpdated`` renders;
-5. **ask_user** a free-form question (NOT gated) — a fake resolver supplies the answer, which
-   comes back to the model as the tool result;
-6. **web_fetch** a URL (read-only → **auto-allowed**) — the ``MockTransport`` serves a stub page.
-
-So the capstone still exercises all three permission outcomes: auto-allow (read/todo_write/
-web_fetch by mode), human-allow (the first write), and human-deny (the second write).
-
-Then the session quits and the test asserts the three end-to-end guarantees: the JSONL session
-log was written and replays, ``--resume`` replays the history into a fresh handler, and the
-on-exit ``MEMORY.md`` summary line was written.
+The six turns: read (auto-allowed) → write (approved) → write (DENIED, file never lands) →
+todo_write → ask_user (ungated, fake answer) → web_fetch (stub page) — covering all three
+permission outcomes: auto-allow, human-allow, human-deny.
 """
 
 from __future__ import annotations

@@ -1,15 +1,8 @@
 """Shared YAML-frontmatter splitting for the Markdown catalogs (ADR-0003 §5, ADR-0004 §3).
 
-Both the Agents Catalog loader (:mod:`decode.agents.loader`) and the Skills Catalog loader
-(:mod:`decode.skills.loader`) read the same on-disk shape: a ``---``-fenced YAML frontmatter block
-atop a Markdown file, then the body. :func:`split_frontmatter` is the one place that split lives —
-extracted once the skills loader became a genuine second caller (AGENTS.md: abstract on the second
-implementation, not before).
-
-Only the *split* is shared. Each loader keeps its own ``_require_str`` because they differ: the skills
-loader strips the returned value (so a dispatcher key is exact) while the agents loader returns it
-raw — sharing a stripping helper would silently change how the agents catalog parses ``name`` /
-``description``.
+The agents and skills catalog loaders read the same ``---``-fenced-YAML-then-body shape; only the
+*split* is shared. Each loader keeps its own ``_require_str`` — the skills loader strips values,
+the agents loader returns them raw — so sharing one would silently change parsing.
 """
 
 from __future__ import annotations

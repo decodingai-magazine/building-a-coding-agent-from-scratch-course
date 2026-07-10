@@ -1,13 +1,8 @@
-"""Unit tests for the flat tool registry (``decode.tools.registry``).
+"""Unit tests for the flat tool registry (``decode.tools.registry``) — ADR-0002 §7 / ADR-0003 §2.
 
-ADR-0002 §7 / ADR-0003 §2: tools live in a **flat registry** — no plugin machinery. The registry
-is the one place that (a) registers every tool on the :class:`~pydantic_ai.Agent` and (b) records
-each tool's :class:`~decode.permissions.types.ToolKind`, which the loop reads via
-:func:`decode.tools.tool_kind` when it builds a
-:class:`~decode.entities.permissions.PermissionRequest`.
-
-These tests assert the registry's two jobs without a network call: the agent ends up with all
-the expected tools, and the tool-kind map matches each tool's declared classification.
+Asserts the registry's two jobs without a network call: every expected tool ends up on the
+agent (and the scaffolding ``noop`` never does), and the tool-kind map matches each tool's
+declared classification (the loop reads it via ``tool_kind`` when building a PermissionRequest).
 """
 
 from pydantic import SecretStr

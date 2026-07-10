@@ -1,28 +1,11 @@
-"""The LSP Service surface: a lazy, per-root, cached, best-effort client behind a spawn seam (ADR-0007).
+"""The LSP Service surface: a lazy, per-root, cached, best-effort client behind a spawn seam.
 
-This module is the public face the next tasks consume — the ``lsp`` tool (052), the Diagnostics
-Enricher (053), and the app-exit path (054) — and it owns the lifecycle the client does not:
-
-* **Lazy, one server per project root, cached** — mirroring ``bash``'s module-level ``_EXECUTOR`` and
-  ``web``'s ``_TRANSPORT`` (AGENTS.md): :data:`_CLIENTS` maps a resolved root to its :class:`LspClient`,
-  spawned on first use and reused thereafter. A spawn/handshake that **fails caches the
-  :data:`_BROKEN` sentinel** so a server that can't even start is not re-spawned on every edit/tool
-  call (no retry storm) — that root stays "unavailable" until the process restarts. A server that
-  handshook **then crashed mid-session** is instead dropped and respawned **once** on the next call
-  (via :attr:`LspClient.is_alive`), so it recovers rather than failing against a dead pipe all session.
-* **A patchable spawn seam** — :func:`_spawn_process` is the one place a real subprocess is created;
-  unit tests patch it to inject a fake process with canned framed responses, so the suite never spawns
-  real ``ty`` (mirrors ``web``'s ``_TRANSPORT`` test seam).
-* **Best-effort everywhere** — every op resolves spawn failure, timeout, closed pipe, or malformed
-  frame to :data:`~decode.services.lsp.types.UNAVAILABLE`; **no exception escapes**. ``lsp_enabled ==
-  False`` short-circuits to ``UNAVAILABLE`` **without spawning anything**.
-* **A sync→async bridge for the enricher** — :func:`diagnostics_on_edit` lets the sync ``write`` /
-  ``edit`` tools (run in pydantic-ai's worker thread) reach the async client via
-  ``anyio.from_thread.run``, keeping one cache / one client; it is patched out in unit tests.
-* **An async shutdown entry** — :func:`shutdown_all` for the ``run_app`` exit path (task 054).
-
-The four ops return a decode-native value object (or ``None`` for "found nothing") on success and the
-``UNAVAILABLE`` sentinel when the server could not answer — never a raw LSP dict, never an exception.
+One Language Server per project root, spawned on first use via the patchable :func:`_spawn_process`
+seam and cached in :data:`_CLIENTS`; a failed spawn caches :data:`_BROKEN` (no retry storm), while
+a mid-session crash respawns once. Every op is best-effort: it returns a decode-native value object,
+``None`` for "found nothing", or ``UNAVAILABLE`` — never a raw LSP dict, never an exception.
+:func:`diagnostics_on_edit` is the sync bridge for the Diagnostics Enricher; :func:`shutdown_all`
+the app-exit entry. See ADR-0007.
 """
 
 from __future__ import annotations
@@ -48,16 +31,13 @@ class _Broken:
 _BROKEN = _Broken()
 
 # Module-level per-root cache — one Language Server per project root, lazily spawned and reused.
-# Mirrors bash._EXECUTOR / web._TRANSPORT (AGENTS.md "Sandbox is the one real abstraction" pattern).
 _CLIENTS: dict[Path, LspClient | _Broken] = {}
 
 
 async def _spawn_process(root: Path) -> asyncio.subprocess.Process:
     """The patchable spawn seam: launch the configured stdio Language Server under ``root``.
 
-    This is the single real-subprocess boundary (mirrors ``web``'s ``_TRANSPORT``). Unit tests patch
-    **this** to inject a fake process with canned ``Content-Length``-framed responses — no real ``ty``,
-    no real subprocess in the suite (AGENTS.md test discipline).
+    The single real-subprocess boundary — unit tests patch this to inject a fake process.
     """
     return await asyncio.create_subprocess_exec(
         settings.lsp_server_command,
@@ -70,12 +50,10 @@ async def _spawn_process(root: Path) -> asyncio.subprocess.Process:
 
 
 async def _get_client(cwd: Path) -> LspClient | None:
-    """Return the cached client for ``cwd``'s root, spawning lazily on first use; ``None`` if unavailable.
+    """Return the cached client for ``cwd``'s root, spawning lazily; ``None`` if unavailable.
 
-    ``lsp_enabled == False`` short-circuits to ``None`` **without spawning**. A root whose initial
-    spawn/handshake failed (cached :data:`_BROKEN`) also returns ``None`` without re-spawning (no retry
-    storm). A cached client whose subprocess has since **died** is dropped and respawned **once** — a
-    mid-session crash recovers rather than failing against a dead pipe for the rest of the session.
+    Disabled or ``_BROKEN`` roots return ``None`` without spawning; a dead cached client is
+    dropped and respawned once.
     """
     if not settings.lsp_enabled:
         return None
@@ -93,12 +71,7 @@ async def _get_client(cwd: Path) -> LspClient | None:
 
 
 async def _start_client(root: Path) -> LspClient | None:
-    """Spawn + handshake one Language Server for ``root``; ``None`` (best-effort) on any failure.
-
-    A spawn error (e.g. ``ty`` not on PATH → ``FileNotFoundError``) or a failed ``initialize``
-    handshake (immediate exit, closed pipe, timeout) is logged and resolves to ``None``, which the
-    caller caches as :data:`_BROKEN`.
-    """
+    """Spawn + handshake one Language Server for ``root``; ``None`` (best-effort) on any failure."""
     try:
         process = await _spawn_process(root)
     except Exception as exc:
@@ -171,10 +144,8 @@ async def diagnostics(cwd: Path, path: str) -> list[Diagnostic] | Unavailable:
 def diagnostics_on_edit(cwd: Path, path: str) -> list[Diagnostic] | None:
     """**Sync** best-effort diagnostics for the enricher — bridges to the async client. Never raises.
 
-    The ``write`` / ``edit`` tools are sync (pydantic-ai runs them in an anyio worker thread), so this
-    helper bridges to the async :func:`diagnostics` via ``anyio.from_thread.run`` (valid from that
-    thread), keeping one cache / one client. Returns ``None`` on **any** failure — disabled, no portal,
-    timeout, unavailable — so the enricher stays silent (ADR-0007 §5). Unit tests patch this helper.
+    The sync ``write``/``edit`` tools (anyio worker thread) reach :func:`diagnostics` via
+    ``anyio.from_thread.run``. ``None`` on any failure, so the enricher stays silent (ADR-0007 §5).
     """
     if not settings.lsp_enabled or not settings.lsp_diagnostics_on_edit:
         return None
@@ -192,11 +163,7 @@ def diagnostics_on_edit(cwd: Path, path: str) -> list[Diagnostic] | None:
 
 
 async def shutdown_all() -> None:
-    """Shut every spawned Language Server down (``run_app`` exit path). Idempotent; never raises.
-
-    A no-op when nothing was spawned; each client's ``shutdown`` is best-effort, and the cache is
-    cleared so a second call (or a fresh session) starts clean.
-    """
+    """Shut every spawned Language Server down (``run_app`` exit path). Idempotent; never raises."""
     for root, client in list(_CLIENTS.items()):
         if isinstance(client, LspClient):
             try:

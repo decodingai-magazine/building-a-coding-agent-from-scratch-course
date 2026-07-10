@@ -188,7 +188,7 @@ def test_render_event_rejects_unknown_event_type():
     raise AssertionError("expected TypeError for an unknown event type")
 
 
-# --- context_gauge: the pure footer fill gauge (task 047 / ADR-0006 §9) ------------------------
+# context_gauge: the pure footer fill gauge (task 047 / ADR-0006 §9)
 
 # Default tier fill lines (warn / danger), used by the color tests below. Kept as plain numbers
 # here; the single-source-of-truth test derives them from the Settings defaults instead.

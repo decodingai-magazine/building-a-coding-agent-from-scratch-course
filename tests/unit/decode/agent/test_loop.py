@@ -1,18 +1,10 @@
-"""Unit tests for :mod:`decode.agent.loop` — the real Pydantic AI turn handler.
+"""Unit tests for :mod:`decode.agent.loop` — the real Pydantic AI turn handler (ADR-0002 §1-4).
 
-ADR-0002 §1-4: the loop drives ``agent.iter()`` as the harness
-:data:`~decode.harness.runner.TurnHandler`. It streams model nodes into
-:mod:`decode.entities.events`, yields the ``MODEL_REQUEST`` / ``WOULD_STOP`` boundaries the
-:class:`~decode.harness.runner.Runner` expects, drains steering into ``message_history``
-before each model request, and carries ``message_history`` across turns. Task 005 adds the
-deferred-tool legs: when a leg resolves to ``DeferredToolRequests`` the loop emits
-``PermissionRequested``, resolves each gated call through the gate + the async resolver,
-builds ``DeferredToolResults`` (approve / ``ToolDenied``), drains steering at the resume
-boundary, and resumes until the output is a plain ``str``.
-
-No network: every test runs the agent against ``TestModel`` / ``FunctionModel`` and asserts
-on the events the loop emitted and the boundaries it yielded. The agent is built once with a
-dummy key and the model is swapped per test via ``agent.override(model=...)``.
+Covers the streamed-node → event mapping, the ``MODEL_REQUEST`` / ``WOULD_STOP`` boundaries,
+steering drained into ``message_history``, the deferred-tool permission legs (approve / deny /
+resume), ``ask_user``, session-log persistence, and the two-tier auto-compaction cascade.
+No network: the agent is built once with a dummy key and every test swaps in a ``TestModel`` /
+``FunctionModel`` via ``agent.override(model=...)``.
 """
 
 import contextlib
@@ -223,7 +215,6 @@ async def test_steering_is_appended_before_the_model_request(agent):
 
 
 async def test_handler_plugs_into_the_runner_end_to_end(agent):
-    """The handler is a real TurnHandler: the Runner can drive it to completion."""
     emitted: list[events.Event] = []
     handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
@@ -239,7 +230,6 @@ async def test_handler_plugs_into_the_runner_end_to_end(agent):
 
 
 async def test_model_error_propagates_so_runner_surfaces_it(agent, mocker):
-    """A model failure must raise out of the handler so the Runner emits an AgentError."""
     emitted: list[events.Event] = []
     handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
@@ -257,7 +247,6 @@ async def test_model_error_propagates_so_runner_surfaces_it(agent, mocker):
 
 
 async def test_thinking_deltas_become_thinking_events(agent):
-    """A model that emits thinking content streams ThinkingDelta events, kept separate."""
     from pydantic_ai.models.function import DeltaThinkingPart
 
     emitted: list[events.Event] = []
@@ -278,7 +267,7 @@ async def test_thinking_deltas_become_thinking_events(agent):
     assert "the answer" in answer
 
 
-# --- task 016: tool-call panels (ToolCallStarted / ToolResult) emitted from the loop --------
+# task 016: tool-call panels (ToolCallStarted / ToolResult) emitted from the loop
 
 
 async def test_tool_call_emits_started_and_result_events_and_renders_a_panel(agent):
@@ -353,7 +342,7 @@ async def test_gated_tool_is_announced_once_across_the_deferred_resume(gated_age
     assert "noop: hi" in results[0].output
 
 
-# --- task 005: the permission gate via the deferred-tool flow -------------------------------
+# task 005: the permission gate via the deferred-tool flow
 
 
 def _noop_then_text(
@@ -395,7 +384,6 @@ def _user_messages_seen(messages: list[ModelMessage]) -> list[str]:
 
 
 async def test_gated_tool_pauses_and_emits_permission_requested(gated_agent):
-    """ADR-0002 §3: a gated call pauses the run and surfaces a PermissionRequested event."""
     emitted: list[events.Event] = []
     asked: list[PermissionRequest] = []
 
@@ -420,7 +408,6 @@ async def test_gated_tool_pauses_and_emits_permission_requested(gated_agent):
 
 
 async def test_approval_resumes_and_executes_the_tool(gated_agent):
-    """An APPROVE resumes the run; the tool executes and the turn ends with text."""
     emitted: list[events.Event] = []
 
     async def approving_resolver(request: PermissionRequest) -> PermissionDecision:
@@ -448,7 +435,6 @@ async def test_approval_resumes_and_executes_the_tool(gated_agent):
 
 
 async def test_denial_feeds_a_tooldenied_result_back_to_the_model(gated_agent):
-    """A DENY returns a denial tool-result the model sees on the next leg (ADR-0002 §3)."""
     emitted: list[events.Event] = []
 
     async def denying_resolver(request: PermissionRequest) -> PermissionDecision:
@@ -594,7 +580,7 @@ async def test_single_flight_lock_spans_the_whole_multi_leg_deferred_turn(gated_
     assert "multi-leg done" in answer
 
 
-# --- task 017: the gate verdict is honored in the loop (auto-allow / auto-deny / ask) -------
+# task 017: the gate verdict is honored in the loop (auto-allow / auto-deny / ask)
 
 
 async def test_auto_allow_runs_a_read_only_tool_without_prompting(agent, tmp_path):
@@ -736,7 +722,7 @@ def _read_then_text(
     return FunctionModel(stream_function=stream_function)
 
 
-# --- task 011: the blocking ask_user tool (NOT gated; rides the decision channel) -----------
+# task 011: the blocking ask_user tool (NOT gated; rides the decision channel)
 
 
 def _ask_user_then_text(
@@ -839,7 +825,7 @@ async def test_ask_user_model_retries_headless_and_the_turn_still_finishes(agent
     assert "proceeding without you" in answer
 
 
-# --- task 014: session-log persistence (append each turn's new messages) --------------------
+# task 014: session-log persistence (append each turn's new messages)
 
 
 async def test_handler_persists_each_turn_to_the_session_log(agent, tmp_path):
@@ -874,7 +860,6 @@ async def test_handler_persists_each_turn_to_the_session_log(agent, tmp_path):
 
 
 async def test_handler_works_without_a_session_log(agent):
-    """The session log is optional: with none wired, the handler runs unchanged (no crash)."""
     emitted: list[events.Event] = []
     handler = AgentTurnHandler(agent, deps=_deps(emitted.append))  # no session_log
 
@@ -916,7 +901,7 @@ async def test_session_log_persists_only_new_messages_per_turn(agent, tmp_path):
     assert "ALPHA-PROMPT" not in second_turn_raw  # only this turn's new messages
 
 
-# --- task 044: the window-relative two-tier auto-compaction cascade -------------------------
+# task 044: the window-relative two-tier auto-compaction cascade
 #
 # Driven through the real loop with FunctionModel/TestModel — no network. A streaming
 # FunctionModel reports a FIXED ``input_tokens`` of 50 (pydantic-ai's FunctionStreamedResponse
@@ -1006,7 +991,6 @@ def _log_line_types(log: SessionLog) -> list[str]:
 
 
 async def test_run_leg_captures_input_tokens_and_property_exposes_it(agent):
-    """AC: a leg records run.result.usage.input_tokens; last_input_tokens exposes it (0 before)."""
     emitted: list[events.Event] = []
     handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
@@ -1022,7 +1006,6 @@ async def test_run_leg_captures_input_tokens_and_property_exposes_it(agent):
 
 
 async def test_full_tier_compacts_through_the_turn(agent, tmp_path, mocker):
-    """AC upper tier: window patched small → the turn fires compact() and checkpoints it."""
     mocker.patch.object(loop.settings, "compaction_context_window_tokens", 60)  # full band
     mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
     log = _fresh_log(tmp_path, "01")
@@ -1057,7 +1040,6 @@ async def test_full_tier_compacts_through_the_turn(agent, tmp_path, mocker):
 
 
 async def test_middle_tier_microcompacts_through_the_turn(agent, tmp_path, mocker):
-    """AC middle tier: window in the micro band → in-memory blanking, no checkpoint, count steady."""
     mocker.patch.object(loop.settings, "compaction_context_window_tokens", 70)  # micro band
     mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
     log = _fresh_log(tmp_path, "02")
@@ -1103,7 +1085,6 @@ async def test_middle_tier_microcompacts_through_the_turn(agent, tmp_path, mocke
 
 
 async def test_microcompaction_keeps_full_fidelity_on_disk(agent, tmp_path, mocker):
-    """AC micro-not-persisted: the JSONL keeps the original tool output; load() replays it full."""
     marker = "PERSISTED-TOOL-BODY-MARKER"
     (tmp_path / "data.txt").write_text(marker + " and a few words to read", encoding="utf-8")
     mocker.patch.object(loop.settings, "compaction_context_window_tokens", 70)  # micro band
@@ -1145,7 +1126,6 @@ async def test_microcompaction_keeps_full_fidelity_on_disk(agent, tmp_path, mock
 
 
 async def test_no_repersist_after_full_compaction(agent, tmp_path, mocker):
-    """AC: after a full compaction the next turn appends only its own new messages."""
     # A large window keeps the auto-cascade quiet; compaction is driven explicitly via compact().
     mocker.patch.object(loop.settings, "compaction_context_window_tokens", 10_000_000)
     mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
@@ -1223,7 +1203,6 @@ async def test_clear_without_a_session_log_still_resets(agent):
 
 
 async def test_below_both_tiers_is_a_no_op(agent, tmp_path, mocker):
-    """AC: usage below both levels compacts neither tier (history unchanged, no event)."""
     mocker.patch.object(loop.settings, "compaction_context_window_tokens", 200)  # below both
     mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
 
@@ -1252,7 +1231,6 @@ async def test_below_both_tiers_is_a_no_op(agent, tmp_path, mocker):
 
 
 async def test_disabled_flag_skips_the_cascade(agent, mocker):
-    """AC: compaction_enabled=False fires neither tier even in a band that otherwise would."""
     mocker.patch.object(loop.settings, "compaction_context_window_tokens", 60)  # full band
     mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
     mocker.patch.object(loop.settings, "compaction_enabled", False)
@@ -1274,7 +1252,6 @@ async def test_disabled_flag_skips_the_cascade(agent, mocker):
 
 
 async def test_zero_tokens_never_compacts(agent, mocker):
-    """AC: input_tokens == 0 (no leg measured) is the safe fallback — the cascade no-ops."""
     mocker.patch.object(loop.settings, "compaction_context_window_tokens", 1)  # tiny → would fire
     mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
 
@@ -1296,7 +1273,6 @@ async def test_zero_tokens_never_compacts(agent, mocker):
 
 
 async def test_compact_returns_false_on_trivial_history(agent):
-    """AC: compact() no-ops (False) when the whole history already fits the recent tail."""
     emitted: list[events.Event] = []
     handler = AgentTurnHandler(
         agent,
@@ -1310,7 +1286,6 @@ async def test_compact_returns_false_on_trivial_history(agent):
 
 
 async def test_compact_returns_false_when_summary_is_none(agent, mocker):
-    """AC: a None summary (blank summarizer) makes compact() a no-op, history untouched."""
     mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
     emitted: list[events.Event] = []
     history: list[ModelMessage] = [

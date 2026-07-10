@@ -1,24 +1,12 @@
 """Headless-Runtime test fixtures (ADR-0008), registered at the **rootdir** ``tests/conftest.py``.
 
-Why these live in ``tests/support`` and are imported into the rootdir conftest — not in
-``tests/unit/decode/runtime/conftest.py`` where they used to be (task 065):
-
-Under ``--import-mode=importlib`` a per-package ``conftest`` is only reliably applied to its tests
-when those tests are collected **contiguously**. If a non-runtime test file (e.g.
-``tests/unit/decode/test_cli.py``, or — under ``pytest-randomly`` running unit+integration together —
-any file outside ``tests/unit/decode/runtime/``) is collected *between* two runtime files, pytest
-de-associates the runtime ``conftest`` from the second runtime file: its autouse store-isolation
-stopped running AND its named fixtures (``inline_wait_resolver``) errored as "fixture not found".
-A de-associated autouse isolation let a later ``create_secret``/``get_secret`` fall through to the
-developer's **real** ZenML store/server. ``tests/unit/decode/`` cannot be made an ``__init__.py``
-package (it would shadow the real ``decode`` source package), and the only common ancestor that is
-*always* in scope for every collected test — so its autouse + named fixtures apply in **any**
-collection order — is the rootdir ``tests/conftest.py``. Registering these fixtures there (via a
-plain ``from support.runtime_fixtures import …`` in that conftest) makes the isolation order-robust.
-
-The autouse :func:`isolated_kitaru_store` therefore runs for the whole suite but is **gated** to the
-unit runtime package (``request.path.parent.name == "runtime"``); for every other test it is a pure
-no-op that imports nothing. The scripted-agent builder is the sibling :mod:`support.runtime_agents`.
+They live in ``tests/support`` — not ``tests/unit/decode/runtime/conftest.py`` — because under
+``--import-mode=importlib`` a per-package conftest only reliably applies when its tests are collected
+contiguously: an interleaved non-runtime file de-associated the autouse store isolation (letting
+``create_secret``/``get_secret`` fall through to the developer's **real** ZenML store) and broke the
+named fixtures. The rootdir conftest is the only ancestor always in scope, so registering there makes
+the isolation order-robust (task 065). :func:`isolated_kitaru_store` is gated to the unit runtime
+package and is a pure no-op for every other test.
 """
 
 from __future__ import annotations

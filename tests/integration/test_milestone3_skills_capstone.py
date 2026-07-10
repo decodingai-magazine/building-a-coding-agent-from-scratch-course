@@ -1,51 +1,18 @@
-"""The Milestone 3 capstone: the whole Skills flow through the FULL real stack.
+"""Milestone 3 capstone: the whole Skills flow through the FULL real stack (ADR-0004).
 
-This is M3's living proof (tasks 029 + 034) — and, like ``test_milestone1_capstone.py``, it doubles
-as documentation. It drives the **three** tiers of progressive disclosure (ADR-0004 §1) and **both**
-entry points into a skill body through the **real** wiring, swapping out only the network boundary:
+Proves all three tiers of progressive disclosure and BOTH entry points into a skill body:
+real build_agent (the @agent.instructions skills-catalog hook + the ungated ``skill``
+dispatcher), real Runner + AgentTurnHandler, real load_skills behind the model's
+``skill("commit")`` AND the user's ``/commit`` TUI path (parse_skill_command →
+_handle_skill_command → runner.submit). Swapped/faked: a scripted FunctionModel plays the
+model (GEMINI_API_KEY faked so build_agent constructs); every working tree is a fresh
+tmp_path so the repo's real ``.decode/`` is never touched. Fully offline — no network, no
+API key, no skipif.
 
-* the real :func:`decode.agent.factory.build_agent` (so the real ``@agent.instructions`` skills-catalog
-  hook, the real flat tool registry, and the real ungated ``skill`` dispatcher are all exercised);
-* the real :class:`decode.harness.runner.Runner` + :class:`decode.agent.loop.AgentTurnHandler`
-  (so the real turn lifecycle — model-request legs, ungated inline tool execution, the permission
-  gate, history carry-over — runs);
-* the real :func:`decode.skills.loader.load_skills` behind both entry points: the model's
-  ``skill("commit")`` dispatcher AND the user's ``/commit`` TUI command (the real
-  :func:`decode.tui.app.parse_skill_command` → :func:`decode.tui.app._handle_skill_command` →
-  ``runner.submit`` path).
-
-**No network.** The model is a scripted :class:`~pydantic_ai.models.function.FunctionModel`
-(``GEMINI_API_KEY`` is faked only so ``build_agent`` constructs), and every working tree is a fresh
-``tmp_path`` so the repo's real ``.decode/`` is never read or written. Every project skill is written
-as ``<cwd>/.decode/skills/<dir>/SKILL.md`` (the Agent Skills directory convention, task 032). The
-test needs no API key and makes no network call, so it runs in CI under
-``make integration-tests`` / ``make ci``.
-
-The seven guarantees, one test each (ADR-0004):
-
-1. **Catalog (always injected, cheap):** both built-in skills' ``name`` + ``description`` and the
-   ``skill("<name>")`` cue ride a real run's assembled instructions — the menu is on every prompt.
-2. **Model dispatcher (body on demand):** a scripted ``skill("commit")`` returns the full built-in
-   body as the tool result and emits **no** ``PermissionRequested`` (the dispatcher is ungated).
-3. **User TUI slash path (second entry point):** ``/commit`` resolves to the commit **body** (not the
-   literal ``/commit``) and that body is what reaches ``runner.submit`` as the turn input.
-4. **Project override (both entry points):** a ``<cwd>/.decode/skills/commit/SKILL.md`` overrides the
-   built-in by name, so ``skill("commit")``, ``/commit``, **and** the catalog line all reflect the
-   project skill.
-5. **Unknown skill:** ``skill("does-not-exist")`` surfaces a :class:`pydantic_ai.ModelRetry` listing
-   the available names — the model receives it as a tool retry, never a crash.
-6. **Built-ins are tier-2 only (task 034):** ``skill("commit")`` and ``/commit`` return the built-in
-   body with **no** resource trailer — a built-in ships only a ``SKILL.md`` (ADR-0004 §3), so
-   progressive disclosure stops at tier 2 for it; the trailer is the project-skill-only tier-3 bridge.
-7. **Tier-3 bundled-resource project skill (task 034 — the full chain):** a project skill at
-   ``<cwd>/.decode/skills/<name>/SKILL.md`` with a sibling ``references/<file>.md`` proves all three
-   tiers end to end. **Tier 1:** its ``name`` + ``description`` ride the catalog (no path).
-   **Tier 2 + surfacing:** ``skill("<name>")`` returns the body **plus a trailer** naming the skill's
-   cwd-relative ``<dir>/`` (ungated — no ``PermissionRequested``). **Tier 3:** prompted by the
-   trailer, the scripted model calls ``read("<dir>/references/<file>.md")`` through the **real** gated
-   ``read`` tool — which auto-allows under ``default`` mode (read-only; ADR-0003 §1), the approving
-   resolver standing as the would-be human verdict — and gets the **bundled file's contents** back as
-   the tool result. The ``/<name>`` TUI path injects the **same** body + trailer (one shared helper).
+Seven guarantees, one test each: catalog always injected, ungated dispatcher body, TUI slash
+path submits the body (not the literal ``/commit``), project override wins on every surface,
+unknown skill → ModelRetry, built-ins are tier-2-only (no resource trailer), and the tier-3
+bundled-resource chain (catalog → body+trailer → gated ``read`` of the bundled file).
 """
 
 from __future__ import annotations

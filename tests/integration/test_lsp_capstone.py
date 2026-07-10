@@ -1,56 +1,17 @@
-"""The LSP capstone: both channels through the FULL real stack (ADR-0007).
+"""LSP capstone (ADR-0007): both LSP channels through the full real stack.
 
-This is the living proof for the LSP-integration feature (ADR-0007, tasks 050-055) — and it doubles
-as documentation, in the style of :mod:`tests.integration.test_milestone1_capstone` and
-:mod:`tests.integration.test_compaction_capstone`. It drives a scripted conversation through the
-**real** wiring, swapping out only the **LSP subprocess boundary** (the task-051 ``_spawn_process``
-seam — the single place a real ``ty server`` would be launched):
+Proves the active ``lsp`` tool AND the passive write/edit Diagnostics Enricher end to end:
+real build_agent (flat tool registry + permission seam), real Runner + AgentTurnHandler,
+real LSP service cache + hand-rolled JSON-RPC/stdio client (incl. the enricher's sync→async
+bridge), real render_event, real SessionLog persist + replay. Swapped/faked: only the
+``service._spawn_process`` subprocess boundary, patched to a FakeLanguageServer feeding
+canned Content-Length-framed JSON-RPC (GEMINI_API_KEY faked so build_agent constructs) —
+no network, no API key, no real subprocess in the hermetic tests.
 
-* the real :func:`decode.agent.factory.build_agent` (so the real flat tool registry — including the
-  ``lsp`` tool — and the real deferred-tool / permission seam are exercised);
-* the real :class:`decode.harness.runner.Runner` + :class:`decode.agent.loop.AgentTurnHandler`
-  (so the real turn lifecycle — gated pause/resume, gate routing, per-turn persistence — runs);
-* the real ``lsp`` tool **and** the real passive Diagnostics Enricher folded into ``write`` / ``edit``
-  (so BOTH ADR-0007 channels are proven end to end), reaching the real
-  :mod:`decode.services.lsp.service` cache + the real hand-rolled JSON-RPC/stdio
-  :class:`decode.services.lsp.client.LspClient` framing/handshake/match-by-id — and, for the enricher,
-  the real **sync→async bridge** (``anyio.from_thread.run`` from pydantic-ai's worker thread);
-* the real :func:`decode.tui.render.render_event` on every emitted event (so the whole render path is
-  proven not to crash on any event kind the turn produces);
-* the real :class:`decode.context.session_log.SessionLog` + :func:`decode.context.session_log.load`
-  (so the JSONL log is written and ``--resume`` replay is proven).
-
-**No network, no API key, no real subprocess (hermetic tests).** The model is a scripted
-:class:`~pydantic_ai.models.function.FunctionModel` (``GEMINI_API_KEY`` is faked only so
-``build_agent`` constructs); the *only* boundary swapped is ``service._spawn_process``, patched to
-inject a :class:`~support.lsp_fakes.FakeLanguageServer` that feeds canned, ``Content-Length``-framed
-JSON-RPC responses — mirroring how the M1 capstone swaps the model with ``FunctionModel`` and
-``web_fetch``'s HTTP with :class:`httpx.MockTransport`. The session log dir + the working tree are
-redirected under ``tmp_path``.
-
-The *available*-server conversation, in order — each turn is one ``runner.submit`` driven to idle.
-Under ``default`` mode the read-only ``lsp`` tool **auto-allows** (no prompt, like ``read`` /
-``web_fetch``); only the mutating ``write`` / ``edit`` calls prompt (all approved here):
-
-1. **ACTIVE** — ``lsp op=definition`` on a seeded ``.py`` file → auto-allowed, the canned location
-   comes back to the model as ``path:line:column``;
-2. **PASSIVE (errors)** — ``write`` a ``.py`` file the fake reports an error for → the result is the
-   **exact** ``Wrote …`` base string **plus** the appended errors-only diagnostics block;
-3. **PASSIVE (clean, write)** — ``write`` a clean ``.py`` file → the base string is **unchanged**;
-4. **PASSIVE (clean, edit)** — ``edit`` the clean ``.py`` file → the ``Edited …`` base is **unchanged**;
-5. **NON-`.py`** — ``write`` a Markdown file → base unchanged and the enricher **never** queries the
-   server (no diagnostic request for that URI).
-
-A second hermetic test (:func:`test_lsp_capstone_unavailable_degrades_gracefully`) patches the spawn
-seam to **fail** (``ty`` not on PATH) so the whole feature degrades to "unavailable": a buggy ``.py``
-write returns just the base string and an ``lsp`` call comes back as a model-readable ``ModelRetry`` —
-the turn never crashes. (It is its own conversation because the broken spawn is cached **per root**.)
-
-Finally, an optional **real-``ty``** test (:func:`test_lsp_capstone_real_ty_wire`), guarded by
-``@pytest.mark.skipif`` on the ``ty`` binary, spawns a **real** ``ty server`` against a tiny on-disk
-fixture and asserts a real definition + a real error diagnostic come back — proving the hand-rolled
-wire works against the actual server. It runs in CI whenever ``ty`` is installed (it is, via the dev
-group, task 050) and is skipped — never failed — on a ``ty``-less environment.
+Capstone 1 drives definition + enricher (errors / clean write / clean edit / non-.py) with an
+available fake; capstone 2 fails the spawn seam so both channels degrade without crashing.
+The real-``ty`` test is the live half — skipif-guarded on the ``ty`` binary (skipped, never
+failed, when absent) — proving the wire against an actual ``ty server``.
 """
 
 from __future__ import annotations
@@ -290,9 +251,7 @@ def _build_runner(
     return Runner(handler, on_event=on_event), handler, agent
 
 
-# ================================================================================================
 # Hermetic capstone 1 — both channels through the real stack with an AVAILABLE fake server.
-# ================================================================================================
 
 
 async def test_lsp_capstone_both_channels_available(tmp_path, mocker):
@@ -413,9 +372,7 @@ async def test_lsp_capstone_both_channels_available(tmp_path, mocker):
     assert _DEF_RESULT in _tool_returns(replayed)
 
 
-# ================================================================================================
 # Hermetic capstone 2 — UNAVAILABLE: a failed spawn degrades both channels, the turn never crashes.
-# ================================================================================================
 
 
 async def test_lsp_capstone_unavailable_degrades_gracefully(tmp_path, mocker):
@@ -470,9 +427,7 @@ async def test_lsp_capstone_unavailable_degrades_gracefully(tmp_path, mocker):
     assert session_log.load(handler._session_log.path) == handler.message_history
 
 
-# ================================================================================================
 # Optional real-`ty` test — proves the hand-rolled wire works against an ACTUAL ``ty server``.
-# ================================================================================================
 
 
 @pytest.mark.skipif(not _TY_AVAILABLE, reason="the `ty` language server binary is not on PATH")

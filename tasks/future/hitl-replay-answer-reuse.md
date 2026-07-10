@@ -7,7 +7,7 @@ status: future
 # HITL replay with answer-reuse (deployed-stack milestone)
 
 Tags: `runtime`, `replay`, `hitl`, `future`
-Refs: ADR-0010 §7, ADR-0008 §3, `tasks/070-runtime-replay-command.md`
+Refs: ADR-0010 §7, ADR-0008 §3
 
 > **Parking lot — not part of the active 067+ sequence.** `status: future`; do not schedule until the
 > deployed Kitaru stack milestone (deploy/step 12). No `status: pending`.

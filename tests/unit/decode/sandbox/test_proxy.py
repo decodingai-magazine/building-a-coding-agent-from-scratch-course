@@ -44,7 +44,7 @@ def _patch_get_secret(mocker, values_by_name: dict[str, dict[str, str]]):
     return mocker.patch("kitaru.get_secret", side_effect=_fake)
 
 
-# --- SandboxProxyRule shape -------------------------------------------------------------------
+# SandboxProxyRule shape
 
 
 def test_sandbox_proxy_rule_holds_name_hosts_and_headers():
@@ -72,7 +72,7 @@ def test_default_proxy_rules_ships_empty():
     assert DEFAULT_PROXY_RULES == []
 
 
-# --- build_credential_map: host-side template resolution --------------------------------------
+# build_credential_map: host-side template resolution
 
 
 def test_build_credential_map_resolves_a_template_into_host_header_value(mocker):
@@ -189,7 +189,7 @@ def test_build_credential_map_logs_names_never_values(mocker, caplog):
     assert "Authorization" in caplog.text  # the header name does
 
 
-# --- github_token_rules: the SANDBOX_GIT_TOKEN one-knob shortcut ------------------------------
+# github_token_rules: the SANDBOX_GIT_TOKEN one-knob shortcut
 
 
 def test_github_token_rules_builds_bearer_api_then_basic_git():
@@ -218,7 +218,7 @@ def test_github_token_rules_resolve_with_no_kitaru_fetch_and_api_host_first(mock
     spy.assert_not_called()  # literal headers → no Kitaru secret is touched
 
 
-# --- DockerCredentialProxy: pure properties (no docker) ---------------------------------------
+# DockerCredentialProxy: pure properties (no docker)
 
 
 def test_worker_proxy_env_points_http_and_https_at_the_proxy_container():

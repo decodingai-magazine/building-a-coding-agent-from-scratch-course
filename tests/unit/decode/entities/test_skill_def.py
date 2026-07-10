@@ -49,7 +49,7 @@ def test_skill_def_uses_slots():
     assert not hasattr(skill, "__dict__")  # slots=True -> no per-instance __dict__
 
 
-# --- resource_dir (optional tier-3 bundled-resource pointer; ADR-0004 §5) -------------------
+# resource_dir (optional tier-3 bundled-resource pointer)
 
 
 def test_skill_def_resource_dir_defaults_to_none():
@@ -95,7 +95,7 @@ def test_skill_def_resource_dir_is_part_of_the_dataclass_fields():
     assert "resource_dir" in field_names
 
 
-# --- validation -----------------------------------------------------------------------------
+# validation
 
 
 def test_skill_def_rejects_an_empty_name():
@@ -124,7 +124,7 @@ def test_skill_def_names_the_skill_in_the_field_error():
         SkillDef(name="commit", description="x", body="   ", source="builtin")
 
 
-# --- shape: no persona / rule fields (ADR-0004 §6) ------------------------------------------
+# shape: no persona / rule fields
 
 
 @pytest.mark.parametrize("absent", ["tools", "mode", "allow", "deny"])
@@ -136,7 +136,7 @@ def test_skill_def_has_no_persona_or_rule_fields(absent: str):
     assert not hasattr(skill, absent)
 
 
-# --- working-looks-like (acceptance) --------------------------------------------------------
+# working-looks-like (acceptance)
 
 
 def test_skill_def_replace_with_empty_name_raises():

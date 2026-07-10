@@ -16,24 +16,15 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 
 logger = logging.getLogger(__name__)
 
-# --- Kitaru secret-store config source: headless-only hydration flag (ADR-0008 §5, task 064) ---
-# A module-level switch the :class:`KitaruSecretSettingsSource` consults on every ``Settings()``
-# build. It is OFF for the import-time singleton (so the interactive REPL never imports kitaru) and
-# turned ON only for the span of a headless ``decode run`` flow by the ``runtime/flow.py`` context
-# manager, which rebuilds the singleton in place while it is active and restores it on exit. Kept a
-# plain module global (not a ContextVar): the flow body, the in-place rebuild, and the source all run
-# on the same thread, so the simplest thing that works is the right one here.
+# Kitaru secret-store hydration flag (ADR-0008 §5): OFF for the import-time singleton (the REPL
+# never imports kitaru), ON only for the span of a headless flow via the runtime/flow.py context
+# manager. A plain module global, not a ContextVar — everything involved runs on one thread.
 _secret_hydration_active = False
 
 
 def set_secret_hydration_active(active: bool) -> None:
-    """Toggle the Kitaru secret-store config source on/off (headless-only; ADR-0008 §5).
-
-    Called only by the ``runtime/flow.py`` hydration context manager: ``True`` before it rebuilds the
-    ``settings`` singleton (so :class:`KitaruSecretSettingsSource` reads the secret), ``False`` in its
-    ``finally`` (so a later in-process ``Settings()`` build — the next test, or a subsequent flow —
-    sees an inert source and does not import kitaru).
-    """
+    """Toggle the Kitaru secret-store config source on/off — called only by the ``runtime/flow.py``
+    hydration context manager (headless-only; ADR-0008 §5)."""
     global _secret_hydration_active
     _secret_hydration_active = active
 
@@ -44,23 +35,16 @@ def is_secret_hydration_active() -> bool:
 
 
 class KitaruSecretSettingsSource(PydanticBaseSettingsSource):
-    """A pydantic-settings source that hydrates fields from a Kitaru secret (ADR-0008 §5, task 064).
+    """A pydantic-settings source that hydrates fields from a Kitaru secret (ADR-0008 §5).
 
-    Generalizes the task-061 single-key proxy into a whole-surface config source: when active it
-    reads the ``.env.example``-shaped key/value pairs out of the Kitaru secret named by
-    ``settings.runtime_secret_name`` and feeds the ones that map to a known field into ``Settings``.
-    Because ``config/settings.py`` already maps every ``.env.example`` var to a field, this covers the
-    entire config surface (provider/model/keys/tuning) with **no per-variable code**.
+    Reads ``.env.example``-shaped key/value pairs from the ``runtime_secret_name`` secret and feeds
+    the ones mapping to a known field into ``Settings`` — the whole config surface, no per-variable
+    code. Two invariants keep it safe in every ``Settings`` build:
 
-    Two invariants make it safe to keep wired into every ``Settings`` build:
-
-    * **Inert unless activated.** :meth:`__call__` returns ``{}`` immediately — and crucially imports
-      **no kitaru** — unless :func:`is_secret_hydration_active` is ``True`` (only the headless flow
-      flips it). So the interactive REPL, which builds the singleton at import, never pulls in kitaru.
-    * **`Settings` object only — never `os.environ`.** It returns a value mapping pydantic validates
-      into the model; it writes nothing to the process env, so a model-chosen ``bash`` never inherits
-      a Kitaru-sourced secret. This is the line between this source and the deferred sandbox
-      Credential Proxy (mitmproxy header injection), which is out of scope here.
+    * **Inert unless activated.** :meth:`__call__` returns ``{}`` — and imports no kitaru — unless
+      the headless flow flipped :func:`is_secret_hydration_active`.
+    * **``Settings`` object only — never ``os.environ``.** Nothing is written to the process env, so
+      a model-chosen ``bash`` never inherits a Kitaru-sourced secret.
     """
 
     def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
@@ -71,12 +55,10 @@ class KitaruSecretSettingsSource(PydanticBaseSettingsSource):
 
     def __call__(self) -> dict[str, Any]:
         if not is_secret_hydration_active():
-            # Inert path: the REPL singleton and every default/interactive build land here, so kitaru
-            # is never imported off the headless flow (the REPL-safety invariant).
+            # Inert path: every default/interactive build lands here, so kitaru is never imported.
             return {}
-        # Lazy import so this module stays kitaru-free until a headless flow actually activates the
-        # source. ``settings`` is the current (pre-rebuild) singleton, so the secret name comes from
-        # env/.env exactly as configured — it can never bootstrap itself out of the secret.
+        # Lazy import. The secret name comes from the pre-rebuild singleton (env/.env), so the
+        # source can never bootstrap itself out of the secret.
         from kitaru import get_secret
 
         values = get_secret(settings.runtime_secret_name).values
@@ -97,27 +79,22 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # --- Inference: one of three providers behind LLM_PROVIDER (ADR-0005). ---
-    # ``llm_provider`` is the explicit selector (no auto-detect); the default ``gemini`` keeps every
-    # existing ``.env`` (GEMINI_API_KEY only) working untouched. The per-provider fields below carry
-    # each backend's config; the cli startup guard (task 039) enforces the selected provider's
-    # required values.
+    # Explicit selector (no auto-detect); the ``gemini`` default keeps existing .env files working.
     llm_provider: Literal["gemini", "openrouter", "modal"] = "gemini"
 
     # gemini (default): google-genai API-key path.
     gemini_api_key: SecretStr = SecretStr("")
-    gemini_model: str = "gemini-2.5-flash"  # config-driven; confirm the exact id at task 004
+    gemini_model: str = "gemini-2.5-flash"
 
-    # openrouter: OpenAI-compatible gateway with :free models. The default is the Free Models Router
-    # (``openrouter/free``) — it spreads across all available free models and auto-filters for the
-    # tool-calling the loop needs, so a single congested upstream no longer hard-blocks you with 429s.
-    # Pin a specific free id (e.g. ``meta-llama/llama-3.3-70b-instruct:free``) for a stricter guarantee.
+    # openrouter: the default ``openrouter/free`` router spreads across free models and auto-filters
+    # for tool-calling, so one congested upstream cannot hard-block with 429s; pin a :free id for a
+    # stricter guarantee.
     openrouter_api_key: SecretStr = SecretStr("")
     openrouter_model: str = "openrouter/free"
 
-    # modal Auto Endpoint: OpenAI-compatible ``/v1`` served on Modal. These endpoint vars are DISTINCT
-    # from the MODAL_TOKEN_ID/MODAL_TOKEN_SECRET account tokens (``modal token set``, CLI/sandbox).
-    # ``modal_endpoint_url`` has no default (per-user deploy output; used as ``{url}/v1``). The proxy
-    # tokens are optional (empty for an ``--unauthenticated`` endpoint), both-or-neither.
+    # modal Auto Endpoint: OpenAI-compatible ``/v1``. Endpoint vars are DISTINCT from the
+    # MODAL_TOKEN_* account tokens; the url is per-user deploy output (used as ``{url}/v1``); proxy
+    # tokens are optional (empty = --unauthenticated), both-or-neither.
     modal_endpoint_url: str = ""
     # More on supported models: MODAL_MODELS.md
     modal_endpoint_model: str = "Qwen/Qwen3.6-35B-A3B-FP8"
@@ -128,189 +105,140 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # --- Observability: Opik (ADR-0014) ---
-    # Presence-based tracing, like every prior optional surface (sandbox/runtime): set ``opik_api_key``
-    # (the presence trigger + the OTLP ``Authorization`` header) and decode emits one Trace per turn
-    # (REPL) / per run (``decode run``) — every LLM + tool call with tokens and (for priced models) cost.
-    # Empty (the default) → ``observability.init_tracing()`` is a silent no-op and decode is
-    # byte-identical (no spans, no network). Export is configured PROGRAMMATICALLY from these fields —
-    # never via global ``OTEL_*`` env vars — so kitaru→zenml's own OpenTelemetry SDK is untouched
-    # (ADR-0014 §2). No readers yet: 092/093 wire the seam.
+    # Presence-based: a set ``opik_api_key`` (also the OTLP Authorization header) turns tracing on;
+    # empty → silent no-op, byte-identical (no spans, no network). Export is configured
+    # PROGRAMMATICALLY from these fields — never via global OTEL_* env vars — so kitaru→zenml's own
+    # OpenTelemetry SDK is untouched (ADR-0014 §2).
     opik_api_key: SecretStr = SecretStr("")
     opik_workspace: str = "default"  # the ``Comet-Workspace`` OTLP header
     opik_project_name: str = "decode"  # the ``projectName`` OTLP header (Opik groups traces by it)
-    # The OTLP **base** URL. ``None`` → Comet cloud base
-    # (``https://www.comet.com/opik/api/v1/private/otel``); set to a self-hosted Opik base, e.g.
-    # ``http://localhost:5173/api/v1/private/otel``. The exporter appends ``/v1/traces``.
+    # The OTLP **base** URL: ``None`` → Comet cloud base; set to a self-hosted Opik base. The
+    # exporter appends ``/v1/traces``.
     opik_url_override: str | None = None
 
-    # --- Tool execution / output truncation (tasks 006/008/010) ---
+    # --- Tool execution / output truncation ---
     bash_timeout_s: float = 120.0
     max_output_lines: int = 2000
     max_output_bytes: int = 50_000
     web_fetch_timeout_s: float = 30.0
 
-    # --- Orchestration: the ungated ``sleep`` tool cap (task 021 / ADR-0003 §8) ---
-    # ``sleep(seconds)`` is bounded to this many seconds so a model cannot stall a turn
-    # indefinitely; a larger request is capped to this value (never rejected for being large).
+    # --- Orchestration (ADR-0003 §8) ---
+    # ``sleep(seconds)`` is capped to this value (never rejected) so a model cannot stall a turn.
     sleep_max_s: float = 60.0
 
     # --- Subagents: the ``agent`` tool + Explore-subagent runner caps (ADR-0013 §7,8) ---
-    # ``subagent_max_parallel`` caps how many read-only Explore children run at once, enforced by a
-    # per-running-loop ``asyncio.Semaphore`` (keep modest — fan-out multiplies model calls against the
-    # Gemini free-tier limits). ``subagent_max_requests`` is each child's
-    # ``UsageLimits(request_limit=…)`` runaway cap. ``subagent_result_max_bytes`` caps the child's
-    # returned report through the shared ``truncate()`` idiom (``tools/truncate.py``). All ``Field(gt=0)``
-    # like the LSP / sandbox timeouts — a non-positive value is a misconfiguration and fails fast.
+    # Parallel cap enforced by a per-running-loop Semaphore (keep modest — fan-out multiplies model
+    # calls); per-child request cap + report truncation via the shared truncate() idiom. All gt=0 —
+    # a non-positive value is a misconfiguration and fails fast.
     subagent_max_parallel: int = Field(4, gt=0)
     subagent_max_requests: int = Field(25, gt=0)
     subagent_result_max_bytes: int = Field(16_000, gt=0)
 
-    # --- Memory caps (task 012/013) ---
+    # --- Memory caps ---
     memory_max_lines: int = 200
     memory_max_bytes: int = 25_000
 
-    # --- Context compaction (ADR-0006) ---
-    # Window-relative two-tier cascade; settings only here (no readers yet — tasks 042/044/046/047).
-    # ``compaction_enabled`` gates ONLY the automatic cascade; manual ``/compact`` (task 045) ignores it.
+    # --- Context compaction (ADR-0006): window-relative two-tier cascade. ---
+    # ``compaction_enabled`` gates ONLY the automatic cascade; manual ``/compact`` ignores it.
     compaction_enabled: bool = True
-    # The active model's MAX *input* context window, in tokens — the single source of truth (also the
-    # TUI fill gauge, task 047). Default = Gemini 2.5 Flash's input window; set this to YOUR active
-    # model's input window. pydantic-ai exposes no model window, so this number is the contract.
+    # The active model's MAX *input* window, in tokens — the single source of truth (pydantic-ai
+    # exposes no model window, so this number is the contract). Default = Gemini 2.5 Flash.
     compaction_context_window_tokens: int = Field(1_048_576, gt=0)
-    # Per-tier reserve fractions: a tier fires when input_tokens >= window * (1 - reserve). Full fires
-    # at 80% full; micro fires EARLIER at 60% full. INVARIANT: micro reserves more than full so it fires
-    # first — ``microcompaction_reserve_fraction > compaction_reserve_fraction`` (asserted on defaults).
+    # A tier fires when input_tokens >= window * (1 - reserve). INVARIANT: micro reserves more than
+    # full so it fires first — ``microcompaction_reserve_fraction > compaction_reserve_fraction``.
     compaction_reserve_fraction: float = Field(0.20, ge=0.0, le=1.0)
     microcompaction_reserve_fraction: float = Field(0.40, ge=0.0, le=1.0)
-    # Token budget of the recent tail full compaction keeps verbatim, and the cutoff microcompaction
-    # treats as "recent" (snapped to a turn boundary by task 042).
+    # Token budget of the recent tail full compaction keeps verbatim (microcompaction's "recent" cutoff).
     compaction_keep_recent_tokens: int = 20_000
-    # Second level: when set, the on-exit MEMORY.md LLM compressor (task 046) runs at the
-    # ``memory_max_lines`` cap instead of pure drop-oldest. Reuses the existing memory caps — no new ones.
+    # When set, the on-exit MEMORY.md LLM compressor runs at the ``memory_max_lines`` cap instead of
+    # pure drop-oldest.
     memory_compression_enabled: bool = True
 
-    # --- Harness artifacts: everything decode writes lives under <cwd>/.decode (Fix 1). ---
+    # --- Harness artifacts: everything decode writes lives under <cwd>/.decode. ---
     decode_dir: Path = Path(".decode")
 
-    # --- Persistence: JSONL session log (task 014) ---
+    # --- Persistence: JSONL session log ---
     sessions_dir: Path = Path(".decode/sessions")
 
-    # --- Permissions: user allow/deny rules file (task 018) ---
-    # Optional personalization: {"permissions": {"allow": [...], "deny": [...]}}. Missing/malformed
-    # is non-fatal (the gate falls back to mode-only). Read only via this singleton.
+    # --- Permissions: optional {"permissions": {"allow": [...], "deny": [...]}} rules file. ---
+    # Missing/malformed is non-fatal (the gate falls back to mode-only).
     permissions_file: Path = Path(".decode/settings.json")
 
-    # --- Skills: project-local skills directory (task 025 / ADR-0004 §3) ---
-    # Project-authored skills live here (relative to cwd) as ``<name>/SKILL.md`` directories, not flat
-    # ``*.md`` files; each is keyed by its frontmatter ``name`` (directory name cosmetic) and a
-    # same-``name`` directory overrides a built-in skill. Missing dir → built-ins only. Read only via
-    # this singleton.
+    # --- Skills: project-local skills directory (ADR-0004 §3) ---
+    # ``<name>/SKILL.md`` directories keyed by frontmatter ``name`` (directory name cosmetic); a
+    # same-``name`` directory overrides a built-in skill. Missing dir → built-ins only.
     skills_dir: Path = Path(".decode/skills")
 
     # --- LSP / code intelligence (ADR-0007) ---
-    # The code-intelligence surface; settings only here (no readers yet — tasks 051/052/053/054).
-    # ``lsp_enabled`` is the master gate for the WHOLE feature (the ``lsp`` tool, the Diagnostics
-    # Enricher, and any server spawn). When ``False`` no Language Server is ever launched.
+    # ``lsp_enabled`` master-gates the WHOLE feature (the ``lsp`` tool, the Diagnostics Enricher, any
+    # server spawn): ``False`` → no Language Server is ever launched.
     lsp_enabled: bool = True
-    # The swappable stdio Language Server. Default spawns ``ty server`` (Astral's type-checker, same
-    # vendor as ruff/uv); a drop-in is documented (``pylsp`` or any stdio LSP server). The spawn is
-    # ``[lsp_server_command, *lsp_server_args]`` — keep the executable and its args split.
+    # The swappable stdio Language Server (default ``ty server``; ``pylsp`` is a documented drop-in).
+    # The spawn is ``[lsp_server_command, *lsp_server_args]`` — keep executable and args split.
     lsp_server_command: str = "ty"
     lsp_server_args: list[str] = ["server"]
-    # Gates ONLY the passive Diagnostics Enricher (task 053) — the errors-only block appended after a
-    # successful ``.py`` write/edit. Independent of the active ``lsp`` tool; both ride ``lsp_enabled``.
+    # Gates ONLY the passive Diagnostics Enricher (post-write/edit errors block), independent of the
+    # active ``lsp`` tool; both ride ``lsp_enabled``.
     lsp_diagnostics_on_edit: bool = True
-    # Per-request best-effort wall-clock timeout (seconds); the server's ``initialize`` is bounded too.
-    # The lazy single spawn per root amortizes the cost. A non-positive value fails fast (Field gt=0).
+    # Per-request best-effort wall-clock timeout (seconds); ``initialize`` is bounded too.
     lsp_request_timeout_s: float = Field(10.0, gt=0)
 
     # --- Kitaru durable runtime (ADR-0008) ---
-    # The Headless Runtime config surface (``decode run`` / ``runtime/``); settings only here — no
-    # readers yet (they land in tasks 058/059/061). ``runtime_enabled`` master-gates the WHOLE headless
-    # feature: ``False`` → ``decode run`` exits with a friendly line and never builds a Durable Flow.
+    # ``runtime_enabled`` master-gates the WHOLE headless feature: ``False`` → ``decode run`` exits
+    # with a friendly line and never builds a Durable Flow.
     runtime_enabled: bool = True
-    # ``KitaruAgent`` Checkpoint granularity. Default ``"calls"`` (per model/tool call): every ``decode
-    # run`` is **replay-ready** — a Replay can anchor before a specific model call, because each call is
-    # its own Checkpoint. Loop-safe on gemini (the wired provider): flow mode builds a keep-alive-free
-    # HTTP client so Kitaru's per-call event loops never reuse a connection across loops
-    # (``_flow_mode_http_client``, ADR-0010 §3; openrouter/modal would need the same wiring). ``"turn"``
-    # (one coarse Checkpoint per run) stays selectable as a cheaper opt-out — but
-    # a ``"turn"`` run can only be replayed whole, not before a specific call. HITL always forces
-    # ``"calls"`` regardless (``flow.py``).
+    # Checkpoint granularity. ``"calls"`` (default) makes every run replay-ready — each model/tool
+    # call is its own Checkpoint (loop-safe on gemini via the keep-alive-free flow-mode HTTP client,
+    # ADR-0010 §3). ``"turn"`` is a cheaper opt-out but replayable only whole. HITL always forces
+    # ``"calls"`` (``flow.py``).
     runtime_checkpoint_strategy: Literal["turn", "calls"] = "calls"
-    # The durable Wait (HITL) poll timeout (seconds) in flow mode; matches Kitaru's local 600s default.
-    # A non-positive value fails fast (Field gt=0). Task 059 reads it.
+    # The durable Wait (HITL) poll timeout (seconds); matches Kitaru's local 600s default.
     runtime_wait_timeout_s: float = Field(600.0, gt=0)
-    # When ``True``, flow-mode model construction resolves the provider API key through the Kitaru
-    # Credentials Proxy (Kitaru secrets) instead of reading the ``SecretStr`` from settings — so a
-    # deployed flow payload carries handles, not raw keys. Default ``False``: the secrets-proxy surface
-    # is the least-exampled in Kitaru (ADR-0008 §5) and must be verified first (task 061 reads it).
+    # When ``True``, flow-mode model construction resolves the provider key through the Kitaru
+    # Credentials Proxy (secrets) instead of settings — a deployed flow payload carries handles, not
+    # raw keys. Default ``False`` (opt-in; ADR-0008 §5).
     runtime_credentials_proxy_enabled: bool = False
-    # The Kitaru secret name the Credentials Proxy reads the provider key from when enabled (task 061).
+    # The Kitaru secret name the Credentials Proxy reads the provider key from when enabled.
     runtime_secret_name: str = "decode-llm-creds"
-    # When ``True``, a headless ``decode run`` flow hydrates the WHOLE ``Settings`` surface from the
-    # ``runtime_secret_name`` Kitaru secret (any ``.env.example`` var: LLM_PROVIDER, GEMINI_MODEL,
-    # OPENROUTER_*/MODAL_*, OPIK_API_KEY, tuning, …) via :class:`KitaruSecretSettingsSource`. Values
-    # land in this ``Settings`` object ONLY — never ``os.environ`` — and the real process env still
-    # overrides them. Default ``False`` and **headless-only**: the import-time singleton has the
-    # hydration flag off, so bare ``decode`` never imports kitaru (task 064 reads it). This is the
-    # secret-store config source, NOT the deferred sandbox Credential Proxy (header injection).
+    # When ``True``, a headless ``decode run`` hydrates the WHOLE ``Settings`` surface from the
+    # ``runtime_secret_name`` secret via :class:`KitaruSecretSettingsSource`. Values land in this
+    # ``Settings`` object ONLY — never ``os.environ`` — and the real process env still overrides
+    # them. Headless-only, so bare ``decode`` never imports kitaru. This is the secret-store config
+    # source, NOT the sandbox Credential Proxy (header injection).
     runtime_secret_store_config: bool = False
 
     # --- Sandboxing (ADR-0012; ADR-0011 §1,§5-7 retained) ---
-    # The ``bash`` execution boundary; the sandbox executor + its docker/modal backends read these
-    # settings. ``sandbox_mode`` selects the ``CommandExecutor`` the ``bash`` ``run`` seam uses
-    # for the whole process (chosen once at startup, fixed for the session). The default ``none`` keeps
-    # today's ``LocalExecutor`` (host subprocess), so every existing ``.env``/test is byte-unchanged.
-    # The cli startup guard (task 071) exits with a friendly line — in both the REPL and the headless
-    # ``decode run``/``replay`` pre-flight — when the chosen backend is unavailable (docker daemon down
-    # / modal creds missing): presence, not correctness (matching the provider-key guards).
+    # ``sandbox_mode`` selects the ``CommandExecutor`` for the whole process (chosen once at
+    # startup); ``none`` (default) keeps the host ``LocalExecutor``, byte-unchanged. An unavailable
+    # backend is a friendly startup / pre-flight error (presence, not correctness).
     sandbox_mode: Literal["none", "docker", "modal"] = "none"
-    # The worker image: ``docker`` pulls it directly; ``modal`` maps it via
-    # ``modal.Image.from_registry(...)``. Must include ``bash``. The default is astral's uv variant
-    # of python-slim — python 3.12 + ``uv`` preinstalled — so BOTH sandboxes come preconfigured to
-    # run python via ``uv`` (skill payloads say ``uv run .decode/skills/<name>/scripts/…``, and a
-    # per-session ``pip install uv`` bootstrap would cost seconds on every launch). git is NOT in the
-    # slim base, so each backend adds it on top (modal bakes an ``apt_install("git")`` layer; docker
-    # installs it into the fresh container at create) — a model ``git`` command in the Workspace works.
+    # The worker image (docker pulls it; modal maps it via ``Image.from_registry``). Must include
+    # ``bash``. The uv variant of python-slim means both sandboxes run python via ``uv`` out of the
+    # box (skill payloads say ``uv run …``). git is NOT in the slim base, so each backend adds it.
     sandbox_image: str = "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
-    # The git identity preconfigured in the sandbox (``git config --global user.name`` / ``user.email``),
-    # so a model ``git commit`` in the Workspace succeeds instead of erroring "Please tell me who you
-    # are". Defaults to the same ``decode`` / ``decode@localhost`` the hand-back stamps its own
-    # dirty-worktree capture commit with (``sandbox/handback.py``), so every decode-authored commit on
-    # the handed-back branch shares one identity. Override to author the model's commits as yourself
-    # (e.g. ``SANDBOX_GIT_USER_NAME="$(git config user.name)"``) or as a bot; set both empty to skip.
+    # The git identity preconfigured in the sandbox so a model ``git commit`` succeeds. Defaults to
+    # the same identity the hand-back stamps its capture commit with (``sandbox/handback.py``);
+    # override to author as yourself or a bot, set both empty to skip.
     sandbox_git_user_name: str = "decode"
     sandbox_git_user_email: str = "decode@localhost"
-    # The one git token for BOTH sandboxes' git push / ``gh pr create`` (ADR-0012 §10) — each backend
-    # honors it its own way (the deliberate **docker = Credential Proxy (cred-free) vs modal = direct
-    # injection** trade-off): **modal** injects it DIRECTLY as ``GITHUB_TOKEN`` (via ``modal.Secret`` +
-    # a baked git credential helper) so it is readable inside the remote sandbox; **docker** (headless
-    # only) feeds it to the Credential Proxy, which auto-engages when this is set NON-EMPTY and injects
-    # the auth header AFTER egress, so the worker holds no token — git is installed into that worker too,
-    # so its ``git push`` over the injected header has a client. Empty — unset (the default) or an
-    # explicit ``SANDBOX_GIT_TOKEN=`` — injects nothing (the proxy stays down); rely on the host-side git
-    # hand-back. Because modal keeps the token in the sandbox, use a **fine-grained PAT scoped to the
-    # target repo** (Contents + Pull requests), never a broad classic token.
+    # The one git token for BOTH sandboxes' git push / PRs (ADR-0012 §10) — the deliberate docker =
+    # Credential Proxy (worker token-free, header injected after egress; auto-engages when non-empty)
+    # vs modal = direct injection (``GITHUB_TOKEN`` via ``modal.Secret``, readable in-sandbox)
+    # trade-off. Empty injects nothing — rely on the host-side hand-back. Because modal keeps it
+    # in-sandbox, use a fine-grained PAT scoped to the target repo, never a broad classic token.
     sandbox_git_token: SecretStr | None = None
-    # The HOST directory bind-mounted at the docker Worker's ``/workspace``, cwd-relative like every
-    # ``.decode`` path. Under ADR-0012 it IS the isolated Workspace — a ``git clone`` of ``sandbox_repo``
-    # (or empty) — and the file tools operate on it THROUGH the backend seam (docker: pathlib on the
-    # mount), never on the host repo tree; skills are seeded in host-side by ``seed_skills``, not mounted.
+    # The HOST directory bind-mounted at the docker Worker's ``/workspace`` — it IS the isolated
+    # Workspace. File tools operate on it THROUGH the backend seam, never on the host repo tree;
+    # skills are seeded in host-side by ``seed_skills``, not mounted.
     sandbox_workspace_dir: Path = Path(".decode/sandbox")
-    # The repo host-side cloned into the Workspace at its committed HEAD on launch (ADR-0012 §3): a
-    # URL or a local path, using the user's ambient git creds; empty (the default) → an empty
-    # Workspace. The ``--repo`` CLI flag overrides it and ``--local`` picks a fast local clone (task
-    # 082). Consumed only in a sandbox mode — ``--repo``/``SANDBOX_REPO`` with ``SANDBOX_MODE=none`` is
-    # a friendly startup error (task 082). ``workspace.prepare_workspace`` does the clone.
+    # The repo cloned host-side into the Workspace at launch (URL or local path, ambient git creds);
+    # empty → an empty Workspace. ``--repo`` overrides it; consumed only in a sandbox mode (ADR-0012 §3).
     sandbox_repo: str = ""
     # Max lifetime (seconds) of a REMOTE (modal) sandbox before Modal reaps it; docker's session
-    # container has no lifetime cap (it runs ``sleep infinity``). A non-positive value fails fast
-    # (Field gt=0).
+    # container has no lifetime cap (``sleep infinity``).
     sandbox_timeout_s: float = Field(600.0, gt=0)
-    # Enable the headless + docker-only Credential Proxy (ADR-0011 §6): a mitmproxy addon container that
-    # injects tool credentials AFTER a request leaves the worker, so the worker never holds a secret.
-    # Default ``False`` (opt-in).
+    # Enable the headless + docker-only Credential Proxy (ADR-0011 §6): a mitmproxy container injects
+    # tool credentials AFTER a request leaves the worker, so the worker never holds a secret. Opt-in.
     sandbox_credential_proxy_enabled: bool = False
     # The mitmproxy addon container image the Credential Proxy runs.
     sandbox_proxy_image: str = "mitmproxy/mitmproxy"
@@ -324,13 +252,11 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Insert the Kitaru secret-store source below env, above .env (ADR-0008 §5, task 064).
+        """Insert the Kitaru secret-store source below env, above .env (ADR-0008 §5).
 
-        Precedence is left-to-right (earlier = higher priority), so the Kitaru source sits between
-        ``env_settings`` and ``dotenv_settings``: a value in the **real process env wins over the
-        Kitaru secret**, and the **Kitaru secret wins over ``.env`` / field defaults**. The source is
-        inert (returns ``{}``, imports no kitaru) unless a headless flow has activated it, so this
-        ordering is a no-op for the interactive REPL and every default build.
+        Precedence is left-to-right: the real process env wins over the Kitaru secret, which wins
+        over ``.env`` / defaults. The source is inert unless a headless flow activated it, so this
+        ordering is a no-op for the REPL and every default build.
         """
         return (
             init_settings,
@@ -347,13 +273,10 @@ settings = Settings()
 def reload_settings() -> Settings:
     """Rebuild the module-level ``settings`` singleton **in place** from its sources (ADR-0008 §5).
 
-    The headless ``decode run`` flow calls this (through the ``runtime/flow.py`` hydration context
-    manager, with :func:`set_secret_hydration_active` on) so ``build_agent`` and every other reader
-    that did ``from decode.config.settings import settings`` sees the freshly hydrated config — the
-    rebuild mutates the existing object rather than rebinding the name, so those shared references
-    update too. A fresh :class:`Settings` is constructed (re-reading env, the Kitaru secret when the
-    source is active, ``.env``, and defaults), then its field values are copied into the singleton.
-    Verified to emit **zero warnings** under ``filterwarnings=["error"]`` on pydantic v2.
+    Mutates the existing object rather than rebinding the name, so every reader that did
+    ``from decode.config.settings import settings`` sees the fresh config. Called by the headless
+    hydration context manager with the secret source active. Verified to emit zero warnings under
+    ``filterwarnings=["error"]`` on pydantic v2.
     """
     fresh = Settings()
     settings.__dict__.update(fresh.__dict__)

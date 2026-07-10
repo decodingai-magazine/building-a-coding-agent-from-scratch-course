@@ -1,24 +1,11 @@
-"""Unit tests for the file/search tools' **sandbox routing** through the backend seam (ADR-0012 §4).
+"""Unit tests for the file/search tools' sandbox routing through the backend seam (ADR-0012 §4).
 
-Task 081 routes ``read`` / ``write`` / ``edit`` / ``glob`` / ``grep`` through the active session's
-:class:`~decode.sandbox.executor.SandboxBackend` in a sandbox mode, while the shared logic (containment
-path-math, edit's search/replace, read numbering, grep rendering) stays host-side above the seam. These
-tests pin that contract **hermetically** — no docker, no modal:
-
-* :func:`decode.tools.files._resolve_logical` — the backend-agnostic containment path-math (the deferred
-  ``..`` protection landing here) — rejects escapes and normalizes ``.`` / ``..`` on the logical root;
-* :func:`decode.tools.files._glob_match` reproduces :meth:`pathlib.Path.glob` (so a sandbox ``glob`` has
-  output-parity with the host implementation);
-* a **recording** fake backend proves ``read`` / ``write`` / ``edit`` route their byte transport through
-  the backend's file ops on **logical** (workspace-relative) paths, and a **local-exec** fake (real
-  ``find`` / ``grep`` + pathlib on a host tmp dir — DockerBackend's mount semantics without a container)
-  proves ``glob`` / ``grep`` execute in the sandbox with output-parity to ``none`` mode on the same tree;
-* containment escapes are rejected by path-math **before** any backend op runs (no leak).
-
-The sync tools bridge to the async backend via :func:`anyio.from_thread.run` (Pydantic AI runs a sync
-tool in a worker thread), so the routing tests invoke the tool through :func:`anyio.to_thread.run_sync`
-— exactly the thread context the real loop provides — while the escape tests (which raise before the
-bridge) call directly. The seam is injected by patching :func:`decode.tools.files._active_backend`.
+Hermetic (no docker, no modal): the seam is injected by patching ``files._active_backend``.
+A recording fake backend proves read/write/edit route bytes on logical (workspace-relative)
+paths; a local-exec fake (real ``find``/``grep`` + pathlib on a host tmp dir) proves glob/grep
+output-parity with ``none`` mode; containment escapes are rejected by path-math before any
+backend op. Sync tools bridge via ``anyio.from_thread.run``, so routing tests invoke them
+through ``anyio.to_thread.run_sync`` — the thread context the real loop provides.
 """
 
 from __future__ import annotations
@@ -154,7 +141,7 @@ class _LocalBackend:
         )
 
 
-# --- _resolve_logical: the backend-agnostic containment path-math (the deferred `..` protection) ----
+# _resolve_logical: the backend-agnostic containment path-math
 
 
 @pytest.mark.parametrize(
@@ -188,7 +175,7 @@ def test_resolve_logical_rejects_escapes(raw: str):
         files._resolve_logical(raw)
 
 
-# --- _glob_match: reproduces Path.glob (the output-parity core) --------------------------------------
+# _glob_match: reproduces Path.glob
 
 
 def test_glob_match_matches_pathlib_across_patterns(tmp_path: Path):
@@ -218,7 +205,7 @@ def test_glob_match_matches_pathlib_across_patterns(tmp_path: Path):
         assert got == expected, pattern
 
 
-# --- read / write / edit: routing through the backend on LOGICAL paths -------------------------------
+# read / write / edit: routing through the backend on LOGICAL paths
 
 
 async def test_read_routes_through_backend_read_bytes_on_logical_path(mocker, tmp_path: Path):
@@ -302,7 +289,7 @@ async def test_edit_missing_file_maps_to_model_retry(mocker, tmp_path: Path):
     assert backend.writes == []
 
 
-# --- containment: escapes rejected by path-math BEFORE any backend op (no leak) ----------------------
+# containment: escapes rejected before any backend op
 
 
 @pytest.mark.parametrize(
@@ -332,7 +319,7 @@ def test_file_tools_reject_dotdot_escapes_before_touching_the_backend(
     assert backend.stat_calls == []
 
 
-# --- glob / grep: execute in the sandbox with output-parity to none mode -----------------------------
+# glob / grep: sandbox output-parity with none mode
 
 
 def _seed_tree(root: Path) -> None:
@@ -410,7 +397,7 @@ async def test_grep_no_matches_is_a_model_retry_in_sandbox(mocker, tmp_path: Pat
         await _call(files.grep, _ctx(tmp_path), "ZZZ-absent-token")
 
 
-# --- none mode: the seam is NOT engaged (byte-identical direct-pathlib) ------------------------------
+# none mode: the seam is NOT engaged
 
 
 def test_none_mode_never_engages_the_backend_seam(tmp_path: Path):
@@ -434,7 +421,7 @@ async def test_gating_still_fires_before_the_seam_in_sandbox(mocker, tmp_path: P
     assert backend.writes == []
 
 
-# --- never-crash: infra failures below the seam render as ModelRetry (not a raw traceback) -----------
+# never-crash: infra failures below the seam render as ModelRetry
 
 
 class _EscapingBackend:

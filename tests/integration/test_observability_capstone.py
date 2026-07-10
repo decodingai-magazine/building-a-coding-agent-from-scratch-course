@@ -1,58 +1,18 @@
-"""The Opik-observability capstone: one turn's whole span tree through the REAL stack (ADR-0014).
+"""Opik-observability capstone (ADR-0014): one turn's whole span tree through the REAL stack.
 
-The living proof for the Opik observability feature (tasks 091-094) — and it doubles as
-documentation, in the style of :mod:`tests.integration.test_milestone1_capstone` and
-:mod:`tests.integration.test_subagents_capstone` (drive the real wiring; swap only the model boundary
-and the span sink). Milestone 10 is **monitoring** (tracing), not evaluation: every REPL turn, every
-subagent fan-out, and every free-riding compaction call becomes an OTel span tree keyed to an Opik
-conversation Thread, exported from settings to Opik. This file asserts the *integrated* milestone
-story, not a per-AC restatement (the per-AC span assertions live in
-:mod:`tests.integration.test_opik_repl_trace` / :mod:`tests.integration.test_opik_headless_trace`).
-
-**REAL (exercised end to end):**
-
-* the real :func:`decode.agent.factory.build_agent` — the real flat tool registry, the per-agent
-  ``prepare=`` tool narrowing, AND the set-once ``set_main_agent`` subagent-spawn seam (ADR-0013 §6);
-* the real :class:`decode.harness.runner.Runner` + :class:`decode.agent.loop.AgentTurnHandler` +
-  :class:`decode.permissions.gate.PermissionGate` — the whole turn lifecycle, gate routing, and the
-  per-turn ``root_span`` the handler opens around ``__call__`` (ADR-0014 §4);
-* the real :func:`decode.tui.render.render_event` on **every** emitted event — the render path is
-  proven not to crash while tracing is active;
-* the real :class:`decode.context.session_log.SessionLog` — persistence runs alongside tracing, and
-  its ``session_id`` is the Opik Thread id wired onto the turn's root span;
-* the **GLOBAL** :func:`logfire.instrument_pydantic_ai` — one call instruments the main loop, the
-  in-turn compaction summarizer, AND the subagent children with zero per-call-site code (ADR-0014 §3);
-* the real :func:`decode.observability.init_tracing` — driven for real in the no-op guard test (no key
-  → ``False``, zero spans) and in the live smoke (real key → real OTLP export to Opik).
-
-**FAKED (the only seams swapped):** the model is a scripted
-:class:`~pydantic_ai.models.function.FunctionModel` that drives BOTH the parent turn and the subagent
-children on the *same* ``Agent`` (``agent.override(model=…)`` is contextvar-scoped, so it covers the
-child's nested run — ADR-0013 §6); the span sink is ``logfire.testing``'s in-memory ``TestExporter``
-(``capfire``) standing in for the OTLP→Opik exporter; and a **fake** ``opik_api_key`` is set only as the
-activation trigger. In the hermetic slice ``tracing._active`` is forced ``True`` + pydantic-ai is
-instrumented directly (not via ``init_tracing``, whose real ``logfire.configure`` would replace
-``capfire``'s exporter and could flush to the network) — the same fidelity trade the 092/093 span tests
-make. No network, no key in the always-run slice.
-
-Each hermetic test pins one milestone guarantee:
-
-1. :func:`test_subagent_child_spans_nest_in_the_parent_turn_trace_with_child_token_usage` — **the
-   flagship, and the one assertion no other file makes**: a parent turn that fans out ``agent(...)``
-   calls has the child ``agent.run()`` model AND tool spans nested INSIDE the parent turn's
-   ``chat_turn`` trace, with the CHILD's ``gen_ai.usage.*`` tokens visible on the child LLM span —
-   closing ADR-0013 §9's "child token spend invisible until Opik lands (M10)".
-2. :func:`test_full_turn_is_one_chat_turn_tree_with_nested_spans_and_usage` — the integrated
-   living-doc restatement: one ``chat_turn`` root (``thread_id`` = the session id), agent-run / ``chat``
-   / ``running tool`` spans nested under it, tokens on the LLM span (ADR-0014 §4).
-3. :func:`test_in_turn_compaction_nests_under_the_turn_root` — an in-turn compaction summarizer call
-   rides free under the same global instrumentation and nests under the turn root (ADR-0014 §4).
-4. :func:`test_untraced_turn_is_a_noop_zero_spans_and_byte_identical_events` — the no-op proof: with no
-   key the real ``init_tracing()`` returns ``False`` and the identical turn emits ZERO spans while
-   producing a byte-identical event stream (mutation-proofs the activation guard — ADR-0014 §1).
-
-Finally :func:`test_live_opik_export_smoke` runs ONE real Gemini turn with real Opik export, SKIPPED
-unless BOTH ``OPIK_API_KEY`` and ``GEMINI_API_KEY`` are set.
+Proves the integrated M10 tracing story (the per-AC span assertions live in
+test_opik_repl_trace / test_opik_headless_trace): real build_agent (incl. the set-once
+subagent-spawn seam), real Runner + AgentTurnHandler + gate + the per-turn ``root_span``,
+real render_event on every event, real SessionLog (its session_id IS the Opik thread id),
+and the one GLOBAL ``instrument_pydantic_ai``. Swapped/faked: one scripted FunctionModel
+drives the parent turn AND the subagent children; capfire's in-memory TestExporter stands in
+for the OTLP→Opik exporter; ``tracing._active`` is forced True with a fake opik_api_key
+(init_tracing's real ``logfire.configure`` would replace capfire's exporter). The hermetic
+tests pin: child spans nest in the parent turn trace with child tokens visible (the flagship,
+ADR-0013 §9); one chat_turn tree with usage; in-turn compaction nests under the turn root;
+no key → zero spans + a byte-identical event stream. Offline vs live: the hermetic slice
+always runs with no network/key; only test_live_opik_export_smoke is skipif-gated on
+OPIK_API_KEY + GEMINI_API_KEY.
 """
 
 from __future__ import annotations
@@ -127,10 +87,8 @@ _LIVE_OPIK_KEY = _configured_key("opik_api_key")
 _LIVE_GEMINI_KEY = _configured_key("gemini_api_key")
 
 
-# ================================================================================================
-# Fixtures — mirror the 092/093 span-test activation: capfure's in-memory exporter + a forced
+# Fixtures — mirror the 092/093 span-test activation: capfire's in-memory exporter + a forced
 # ``_active`` + direct global instrumentation, with an autouse save/restore so nothing leaks.
-# ================================================================================================
 
 
 @pytest.fixture(autouse=True)
@@ -174,10 +132,8 @@ def active_tracing(monkeypatch, capfire) -> CaptureLogfire:  # noqa: F811
     return capfire
 
 
-# ================================================================================================
 # Scripted-model plumbing — one FunctionModel drives the streamed parent turn (``agent.iter``) AND
 # the non-streamed subagent child (``agent.run``), from one ``function`` (adapted from the M9 capstone).
-# ================================================================================================
 
 
 def _tool_returned(messages: list[ModelMessage], name: str) -> bool:
@@ -271,10 +227,8 @@ def _skeleton_summarizer() -> FunctionModel:
     return FunctionModel(fill)
 
 
-# ================================================================================================
 # Recording harness — a sink that renders every event through the REAL render_event (proving the
 # path), plus deny-if-called resolvers a read-only turn/fan-out must never invoke (M9 idiom).
-# ================================================================================================
 
 
 class _RecordingSink:
@@ -342,9 +296,7 @@ async def _run_turn(runner: Runner, prompt: str) -> None:
     await runner.wait_idle()
 
 
-# ================================================================================================
 # Span selectors + tree helpers
-# ================================================================================================
 
 
 def _chat_turn_roots(spans: list[dict]) -> list[dict]:
@@ -383,9 +335,7 @@ def _descends_through_tool(span: dict, by_id: dict[int, dict]) -> bool:
     return False
 
 
-# ================================================================================================
 # 1. THE FLAGSHIP — subagent child spans nest in the parent turn trace, child tokens visible (§9).
-# ================================================================================================
 
 
 async def test_subagent_child_spans_nest_in_the_parent_turn_trace_with_child_token_usage(
@@ -448,9 +398,7 @@ async def test_subagent_child_spans_nest_in_the_parent_turn_trace_with_child_tok
     assert parent_model_spans, "the parent turn's own model legs must remain parent-scoped"
 
 
-# ================================================================================================
 # 2. The integrated living-doc tree — one chat_turn root, nested spans, tokens (ADR-0014 §4).
-# ================================================================================================
 
 
 async def test_full_turn_is_one_chat_turn_tree_with_nested_spans_and_usage(
@@ -508,9 +456,7 @@ async def test_full_turn_is_one_chat_turn_tree_with_nested_spans_and_usage(
     assert "i read the notes" in sink.rendered
 
 
-# ================================================================================================
 # 3. In-turn compaction rides free — the summarizer call nests under the turn root (ADR-0014 §4).
-# ================================================================================================
 
 
 async def test_in_turn_compaction_nests_under_the_turn_root(active_tracing, tmp_path, monkeypatch):
@@ -560,9 +506,7 @@ async def test_in_turn_compaction_nests_under_the_turn_root(active_tracing, tmp_
         assert span["parent"] is not None
 
 
-# ================================================================================================
 # 4. No-op proof — no key → init_tracing() False + ZERO spans + a byte-identical event stream (§1).
-# ================================================================================================
 
 
 async def test_untraced_turn_is_a_noop_zero_spans_and_byte_identical_events(capfire, tmp_path):  # noqa: F811
@@ -622,9 +566,7 @@ async def test_untraced_turn_is_a_noop_zero_spans_and_byte_identical_events(capf
     assert on_sink.type_sequence() == off_sink.type_sequence()
 
 
-# ================================================================================================
 # 5. Live Opik export smoke — ONE real Gemini turn + real Opik export; SKIPPED without both keys.
-# ================================================================================================
 
 
 @pytest.mark.filterwarnings("ignore::ResourceWarning")

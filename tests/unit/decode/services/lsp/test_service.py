@@ -76,7 +76,7 @@ def _request_for(fake: FakeLanguageServer, method: str) -> dict[str, Any]:
     return next(req for req in fake.requests if req.get("method") == method)
 
 
-# --- framing round-trips in both directions ----------------------------------------------------
+# framing round-trips in both directions
 
 
 async def test_framing_roundtrips_both_directions(tmp_path: Path):
@@ -92,7 +92,7 @@ async def test_framing_roundtrips_both_directions(tmp_path: Path):
     assert await client._read() == {"jsonrpc": "2.0", "id": 7, "result": {"ok": True}}
 
 
-# --- handshake order + the four ops mapped to 1-based decode-native value objects ---------------
+# handshake order + the four ops mapped to 1-based decode-native value objects
 
 
 async def test_definition_handshake_order_and_1based_location(tmp_path: Path, mocker):
@@ -180,7 +180,7 @@ async def test_definition_null_result_is_none_not_unavailable(tmp_path: Path, mo
     assert result is None
 
 
-# --- responses are matched by JSON-RPC id, not by arrival order --------------------------------
+# responses are matched by JSON-RPC id, not by arrival order
 
 
 async def test_out_of_order_response_resolves_by_id(tmp_path: Path, mocker):
@@ -195,7 +195,7 @@ async def test_out_of_order_response_resolves_by_id(tmp_path: Path, mocker):
     assert result == Location(path="pkg/other.py", line=3, column=1)
 
 
-# --- lazy, cached, one server per root ---------------------------------------------------------
+# lazy, cached, one server per root
 
 
 async def test_same_root_spawns_once(tmp_path: Path, mocker):
@@ -251,7 +251,7 @@ async def test_crashed_client_is_respawned_not_stuck_unavailable(tmp_path: Path,
     )  # the fresh client is cached
 
 
-# --- best-effort: broken spawn, dead process, timeout, malformed frame, disabled ---------------
+# best-effort: broken spawn, dead process, timeout, malformed frame, disabled
 
 
 async def test_broken_spawn_is_cached_no_retry_storm(tmp_path: Path, mocker):
@@ -308,7 +308,7 @@ async def test_disabled_short_circuits_without_spawning(tmp_path: Path, mocker):
     spawn.assert_not_called()  # lsp_enabled == False never spawns a server
 
 
-# --- the sync diagnostics-on-edit bridge (task 053) — patched per ADR-0007 §5 -------------------
+# the sync diagnostics-on-edit bridge
 
 
 def test_diagnostics_on_edit_disabled_does_not_bridge(tmp_path: Path, mocker):
@@ -349,7 +349,7 @@ def test_diagnostics_on_edit_swallows_bridge_failure(tmp_path: Path, mocker):
     assert lsp_service.diagnostics_on_edit(tmp_path, "pkg/mod.py") is None
 
 
-# --- shutdown (app-exit path, task 054) --------------------------------------------------------
+# shutdown (app-exit path)
 
 
 async def test_shutdown_all_terminates_and_clears(tmp_path: Path, mocker):

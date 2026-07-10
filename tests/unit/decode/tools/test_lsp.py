@@ -1,19 +1,10 @@
-"""Unit tests for the active ``lsp`` Code Intelligence tool (``decode.tools.lsp``; ADR-0007).
+"""Unit tests for the active ``lsp`` Code Intelligence tool (``decode.tools.lsp``) — ADR-0007.
 
-ADR-0007 (the active channel): ``lsp`` is a single READ_ONLY tool with a four-op surface
-(``definition`` / ``references`` / ``hover`` / ``diagnostics``) over the task-051 LSP Service. It
-auto-allows like ``read`` / ``web_fetch`` (raises :class:`pydantic_ai.ApprovalRequired` until
-approved; the gate then auto-allows it by READ_ONLY kind), returns model-readable ``path:line:column``
-/ hover / diagnostics strings (1-based), and maps every recoverable problem — unknown op, missing
-``line``/``column`` for a position op, an out-of-tree/missing path, and the service reporting
-**unavailable** — to a :class:`pydantic_ai.ModelRetry` so the loop never crashes. Crucially, the
-service's ``UNAVAILABLE`` ("no answer at all") becomes a retry, while ``None`` / an empty list
-("answered, found nothing") becomes the plain ``"no X"`` string — **not** a retry.
-
-**No real ``ty``.** Every test fakes the task-051 service seam by patching the four async ops on the
-``decode.services.lsp`` package the tool calls through — no subprocess, no language server — and drives
-the tool directly with a hand-built :class:`RunContext` (mirroring ``test_web.py``), plus one run
-**through a real agent** proving the auto-allow path end to end.
+Covers the four-op surface (definition/references/hover/diagnostics), 1-based rendering, the
+sandbox postures (docker operates on the workspace, modal is disabled), and error mapping:
+``UNAVAILABLE`` ("no answer at all") → ``ModelRetry``, while ``None``/empty ("answered, found
+nothing") → the plain "no X" string, not a retry. No real ``ty``: the four async ops on the
+``decode.services.lsp`` seam are patched; one run through a real agent proves auto-allow.
 """
 
 import json
@@ -83,7 +74,7 @@ def _patch_op(mocker, op_name: str, result: object) -> None:
     mocker.patch.object(lsp_service, op_name, _fake)
 
 
-# --- registry classification ----------------------------------------------------------------
+# registry classification
 
 
 def test_lsp_is_registered_read_only():
@@ -92,7 +83,7 @@ def test_lsp_is_registered_read_only():
     assert "lsp" in {spec.name for spec in TOOL_SPECS}
 
 
-# --- gating: lsp auto-allows (defers like read/web_fetch; READ_ONLY → no prompt) -------------
+# gating
 
 
 async def test_lsp_requires_approval_when_not_approved(tmp_path: Path, mocker):
@@ -109,7 +100,7 @@ async def test_lsp_requires_approval_when_not_approved(tmp_path: Path, mocker):
     sentinel.assert_not_called()
 
 
-# --- sandbox postures (ADR-0012 §7): none+docker operate on the workspace, modal is disabled --------
+# sandbox postures: none+docker operate on the workspace, modal is disabled
 
 
 async def test_lsp_disabled_in_the_modal_sandbox_with_a_friendly_note(tmp_path: Path, mocker):
@@ -144,7 +135,7 @@ async def test_lsp_operates_on_the_workspace_path_in_docker(tmp_path: Path, mock
     assert captured["cwd"] == tmp_path  # pointed at the Workspace (deps.cwd), not disabled
 
 
-# --- definition -----------------------------------------------------------------------------
+# definition
 
 
 async def test_lsp_definition_returns_location_one_based(tmp_path: Path, mocker):
@@ -167,7 +158,7 @@ async def test_lsp_definition_none_returns_no_definition_found(tmp_path: Path, m
     assert out == "no definition found"
 
 
-# --- references -----------------------------------------------------------------------------
+# references
 
 
 async def test_lsp_references_returns_counted_list_one_based(tmp_path: Path, mocker):
@@ -208,7 +199,7 @@ async def test_lsp_references_empty_returns_no_references_found(tmp_path: Path, 
     assert out == "no references found"
 
 
-# --- hover ----------------------------------------------------------------------------------
+# hover
 
 
 async def test_lsp_hover_returns_text(tmp_path: Path, mocker):
@@ -230,7 +221,7 @@ async def test_lsp_hover_empty_returns_no_hover_info(tmp_path: Path, mocker, emp
     assert out == "no hover info"
 
 
-# --- diagnostics ----------------------------------------------------------------------------
+# diagnostics
 
 
 async def test_lsp_diagnostics_returns_compact_list_all_severities(tmp_path: Path, mocker):
@@ -273,7 +264,7 @@ async def test_lsp_diagnostics_ignores_line_and_column(tmp_path: Path, mocker):
     assert out == "no diagnostics"
 
 
-# --- bad arguments → ModelRetry (never a crash) ---------------------------------------------
+# bad arguments → ModelRetry
 
 
 async def test_lsp_unknown_op_returns_model_retry_listing_ops(tmp_path: Path, mocker):
@@ -312,7 +303,7 @@ async def test_lsp_missing_path_returns_model_retry(tmp_path: Path):
     assert "no such file" in str(excinfo.value).lower()
 
 
-# --- the service is unavailable → ModelRetry (distinct from "found nothing") -----------------
+# service unavailable → ModelRetry (distinct from "found nothing")
 
 
 @pytest.mark.parametrize(
@@ -337,7 +328,7 @@ async def test_lsp_unavailable_returns_model_retry(tmp_path: Path, mocker, op, k
     assert "read" in message and "grep" in message
 
 
-# --- through a real agent: forced lsp call auto-allows (no prompt) ---------------------------
+# through a real agent: forced lsp call auto-allows
 
 
 def _agent(mocker):

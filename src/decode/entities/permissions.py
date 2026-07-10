@@ -1,20 +1,8 @@
 """Shared value objects for the permission gate (ADR-0003 §1-3).
 
-Two frozen models cross the loop / gate / TUI boundary:
-
-* :class:`PermissionRequest` — *what* the gate is being asked about: the tool name, a
-  human-readable argument summary, and the call's :class:`~decode.permissions.types.ToolKind`
-  (which, with the active mode, decides allow/ask/deny). It carries the Pydantic AI
-  ``tool_call_id`` so a decision can be routed back to the exact deferred call it answers.
-* :class:`PermissionDecision` — the gate's verdict: an :class:`PermissionOutcome`
-  (``allow`` / ``ask`` / ``deny``) plus the :class:`~decode.permissions.types.PermissionMode`
-  it was evaluated under (default ``DEFAULT``), and an optional human-facing ``reason`` (e.g. a
-  denial message fed back to the model). An ``ALLOW`` / ``DENY`` outcome may come straight from
-  the gate (auto-allow / auto-deny by mode) or from the human via the resolver on an ``ASK``.
-
-These live in ``entities/`` (not ``permissions/``) because they are the contract the agent
-loop, the gate, and the TUI all share — frozen + slotted so they are cheap and safe to pass
-across the queue/stream boundary, mirroring :mod:`decode.entities.events`.
+:class:`PermissionRequest` (what the gate is asked about) and :class:`PermissionDecision` (its
+verdict) are the frozen models crossing the loop / gate / TUI boundary. They live in
+``entities/`` (not ``permissions/``) because all three layers share them.
 """
 
 from __future__ import annotations
@@ -28,9 +16,8 @@ from decode.permissions.types import PermissionMode, ToolKind
 class PermissionOutcome(enum.Enum):
     """The three verdicts the gate can return (ADR-0003 §1).
 
-    ``ASK`` means "route to the human". ``ALLOW`` / ``DENY`` are terminal verdicts the gate may
-    decide directly (mode-driven auto-allow / auto-deny) or that the resolver produces from the
-    human's answer. (Note: this is the *outcome* ``ASK`` — the M1 ``ASK`` *mode* value is gone.)
+    ``ASK`` routes to the human; ``ALLOW`` / ``DENY`` are terminal (from the gate directly, or
+    from the resolver on an ``ASK``).
     """
 
     ALLOW = "allow"
@@ -42,15 +29,10 @@ class PermissionOutcome(enum.Enum):
 class PermissionRequest:
     """A gated tool call the gate (and possibly the human) is asked to approve.
 
-    ``args`` is an already-rendered, human-readable summary of the call arguments (the loop
-    serializes the tool-call args before constructing the request — the gate never sees raw
-    argument objects). ``kind`` is the tool's :class:`~decode.permissions.types.ToolKind`: the
-    gate evaluates it against the active mode (default ``OTHER`` — the safe, ask/deny-leaning
-    classification for an unclassified call). ``subject`` is the per-kind string that allow/deny
-    Permission Rules glob against (ADR-0003 §4): ``bash`` → the command, file tools → the path,
-    ``web_fetch`` → the url, everything else → the tool name; the loop fills it via
-    :func:`decode.permissions.rules.subject_for` and it defaults to ``""``. ``tool_call_id`` ties
-    the request to the Pydantic AI deferred call it came from (``None`` for ad-hoc checks).
+    ``args`` is an already-rendered summary (the gate never sees raw argument objects); ``kind``
+    defaults to the safe ``OTHER``; ``subject`` is the per-kind string Permission Rules glob
+    against (filled via :func:`decode.permissions.rules.subject_for`); ``tool_call_id`` ties the
+    request to the Pydantic AI deferred call it came from (``None`` for ad-hoc checks).
     """
 
     tool_name: str
@@ -69,10 +51,8 @@ class PermissionRequest:
 class PermissionDecision:
     """The gate's verdict on a :class:`PermissionRequest` (ADR-0003 §1,3).
 
-    ``outcome`` is the verdict; ``mode`` is the :class:`~decode.permissions.types.PermissionMode`
-    it was evaluated under (default ``DEFAULT``); ``reason`` is an optional human-facing message
-    — used for the denial message fed back to the model. Construct via the :meth:`allow` /
-    :meth:`ask` / :meth:`deny` factories rather than the raw fields.
+    ``reason`` is an optional human-facing message (e.g. the denial fed back to the model).
+    Construct via the :meth:`allow` / :meth:`ask` / :meth:`deny` factories.
     """
 
     outcome: PermissionOutcome

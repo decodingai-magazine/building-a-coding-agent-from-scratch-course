@@ -45,14 +45,6 @@ dependencies = [
     "logfire>=4.37.0",
 ]
 
-# pydantic-ai (above) is the agent loop (ReAct) for src/decode/agent/; it pulls in
-# google-genai (the Gemini LLM API) transitively, so both are now installed.
-# Added as the course progresses — `uv add <pkg>` when you reach the step:
-#   fastmcp        — MCP tool factory + servers     → src/decode/tools/, services/
-#   opik           — observability / tracing        → src/decode/observability/
-#   modal          — remote sandbox + model serving → src/decode/sandbox/, services/
-#   kitaru         — durability runtime (confirm package name/source) → src/decode/runtime/
-
 [project.scripts]
 decode = "decode.cli:cli"
 
@@ -87,10 +79,6 @@ select = [
 ignore = [
     "E501",     # line length — the formatter owns this
 ]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101"]    # assert is the whole point of tests
-"scripts/**/*.py" = ["T201"]  # operator scripts may print
 
 [tool.ruff.format]
 quote-style = "double"

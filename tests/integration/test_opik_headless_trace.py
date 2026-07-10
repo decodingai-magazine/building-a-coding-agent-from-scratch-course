@@ -80,11 +80,9 @@ _READ_TARGET = "spec.md"
 _READ_CONTENTS = "trace this headless run"
 
 
-# ================================================================================================
 # Hermeticity — redirect the Kitaru/ZenML store under tmp_path and release every straggler (copied
 # from test_runtime_capstone: a live @flow leaves ZenML's SQLite engine + the run_sync event loop
 # behind, which filterwarnings=["error"] turns into errors when finalized during a later test).
-# ================================================================================================
 
 
 @pytest.fixture(autouse=True)
@@ -135,11 +133,9 @@ def _close_idle_event_loop() -> None:
         asyncio.set_event_loop(None)
 
 
-# ================================================================================================
 # Tracing activation — force _active True against capfire's in-memory exporter (mirrors the REPL
 # trace test): the flow's own init_tracing() then early-returns (no reconfigure) and root_span opens
 # real spans. An autouse fixture saves/restores the global instrumentation + module flag.
-# ================================================================================================
 
 
 @pytest.fixture(autouse=True)

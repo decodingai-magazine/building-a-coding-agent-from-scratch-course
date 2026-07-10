@@ -1,18 +1,10 @@
-"""Unit tests for the read-only file tools (``decode.tools.files``).
+"""Unit tests for the file tools (``decode.tools.files``) — ADR-0002 §7.
 
-ADR-0002 §7: ``read`` (line-paginated, 1-indexed, numbered, truncated), ``glob`` (paths only),
-and ``grep`` (regex search) are the read-only file tools. All three:
-
-* **gate** — raise :class:`pydantic_ai.ApprovalRequired` until the call is approved (they take the
-  deferred path); being ``READ_ONLY`` (ADR-0003 §2) the gate then auto-allows them under every
-  mode, so they never prompt;
-* **resolve paths under ``ctx.deps.cwd``** — never the process cwd;
-* return a model-readable :class:`pydantic_ai.ModelRetry` (not a crash) for a missing /
-  unreadable path.
-
-These tests drive the tool functions directly with a hand-built :class:`RunContext` (mirroring
-``tests/.../test_noop.py``), using ``tmp_path`` for a real filesystem. The
-``read_only``-through-the-agent wiring is covered in ``test_registry.py``.
+Covers ``read``/``glob``/``grep``/``write``/``edit``: gating via ``ApprovalRequired``, path
+resolution + containment under ``ctx.deps.cwd`` (dotdot/absolute/symlink escapes refused),
+``ModelRetry`` on bad input, BOM/EOL preservation, and the passive LSP Diagnostics Enricher
+(seam patched — no real ``ty``/subprocess). Tools are driven directly with a hand-built
+:class:`RunContext` on ``tmp_path``; the through-the-agent wiring rides ``FunctionModel``.
 """
 
 import contextlib
@@ -53,7 +45,7 @@ def _ctx(cwd: Path, *, approved: bool = True) -> RunContext[AgentDeps]:
     return RunContext(deps=deps, model=None, usage=None, tool_call_approved=approved)  # type: ignore[arg-type]
 
 
-# --- gating (every read-only tool still asks in v1) -----------------------------------------
+# gating
 
 
 def test_read_requires_approval_when_not_approved(tmp_path: Path):
@@ -72,7 +64,7 @@ def test_grep_requires_approval_when_not_approved(tmp_path: Path):
         files.grep(_ctx(tmp_path, approved=False), pattern="x")
 
 
-# --- read: numbered output, offset/limit windowing ------------------------------------------
+# read
 
 
 def test_read_numbers_lines_one_indexed(tmp_path: Path):
@@ -142,7 +134,7 @@ def test_read_truncates_long_files_and_reports_the_spill(tmp_path: Path, mocker)
     assert "truncated" in out.lower()  # the spill notice is appended
 
 
-# --- glob: paths only, honoring cwd ---------------------------------------------------------
+# glob
 
 
 def test_glob_returns_matching_paths_relative_to_cwd(tmp_path: Path):
@@ -231,7 +223,7 @@ def test_glob_excludes_symlink_resolving_outside_cwd(tmp_path: Path):
     assert out.splitlines() == ["own.env"]
 
 
-# --- grep: regex search, honoring cwd -------------------------------------------------------
+# grep
 
 
 def test_grep_finds_matching_lines_with_file_and_line_prefix(tmp_path: Path):
@@ -342,7 +334,7 @@ def test_grep_missing_explicit_path_returns_model_retry(tmp_path: Path):
         files.grep(_ctx(tmp_path), pattern="x", path="nope.txt")
 
 
-# --- write: create / overwrite, gated, contained (task 007) ---------------------------------
+# write
 
 
 def test_write_requires_approval_when_not_approved(tmp_path: Path):
@@ -419,7 +411,7 @@ def test_denied_write_leaves_an_existing_file_untouched(tmp_path: Path):
     assert target.read_bytes() == b"do not change me\n"
 
 
-# --- edit: exact-then-fuzzy unique match, BOM/EOL preserved (task 007) -----------------------
+# edit
 
 
 def test_edit_requires_approval_when_not_approved(tmp_path: Path):
@@ -602,7 +594,7 @@ def test_mutating_file_tools_are_tagged_not_read_only():
     assert files.FILE_TOOLS_MUTATING == {"write": False, "edit": False}
 
 
-# --- through a real agent: gated write/edit, then approve (task 007) -------------------------
+# through a real agent: gated write/edit, then approve
 
 
 def _agent(mocker):
@@ -710,13 +702,9 @@ async def test_edit_runs_through_the_agent_when_approved(tmp_path: Path, mocker)
     assert target.read_text(encoding="utf-8") == "the slow brown fox\n"
 
 
-# --- passive Diagnostics Enricher folded into write/edit (task 053, ADR-0007 passive channel) ---
-#
-# After a SUCCESSFUL `.py` write/edit, an errors-only `ty` diagnostics block is APPENDED to the base
-# `Wrote …`/`Edited …` string — riding the edit's already-granted approval, silent on clean/unavailable
-# files, best-effort (an enricher failure never breaks the edit). The sync seam the enricher calls is
-# the LSP Service's `diagnostics_on_edit(cwd, path) -> list[Diagnostic] | None` (task 051); these tests
-# patch it directly, so no real `ty`/subprocess runs (ADR-0007 §5).
+# passive Diagnostics Enricher on write/edit (ADR-0007): an errors-only ty block is appended to a
+# successful .py write/edit result, best-effort. Tests patch the sync seam
+# `lsp_service.diagnostics_on_edit` directly — no real ty/subprocess runs.
 
 
 def _diag(

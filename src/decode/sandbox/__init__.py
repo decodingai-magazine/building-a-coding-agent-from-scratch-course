@@ -1,22 +1,10 @@
 """The sandbox executor + the mode selection seam for ``bash`` (ADR-0012 §2; ADR-0011 §1,4 retained).
 
-The home of the sandboxed :class:`~decode.tools.exec.CommandExecutor`s that sit behind the ADR-0002
-``run`` seam (``tools/exec.py``), selected by ``SANDBOX_MODE``. ADR-0012 collapses the two
-ADR-0011 executors into **one** :class:`~decode.sandbox.executor.SandboxExecutor` over a thin
-:class:`~decode.sandbox.executor.SandboxBackend`, so both sandbox modes are now the same shape: ``docker``
-→ ``SandboxExecutor(DockerBackend())`` (one session container, fresh ``docker exec`` per call, file ops
-on the bind mount) and ``modal`` → ``SandboxExecutor(ModalBackend())`` (one remote sandbox, fresh
-``sb.exec`` per call, file ops via the SandboxFilesystem API + a bootstrap upload / export sweep). The
-``none`` default keeps :class:`~decode.tools.exec.LocalExecutor` (a host subprocess).
-
-**Lazy by construction — ``none`` imports nothing here.** :func:`select_executor` is the single
-mapping ``SANDBOX_MODE`` → executor, and it **imports each concrete backend inside its own branch** so
-choosing ``docker`` never imports the modal module and vice-versa. The package ``__init__`` itself
-imports no executor/backend module at import time (:func:`__getattr__` resolves the names lazily on
-first access), so ``bash.py``'s ``_get_executor()`` — which imports ``select_executor`` only on the
-``docker`` / ``modal`` branch — keeps the ``none``-mode REPL path free of every sandbox executor
-module. Importing this package pulls in **no** heavy backend SDK either: :class:`ModalBackend` imports
-``modal`` only lazily on first ``create``, and :class:`DockerBackend` shells out to the ``docker`` CLI.
+``SANDBOX_MODE`` selects the executor: ``none`` → :class:`~decode.tools.exec.LocalExecutor`;
+``docker`` / ``modal`` → one :class:`~decode.sandbox.executor.SandboxExecutor` over the matching
+backend. Lazy by construction: each backend is imported inside its own :func:`select_executor`
+branch and the package resolves executor/backend names via PEP 562 :func:`__getattr__`, so a
+``none``-mode process never imports any sandbox executor module or heavy backend SDK.
 """
 
 from __future__ import annotations
@@ -35,15 +23,10 @@ __all__ = ["DockerBackend", "ModalBackend", "SandboxExecutor", "select_executor"
 def select_executor(mode: str) -> CommandExecutor:
     """Return the :class:`~decode.tools.exec.CommandExecutor` for ``mode`` (ADR-0012 §2; ADR-0011 §1,4).
 
-    ``none`` → :class:`~decode.tools.exec.LocalExecutor` (a host subprocess — the default); ``docker`` →
-    ``SandboxExecutor(DockerBackend())``; ``modal`` → ``SandboxExecutor(ModalBackend())``. Each concrete
-    backend is imported **inside** its own branch, so a ``none`` / ``docker`` selection never imports the
-    modal module (and vice-versa) — the laziness the ``bash`` seam relies on to keep the ``none``-mode
-    REPL path free of every sandbox module. Construction is **inert** for all three: no container is
-    started, no remote sandbox is created, no ``modal`` SDK is imported — the backend spins up lazily on
-    the executor's first :meth:`~decode.sandbox.executor.SandboxExecutor.run`. Any unexpected ``mode``
-    falls back to the host :class:`~decode.tools.exec.LocalExecutor` (defensive; the settings ``Literal``
-    blocks it upstream).
+    Each backend is imported **inside** its own branch (the laziness the ``bash`` seam relies on) and
+    construction is inert — nothing spins up until the executor's first ``run``. An unexpected
+    ``mode`` falls back to the host :class:`~decode.tools.exec.LocalExecutor` (defensive; the
+    settings ``Literal`` blocks it upstream).
     """
     if mode == "docker":
         from decode.sandbox.docker_backend import DockerBackend
@@ -63,10 +46,7 @@ def select_executor(mode: str) -> CommandExecutor:
 def __getattr__(name: str) -> Any:
     """Resolve ``SandboxExecutor`` / ``DockerBackend`` / ``ModalBackend`` lazily (PEP 562).
 
-    ``from decode.sandbox import ModalBackend`` still works, but importing the *package* (e.g. via
-    ``from decode.sandbox import select_executor``) imports **no** executor/backend module — so a
-    ``none``-mode process that only ever touches ``select_executor`` never pulls the docker/modal
-    modules into ``sys.modules`` (the ADR-0011 §4 laziness assertion, retained).
+    Importing the package pulls in no executor/backend module (the ADR-0011 §4 laziness assertion).
     """
     if name == "SandboxExecutor":
         from decode.sandbox.executor import SandboxExecutor

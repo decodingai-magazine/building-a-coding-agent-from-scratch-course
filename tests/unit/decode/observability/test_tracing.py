@@ -1,17 +1,10 @@
-"""Unit tests for the Opik tracing init seam (ADR-0014, task 091).
+"""Unit tests for the Opik tracing init seam (ADR-0014 §7, task 091).
 
-Two hermetic layers, per ADR-0014 §7:
-
-* **Mocked boundary** (most tests) — ``logfire.configure`` / ``instrument_pydantic_ai`` and the OTLP
-  ``OTLPSpanExporter`` / ``BatchSpanProcessor`` are patched, so the wiring is asserted precisely (called
-  once, right endpoint + headers) with **no** real global-provider mutation and **no** network. Mocking
-  the exporter is a stronger no-network guarantee than a live in-memory exporter — the real HTTP
-  exporter is never even constructed.
-* **``logfire.testing`` in-memory** (one test) — the ``capfire`` fixture proves an *active* ``root_span``
-  emits a real, capturable logfire span carrying the ``thread_id`` attribute, entirely in memory.
-
-The module ``_active`` flag is reset around every test by the local autouse fixture so init state never
-leaks; the rootdir ``_no_opik_tracing`` fixture blanks the key so the no-key path is the default.
+Two hermetic layers: most tests patch the ``logfire.configure`` / ``instrument_pydantic_ai`` +
+OTLP exporter boundary (the real HTTP exporter is never constructed — no network, no global
+provider mutation); one test uses ``logfire.testing``'s in-memory ``capfire`` to prove an
+active ``root_span`` emits a real span. The module ``_active`` flag is reset around every test;
+the rootdir ``_no_opik_tracing`` fixture blanks the key so the no-key path is the default.
 """
 
 import contextlib
@@ -64,7 +57,7 @@ def mock_logfire(mocker):
     )
 
 
-# --- no key: presence-based silent no-op -------------------------------------------------------
+# no key: presence-based silent no-op
 
 
 def test_init_tracing_without_key_returns_false_and_configures_nothing(mock_logfire):
@@ -96,7 +89,7 @@ def test_root_span_is_nullcontext_when_inactive():
         assert value is None
 
 
-# --- fake key: active wiring -------------------------------------------------------------------
+# fake key: active wiring
 
 
 def test_init_tracing_with_key_returns_true_and_configures_once(fake_opik_key, mock_logfire):
@@ -253,7 +246,7 @@ def test_record_output_sets_output_only_for_non_empty_text(mocker):
     span.set_attribute.assert_called_once_with("output", "the turn is done")
 
 
-# --- logfire.testing in-memory: a real span is emitted when active -----------------------------
+# logfire.testing in-memory: a real span is emitted when active
 
 
 def test_root_span_emits_a_real_span_captured_in_memory(monkeypatch, capfire):  # noqa: F811

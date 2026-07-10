@@ -174,7 +174,7 @@ def test_cli_passes_named_resume_through(mocker):
     assert run_app.await_args.kwargs.get("resume") == "2026-06-19_abc"
 
 
-# --- task 004 carryover: the no-key startup guard (friendly line, no traceback) -------------
+# task 004 carryover: the no-key startup guard (friendly line, no traceback)
 
 
 def test_cli_with_no_gemini_key_exits_nonzero_with_a_friendly_line(mocker):
@@ -203,7 +203,6 @@ def test_cli_with_no_gemini_key_exits_nonzero_with_a_friendly_line(mocker):
 
 
 def test_cli_with_a_present_gemini_key_does_not_trip_the_guard(mocker):
-    """A present key does NOT trigger the guard: the CLI proceeds to ``run_app`` normally."""
     mocker.patch.object(cli_mod.settings, "gemini_api_key", SecretStr("a-real-looking-key"))
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
 
@@ -213,7 +212,7 @@ def test_cli_with_a_present_gemini_key_does_not_trip_the_guard(mocker):
     run_app.assert_awaited_once()
 
 
-# --- the --agent startup flag (ADR-0003 §9, task 020) ---------------------------------------
+# the --agent startup flag (ADR-0003 §9, task 020)
 
 
 def test_cli_defaults_to_the_build_agent(mocker):
@@ -238,7 +237,6 @@ def test_cli_passes_a_named_agent_through(mocker):
 
 
 def test_cli_with_an_unknown_agent_exits_nonzero_with_a_friendly_line(mocker):
-    """``--agent nope`` → one friendly stderr line + non-zero exit, NO traceback (like no-key)."""
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
 
     result = CliRunner().invoke(cli, ["--agent", "nope"])
@@ -253,7 +251,6 @@ def test_cli_with_an_unknown_agent_exits_nonzero_with_a_friendly_line(mocker):
 
 
 def test_cli_validates_the_agent_before_building_the_agent(mocker):
-    """The unknown-agent guard fires before run_app, so no agent is ever built for a bad name."""
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
 
     result = CliRunner().invoke(cli, ["--agent", "does-not-exist"])
@@ -312,7 +309,7 @@ def test_cli_agent_plan_starts_the_real_repl_in_plan_mode(mocker):
     assert selected.mode.value == "plan"
 
 
-# --- the --mode startup flag (ADR-0003 §9, task 022) ----------------------------------------
+# the --mode startup flag (ADR-0003 §9, task 022)
 
 
 def test_cli_passes_no_mode_by_default(mocker):
@@ -337,7 +334,6 @@ def test_cli_passes_a_named_mode_through(mocker):
 
 
 def test_cli_with_an_unknown_mode_exits_nonzero_with_a_friendly_line(mocker):
-    """``--mode nope`` → one friendly stderr line + non-zero exit, NO traceback (like no-key)."""
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
 
     result = CliRunner().invoke(cli, ["--mode", "nope"])
@@ -369,7 +365,6 @@ def test_cli_mode_plan_starts_the_real_repl_in_plan_mode(mocker):
 
 
 def test_cli_mode_overrides_the_selected_agents_default_mode(mocker):
-    """``--agent plan --mode default`` overrides plan's default mode back to ``DEFAULT``."""
     gate_spy = mocker.spy(app_mod, "PermissionGate")
 
     result = CliRunner().invoke(cli, ["--agent", "plan", "--mode", "default"])
@@ -379,7 +374,7 @@ def test_cli_mode_overrides_the_selected_agents_default_mode(mocker):
     assert gate.mode is PermissionMode.DEFAULT
 
 
-# --- task 039: the generalized per-provider startup guard (ADR-0005 §6) ----------------------
+# task 039: the generalized per-provider startup guard (ADR-0005 §6)
 #
 # ``_provider_config_error()`` returns ONE friendly line (or ``None``) for the selected provider's
 # required config. These first tests pin the helper's contract directly (decidable message text /
@@ -512,11 +507,10 @@ def test_provider_config_error_modal_only_token_secret_is_both_or_neither(mocker
     assert "MODAL_PROXY_TOKEN_SECRET" in msg
 
 
-# --- task 039: CLI behaviour — friendly line + non-zero exit, no traceback -------------------
+# task 039: CLI behaviour — friendly line + non-zero exit, no traceback
 
 
 def test_cli_openrouter_with_no_key_exits_nonzero_with_a_friendly_line(mocker):
-    """``LLM_PROVIDER=openrouter`` + no key → one friendly stderr line, non-zero exit, NO traceback."""
     _select_provider(mocker, "openrouter", openrouter_api_key=SecretStr(""))
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
 
@@ -532,7 +526,6 @@ def test_cli_openrouter_with_no_key_exits_nonzero_with_a_friendly_line(mocker):
 
 
 def test_cli_modal_missing_url_exits_nonzero_naming_the_missing_var(mocker):
-    """``LLM_PROVIDER=modal`` missing url → friendly line naming MODAL_ENDPOINT_URL, no traceback."""
     _select_provider(mocker, "modal", modal_endpoint_url="", modal_endpoint_model="m")
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
 
@@ -546,7 +539,6 @@ def test_cli_modal_missing_url_exits_nonzero_naming_the_missing_var(mocker):
 
 
 def test_cli_modal_both_proxy_tokens_passes_the_guard(mocker):
-    """url + model + BOTH proxy tokens → guard passes, REPL starts (run_app awaited)."""
     _select_provider(
         mocker,
         "modal",
@@ -564,7 +556,6 @@ def test_cli_modal_both_proxy_tokens_passes_the_guard(mocker):
 
 
 def test_cli_modal_unauthenticated_passes_the_guard(mocker):
-    """url + model + NEITHER proxy token (--unauthenticated) → guard passes, REPL starts."""
     _select_provider(
         mocker,
         "modal",
@@ -582,7 +573,6 @@ def test_cli_modal_unauthenticated_passes_the_guard(mocker):
 
 
 def test_cli_modal_only_token_id_exits_nonzero_both_or_neither(mocker):
-    """url + model + ONLY token id → both-or-neither friendly line, non-zero exit, no traceback."""
     _select_provider(
         mocker,
         "modal",
@@ -602,7 +592,6 @@ def test_cli_modal_only_token_id_exits_nonzero_both_or_neither(mocker):
 
 
 def test_cli_modal_only_token_secret_exits_nonzero_both_or_neither(mocker):
-    """url + model + ONLY token secret → both-or-neither friendly line, non-zero exit, no traceback."""
     _select_provider(
         mocker,
         "modal",
@@ -690,7 +679,7 @@ def test_cli_provider_guard_precedes_agent_and_mode_validation(mocker, provider,
     run_app.assert_not_awaited()
 
 
-# --- task 071: the sandbox backend-availability guard — the helper contract (ADR-0011 §1) ------
+# task 071: the sandbox backend-availability guard — the helper contract (ADR-0011 §1)
 #
 # ``_sandbox_config_error()`` returns ONE friendly line (or ``None``) for the selected Sandbox Mode
 # when its backend is unavailable. Presence/reachability only, like the provider-key guards — a
@@ -699,7 +688,6 @@ def test_cli_provider_guard_precedes_agent_and_mode_validation(mocker, provider,
 
 
 def test_sandbox_config_error_none_returns_none_and_runs_no_probe(mocker):
-    """SANDBOX_MODE=none: returns None and never invokes the docker or modal probe (the default path)."""
     mocker.patch.object(cli_mod.settings, "sandbox_mode", "none")
     docker_probe = mocker.patch("decode.cli._docker_daemon_reachable")
     modal_probe = mocker.patch("decode.cli._modal_credentials_present")
@@ -749,32 +737,28 @@ def test_sandbox_config_error_modal_present_creds_returns_none(mocker):
     assert cli_mod._sandbox_config_error() is None
 
 
-# --- task 071: the docker daemon-reachability probe (missing binary / non-zero / timeout) -------
+# task 071: the docker daemon-reachability probe (missing binary / non-zero / timeout)
 
 
 def test_docker_daemon_reachable_true_on_zero_exit(mocker):
-    """A `docker info` that exits 0 means the daemon answered — reachable."""
     mocker.patch("decode.cli.subprocess.run", return_value=mocker.Mock(returncode=0))
 
     assert cli_mod._docker_daemon_reachable() is True
 
 
 def test_docker_daemon_reachable_false_on_nonzero_exit(mocker):
-    """`docker info` exiting non-zero (daemon down) means not reachable."""
     mocker.patch("decode.cli.subprocess.run", return_value=mocker.Mock(returncode=1))
 
     assert cli_mod._docker_daemon_reachable() is False
 
 
 def test_docker_daemon_reachable_false_when_binary_missing(mocker):
-    """A missing docker binary (FileNotFoundError) means not reachable — never crashes."""
     mocker.patch("decode.cli.subprocess.run", side_effect=FileNotFoundError)
 
     assert cli_mod._docker_daemon_reachable() is False
 
 
 def test_docker_daemon_reachable_false_on_timeout(mocker):
-    """A probe that overruns the short timeout means not reachable — never crashes."""
     import subprocess
 
     mocker.patch(
@@ -785,7 +769,7 @@ def test_docker_daemon_reachable_false_on_timeout(mocker):
     assert cli_mod._docker_daemon_reachable() is False
 
 
-# --- task 071: the modal credential-presence probe (no network, no modal import) ---------------
+# task 071: the modal credential-presence probe (no network, no modal import)
 
 
 def test_modal_credentials_present_true_with_env_token_pair(monkeypatch, mocker, tmp_path):
@@ -798,7 +782,6 @@ def test_modal_credentials_present_true_with_env_token_pair(monkeypatch, mocker,
 
 
 def test_modal_credentials_present_true_with_modal_toml(monkeypatch, mocker, tmp_path):
-    """A ~/.modal.toml written by `modal token set` → present, even with no env tokens."""
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
     (tmp_path / ".modal.toml").write_text("[default]\n")
@@ -808,7 +791,6 @@ def test_modal_credentials_present_true_with_modal_toml(monkeypatch, mocker, tmp
 
 
 def test_modal_credentials_absent_with_no_env_and_no_toml(monkeypatch, mocker, tmp_path):
-    """No env token pair and no ~/.modal.toml → absent (the guard then emits the friendly line)."""
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
     mocker.patch("decode.cli.Path.home", return_value=tmp_path)  # empty tmp dir → no ~/.modal.toml
@@ -817,7 +799,6 @@ def test_modal_credentials_absent_with_no_env_and_no_toml(monkeypatch, mocker, t
 
 
 def test_modal_credentials_absent_with_only_one_env_token(monkeypatch, mocker, tmp_path):
-    """Only one of the token pair is not enough — modal needs both (or the toml)."""
     monkeypatch.setenv("MODAL_TOKEN_ID", "ak-1")
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
     mocker.patch("decode.cli.Path.home", return_value=tmp_path)
@@ -825,11 +806,10 @@ def test_modal_credentials_absent_with_only_one_env_token(monkeypatch, mocker, t
     assert cli_mod._modal_credentials_present() is False
 
 
-# --- task 071: the sandbox guard in the REPL startup chain (friendly line, no traceback) --------
+# task 071: the sandbox guard in the REPL startup chain (friendly line, no traceback)
 
 
 def test_cli_sandbox_docker_unreachable_exits_nonzero_with_a_friendly_line(mocker):
-    """SANDBOX_MODE=docker + daemon unreachable (probe patched) → friendly line, non-zero, no REPL."""
     mocker.patch.object(cli_mod.settings, "sandbox_mode", "docker")
     mocker.patch("decode.cli._docker_daemon_reachable", return_value=False)
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
@@ -846,7 +826,6 @@ def test_cli_sandbox_docker_unreachable_exits_nonzero_with_a_friendly_line(mocke
 
 
 def test_cli_sandbox_modal_missing_creds_exits_nonzero_with_a_friendly_line(mocker):
-    """SANDBOX_MODE=modal + no creds (probe patched) → friendly line, non-zero, no REPL, no modal import."""
     mocker.patch.object(cli_mod.settings, "sandbox_mode", "modal")
     mocker.patch("decode.cli._modal_credentials_present", return_value=False)
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
@@ -863,7 +842,6 @@ def test_cli_sandbox_modal_missing_creds_exits_nonzero_with_a_friendly_line(mock
 
 
 def test_cli_sandbox_none_default_starts_the_repl_and_runs_no_probe(mocker):
-    """SANDBOX_MODE=none (default) → the REPL starts exactly as before; no docker/modal probe runs."""
     mocker.patch.object(cli_mod.settings, "sandbox_mode", "none")
     docker_probe = mocker.patch("decode.cli._docker_daemon_reachable")
     modal_probe = mocker.patch("decode.cli._modal_credentials_present")
@@ -878,7 +856,6 @@ def test_cli_sandbox_none_default_starts_the_repl_and_runs_no_probe(mocker):
 
 
 def test_cli_sandbox_docker_reachable_starts_the_repl(mocker):
-    """SANDBOX_MODE=docker + a reachable-but-fake probe → guard passes, the REPL starts (present-only)."""
     mocker.patch.object(cli_mod.settings, "sandbox_mode", "docker")
     mocker.patch("decode.cli._docker_daemon_reachable", return_value=True)
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
@@ -890,7 +867,6 @@ def test_cli_sandbox_docker_reachable_starts_the_repl(mocker):
 
 
 def test_cli_provider_guard_precedes_the_sandbox_guard(mocker):
-    """A missing provider key wins over an unavailable sandbox — the provider guard fires first."""
     mocker.patch.object(cli_mod.settings, "gemini_api_key", SecretStr(""))
     mocker.patch.object(cli_mod.settings, "sandbox_mode", "docker")
     # If the sandbox guard ran first this would flip the message; assert it never runs.
@@ -906,7 +882,7 @@ def test_cli_provider_guard_precedes_the_sandbox_guard(mocker):
     run_app.assert_not_awaited()
 
 
-# --- task 082: the Workspace repo resolution + the none-mode guard (ADR-0012 §3) ---------------
+# task 082: the Workspace repo resolution + the none-mode guard (ADR-0012 §3)
 #
 # ``_resolve_sandbox_repo`` (--repo > SANDBOX_REPO > None) and ``_sandbox_repo_config_error`` (a repo
 # requested while SANDBOX_MODE=none is a config error) are the decidable helpers; the CLI-level tests
@@ -943,7 +919,6 @@ def test_sandbox_repo_config_error_repo_in_none_mode_returns_the_message(mocker)
 
 
 def test_sandbox_repo_config_error_repo_in_a_sandbox_mode_returns_none(mocker):
-    """Presence of a repo is fine in a sandbox mode — that is the whole point (no error)."""
     mocker.patch.object(cli_mod.settings, "sandbox_mode", "docker")
 
     assert cli_mod._sandbox_repo_config_error("/some/repo") is None
@@ -956,7 +931,6 @@ def test_sandbox_repo_config_error_no_repo_returns_none(mocker):
 
 
 def test_cli_repo_and_local_flags_are_documented():
-    """``decode --help`` documents ``--repo`` and ``--local`` (discoverability)."""
     result = CliRunner().invoke(cli, ["--help"])
 
     assert result.exit_code == 0
@@ -965,7 +939,6 @@ def test_cli_repo_and_local_flags_are_documented():
 
 
 def test_cli_repo_in_none_mode_exits_nonzero_with_a_friendly_line(mocker):
-    """``--repo`` while ``SANDBOX_MODE=none`` → one friendly stderr line + non-zero exit, no REPL, no traceback."""
     # sandbox_mode is pinned none by the autouse fixture — a repo is contradictory there.
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
 
@@ -980,7 +953,6 @@ def test_cli_repo_in_none_mode_exits_nonzero_with_a_friendly_line(mocker):
 
 
 def test_cli_sandbox_repo_env_in_none_mode_exits_nonzero(mocker):
-    """A bare ``SANDBOX_REPO`` (no ``--repo`` flag) in ``none`` mode also trips the guard."""
     mocker.patch.object(cli_mod.settings, "sandbox_repo", "https://from.env/repo.git")
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
 
@@ -992,7 +964,6 @@ def test_cli_sandbox_repo_env_in_none_mode_exits_nonzero(mocker):
 
 
 def test_cli_repo_threaded_to_run_app_in_a_sandbox_mode(mocker):
-    """``--repo`` + a docker mode (probe patched reachable) → the resolved repo reaches ``run_app``."""
     mocker.patch.object(cli_mod.settings, "sandbox_mode", "docker")
     mocker.patch("decode.cli._docker_daemon_reachable", return_value=True)
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
@@ -1006,7 +977,6 @@ def test_cli_repo_threaded_to_run_app_in_a_sandbox_mode(mocker):
 
 
 def test_cli_no_repo_passes_none_to_run_app(mocker):
-    """No ``--repo`` (and no ``SANDBOX_REPO``) → ``run_app`` gets ``repo=None`` (an empty Workspace)."""
     mocker.patch.object(cli_mod.settings, "sandbox_mode", "docker")
     mocker.patch("decode.cli._docker_daemon_reachable", return_value=True)
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())

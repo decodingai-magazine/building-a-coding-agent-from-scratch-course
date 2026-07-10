@@ -1,15 +1,9 @@
 """Unit tests for :func:`decode.memory.files.discover_memory_files` (ADR-0002 §8, Fix 1).
 
-Discovery has two kinds of memory, found differently:
-
-* ``AGENTS.md`` — human/project memory, **walked** from ``cwd`` up to the filesystem root,
-  ordered **root-most first, cwd-most last** so the cwd-most file "wins" (appears last). The
-  Claude-Code shim ``CLAUDE.md`` is skipped.
-* ``MEMORY.md`` — the harness-extracted scratch memory. **Not walked**: it is the single file
-  ``cwd/.decode/MEMORY.md``, appended **last** of all so it has the final word.
-
-These tests build a fake ``cwd → root`` tree under ``tmp_path`` so the walk is hermetic (no real
-filesystem layout).
+Two kinds of memory, found differently: ``AGENTS.md`` is walked cwd → root (root-most first,
+cwd-most last, ``CLAUDE.md`` skipped); ``MEMORY.md`` is not walked — only the single
+``cwd/.decode/MEMORY.md``, appended last of all. Tests build a fake cwd → root tree under
+``tmp_path`` so the walk is hermetic.
 """
 
 from pathlib import Path

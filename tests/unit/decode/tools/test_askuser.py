@@ -1,17 +1,9 @@
-"""Unit tests for the blocking ``ask_user`` tool (``decode.tools.askuser``).
+"""Unit tests for the blocking ``ask_user`` tool (``decode.tools.askuser``) — ADR-0002 §2,7.
 
-ADR-0002 §2,7: ``ask_user`` is the *one* blocking tool — the model asks the human a free-form
-question and the human's typed line becomes the tool result. Unlike every other tool it is
-**not** routed through the permission gate (asking "may I ask the human?" before asking would
-double-prompt — it *is* the human-interaction tool), so it never raises ``ApprovalRequired``;
-it emits an :class:`~decode.entities.events.AskUserRequested` event and then awaits the answer
-on ``ctx.deps.resolve_user_question`` (the same single mid-turn HITL channel the permission
-resolver uses — task 005's :class:`~decode.harness.decisions.DecisionChannel`).
-
-These tests pin the tool's contract without a model or a terminal: it emits the question, it
-returns the resolved free-text answer, and it fails cleanly with a model-readable
-:class:`pydantic_ai.ModelRetry` when no interactive user is attached (headless) or the pending
-request is cancelled (abort / shutdown) — never a hang.
+``ask_user`` is ungated (it IS the human-interaction tool — gating it would double-prompt).
+These tests pin its contract without a model or terminal: it emits ``AskUserRequested``,
+returns the resolved free-text answer, and maps a missing interactive user (headless) or a
+cancelled request (abort/shutdown) to a clean ``ModelRetry`` — never a hang.
 """
 
 import asyncio

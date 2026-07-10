@@ -41,9 +41,6 @@ install-cli:  ## Put `decode` on your PATH (editable: tracks your source). Then 
 uninstall-cli:  ## Remove the `decode` command from your PATH.
 	uv tool uninstall decode
 
-cli:  ## Run the CLI.
-	uv run decode
-
 ci:  ## What CI runs: lockfile check + format-check + lint-check + full tests.
 	uv lock --check
 	$(MAKE) format-check

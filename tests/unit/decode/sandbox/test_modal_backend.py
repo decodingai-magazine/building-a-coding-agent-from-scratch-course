@@ -1,33 +1,11 @@
 """Hermetic unit tests for the Modal sandbox backend (``decode.sandbox.modal_backend``, ADR-0012 §2,4,5).
 
-These exercise :class:`ModalBackend` — the second adapter behind the one
-:class:`~decode.sandbox.executor.SandboxExecutor` — with **no modal account and no network**: the
-``modal`` SDK is imported through a single lazy seam (:func:`_load_modal`) that the tests patch with a
-**fake ``modal`` module** + a fake ``Sandbox`` / ``SandboxFilesystem`` double. They prove the backend's
-contract offline:
-
-* **exec** — the fresh ``bash -lc`` / ``workdir=/workspace`` / int per-exec ``timeout`` / ``text=False``
-  shape, the stdout/stderr/exit mapping, the timeout-kills-the-exec-not-the-sandbox rule, and the
-  ``errors="replace"`` decode contract (binary output never crashes the turn);
-* **create + bootstrap** — ``App.lookup`` → ``Sandbox.create("sleep","infinity",
-  image=from_registry(…).apt_install("git"), …)`` → ``mkdir -p /workspace`` → the ONE tar bootstrap
-  upload (``filesystem.write_bytes`` + a remote ``tar -x`` exec), with git baked into the image and
-  **no** ``add_local_dir`` anywhere;
-* **file ops = the SandboxFilesystem API** against ``/workspace/<rel>`` (a fake fs backed by a real
-  ``tmp_path`` so the round-trips are truthful), including the missing-file mapping (``read_bytes`` /
-  ``list_dir`` → ``FileNotFoundError``; ``stat`` → ``None``) that mirrors
-  :class:`~decode.sandbox.docker_backend.DockerBackend`, and the file-op revival that gives every op the
-  same self-heal ``exec`` has when the remote sandbox is gone;
-* **export** — the ONE end-of-session sweep (a remote ``tar -c`` exec + ``read_bytes`` + host-side
-  ``extract_tar``), standalone (no ``destroy``);
-* **revival** — a ``poll()``-dead sandbox (exec) or a ``NotFoundError`` from a **file op** on a
-  shut-down sandbox is recreated + re-bootstrapped from the host state; exec surfaces the one-shot restore
-  ``note`` inline, a file op has no note channel so it defers the note to the next exec;
-* **destroy** — ``terminate`` (idempotent, best-effort), and that importing ``decode.sandbox`` /
-  ``decode.cli`` never imports ``modal``.
-
-The real end-to-end contract (a live remote sandbox, the real SandboxFilesystem, bootstrap + export
-round-trips, revival) lives in the ``@skipif``-guarded ``tests/integration/test_modal_executor.py``.
+No modal account, no network: the SDK is reached through the lazy ``_load_modal`` seam, patched with
+a fake ``modal`` module + ``Sandbox`` / ``SandboxFilesystem`` doubles (the fake fs is backed by a
+real ``tmp_path`` so round-trips are truthful). Covers the exec shape + timeout + decode contract,
+create/bootstrap (ONE tar upload — never ``add_local_dir``), the file ops + their missing-file
+normalization, export, revival of a remotely-dead sandbox, and destroy. The live end-to-end contract
+is the ``@skipif``-guarded ``tests/integration/test_modal_executor.py``.
 """
 
 from __future__ import annotations
@@ -56,7 +34,7 @@ from decode.sandbox.modal_backend import (
     _load_modal,
 )
 
-# --- fake modal filesystem exceptions (the real ones do NOT subclass FileNotFoundError) ----------
+# fake modal filesystem exceptions (the real ones do NOT subclass FileNotFoundError)
 # ``modal.exception.SandboxFilesystemNotFoundError`` subclasses ``modal.exception.Error`` (verified on
 # modal 1.5.1), NOT ``FileNotFoundError`` — so the backend must normalize it. The fakes stand in for
 # those real classes; the backend catches ``_load_modal().exception.<name>``, so a fake module whose
@@ -82,7 +60,7 @@ _FAKE_EXCEPTION_NS = types.SimpleNamespace(
 )
 
 
-# --- fake modal surface (only what the backend touches) ------------------------------------------
+# fake modal surface (only what the backend touches)
 
 
 class _Aio:
@@ -384,7 +362,7 @@ def fake_modal(mocker, sandbox: _FakeSandbox) -> dict:
     return recorders
 
 
-# --- construction is inert -----------------------------------------------------------------------
+# construction is inert
 
 
 def test_construction_creates_no_sandbox_and_imports_no_modal(mocker):
@@ -397,7 +375,7 @@ def test_construction_creates_no_sandbox_and_imports_no_modal(mocker):
     load.assert_not_called()  # nothing imports/creates modal until create()
 
 
-# --- create: spawn + bootstrap upload (App.lookup → Sandbox.create → mkdir → tar upload) ----------
+# create: spawn + bootstrap upload (App.lookup → Sandbox.create → mkdir → tar upload)
 
 
 async def test_create_spawns_the_sandbox_once_with_the_configured_image_and_lifetime(
@@ -523,7 +501,7 @@ async def test_create_raises_a_runtime_error_when_the_bootstrap_extract_fails(mo
     assert backend._sandbox is None
 
 
-# --- exec: fresh bash -lc in /workspace, int timeout, text=False ---------------------------------
+# exec: fresh bash -lc in /workspace, int timeout, text=False
 
 
 async def test_exec_runs_bash_lc_with_workspace_workdir_and_int_timeout(
@@ -569,7 +547,7 @@ async def test_exec_floors_a_sub_second_timeout_to_one_second(fake_modal, sandbo
     assert sandbox.command_calls[0][1]["timeout"] == 1
 
 
-# --- timeout: kill the exec, keep the sandbox ---------------------------------------------------
+# timeout: kill the exec, keep the sandbox
 
 
 async def test_exec_timeout_reports_timed_out_without_terminating_the_sandbox(mocker, workspace):
@@ -591,7 +569,7 @@ async def test_exec_timeout_reports_timed_out_without_terminating_the_sandbox(mo
     assert sandbox.terminate_count == 0  # the sandbox is NOT torn down on an exec timeout
 
 
-# --- decode contract: non-UTF-8 output is replaced, never crashes -------------------------------
+# decode contract: non-UTF-8 output is replaced, never crashes
 
 
 async def test_exec_replaces_undecodable_bytes_on_both_streams(mocker, workspace):
@@ -628,7 +606,7 @@ async def test_exec_round_trips_utf8_multibyte_output(mocker, workspace):
     assert result.stdout == "café ✓\n"
 
 
-# --- file ops = SandboxFilesystem, direct against the remote (ADR-0012 §4) ----------------------
+# file ops = SandboxFilesystem, direct against the remote (ADR-0012 §4)
 
 
 async def test_file_ops_round_trip_through_the_filesystem_api(fake_modal, sandbox, workspace):
@@ -758,7 +736,7 @@ async def test_file_ops_require_a_created_sandbox():
         await backend.read_bytes("f.txt")
 
 
-# --- export: the ONE end-of-session sweep, standalone (no destroy) -------------------------------
+# export: the ONE end-of-session sweep, standalone (no destroy)
 
 
 async def test_export_sweeps_the_workspace_down_to_the_host(fake_modal, sandbox, workspace):
@@ -801,7 +779,7 @@ async def test_export_swallows_a_sweep_failure(mocker, sandbox, workspace):
     await backend.export()  # must not raise
 
 
-# --- revival: a remotely-ended sandbox is recreated + re-bootstrapped ----------------------------
+# revival: a remotely-ended sandbox is recreated + re-bootstrapped
 
 
 async def test_exec_revives_a_remotely_ended_sandbox_and_notes_the_restore(mocker, workspace):
@@ -923,7 +901,7 @@ async def test_exec_lets_a_non_sandbox_error_from_the_command_surface(mocker, wo
         await backend.exec("bash", "-lc", "echo hi", timeout_s=30.0)
 
 
-# --- file-op revival: a dead sandbox is recreated + re-bootstrapped, like exec (ADR-0012 §3,4) ----
+# file-op revival: a dead sandbox is recreated + re-bootstrapped, like exec (ADR-0012 §3,4)
 
 
 @pytest.mark.parametrize(
@@ -1082,7 +1060,7 @@ async def test_a_timeout_never_triggers_file_op_revival(mocker, workspace):
     assert backend._recreated is False  # no restore note pending
 
 
-# --- destroy: terminate, idempotent, safe when never started -------------------------------------
+# destroy: terminate, idempotent, safe when never started
 
 
 async def test_destroy_terminates_the_sandbox(fake_modal, sandbox, workspace):
@@ -1130,7 +1108,7 @@ async def test_destroy_swallows_a_terminate_failure(mocker, sandbox, workspace):
     assert backend._sandbox is None
 
 
-# --- observability -------------------------------------------------------------------------------
+# observability
 
 
 async def test_logs_create_command_and_terminate(fake_modal, sandbox, workspace, caplog):
@@ -1151,7 +1129,7 @@ async def test_logs_create_command_and_terminate(fake_modal, sandbox, workspace,
     assert f"[sandbox] modal terminate {sandbox.object_id}" in text  # id on terminate (INFO)
 
 
-# --- laziness: modal never imported by decode.sandbox / decode.cli -------------------------------
+# laziness: modal never imported by decode.sandbox / decode.cli
 
 
 def test_load_modal_returns_the_real_sdk():
@@ -1171,7 +1149,7 @@ def test_importing_decode_does_not_import_modal():
     assert result.returncode == 0, result.stderr
 
 
-# --- helpers -------------------------------------------------------------------------------------
+# helpers
 
 
 def _install_fake_tar_roundtrip(sandbox: _FakeSandbox) -> None:

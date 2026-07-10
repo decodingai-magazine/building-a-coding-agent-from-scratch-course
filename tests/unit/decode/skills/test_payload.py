@@ -1,14 +1,10 @@
-"""Unit tests for the shared skill payload helper (``decode.skills.payload``; ADR-0004 §1,§5).
+"""Unit tests for the shared skill payload helper (``decode.skills.payload``) — ADR-0004 §1,5.
 
-``format_skill_payload(skill, cwd=…)`` is the single bridge from tier 2 (the body) to tier 3 (the
-bundled-resource files): it returns the skill's ``body`` **unchanged** when the skill ships no
-resources (``resource_dir is None`` — built-ins and resource-less project skills), and ``body`` +
-a **resource manifest** when it does: every bundled file enumerated recursively with its exact,
-``read``/``bash``-resolvable **cwd-relative** path (revised from the directory-only trailer after a
-live failure — a ``glob <dir>/*`` cannot see into ``references/``/``scripts/`` subdirs, so the model
-guessed wrong paths). An empty walk degrades to the old directory-only line. Both invocation paths
-(the model's ``skill`` dispatcher and the user's ``/<skill-name>`` TUI command) go through this one
-helper, so the payload can never diverge.
+``format_skill_payload`` returns the body unchanged when ``resource_dir`` is None, and body + a
+recursive cwd-relative resource manifest when set (the manifest replaced a directory-only
+trailer after a live failure: ``glob <dir>/*`` cannot see into subdirs, so the model guessed
+wrong paths). An empty walk degrades to the directory-only line. Both the ``skill`` dispatcher
+and the ``/<skill-name>`` TUI command ride this one helper.
 """
 
 from __future__ import annotations
@@ -31,7 +27,7 @@ def _skill(*, resource_dir: Path | None) -> SkillDef:
     )
 
 
-# --- resource_dir is None → body verbatim, no trailer ---------------------------------------
+# resource_dir is None → body verbatim, no trailer
 
 
 def test_payload_is_the_body_unchanged_when_no_resource_dir(tmp_path):
@@ -44,7 +40,7 @@ def test_payload_is_the_body_unchanged_when_no_resource_dir(tmp_path):
     assert result == skill.body
 
 
-# --- resource_dir set → body + trailer naming the cwd-relative dir ---------------------------
+# resource_dir set → body + trailer
 
 
 def test_payload_appends_a_trailer_when_resource_dir_is_set(tmp_path):

@@ -1,17 +1,10 @@
 """Unit tests for the ``bash`` executor-selection seam + mode-specific description (ADR-0011 §4).
 
-These cover the task-074 additions to :mod:`decode.tools.bash` and :mod:`decode.tools.registry`:
-
-* ``_get_executor()`` selects the executor by ``SANDBOX_MODE`` on first use, lazily, and memoizes it;
-* ``reset_executor()`` re-arms selection; ``close_executor()`` reaps a sandbox executor and resets;
-* ``bash_description()`` + the registry ``prepare`` compose the tool description (``none``
-  byte-identical; ``docker`` AND ``modal`` append the SAME unified sandbox paragraph — ADR-0012 §2);
-* end to end, a ``bash`` call in docker mode routes through the *selected* executor's ``run`` (a fake
-  records it) and renders its :class:`ExecResult` — the seam swap, with no real infra;
-* the ``none`` path imports no sandbox executor module, and a docker-mode REPL agent imports no kitaru.
-
-All hermetic: the sandbox executors are faked/patched at the ``select_executor`` seam, so no Docker
-daemon and no Modal credentials are needed anywhere here.
+Covers lazy ``_get_executor()`` selection + memoization, ``reset``/``close``/``warm``/``export``
+lifecycle hooks, the ``active_backend`` file-tool seam, ``bash_description()`` + registry
+``prepare`` composition (none byte-identical; docker == modal), end-to-end routing through the
+selected executor, and import-laziness (no sandbox/kitaru/modal modules leak). Hermetic: the
+sandbox executors are faked at the ``select_executor`` seam — no Docker daemon, no Modal creds.
 """
 
 from __future__ import annotations
@@ -65,7 +58,7 @@ class _AgentCtx:
         self.deps = SimpleNamespace(active_agent=load_agent(agent_name))
 
 
-# --- _get_executor: lazy selection + memo -----------------------------------------------------
+# _get_executor: lazy selection + memo
 
 
 def test_get_executor_none_keeps_the_eager_local_executor(monkeypatch):
@@ -139,7 +132,7 @@ def test_reset_executor_rearms_selection(monkeypatch):
     assert bash_mod._get_executor().mode == "docker"
 
 
-# --- close_executor: teardown + reset ---------------------------------------------------------
+# close_executor: teardown + reset
 
 
 async def test_close_executor_awaits_aclose_once_and_resets(monkeypatch):
@@ -186,7 +179,7 @@ async def test_close_executor_is_a_safe_noop_in_none_mode():
     assert bash_mod._executor_selected is False
 
 
-# --- warm_executor: the eager REPL warm-up (ADR-0011 §4) ---------------------------------------
+# warm_executor: the eager REPL warm-up
 
 
 async def test_warm_executor_none_is_a_noop_that_never_selects(monkeypatch):
@@ -244,7 +237,7 @@ async def test_warm_executor_failure_propagates_and_keeps_the_memo(monkeypatch, 
     assert bash_mod._get_executor() is executor  # memo kept — the first bash retries through it
 
 
-# --- export_executor: the mid-session /ship sweep hook (task 083, ADR-0012 §5,8) ----------------
+# export_executor: the mid-session /ship sweep hook
 
 
 async def test_export_executor_awaits_export_without_resetting_the_memo(monkeypatch):
@@ -272,7 +265,7 @@ async def test_export_executor_is_a_safe_noop_in_none_mode():
     assert isinstance(bash_mod._EXECUTOR, LocalExecutor)  # untouched
 
 
-# --- active_backend: the file-tool seam (ADR-0012 §4) -----------------------------------------
+# active_backend: the file-tool seam
 
 
 def test_active_backend_none_mode_returns_none_without_touching_the_memo(monkeypatch):
@@ -318,7 +311,7 @@ async def test_active_backend_docker_returns_the_executors_created_backend(monke
     assert bash_mod._get_executor() is executor  # shares the bash memo (one backend per session)
 
 
-# --- bash_description: the mode-specific description composition -------------------------------
+# bash_description
 
 
 def test_bash_description_none_is_identity(monkeypatch):
@@ -353,7 +346,7 @@ def test_bash_description_modal_appends_the_same_unified_paragraph(monkeypatch):
     assert modal_out == docker_out == f"BASE\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
 
 
-# --- registry prepare: the description reaches the tool definition per mode --------------------
+# registry prepare
 
 
 async def test_bash_prepare_none_returns_the_definition_untouched(monkeypatch):
@@ -399,7 +392,7 @@ async def test_prepare_for_non_bash_ignores_sandbox_mode(monkeypatch):
     assert result is td  # unchanged — no sandbox paragraph on a non-bash tool
 
 
-# --- through a real agent: the description the MODEL sees, per mode ----------------------------
+# through a real agent: the description the MODEL sees, per mode
 
 
 async def _bash_description_via_agent(mode: str, monkeypatch, cwd: Path) -> str:
@@ -455,7 +448,7 @@ async def test_agent_bash_description_modal_equals_docker(monkeypatch, tmp_path)
     assert modal_desc == docker_desc == f"{none_desc}\n\n{bash_mod._SANDBOX_DESCRIPTION_SUFFIX}"
 
 
-# --- end to end: a bash call routes through the SELECTED executor (the seam swap) --------------
+# end to end: a bash call routes through the SELECTED executor
 
 
 async def test_bash_routes_through_the_selected_docker_executor(monkeypatch, tmp_path):
@@ -519,7 +512,7 @@ async def test_bash_renders_a_daemon_loss_without_raising(monkeypatch, tmp_path)
     assert "Cannot connect to the Docker daemon" in out  # the underlying failure text is surfaced
 
 
-# --- laziness / isolation: subprocess assertions on a clean interpreter ------------------------
+# laziness / isolation: subprocess assertions on a clean interpreter
 
 
 def _run_isolated(code: str, *, mode: str) -> subprocess.CompletedProcess[str]:

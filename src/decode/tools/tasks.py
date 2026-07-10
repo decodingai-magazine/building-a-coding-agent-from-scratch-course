@@ -1,23 +1,10 @@
 """The gated ``todo_write`` tool — the in-memory TodoWrite task list (ADR-0002 §7).
 
-``todo_write`` lets the model maintain a short to-do list **within a session** so it (and the
-developer watching the TUI) can track multi-step work. It follows TodoWrite *replace* semantics:
-the model passes the **full desired list** every call and the tool overwrites the store with it —
-there are no incremental add/remove/complete operations. Each item is a
-:class:`~decode.entities.task.Task` (``id`` / ``content`` / ``status``), validated on construction,
-so a malformed status never reaches the store.
-
-The store is :data:`decode.agent.deps.AgentDeps.task_store` — a per-run ``list[Task]`` the tool
-rewrites **in place** (clear + extend, so the same list object the loop/TUI hold stays current),
-then announces with a :class:`~decode.entities.events.TaskListUpdated` event so the TUI redraws the
-checklist. The event carries already-status-marked lines (``[x]`` completed, ``[~]`` in progress,
-``[ ]`` pending) so the renderer shows a sensible checklist without re-deriving the markers.
-
-It self-gates via :class:`pydantic_ai.ApprovalRequired` (like every tool that takes the deferred
-path), but it is classified :class:`~decode.permissions.types.ToolKind.READ_ONLY` in the registry
-(ADR-0003 §2): an in-memory checklist has no disk/exec side effect, so the gate **auto-allows** it
-under every mode — it must stay usable in plan mode (where the plan agent builds its checklist) and
-need not prompt anywhere. In-memory, per-run only — no cross-session persistence (later).
+TodoWrite *replace* semantics: the model passes the full desired list every call and the tool
+rewrites ``AgentDeps.task_store`` in place, then emits a ``TaskListUpdated`` event with
+status-marked lines so the TUI redraws. Self-gates via :class:`pydantic_ai.ApprovalRequired` but
+is classified READ_ONLY (no disk/exec side effect), so the gate auto-allows it in every mode.
+In-memory, per-run only.
 """
 
 from __future__ import annotations
@@ -35,8 +22,7 @@ logger = logging.getLogger(__name__)
 
 TODO_WRITE_TOOL_NAME = "todo_write"
 
-# Status -> checklist marker the TUI renders. A small, stable mapping so the renderer stays a pure
-# string formatter and never has to know the Task status vocabulary.
+# Status -> checklist marker, so the TUI renderer never has to know the Task status vocabulary.
 _STATUS_MARKERS: dict[str, str] = {
     "pending": "[ ]",
     "in_progress": "[~]",
@@ -68,10 +54,5 @@ def todo_write(ctx: RunContext[AgentDeps], tasks: list[Task]) -> str:
 
 
 def _checklist_lines(tasks: list[Task]) -> tuple[str, ...]:
-    """Render each task as a status-marked checklist line for the TaskListUpdated event.
-
-    e.g. ``Task(id="2", content="build", status="in_progress")`` -> ``"[~] build"``. The TUI
-    renderer then shows these lines verbatim, so the status vocabulary lives here (next to the
-    Task model) rather than being re-derived in the TUI.
-    """
+    """Render each task as a status-marked checklist line (e.g. ``"[~] build"``) for the event."""
     return tuple(f"{_STATUS_MARKERS[task.status]} {task.content}" for task in tasks)

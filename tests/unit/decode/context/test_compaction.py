@@ -1,21 +1,10 @@
 """Unit tests for :mod:`decode.context.compaction` — the pure compaction primitives (ADR-0006 §3-5).
 
-These are the **network-free** building blocks the handler (task 044) and ``/compact`` (task 045)
-orchestrate; this module owns only the math + message surgery, no wiring. Each primitive is
-exercised independently and every LLM call is driven by ``FunctionModel`` / ``TestModel`` so CI
-stays offline:
-
-* :func:`reserve_threshold` — ``int(window * (1 - reserve))`` with the ``[0,1]`` / positive-window
-  guards.
-* :func:`should_compact` — the window-relative predicate shared by both tiers (``input_tokens == 0``
-  is the safe "don't fire" fallback).
-* :func:`summarize_for_compaction` — the one full-tier LLM call producing the fixed Markdown
-  skeleton; ``None`` (never raises) on an empty conversation or a failing call.
-* :func:`build_summary_message` — the synthetic head ``ModelRequest`` framing.
-* :func:`split_tail` — the boundary-snapped recent-tail cut (never starts on an orphaned tool
-  result).
-* :func:`microcompact` — the no-LLM tier that blanks old tool-output bodies (idempotent, never
-  removes a part, originals untouched).
+Covers ``reserve_threshold`` math + guards, the ``should_compact`` predicate, the
+``summarize_for_compaction`` LLM call (fixed skeleton; None, never raises, on empty/failure),
+``build_summary_message`` framing, the boundary-snapped ``split_tail`` cut, and the no-LLM
+``microcompact`` tier (idempotent, never removes a part, originals untouched). Every LLM call
+is a ``FunctionModel`` / ``TestModel`` — no network.
 """
 
 import dataclasses
@@ -82,9 +71,7 @@ _SKELETON_HEADINGS = [
 ]
 
 
-# --------------------------------------------------------------------------------------------
-# message builders (shared by the split_tail / microcompact tests)
-# --------------------------------------------------------------------------------------------
+# message builders shared by the split_tail / microcompact tests
 
 
 def _user(text: str) -> ModelRequest:
@@ -109,9 +96,7 @@ def _tool_return(name: str, call_id: str, content: str) -> ModelRequest:
     )
 
 
-# --------------------------------------------------------------------------------------------
-# reserve_threshold — int(window * (1 - reserve)) with guards
-# --------------------------------------------------------------------------------------------
+# reserve_threshold
 
 
 def test_reserve_threshold_full_and_micro_fractions():
@@ -143,9 +128,7 @@ def test_reserve_threshold_rejects_non_positive_window(window: int):
         reserve_threshold(window, 0.20)
 
 
-# --------------------------------------------------------------------------------------------
-# should_compact — the window-relative predicate shared by both tiers (built RunUsage, no network)
-# --------------------------------------------------------------------------------------------
+# should_compact
 
 
 def test_should_compact_true_at_the_full_level():
@@ -177,9 +160,7 @@ def test_should_compact_false_on_zero_tokens_fallback():
     assert should_compact(usage, window=1_000_000, reserve=0.20, enabled=True) is False
 
 
-# --------------------------------------------------------------------------------------------
-# summarize_for_compaction — one LLM call → fixed skeleton; None (never raises) on empty/failure
-# --------------------------------------------------------------------------------------------
+# summarize_for_compaction
 
 
 async def test_summarize_for_compaction_returns_the_filled_skeleton():
@@ -280,9 +261,7 @@ async def test_summarize_for_compaction_returns_none_when_the_model_returns_blan
     assert summary is None
 
 
-# --------------------------------------------------------------------------------------------
-# build_summary_message — the synthetic head ModelRequest / UserPromptPart
-# --------------------------------------------------------------------------------------------
+# build_summary_message
 
 
 def test_build_summary_message_shape_and_framing():
@@ -299,9 +278,7 @@ def test_build_summary_message_shape_and_framing():
     assert "compacted" in part.content.lower()
 
 
-# --------------------------------------------------------------------------------------------
-# split_tail — largest boundary-snapped recent tail (never starts on an orphaned tool result)
-# --------------------------------------------------------------------------------------------
+# split_tail
 
 
 def test_split_tail_returns_zero_when_everything_fits():
@@ -349,9 +326,7 @@ def test_split_tail_snaps_back_to_a_user_turn_boundary_no_orphan():
     assert not any(isinstance(part, ToolReturnPart) for part in head.parts)
 
 
-# --------------------------------------------------------------------------------------------
-# microcompact — blank old tool-output bodies only; idempotent; originals untouched; never removes
-# --------------------------------------------------------------------------------------------
+# microcompact
 
 
 def _straddling_history() -> list[ModelMessage]:

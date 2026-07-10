@@ -1,33 +1,12 @@
 """Read + validate + merge the Skills Catalog from two sources (ADR-0004 §3,§5).
 
-A skill follows the **Agent Skills directory convention**: a directory ``<name>/SKILL.md`` whose
-``SKILL.md`` is a YAML frontmatter block (delimited by ``---`` lines) carrying ``name`` +
-``description``, followed by the instruction body. The loader recognizes **only** ``<name>/SKILL.md``
-directories — a flat ``*.md`` is no longer a skill (hard switch, no back-compat).
-:func:`parse_skill_file` splits and validates one ``SKILL.md`` into a
-:class:`~decode.entities.skill_def.SkillDef`; the ``source`` provenance label is supplied by the caller
-(the one deliberate deviation from :func:`decode.agents.loader.parse_agent_file` — a skill carries
-where it came from). The skill's **name is the frontmatter ``name:``** (ADR-0004 §3); the directory
-name is cosmetic.
-
-Skills come from two sources, with the same asymmetry the agents catalog uses for built-ins vs the
-user's ``settings.json`` (ADR-0004 §3):
-
-* :func:`load_builtin_skills` walks the bundled ``builtin/<name>/SKILL.md`` directories as **packaged
-  data** (via :mod:`importlib.resources` nested traversal, so they ship in the installed wheel),
-  ``source="builtin"`` and ``resource_dir=None`` always (a built-in's resources would live unreadable
-  in site-packages — ADR-0004 §3). A built-in parse failure **raises loudly** — the built-ins ship
-  with the package, so a failure here is a packaging bug, not user input to tolerate.
-* :func:`discover_project_skills` scans ``<cwd>/<settings.skills_dir>/<name>/SKILL.md`` (cwd-relative,
-  like memory), ``source`` set to the absolute ``SKILL.md`` path. A project skill that ships sibling
-  resources (anything besides ``SKILL.md`` in its directory) gets ``resource_dir`` set to its
-  directory (kept cwd-joined, un-``.resolve()``d, so task 033 can render it cwd-relative). A
-  malformed/unreadable ``SKILL.md`` is logged at WARNING and **skipped** (a user's typo never breaks a
-  session); a subdirectory with no ``SKILL.md`` is skipped; a missing dir yields ``{}``.
-
-:func:`load_skills` merges built-ins first, then project skills via ``dict.update``, so a project skill
-whose frontmatter ``name`` equals a built-in's **intentionally overrides** it (most-specific wins; the
-silent override is acceptable — ``source`` keeps it traceable, ADR-0004 §3).
+A skill is a directory ``<name>/SKILL.md``: YAML frontmatter (``name`` + ``description``)
+followed by the instruction body. The skill's name is the frontmatter ``name:``; the directory
+name is cosmetic. Built-ins load as packaged data and a malformed one raises loudly; project
+skills under ``<cwd>/<settings.skills_dir>`` are skipped with a WARNING when malformed (a
+user's typo never breaks a session). :func:`load_skills` merges built-ins first, then project
+skills — a same-name project skill intentionally overrides the built-in (``source`` keeps the
+provenance traceable).
 """
 
 from __future__ import annotations
@@ -44,27 +23,23 @@ from decode.frontmatter import split_frontmatter
 
 logger = logging.getLogger(__name__)
 
-# The package the bundled catalog directories live in (packaged data, loaded via importlib.resources).
+# The package the bundled catalog directories live in.
 _BUILTIN_PACKAGE = "decode.skills.builtin"
 
 # The provenance label for a bundled built-in skill.
 _BUILTIN_SOURCE = "builtin"
 
-# The canonical per-skill manifest filename (the Agent Skills directory convention; ADR-0004 §3).
+# The canonical per-skill manifest filename (ADR-0004 §3).
 _SKILL_FILE = "SKILL.md"
 
 
 def parse_skill_file(text: str, source: str, resource_dir: Path | None = None) -> SkillDef:
     """Parse one ``SKILL.md`` (frontmatter + body) into a :class:`SkillDef`.
 
-    Splits the leading ``---``-fenced YAML frontmatter from the body, requires a non-empty string
-    ``name`` + ``description`` (the skill's name is the frontmatter ``name:``, not the directory name),
-    and lets :class:`SkillDef` validate the rest. ``source`` is the provenance label the caller supplies
-    (``"builtin"`` or the project ``SKILL.md`` path); ``resource_dir`` is the optional tier-3
-    bundled-resource directory the caller threads through (``None`` for built-ins and resource-less
-    project skills). Raises :class:`ValueError` on any structural problem — missing frontmatter, an
-    unclosed fence, a missing/non-string ``name`` or ``description``, or an empty body — so a non-string
-    YAML value (e.g. a list for ``name``) surfaces as a clear error here rather than an
+    ``source`` is the caller-supplied provenance label (``"builtin"`` or the project ``SKILL.md``
+    path); ``resource_dir`` is the optional bundled-resource directory (``None`` for built-ins
+    and resource-less project skills). Raises :class:`ValueError` on any structural problem,
+    including a non-string YAML value, so the error surfaces here rather than as an
     :class:`AttributeError` from :class:`SkillDef`.
     """
     frontmatter, body = split_frontmatter(text)
@@ -83,13 +58,10 @@ def parse_skill_file(text: str, source: str, resource_dir: Path | None = None) -
 def load_builtin_skills() -> dict[str, SkillDef]:
     """Read + validate every bundled built-in skill, keyed by frontmatter name (ADR-0004 §3).
 
-    Walks ``builtin/<name>/SKILL.md`` directories via :mod:`importlib.resources` nested traversal
-    (so the skills ship in the installed wheel). Returns a fresh dict each call (no shared mutable
-    state), ``source="builtin"`` and ``resource_dir=None`` for every built-in (a built-in's resources
-    would live unreadable in site-packages — ADR-0004 §3). A directory without a ``SKILL.md`` (and
-    non-directory entries like ``__init__.py`` / ``__pycache__``) is skipped at DEBUG. Raises
-    :class:`ValueError` if any bundled ``SKILL.md`` is malformed — the built-ins ship with the package,
-    so a failure here is a packaging bug surfaced loudly rather than a silently dropped skill.
+    Walks ``builtin/<name>/SKILL.md`` via :mod:`importlib.resources`; returns a fresh dict with
+    ``source="builtin"`` and ``resource_dir=None`` for every built-in (a built-in's resources
+    would live unreadable in site-packages). A malformed bundled ``SKILL.md`` raises
+    :class:`ValueError` — a packaging bug surfaced loudly, not a silently dropped skill.
     """
     package = importlib.resources.files(_BUILTIN_PACKAGE)
     skills: dict[str, SkillDef] = {}
@@ -113,17 +85,11 @@ def load_builtin_skills() -> dict[str, SkillDef]:
 def discover_project_skills(cwd: Path) -> dict[str, SkillDef]:
     """Discover project-local skills under ``<cwd>/<settings.skills_dir>``, keyed by frontmatter name.
 
-    Scans each ``<name>/SKILL.md`` subdirectory (sorted by directory name for a deterministic merge
-    order) and parses its ``SKILL.md`` with ``source`` set to the manifest's absolute path. A skill
-    that ships sibling resources (any entry in its directory besides ``SKILL.md``) gets
-    ``resource_dir`` set to that directory **un-``.resolve()``d / cwd-joined**, so task 033 can render
-    it cwd-relative; a resource-less skill gets ``None``. A subdirectory lacking ``SKILL.md`` is logged
-    at WARNING and skipped; a malformed or unreadable ``SKILL.md`` is logged at WARNING and **skipped**
-    so a user's typo never crashes the agent (mirrors memory's skip-unreadable and the user
-    ``settings.json`` tolerance); a directory-name ≠ frontmatter-name mismatch still loads (keyed by
-    frontmatter ``name``) but is logged at WARNING to catch copy-paste slips. A non-directory entry
-    directly under the skills dir (e.g. a loose ``*.md`` from the dropped flat format) is ignored. A
-    missing skills directory returns an empty dict.
+    A skill shipping sibling resources gets ``resource_dir`` set to its directory, kept
+    cwd-joined and un-``.resolve()``d so callers can render it cwd-relative. A subdirectory
+    lacking ``SKILL.md`` or a malformed/unreadable ``SKILL.md`` is logged at WARNING and skipped
+    (a user's typo never crashes the agent); a directory-name ≠ frontmatter-name mismatch still
+    loads but warns. A missing skills directory returns an empty dict.
     """
     skills_dir = cwd / settings.skills_dir
     if not skills_dir.is_dir():
@@ -142,15 +108,12 @@ def discover_project_skills(cwd: Path) -> dict[str, SkillDef]:
             resource_dir = sub if any(e.name != _SKILL_FILE for e in sub.iterdir()) else None
             skill = parse_skill_file(text, source=source, resource_dir=resource_dir)
         except (ValueError, OSError, yaml.YAMLError) as exc:
-            # ``yaml.YAMLError`` (e.g. ``ScannerError`` on a typo'd frontmatter) is NOT a ``ValueError``,
-            # so it must be caught explicitly — else a single broken project skill crashes the live
-            # session (the loader runs every turn via the catalog hook). The built-in path keeps catching
-            # only ``ValueError``, so a malformed built-in still raises loudly (ADR-0004 §3 asymmetry).
+            # ``yaml.YAMLError`` is NOT a ``ValueError`` — catch it explicitly so one broken
+            # project skill never crashes the live session (built-ins still raise loudly).
             logger.warning("skipping malformed/unreadable project skill %s: %s", source, exc)
             continue
         if skill.name != sub.name:
-            # The directory name is cosmetic (keyed by frontmatter ``name``), but a mismatch is usually
-            # a copy-paste slip worth surfacing — load it, warn loudly (ADR-0004 §3).
+            # A mismatch is usually a copy-paste slip — load it, warn loudly (ADR-0004 §3).
             logger.warning(
                 "project skill directory %r holds a skill named %r (directory name is cosmetic)",
                 sub.name,
@@ -166,10 +129,8 @@ def discover_project_skills(cwd: Path) -> dict[str, SkillDef]:
 def load_skills(cwd: Path) -> dict[str, SkillDef]:
     """Merge built-in + project-local skills, keyed by frontmatter name (ADR-0004 §3).
 
-    Built-ins are loaded first, then the project skills ``dict.update`` over them — so a project skill
-    whose frontmatter ``name`` equals a built-in's **overrides** it (its ``body`` and ``source`` become
-    the project file's), while unoverridden built-ins and project-only skills both appear. The override
-    is intentional and silent; ``source`` keeps the provenance traceable in logs.
+    Built-ins first, then project skills ``dict.update`` over them — a same-name project skill
+    intentionally overrides the built-in; ``source`` keeps the provenance traceable.
     """
     skills = load_builtin_skills()
     project = discover_project_skills(cwd)
@@ -181,13 +142,7 @@ def load_skills(cwd: Path) -> dict[str, SkillDef]:
 
 
 def _require_str(meta: dict[str, object], key: str) -> str:
-    """Read a required, non-empty string frontmatter field.
-
-    Raises :class:`ValueError` (never :class:`AttributeError`) when the key is missing or its YAML
-    value is not a string — e.g. a list/number for ``name`` — so the loader, not :class:`SkillDef`,
-    owns the clear error. The returned value is stripped so the dispatcher key and catalog text are
-    exact (no leading/trailing whitespace), since :class:`SkillDef` validates stripped but stores raw.
-    """
+    """Read a required non-empty string field, stripped; missing/non-string raises ValueError."""
     value = meta.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"'{key}' is required and must be a non-empty string")

@@ -1,16 +1,11 @@
 """Unit tests for the per-turn Opik root span the loop opens (ADR-0014 §4, task 092).
 
-Mirrors the ``agent/loop.py`` wiring: :meth:`AgentTurnHandler.__call__` runs its whole ``while True``
-inside ONE :func:`decode.observability.root_span` named ``chat_turn`` carrying the constructor's
-``session_id`` as the Opik ``thread_id``. These tests patch ``observability.root_span`` with a
-*recording* context manager — no real logfire, no network — so they assert the wiring precisely and
-fast: opened once per turn, right name + ``thread_id``, and closed **exactly once** on a normal turn,
-across a multi-leg (gated) turn, AND on abort (the runner's ``aclose()`` throws ``GeneratorExit`` into
-the suspended ``yield`` and the ``with`` must unwind). The real-span nesting / usage assertions live in
-the integration capstone (``tests/integration/test_opik_repl_trace.py``).
-
-No network: the agent runs against ``FunctionModel`` and the model is swapped per test via
-``agent.override(model=...)``; the span boundary is a mock.
+:meth:`AgentTurnHandler.__call__` runs its whole turn inside ONE ``observability.root_span``
+named ``chat_turn`` carrying ``session_id`` as the Opik ``thread_id``. ``root_span`` is patched
+with a recording context manager (no logfire, no network) to assert: opened once per turn, right
+name + thread id, and closed exactly once — on a normal turn, a gated multi-leg turn, an abort,
+and a mid-leg exception. The agent runs against ``FunctionModel`` via ``agent.override``; the
+real-span nesting / usage assertions live in ``tests/integration/test_opik_repl_trace.py``.
 """
 
 from __future__ import annotations
@@ -169,7 +164,6 @@ async def test_session_id_defaults_to_none_thread_id_when_not_wired(agent, recor
 
 
 async def test_a_gated_multi_leg_turn_stays_inside_one_root_span(agent, recorder):
-    """A gated tool's approve/resume leg rides the SAME root span — one open, one close (§4)."""
     register_noop(agent)
     handler = AgentTurnHandler(agent, deps=_deps(), session_id="sess-gate")
     runner = Runner(handler, on_event=lambda event: None)

@@ -1,40 +1,15 @@
 """The gated ``web_fetch`` tool — GET a URL and hand the model readable text (ADR-0002 §7,10).
 
-``web_fetch`` does a single HTTP **GET** with an :class:`httpx.AsyncClient` and returns the page
-as model-readable text. When the response is **HTML it is converted to Markdown** (with
-``<script>`` / ``<style>`` removed) — the same trick claude-code's WebFetch uses to cut tokens,
-since the model rarely needs the tag soup. text/plain (and other ``text/*`` content, plus JSON)
-is returned **as-is**. The reply states the HTTP status and the final URL so the model knows
-exactly what it read.
-
-**Async-for-IO.** A network round-trip is I/O, so the tool is ``async`` and uses
-``httpx.AsyncClient`` (per the AGENTS.md async-for-IO rule). Redirects are followed
-(``follow_redirects=True``) and the reply reports the *final* URL after the redirect chain.
-
-**Timeout.** Every phase uses ``settings.web_fetch_timeout_s`` (passed straight to the client),
-so a hung server cannot wedge a turn.
-
-**Size cap.** The decoded response is capped at :data:`_MAX_RESPONSE_BYTES` *before* conversion:
-a huge page can blow up both the context window and memory. Unlike file / bash output (capped by
-:mod:`decode.tools.truncate`, which snaps to a *line* boundary), web content often has no useful
-line structure (minified HTML, single-line text), so a line-snapped cap would not actually bound
-it — we cap by **raw UTF-8 bytes** instead (truncated to a valid character boundary) and append a
-notice. Capping the *source* text (not just the Markdown) means the conversion itself never has
-to chew through an unbounded document.
-
-**Gating (ADR-0002 §3).** v1 asks on *every* tool call, so the function raises
-:class:`pydantic_ai.ApprovalRequired` until ``ctx.tool_call_approved`` is set — *before* any
-connection is opened, so a denied call makes no network request at all. A GET has **no local
-side effect** (network egress only), so M3 may auto-allow it later — but in v1 it is **still
-asked**, exactly like the read-only file tools.
-
-**Errors never crash the REPL.** A non-2xx status, a timeout, a connection error, or non-text
-content all map to a model-readable :class:`pydantic_ai.ModelRetry` so the model can correct
-itself (try another URL, accept that the page is unreadable) instead of taking down the loop.
-
-The :data:`_TRANSPORT` module attribute is the test seam: it is ``None`` in production (the
-client opens a real connection) and tests patch it with an :class:`httpx.MockTransport` so the
-suite is hermetic — no real network under ``filterwarnings=["error"]``.
+One async httpx GET (redirects followed; ``settings.web_fetch_timeout_s`` on every phase). HTML
+is converted to Markdown (``<script>`` / ``<style>`` removed) to cut tokens; other textual
+content passes through as-is. The decoded body is capped at :data:`_MAX_RESPONSE_BYTES`
+**before** conversion — a raw UTF-8 byte cap (backed off to a valid character boundary), not a
+line-snapped one, because web content often has no useful line structure. Gating raises
+:class:`pydantic_ai.ApprovalRequired` *before* any connection is opened, so a denied call makes
+no request. Every failure (non-2xx, timeout, connection error, non-text content) maps to a
+model-readable :class:`pydantic_ai.ModelRetry` — errors never crash the REPL.
+:data:`_TRANSPORT` is the test seam (``None`` in production; tests patch an
+:class:`httpx.MockTransport` so the suite is hermetic).
 """
 
 from __future__ import annotations
@@ -54,30 +29,22 @@ logger = logging.getLogger(__name__)
 
 WEB_FETCH_TOOL_NAME = "web_fetch"
 
-# The largest decoded response body we hand onward, in **raw UTF-8 bytes**. A page above this is
-# hard-truncated to the cap (at a valid character boundary) before conversion so neither the
-# context window nor memory is blown by one giant document. A byte cap (not a line-snapped one
-# like decode.tools.truncate) is used because web content often has no useful line structure.
-# 2 MB of text is already far more than a model needs from a single fetch.
+# Cap on the decoded body in raw UTF-8 bytes (hard-truncated at a valid character boundary,
+# before conversion); a byte cap, not a line-snapped one — web content has no useful line structure.
 _MAX_RESPONSE_BYTES = 2_000_000
 
-# HTML element tags whose *content* must never reach the model: scripts and stylesheets are pure
-# noise (and JS could even be hostile to quote back). They are removed wholesale before Markdown
-# conversion — markdownify's own ``strip`` only drops the tags, not their text bodies.
+# Tags whose *content* must never reach the model — markdownify's own ``strip`` only drops the
+# tags, not their text bodies, so these are removed wholesale before conversion.
 _DROP_TAGS = ("script", "style")
 
-# Content types we treat as HTML (→ convert to Markdown). Everything else that is still textual
-# is passed through verbatim; non-text content is refused with a ModelRetry.
+# Content types treated as HTML (→ Markdown conversion).
 _HTML_CONTENT_TYPES = ("text/html", "application/xhtml+xml")
 
-# Textual (non-HTML) content types we pass through as-is. ``text/*`` covers text/plain, csv, etc.;
-# the explicit extras cover the common structured-text payloads a fetch legitimately returns.
+# Textual (non-HTML) content types passed through verbatim; non-text content is refused.
 _TEXT_CONTENT_PREFIXES = ("text/",)
 _TEXT_CONTENT_TYPES = ("application/json", "application/xml")
 
-# The test seam: ``None`` in production (httpx opens a real connection). Tests patch this with an
-# httpx.MockTransport so no real network call ever happens. M-later could swap a caching/proxy
-# transport here without touching the tool.
+# Test seam: ``None`` in production; tests patch an httpx.MockTransport (no real network).
 _TRANSPORT: httpx.BaseTransport | httpx.AsyncBaseTransport | None = None
 
 
@@ -117,10 +84,8 @@ async def web_fetch(ctx: RunContext[AgentDeps], url: str) -> str:
 def _validate_url(url: str) -> None:
     """Reject a non-http(s) URL with a ModelRetry *before* any connection is attempted.
 
-    An empty string or a URL without an ``http``/``https`` scheme (a bare ``"a"``, a ``file://``
-    path, a relative reference) is a model mistake, not a crash — and httpx mangles relative URLs
-    deep inside redirect/cookie handling, so we catch it up front with a clear, model-facing
-    message instead of letting an opaque parse error escape.
+    httpx mangles relative URLs deep inside redirect/cookie handling, so a model mistake is
+    caught up front with a clear message instead of an opaque parse error.
     """
     if not url:
         raise ModelRetry("url is empty; provide an http(s) URL to fetch.")
@@ -141,12 +106,7 @@ def _parseable(url: str) -> bool:
 
 
 async def _get(url: str) -> httpx.Response:
-    """Perform the GET, mapping every transport/HTTP failure to a model-readable ModelRetry.
-
-    A timeout, a connection failure, or a non-2xx status are all things the model can react to
-    (pick a different URL, give up on this page) — never reasons to crash the loop — so each
-    becomes a :class:`pydantic_ai.ModelRetry` with a short, model-facing explanation.
-    """
+    """Perform the GET, mapping every transport/HTTP failure to a model-readable ModelRetry."""
     try:
         async with _client() as client:
             response = await client.get(url)
@@ -169,12 +129,7 @@ async def _get(url: str) -> httpx.Response:
 
 
 def _client() -> httpx.AsyncClient:
-    """Build the per-call :class:`httpx.AsyncClient` (timeout + redirects + the test seam).
-
-    The timeout comes from ``settings.web_fetch_timeout_s`` and is applied to every phase;
-    redirects are followed so the reply can report the final URL. ``_TRANSPORT`` is ``None`` in
-    production (a real connection) and a :class:`httpx.MockTransport` in tests (no network).
-    """
+    """Build the per-call :class:`httpx.AsyncClient` (settings timeout, redirects, the test seam)."""
     return httpx.AsyncClient(
         timeout=settings.web_fetch_timeout_s,
         follow_redirects=True,
@@ -183,12 +138,7 @@ def _client() -> httpx.AsyncClient:
 
 
 def _decode_body(response: httpx.Response) -> str:
-    """Decode the response to text, refusing non-text content with a ModelRetry.
-
-    HTML and other textual content types are decoded (httpx picks the charset from the headers).
-    A non-text payload (an image, a binary download) is not something the model can read, so it
-    is refused with a :class:`pydantic_ai.ModelRetry` naming the content type.
-    """
+    """Decode the response to text, refusing non-text content with a ModelRetry naming the type."""
     content_type = _content_type(response)
     if not _is_textual(content_type):
         logger.debug("web_fetch refused non-text content (%s, url=%s)", content_type, response.url)
@@ -202,10 +152,8 @@ def _decode_body(response: httpx.Response) -> str:
 def _render_body(response: httpx.Response, body: str) -> str:
     """Cap, then (for HTML) Markdown-convert the decoded body into the model-facing text.
 
-    The body is hard-capped at :data:`_MAX_RESPONSE_BYTES` *first* so conversion never chews
-    through an unbounded document; an HTML body is then converted to Markdown (``<script>`` /
-    ``<style>`` removed), while any other textual body is returned as-is. When the body was
-    truncated, a notice naming the cap is appended so the model knows the page was clipped.
+    Capped at :data:`_MAX_RESPONSE_BYTES` *first* so conversion never chews through an unbounded
+    document; a truncation notice is appended when the body was clipped.
     """
     capped, truncated = _cap(body)
     text = _html_to_markdown(capped, response.url) if _is_html(_content_type(response)) else capped
@@ -217,10 +165,8 @@ def _render_body(response: httpx.Response, body: str) -> str:
 def _cap(body: str) -> tuple[str, bool]:
     """Hard-cap ``body`` to :data:`_MAX_RESPONSE_BYTES` UTF-8 bytes; return ``(text, truncated)``.
 
-    Web content has no useful line structure to preserve, so this is a plain byte cap (not the
-    line-snapped :mod:`decode.tools.truncate`). The cut is backed off to the last valid UTF-8
-    character boundary so a multi-byte character is never split. ``truncated`` is ``True`` only
-    when bytes were actually dropped.
+    A plain byte cap (no line structure to preserve), backed off to the last valid UTF-8
+    character boundary so a multi-byte character is never split.
     """
     encoded = body.encode("utf-8")
     if len(encoded) <= _MAX_RESPONSE_BYTES:
@@ -233,21 +179,14 @@ def _cap(body: str) -> tuple[str, bool]:
 def _html_to_markdown(html: str, url: httpx.URL) -> str:
     """Convert ``html`` to Markdown, removing ``<script>`` / ``<style>`` content entirely.
 
-    markdownify's own ``strip`` argument only drops the *tags*, leaving their text bodies in the
-    output, so the script / style elements are decomposed with BeautifulSoup first (a hard
-    dependency of markdownify — always present). ATX headings (``# Title``) keep the output
-    compact and unambiguous; the result is whitespace-trimmed.
+    The script / style elements are decomposed with BeautifulSoup first (markdownify's ``strip``
+    would keep their text bodies); ATX headings keep the output compact.
 
-    **Hostile-input guard.** ``web_fetch`` ingests arbitrary remote HTML, and markdownify
-    recurses once per element nesting level — a tiny page of deeply nested tags (a few hundred
-    ``<div>``, far under the byte cap, so the cap gives no protection) overflows Python's
-    recursion limit and raises :class:`RecursionError`. That, or any other unexpected conversion
-    failure on malformed input, must **never** escape and crash the turn (the module's "errors
-    never crash the REPL" contract), so the whole conversion is wrapped and mapped to a
-    model-readable :class:`pydantic_ai.ModelRetry`. We catch :class:`RecursionError` at this
-    boundary rather than bumping ``sys.setrecursionlimit`` (which only moves the cliff and risks
-    a C-stack segfault). The BeautifulSoup ``decompose()`` loop is iterative and safe; the guard
-    spans it anyway so the whole conversion is covered.
+    **Hostile-input guard.** markdownify recurses per nesting level, so a tiny page of deeply
+    nested tags (far under the byte cap) raises :class:`RecursionError`. That — or any other
+    conversion failure on malformed input — must never crash the turn, so the whole conversion
+    maps to a model-readable :class:`pydantic_ai.ModelRetry`; catching at this boundary beats
+    bumping ``sys.setrecursionlimit``, which only moves the cliff and risks a C-stack segfault.
     """
     try:
         soup = BeautifulSoup(html, "html.parser")

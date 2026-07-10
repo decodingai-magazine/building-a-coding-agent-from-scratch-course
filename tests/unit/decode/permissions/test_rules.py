@@ -17,7 +17,7 @@ from decode.entities.permissions import PermissionRequest
 from decode.permissions import rules
 from decode.permissions.types import ToolKind
 
-# --- parsing rule strings -------------------------------------------------------------------
+# parsing rule strings
 
 
 def test_parse_rule_with_pattern():
@@ -47,7 +47,7 @@ def test_parse_rule_rejects_a_missing_tool_name(text):
         rules.parse_rule(text)
 
 
-# --- subject extraction per tool kind -------------------------------------------------------
+# subject extraction per tool kind
 
 
 def test_subject_for_bash_is_the_command():
@@ -83,7 +83,7 @@ def test_subject_for_handles_malformed_args_json():
     assert subject == "bash"
 
 
-# --- matching rule against request ----------------------------------------------------------
+# matching rule against request
 
 
 def _request(tool_name: str, subject: str, kind: ToolKind = ToolKind.OTHER) -> PermissionRequest:
@@ -123,7 +123,7 @@ def test_matches_npm_glob_pattern():
     assert rules.matches(rule, _request("bash", "npm run build")) is False
 
 
-# --- loading a RuleSet from .decode/settings.json -------------------------------------------
+# loading a RuleSet from .decode/settings.json
 
 
 def test_load_rule_set_parses_allow_and_deny(tmp_path):
@@ -191,7 +191,7 @@ def test_load_rule_set_skips_unparseable_rule_strings(tmp_path, caplog):
     assert [r.tool_name for r in rule_set.allow] == ["read"]
 
 
-# --- building a persistable allow-rule string from a request --------------------------------
+# building a persistable allow-rule string from a request
 
 
 def test_allow_rule_string_for_a_subject():
@@ -213,7 +213,7 @@ def test_allow_rule_string_falls_back_to_bare_tool_when_subject_is_empty():
     assert rules.allow_rule_string(request) == "noop"
 
 
-# --- persisting an allow rule to .decode/settings.json --------------------------------------
+# persisting an allow rule to .decode/settings.json
 
 
 def test_persist_allow_rule_creates_the_file_and_parent_dir(tmp_path):
@@ -270,7 +270,7 @@ def test_persist_allow_rule_preserves_unrelated_top_level_keys(tmp_path):
     assert data["other"] == 42
 
 
-# --- RuleSet.matched_* helpers --------------------------------------------------------------
+# RuleSet.matched_* helpers
 
 
 def test_rule_set_first_matching_allow():

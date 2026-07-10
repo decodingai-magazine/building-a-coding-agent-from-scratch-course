@@ -1,23 +1,11 @@
 """The orchestration control tools — ``enter_plan_mode`` / ``exit_plan_mode`` (ADR-0003 §8).
 
-These tools steer the *session* rather than touch the filesystem: they flip the gate's
-:class:`~decode.permissions.types.PermissionMode`. They are **ungated** — like ``ask_user`` they
-never raise :class:`pydantic_ai.ApprovalRequired`, so they never reach the permission gate (routing
-a control signal through the gate would either block it in plan mode or double-prompt the human).
-
-* :func:`enter_plan_mode` switches the gate to ``PLAN`` (read-only: any mutation is then denied
-  with a reason pointing back here) and acknowledges.
-* :func:`exit_plan_mode` is itself a **HITL tool**: it presents the plan and asks the human to
-  approve leaving plan mode, *via the same single Decision Channel* ``ask_user`` uses
-  (``deps.resolve_user_question`` — never a second prompt). On approve it switches to ``EDIT`` (so
-  the agent can implement the just-approved plan); on deny it stays in ``PLAN`` and tells the model
-  to refine and ask again. A headless run / a cancelled approval maps to a model-readable
-  :class:`pydantic_ai.ModelRetry` (never a hang) and leaves the mode untouched.
-
-The ``sleep`` control tool's body lives in :mod:`decode.tools.sleep`; its name constant stays here
-(:data:`SLEEP_TOOL_NAME`) because this module is the one place the ``tools`` package owns the
-orchestration tool-name constants the agents-catalog loader (task 019) validates ``tools``
-allowlists against, regardless of task ordering.
+Ungated session controls that flip the gate's mode: ``enter_plan_mode`` switches to ``PLAN``;
+``exit_plan_mode`` is the plan-approval HITL — it asks the human via the same single Decision
+Channel ``ask_user`` uses, switching to ``EDIT`` on approve and staying in ``PLAN`` on deny
+(headless / cancelled approvals map to a :class:`pydantic_ai.ModelRetry`, never a hang).
+``sleep``'s body lives in :mod:`decode.tools.sleep`; its name constant stays here because this
+module owns the orchestration tool-name constants the agents-catalog loader validates against.
 """
 
 from __future__ import annotations
@@ -38,20 +26,17 @@ ENTER_PLAN_MODE_TOOL_NAME = "enter_plan_mode"
 EXIT_PLAN_MODE_TOOL_NAME = "exit_plan_mode"
 SLEEP_TOOL_NAME = "sleep"
 
-# The orchestration tool names as a frozenset — the agents-catalog loader unions these with the
-# registry's tool names to form the allowlist-validation set (the build/plan personas list these).
+# Unioned with the registry's tool names to form the allowlist-validation set.
 ORCHESTRATION_TOOL_NAMES: frozenset[str] = frozenset(
     {ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME, SLEEP_TOOL_NAME}
 )
 
-# The acknowledgements + approval cue the tools return / surface. Kept as named constants so the
-# tests pin the exact contract and the strings live in one place.
+# Acknowledgements + approval cue, as named constants so tests pin the exact contract.
 _ENTERED_PLAN_MESSAGE = "Entered plan mode: read-only. Present your plan, then call exit_plan_mode."
 _PLAN_APPROVED_MESSAGE = "Plan approved — entering edit mode."
 _PLAN_DENIED_MESSAGE = "Plan not approved — refine it and call exit_plan_mode again."
 _APPROVAL_CUE = "Approve this plan and start editing? [y/N]"
-# The model-readable fallbacks when the human cannot answer the approval (headless / cancelled).
-# The gate is left untouched in both cases (the session stays in plan mode).
+# Model-readable fallbacks when the human cannot answer; the gate stays in PLAN in both cases.
 _NO_INTERACTIVE_USER_MESSAGE = (
     "No interactive user is attached to approve the plan, so plan mode was not exited. "
     "Refine the plan or proceed read-only."
@@ -60,8 +45,7 @@ _CANCELLED_MESSAGE = (
     "The plan approval was dismissed without an answer, so plan mode was not exited. "
     "Call exit_plan_mode again when ready."
 )
-# Typed answers (case-insensitive, stripped) that approve leaving plan mode; anything else denies
-# (the safe default behind the ``[y/N]`` cue).
+# Answers (case-insensitive, stripped) that approve; anything else denies (safe [y/N] default).
 _APPROVE_ANSWERS: frozenset[str] = frozenset({"y", "yes"})
 
 

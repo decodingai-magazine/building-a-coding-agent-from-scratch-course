@@ -1,30 +1,10 @@
-"""The flat tool registry — the one place tools are declared and wired (ADR-0002 §7, ADR-0003 §2).
+"""The flat tool registry — the one place tools are declared and wired.
 
-M1 keeps tooling deliberately flat: **no plugin machinery, no discovery, no MCP** (that is
-M12). The registry is a plain list of :class:`ToolSpec` — one per tool — and does exactly two
-jobs:
-
-* :func:`register_tools` registers every spec's function on the :class:`~pydantic_ai.Agent`
-  (the factory calls this instead of hand-registering each tool);
-* :data:`TOOL_KIND` is *derived from the same list*, so a tool's
-  :class:`~decode.permissions.types.ToolKind` is declared in exactly one place. The loop reads it
-  through :func:`decode.tools.tool_kind` when it builds a
-  :class:`~decode.entities.permissions.PermissionRequest`.
-
-Tools land here as they are built (006-011). Every *gated* tool raises
-:class:`pydantic_ai.ApprovalRequired` when ``not ctx.tool_call_approved`` so the run resolves to
-``DeferredToolRequests`` and the loop can route the call through the gate; the gate then decides
-allow/ask/deny by mode x the tool's ``kind`` (ADR-0003 §1) — read-only tools auto-allow.
-
-The **ungated** tools never raise ``ApprovalRequired`` and so never reach the permission gate (the
-gate path is only reached by a tool that actually raised it; their ``kind`` is ``OTHER`` but is
-never consulted): ``ask_user`` (task 011), which IS the human-interaction tool — gating it ("may I
-ask you a question?") would double-prompt — the orchestration controls ``enter_plan_mode`` /
-``exit_plan_mode`` / ``sleep`` (task 021 / ADR-0003 §8), which touch no filesystem and only steer
-the session (mode flips, a bounded ``sleep``), and the ``skill`` dispatcher (task 026 / ADR-0004 §7),
-which only returns a skill's instruction body — the gated ``bash`` / ``write`` / ``edit`` calls that
-body *induces* are what the gate still governs. ``exit_plan_mode`` rides the same single decision
-channel ``ask_user`` uses for its plan-approval HITL.
+A plain list of :class:`ToolSpec` (no plugin machinery): :func:`register_tools` registers each
+spec's function on the Agent, and :data:`TOOL_KIND` is derived from the same list so a tool's
+kind is declared exactly once. Gated tools raise :class:`pydantic_ai.ApprovalRequired` so the
+loop routes them through the gate; the ungated tools (``ask_user``, the orchestration controls,
+``skill``) never raise it and never reach the gate. See ADR-0002 §7, ADR-0003 §2,§8, ADR-0004 §7.
 """
 
 from __future__ import annotations
@@ -69,58 +49,42 @@ class ToolSpec:
 
 
 # The flat catalogue. Source of truth for registration and the tool-kind map.
-#
-# The scaffolding ``noop`` tool (task 005) is deliberately ABSENT: it was the stand-in that made
-# the permission-gate-via-deferred-tools path real *before* the real tools existed, and 006-011
-# fully superseded it. It is no longer in this package — it survives only as a TEST-ONLY helper
-# (``support.noop_helper.register_noop``) for the permission/loop tests that want a minimal
-# one-gated-tool agent; the production agent never exposes it (AGENTS.md: remove scaffolding once
-# the real thing lands; no abstraction without a second concrete caller).
 TOOL_SPECS: list[ToolSpec] = [
-    # The read-only file tools (task 006): no disk/exec side effect → auto-allowed by the gate.
+    # Read-only file tools: no disk/exec side effect → auto-allowed by the gate.
     ToolSpec(name=files.READ_TOOL_NAME, func=files.read, kind=ToolKind.READ_ONLY),
     ToolSpec(name=files.GLOB_TOOL_NAME, func=files.glob, kind=ToolKind.READ_ONLY),
     ToolSpec(name=files.GREP_TOOL_NAME, func=files.grep, kind=ToolKind.READ_ONLY),
-    # The mutating file tools (task 007): FILE_EDIT — edit mode auto-allows them, default asks.
+    # Mutating file tools: FILE_EDIT — edit mode auto-allows them, default asks.
     ToolSpec(name=files.WRITE_TOOL_NAME, func=files.write, kind=ToolKind.FILE_EDIT),
     ToolSpec(name=files.EDIT_TOOL_NAME, func=files.edit, kind=ToolKind.FILE_EDIT),
-    # Bash (task 008): shell execution behind the executor seam → OTHER (edit mode still asks).
+    # Bash: shell execution behind the executor seam → OTHER (edit mode still asks).
     ToolSpec(name=bash_module.BASH_TOOL_NAME, func=bash_module.bash, kind=ToolKind.OTHER),
-    # Tasks (task 009): in-memory TodoWrite checklist, no disk/exec side effect → READ_ONLY
-    # (ADR-0003 §2), so it works in plan mode and never prompts.
+    # In-memory TodoWrite checklist: no disk/exec side effect → READ_ONLY (works in plan mode).
     ToolSpec(
         name=tasks_module.TODO_WRITE_TOOL_NAME,
         func=tasks_module.todo_write,
         kind=ToolKind.READ_ONLY,
     ),
-    # Web (task 010): httpx GET → HTML-to-Markdown. No local side effect (network egress only) →
-    # READ_ONLY, so the gate auto-allows it.
+    # Web: httpx GET → Markdown; network egress only, no local side effect → READ_ONLY.
     ToolSpec(
         name=web_module.WEB_FETCH_TOOL_NAME,
         func=web_module.web_fetch,
         kind=ToolKind.READ_ONLY,
     ),
-    # LSP (task 052 / ADR-0007): the active Code Intelligence tool (definition / references / hover /
-    # diagnostics). It only reads code intelligence — no disk/exec side effect → READ_ONLY, so the
-    # gate auto-allows it under every mode, exactly like the read-only file tools and web_fetch.
+    # LSP (ADR-0007): reads code intelligence only → READ_ONLY, auto-allowed in every mode.
     ToolSpec(
         name=lsp_module.LSP_TOOL_NAME,
         func=lsp_module.lsp,
         kind=ToolKind.READ_ONLY,
     ),
-    # AskUser (task 011): the one blocking tool. NOT gated — it IS the human-interaction tool, so
-    # routing it through the permission gate would double-prompt. It never raises ApprovalRequired
-    # and so never reaches the gate; its kind is OTHER but never consulted.
+    # AskUser: the one blocking tool. NOT gated — gating the human-interaction tool would
+    # double-prompt; it never raises ApprovalRequired (kind OTHER, never consulted).
     ToolSpec(
         name=askuser_module.ASK_USER_TOOL_NAME,
         func=askuser_module.ask_user,
         kind=ToolKind.OTHER,
     ),
-    # Orchestration + sleep (task 021 / ADR-0003 §8): control signals that touch no filesystem.
-    # UNGATED like ask_user — they never raise ApprovalRequired and so never reach the gate (gating
-    # a control signal would block it in plan mode or double-prompt the exit_plan_mode HITL). Their
-    # kind is OTHER but, like ask_user's, is never consulted. enter/exit_plan_mode flip the gate
-    # mode; exit_plan_mode rides the same Decision Channel as ask_user for its approval.
+    # Orchestration + sleep (ADR-0003 §8): ungated control signals; kind OTHER, never consulted.
     ToolSpec(
         name=orchestration_module.ENTER_PLAN_MODE_TOOL_NAME,
         func=orchestration_module.enter_plan_mode,
@@ -136,21 +100,15 @@ TOOL_SPECS: list[ToolSpec] = [
         func=sleep_module.sleep,
         kind=ToolKind.OTHER,
     ),
-    # The skill dispatcher (task 026 / ADR-0004 §7): returns a skill's instruction body on demand.
-    # UNGATED like ask_user / the orchestration controls — it never raises ApprovalRequired and so
-    # never reaches the gate (loading instructions is harmless; its kind is OTHER but never
-    # consulted). The gated bash/write/edit calls the returned body INDUCES are what the gate still
-    # governs — e.g. the commit skill's git commit rides the gated bash tool (default asks, plan denies).
+    # Skill dispatcher (ADR-0004 §7): ungated — it only returns instructions; the gated
+    # bash/write/edit calls the body induces are what the gate still governs.
     ToolSpec(
         name=skills_module.SKILL_TOOL_NAME,
         func=skills_module.skill,
         kind=ToolKind.OTHER,
     ),
-    # The Agent tool (task 088 / ADR-0013): spawns a read-only Explore subagent as an in-process
-    # nested agent.run(). READ_ONLY — it can only cause reads, so it runs inline, never raises
-    # ApprovalRequired, and the gate auto-allows it in every mode (like the read-only file tools). It
-    # joins KNOWN_TOOL_NAMES automatically (derived from TOOL_KIND) so build/plan/code-reviewer may
-    # list it; explore never does (recursion default-deny — its children would omit it anyway).
+    # Agent tool (ADR-0013): spawns a read-only Explore subagent in-process. READ_ONLY → runs
+    # inline, auto-allowed; explore itself omits it (recursion default-deny).
     ToolSpec(
         name=agent_module.AGENT_TOOL_NAME,
         func=agent_module.agent,
@@ -158,8 +116,7 @@ TOOL_SPECS: list[ToolSpec] = [
     ),
 ]
 
-# Each tool's kind, derived from TOOL_SPECS (single source of truth). Consulted by the loop via
-# decode.tools.tool_kind; unknown tools default to OTHER (mutating → gated/asked).
+# Each tool's kind, derived from TOOL_SPECS; unknown tools default to OTHER (mutating → gated).
 TOOL_KIND: dict[str, ToolKind] = {spec.name: spec.kind for spec in TOOL_SPECS}
 
 
@@ -183,16 +140,10 @@ def _prepare_for(
 ) -> Callable[[RunContext[AgentDeps], ToolDefinition], Awaitable[ToolDefinition | None]]:
     """Build the ``prepare=`` callback for ``tool_name`` — active-agent restriction, plus bash's description.
 
-    Every tool gets :func:`_restrict_to_active_agent` (hide the tool when the active agent omits it).
-    ``bash`` additionally gets its **mode-specific description** (ADR-0011 §4): after the restriction
-    keeps it visible, the description is composed for the active ``SANDBOX_MODE`` via
-    :func:`decode.tools.bash.bash_description`. ``none`` mode is a no-op — ``bash_description`` returns
-    the base unchanged, so the original :class:`ToolDefinition` is returned untouched (byte-identical to
-    before this task). ``docker`` / ``modal`` return a :func:`dataclasses.replace` copy carrying the
-    appended sandbox-semantics paragraph. Verified on pydantic-ai-slim 1.95: a ``prepare`` callback that
-    returns a modified ``ToolDefinition`` takes effect on the model-facing schema, and the ``tool_def``
-    is rebuilt fresh per run (no cross-run accumulation), so composing from ``tool_def.description`` is
-    safe. ``replace`` (not in-place mutation) keeps the passed definition untouched.
+    Every tool gets :func:`_restrict_to_active_agent`; ``bash`` additionally gets its mode-specific
+    description via :func:`decode.tools.bash.bash_description` (ADR-0011 §4). ``none`` mode returns the
+    definition untouched; ``docker`` / ``modal`` return a :func:`dataclasses.replace` copy with the
+    sandbox paragraph appended (``tool_def`` is rebuilt fresh per run, so composing from it is safe).
     """
     restrict = _restrict_to_active_agent(tool_name)
     if tool_name != bash_module.BASH_TOOL_NAME:
@@ -218,12 +169,9 @@ def _restrict_to_active_agent(
 ) -> Callable[[RunContext[AgentDeps], ToolDefinition], Awaitable[ToolDefinition | None]]:
     """Build the per-tool ``prepare=`` callback hiding ``tool_name`` when the agent disallows it.
 
-    Pydantic AI 1.107's per-tool ``prepare`` is
-    ``Callable[[RunContext[Deps], ToolDefinition], Awaitable[ToolDefinition | None]]`` (verified
-    against the installed SDK): it runs at schema-build time per run, receives ``ctx.deps``, and a
-    ``None`` return drops the tool from the model-facing schema for that run. Returning the
-    unchanged ``tool_def`` keeps the tool visible. Reading ``ctx.deps.active_agent.tools`` here is
-    what makes the active agent's allowlist take effect per turn with no rebuild (ADR-0003 §6).
+    ``prepare`` runs at schema-build time per run; returning ``None`` drops the tool from the
+    model-facing schema. Reading ``ctx.deps.active_agent.tools`` makes the active agent's
+    allowlist take effect per turn with no rebuild (ADR-0003 §6).
     """
 
     async def prepare(

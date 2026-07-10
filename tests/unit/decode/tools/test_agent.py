@@ -1,23 +1,11 @@
 """Unit tests for the ``agent`` tool + the in-process Explore-subagent runner (ADR-0013 §1,5-9).
 
-The ``agent`` tool is the model-callable spawn point: ``agent(prompt)`` re-enters the ONE built
-Pydantic-AI :class:`~pydantic_ai.Agent` (reached via a set-once module seam, mirroring bash's
-``_EXECUTOR``) as a nested ``agent.run()`` with **fresh, narrowed, read-only deps**
-(``active_agent=explore``, a fresh gate + task_store, a no-op event sink). It is
-:class:`~decode.permissions.types.ToolKind.READ_ONLY`, so it runs inline and never prompts; its
-children are read-only too.
-
-Two layers of test, mirroring ``test_skills.py``:
-
-* **direct** — call ``agent`` (or the seam helpers) with a hand-built :class:`RunContext` / a stub
-  main agent to pin the seam contract, the fresh-deps identity, the no-usage-threading rule, the
-  ``UsageLimits`` cap, the report truncation, and the concurrency semaphore;
-* **loop-driven** — drive ``agent`` through the *real* ``build_agent`` + ``AgentTurnHandler`` (model
-  swapped for a scripted :class:`FunctionModel`, no network) so the whole spawn-and-fold path holds:
-  a parent turn spawns a child, the child runs read-only with the ``agent`` tool hidden (recursion
-  impossible), and the child's final text folds back as the tool result — emitting **no** permission
-  prompt (READ_ONLY runs inline). One :func:`FunctionModel` drives BOTH parent and child on the same
-  ``Agent`` (``override`` is contextvar-scoped), branching on whether ``agent`` is a visible tool.
+Covers the set-once main-Agent seam, fresh narrowed read-only child deps, the no-usage-threading
+rule, the ``UsageLimits`` cap, report truncation, the concurrency semaphore, persona grants, and
+kitaru-free imports. Direct tests use a hand-built :class:`RunContext` / stub main agent;
+loop-driven tests ride the real ``build_agent`` + ``AgentTurnHandler`` with one scripted
+:class:`FunctionModel` driving BOTH parent and child (``override`` is contextvar-scoped),
+branching on whether the ``agent`` tool is visible. No network anywhere.
 """
 
 from __future__ import annotations
@@ -57,7 +45,7 @@ from decode.tools import agent as agent_module
 from decode.tools.agent import AGENT_TOOL_NAME
 from decode.tools.registry import TOOL_SPECS
 
-# --- direct-call harness -----------------------------------------------------------------------
+# direct-call harness
 
 
 async def _direct_deny_permission(request):
@@ -80,7 +68,7 @@ def _tool_ctx(cwd: Path, *, usage: RunUsage | None = None) -> RunContext[AgentDe
     return RunContext(deps=deps, model=None, usage=usage, tool_call_approved=False)  # type: ignore[arg-type]
 
 
-# --- seam: name + signature + set-once + require-when-unset -------------------------------------
+# seam: name + signature + set-once + require-when-unset
 
 
 def test_agent_tool_name_is_stable():
@@ -112,7 +100,7 @@ def test_set_main_agent_installs_the_seam(mocker):
     assert agent_module._require_main_agent() is built
 
 
-# --- registry: kind + known names --------------------------------------------------------------
+# registry: kind + known names
 
 
 def test_agent_is_registered_as_a_read_only_spec():
@@ -145,7 +133,7 @@ def test_build_agent_registers_agent_and_sets_the_seam(mocker):
     assert agent_module._require_main_agent() is built
 
 
-# --- persona grants: build / plan / code-reviewer YES, explore NO ------------------------------
+# persona grants: build / plan / code-reviewer YES, explore NO
 
 
 def test_primary_agents_grant_agent_tool_and_explore_never_does():
@@ -160,7 +148,7 @@ def test_primary_agents_grant_agent_tool_and_explore_never_does():
     assert "agent" not in agents["explore"].tools  # never — recursion default-deny
 
 
-# --- loop-driven harness: one FunctionModel drives parent AND child ----------------------------
+# loop-driven harness: one FunctionModel drives parent AND child
 
 
 @pytest.fixture
@@ -397,7 +385,7 @@ async def test_child_read_only_tool_runs_without_touching_any_resolver(agent, tm
     deny_user.assert_not_called()
 
 
-# --- direct: report truncation -----------------------------------------------------------------
+# direct: report truncation
 
 
 async def test_long_child_report_is_truncated_to_the_byte_cap(agent, tmp_path, monkeypatch):
@@ -437,7 +425,7 @@ class _StubAgent:
         return self._result
 
 
-# --- direct: the concurrency semaphore ---------------------------------------------------------
+# direct: the concurrency semaphore
 
 
 class _ConcurrencyTracker:
@@ -470,7 +458,7 @@ async def test_semaphore_bounds_concurrent_children(mocker, monkeypatch, tmp_pat
     assert tracker.max_concurrent == 2  # concurrency reached — but never exceeded — the cap
 
 
-# --- import hygiene: the agent tool + the cli stay kitaru-free ----------------------------------
+# import hygiene: the agent tool + the cli stay kitaru-free
 
 
 def test_importing_the_agent_tool_and_cli_stays_kitaru_free():

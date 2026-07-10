@@ -1,26 +1,11 @@
-"""The hand-rolled JSON-RPC-2.0-over-stdio Language Server client (ADR-0007 §3).
+"""Hand-rolled JSON-RPC-2.0-over-stdio Language Server client — no protocol library.
 
-No protocol library (no ``multilspy``, no ``lsprotocol``) — teaching the wire is the point. The
-client owns one spawned stdio Language Server and speaks LSP by hand:
-
-* **Framing** — ``Content-Length: <n>\\r\\n\\r\\n<json>`` written/read on the subprocess pipes
-  (:meth:`LspClient._write` / :meth:`LspClient._read`).
-* **Handshake** — :meth:`LspClient.initialize` sends an ``initialize`` request (``rootUri`` = the
-  project root ``file://`` URI, declaring **pull**-diagnostics capability), awaits the response, then
-  sends the ``initialized`` notification.
-* **Per-file sync** — before any position/diagnostic request the file's current on-disk UTF-8 content
-  is pushed with ``textDocument/didOpen`` (re-edits go via ``didChange``); the on-disk file is the
-  source of truth.
-* **Requests matched by ``id``** — ``textDocument/definition`` / ``references`` / ``hover`` and a
-  **pull** ``textDocument/diagnostic`` request→response. Each awaits the response whose JSON-RPC
-  ``id`` matches the request it sent, **skipping** interleaved notifications, server→client requests,
-  and stale responses. There is **no** async ``publishDiagnostics`` handling.
-* **Position basis** — the wire is LSP's **0-based** line/character; the public methods take and
-  return decode's **1-based** line/column, converting at this one boundary.
-
-Every wire failure (closed pipe, malformed frame, per-request timeout, server error) raises the
-private :class:`LspError`; the service layer (:mod:`decode.services.lsp.service`) catches it and
-returns the :data:`~decode.services.lsp.types.UNAVAILABLE` sentinel so nothing escapes into the loop.
+Owns one spawned stdio server: Content-Length framing, initialize handshake (pull diagnostics),
+per-file didOpen/didChange sync (on-disk file is the source of truth), and request/response
+matched by JSON-RPC ``id`` (interleaved notifications skipped; no async publishDiagnostics).
+Public methods are 1-based line/column; the 0-based wire conversion happens here only. Every
+wire failure raises :class:`LspError`, which the service layer maps to ``UNAVAILABLE``.
+See ADR-0007 §3.
 """
 
 from __future__ import annotations
@@ -45,19 +30,13 @@ _SHUTDOWN_GRACE_S = 2.0
 
 
 class LspError(Exception):
-    """Any wire-level failure — closed pipe, malformed frame, timeout, or server error.
-
-    Private to the package: the service layer catches it and resolves to ``UNAVAILABLE`` so the
-    best-effort posture (ADR-0007 §6) holds and nothing is raised into the tool/loop/edit path.
-    """
+    """Any wire-level failure; the service layer maps it to ``UNAVAILABLE`` (ADR-0007 §6)."""
 
 
 class LspClient:
     """A thin JSON-RPC/stdio client owning one already-spawned Language Server subprocess.
 
-    Constructed with the spawned ``process`` (real or, in unit tests, a fake whose stdout yields
-    canned framed responses) and the project ``root``. Not safe for concurrent requests on one
-    instance — the service drives it one request at a time.
+    Not safe for concurrent requests on one instance — the service drives it one at a time.
     """
 
     def __init__(self, process: Any, root: Path) -> None:
@@ -69,22 +48,13 @@ class LspClient:
 
     @property
     def is_alive(self) -> bool:
-        """True while the spawned subprocess is still running (its ``returncode`` is unset).
-
-        The service checks this before reusing a cached client: a server that handshook then crashed
-        mid-session is dropped and respawned once, instead of every later request failing against its
-        dead pipe for the rest of the session.
-        """
+        """True while the spawned subprocess is still running (its ``returncode`` is unset)."""
         return self._process.returncode is None
 
     # --- handshake -----------------------------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Run the ``initialize`` → ``initialized`` handshake (raises :class:`LspError` on failure).
-
-        Declares minimal client capabilities including **pull** diagnostics (``textDocument.diagnostic``)
-        and the project ``rootUri``; the ``initialize`` response is bounded by the per-request timeout.
-        """
+        """Run the ``initialize`` → ``initialized`` handshake (raises :class:`LspError` on failure)."""
         await self._request(
             "initialize",
             {
@@ -135,12 +105,7 @@ class LspClient:
     # --- per-file sync -------------------------------------------------------------------------
 
     async def _sync(self, path: str) -> str:
-        """Push ``path``'s current on-disk content to the server and return its ``file://`` URI.
-
-        First touch of a URI is a ``didOpen`` (version 1); a later touch is a ``didChange`` carrying
-        the full current text (the on-disk file is the source of truth — ADR-0007 §3). Reading a
-        missing/unreadable file raises, which the service maps to ``UNAVAILABLE``.
-        """
+        """Push ``path``'s current on-disk content (didOpen, then didChange) and return its URI."""
         file_path = (self._root / path).resolve()
         uri = file_path.as_uri()
         text = file_path.read_text(encoding="utf-8")
@@ -164,11 +129,7 @@ class LspClient:
     # --- JSON-RPC request/response matched by id -----------------------------------------------
 
     async def _request(self, method: str, params: Any) -> Any:
-        """Send a request and return its ``result``, bounded by ``settings.lsp_request_timeout_s``.
-
-        The response is matched to this request by JSON-RPC ``id``; a timeout, a closed pipe, a
-        malformed frame, or a server ``error`` all raise :class:`LspError`.
-        """
+        """Send a request and return its ``result``, bounded by ``settings.lsp_request_timeout_s``."""
         req_id = next(self._ids)
         await self._write({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
         try:
@@ -179,12 +140,7 @@ class LspClient:
             raise LspError(f"{method} timed out after {settings.lsp_request_timeout_s:g}s") from exc
 
     async def _read_result(self, req_id: int) -> Any:
-        """Read frames until the response whose ``id`` is ``req_id`` arrives; return its ``result``.
-
-        Interleaved notifications (no ``id``), server→client requests (``method`` but no ``result``),
-        and stale responses from earlier requests are **skipped** — this is the match-by-id contract,
-        so an out-of-order response still resolves the right call.
-        """
+        """Read frames until the response matching ``req_id`` arrives, skipping everything else."""
         while True:
             message = await self._read()
             if message.get("id") == req_id and ("result" in message or "error" in message):
@@ -206,11 +162,7 @@ class LspClient:
         await self._process.stdin.drain()
 
     async def _read(self) -> dict[str, Any]:
-        """Read one ``Content-Length``-framed JSON message from the server's stdout.
-
-        Parses the header, reads **exactly** ``Content-Length`` bytes, and ``json.loads`` them. A
-        closed pipe, a missing/invalid ``Content-Length``, or non-JSON content raises :class:`LspError`.
-        """
+        """Read one ``Content-Length``-framed JSON message from the server's stdout."""
         length = await self._read_header()
         try:
             body = await self._process.stdout.readexactly(length)
@@ -244,11 +196,7 @@ class LspClient:
     # --- shutdown ------------------------------------------------------------------------------
 
     async def shutdown(self) -> None:
-        """``shutdown`` request → ``exit`` notification → terminate the subprocess. Never raises.
-
-        Idempotent and fully best-effort: a hung or already-dead server is force-killed after a short
-        grace window and any wire error is swallowed (the app-exit path, task 054, must not be blocked).
-        """
+        """``shutdown`` request → ``exit`` notification → terminate. Idempotent; never raises."""
         try:
             await self._request("shutdown", None)
             await self._notify("exit", None)

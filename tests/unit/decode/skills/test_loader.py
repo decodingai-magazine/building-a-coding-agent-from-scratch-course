@@ -1,23 +1,10 @@
-"""Unit tests for the Skills Catalog loader (``decode.skills.loader``; ADR-0004 §3,§5).
+"""Unit tests for the Skills Catalog loader (``decode.skills.loader``) — ADR-0004 §3,5.
 
-A skill follows the **Agent Skills directory convention**: a directory ``<name>/SKILL.md``. The loader
-reads skills from two sources and merges them (ADR-0004 §3):
-
-* **built-in** — the bundled ``builtin/<name>/SKILL.md`` directories loaded as *packaged data*
-  (``importlib.resources`` nested traversal, so they ship in the wheel), validated into
-  :class:`~decode.entities.skill_def.SkillDef`, keyed by frontmatter ``name``, ``source == "builtin"``,
-  ``resource_dir is None`` always. A built-in parse failure raises loudly.
-* **project-local** — ``<cwd>/<settings.skills_dir>/<name>/SKILL.md`` (cwd-relative, like memory),
-  ``source`` set to the absolute ``SKILL.md`` path; ``resource_dir`` set to the skill's directory iff it
-  ships sibling resources. A malformed/unreadable ``SKILL.md`` (or a subdir without one) is logged at
-  WARNING and skipped; a missing dir yields ``{}``.
-
-:func:`load_skills` merges built-ins first then project skills, so a project skill whose frontmatter
-``name`` equals a built-in's intentionally overrides it. These tests pin the two built-ins (the active
-``commit`` body, the advisory ``review-diff`` body), the packaged-data nested traversal, frontmatter/body
-parsing + error messages, project discovery + keying by frontmatter name, ``resource_dir`` set/unset, the
-directory-name-mismatch warning, skip-with-warning vs raise asymmetry, the dropped flat format, and the
-project-override-by-name merge.
+Covers the two built-ins (packaged ``builtin/<name>/SKILL.md`` data), frontmatter/body parsing
++ error messages, project discovery keyed by frontmatter name (dir name cosmetic, mismatch
+warned), ``resource_dir`` set/unset, the built-in/project asymmetry (a malformed built-in
+raises loudly; a malformed/unreadable project skill is skipped with a WARNING), the dropped
+flat format, and the project-override-by-name merge in :func:`load_skills`.
 """
 
 import importlib.resources
@@ -64,7 +51,7 @@ def _skills_dir(cwd: Path) -> Path:
     return cwd / settings.skills_dir
 
 
-# --- settings -------------------------------------------------------------------------------
+# settings
 
 
 def test_skills_dir_default_is_decode_skills():
@@ -83,7 +70,7 @@ def test_discover_reads_the_dir_via_the_settings_singleton(tmp_path, monkeypatch
     assert found["custom-skill"].source == str(custom.resolve())
 
 
-# --- the two built-ins ----------------------------------------------------------------------
+# the two built-ins
 
 
 def test_load_builtin_skills_returns_the_two_skills():
@@ -146,7 +133,7 @@ def test_load_builtin_skills_is_independent_per_call():
     assert first is not second
 
 
-# --- packaged-data loading ------------------------------------------------------------------
+# packaged-data loading
 
 
 def test_builtin_skills_are_packaged_directories_each_with_a_skill_md():
@@ -193,7 +180,7 @@ def test_load_builtin_skills_raises_loudly_on_a_malformed_skill_md(mocker, tmp_p
         loader.load_builtin_skills()
 
 
-# --- parse_skill_file -----------------------------------------------------------------------
+# parse_skill_file
 
 
 def test_parse_skill_file_splits_frontmatter_and_body():
@@ -305,7 +292,7 @@ def test_parse_skill_file_ignores_unknown_frontmatter_keys():
     assert skill.name == "demo"
 
 
-# --- discover_project_skills ----------------------------------------------------------------
+# discover_project_skills
 
 
 def test_discover_finds_project_skills_keyed_by_frontmatter_name(tmp_path):
@@ -409,7 +396,7 @@ def test_discover_skips_an_unreadable_project_skill_with_a_warning(tmp_path, cap
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
-# --- resource_dir (tier-3 bundled resources; ADR-0004 §5) -----------------------------------
+# resource_dir (tier-3 bundled resources)
 
 
 def test_discover_sets_resource_dir_when_the_skill_ships_a_sibling(tmp_path):
@@ -460,7 +447,7 @@ def test_discover_resource_dir_set_for_a_sibling_directory_too(tmp_path):
     assert found["deploy"].resource_dir == skills_dir / "deploy"
 
 
-# --- directory-name vs frontmatter-name mismatch (ADR-0004 §3) ------------------------------
+# directory-name vs frontmatter-name mismatch
 
 
 def test_discover_dir_name_mismatch_loads_and_warns(tmp_path, caplog):
@@ -547,7 +534,7 @@ def test_discover_malformed_yaml_warning_names_the_offending_file(tmp_path, capl
     )
 
 
-# --- load_skills (merge) --------------------------------------------------------------------
+# load_skills (merge)
 
 
 def test_load_skills_returns_builtins_when_no_project_skills(tmp_path):
@@ -621,7 +608,7 @@ def test_load_skills_does_not_raise_on_a_malformed_yaml_project_skill(tmp_path, 
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
-# --- built-in / project asymmetry (ADR-0004 §3) ---------------------------------------------
+# built-in / project asymmetry
 
 
 def test_parse_skill_file_propagates_malformed_yaml_frontmatter():

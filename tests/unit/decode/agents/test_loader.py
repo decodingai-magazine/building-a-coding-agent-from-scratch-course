@@ -1,12 +1,8 @@
-"""Unit tests for the Agents Catalog loader (``decode.agents.loader``; ADR-0003 §5).
+"""Unit tests for the Agents Catalog loader (``decode.agents.loader``) — ADR-0003 §5.
 
-The loader reads the four bundled ``builtin/*.md`` files — YAML frontmatter + a system-prompt
-body — as **packaged data** (``importlib.resources``, so they ship in the wheel), validates each
-into an :class:`~decode.entities.agent_def.AgentDef`, and returns them keyed by name.
-:func:`load_agent` returns one persona by name or raises a clear "no such agent" error listing the
-available names. These tests pin: the four built-ins load with the right tools/mode/rules from
-ADR-0003 §5, the packaged-data path (not a hard-coded repo path), and the frontmatter/body parsing
-+ error messages.
+Pins the four built-ins (tools/mode/rules, the explore subagent flag), the packaged-data path
+(``importlib.resources``, not a hard-coded repo path), ``load_agent`` /
+``load_primary_agent`` error messages, and the frontmatter/body parsing rules.
 """
 
 import importlib.resources
@@ -24,7 +20,7 @@ _BUILTIN_NAMES = {"build", "plan", "explore", "code-reviewer"}
 _READ_ONLY_TOOLS = {"read", "glob", "grep", "lsp", "web_fetch", "todo_write"}
 
 
-# --- the four built-ins ---------------------------------------------------------------------
+# the four built-ins
 
 
 def test_load_builtin_agents_returns_the_four_personas():
@@ -104,7 +100,7 @@ def test_code_reviewer_carries_the_git_allow_rule():
     assert Rule(tool_name="bash", pattern="git *") in reviewer.allow_rules
 
 
-# --- packaged-data loading ------------------------------------------------------------------
+# packaged-data loading
 
 
 def test_builtin_files_are_packaged_data_not_a_repo_path():
@@ -118,7 +114,7 @@ def test_builtin_files_are_packaged_data_not_a_repo_path():
         assert (files / md).read_text(encoding="utf-8").strip()
 
 
-# --- load_agent errors ----------------------------------------------------------------------
+# load_agent errors
 
 
 def test_load_agent_unknown_name_lists_the_available_agents():
@@ -140,7 +136,7 @@ def test_load_builtin_agents_is_independent_per_call():
     assert first is not second
 
 
-# --- load_primary_agent (ADR-0013 §3) -------------------------------------------------------
+# load_primary_agent
 
 
 def test_load_primary_agent_returns_a_primary():
@@ -171,7 +167,7 @@ def test_load_primary_agent_unknown_name_lists_only_primaries():
     assert "available agents: build, code-reviewer, plan" in message
 
 
-# --- frontmatter / body parsing -------------------------------------------------------------
+# frontmatter / body parsing
 
 
 def test_parse_agent_file_splits_frontmatter_and_body():

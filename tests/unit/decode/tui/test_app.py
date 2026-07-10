@@ -103,7 +103,6 @@ def test_event_sink_streams_deltas_onto_one_line_not_one_per_chunk():
 
 
 def test_event_sink_respects_a_model_emitted_newline():
-    """A real ``\\n`` inside the streamed text DOES break the line (the model's intended newline)."""
     console = _record_console()
     sink = app._make_event_sink(console)
 
@@ -423,7 +422,7 @@ async def test_ask_user_resolver_propagates_cancellation():
         await task
 
 
-# --- control-surface parsers (ADR-0003 §9, task 022) — pure, mirror is_quit_command -----------
+# control-surface parsers (ADR-0003 §9, task 022) — pure, mirror is_quit_command
 
 
 @pytest.mark.parametrize(
@@ -495,7 +494,7 @@ def test_agent_switch_confirmation_names_the_agent_and_mode():
     assert "Decode" in line
 
 
-# --- the live bottom toolbar (reads agent + mode each render) ---------------------------------
+# the live bottom toolbar (reads agent + mode each render)
 
 
 async def _deny_resolver(request: PermissionRequest) -> PermissionDecision:
@@ -627,7 +626,7 @@ def test_bottom_toolbar_hides_the_spinner_while_awaiting_a_human_decision(mocker
     assert "working…" in working
 
 
-# --- the /mode and /agent handlers (mutate gate/deps, render one confirmation line) -----------
+# the /mode and /agent handlers (mutate gate/deps, render one confirmation line)
 
 
 def test_handle_mode_command_sets_the_gate_and_confirms():
@@ -695,7 +694,7 @@ def test_handle_agent_command_missing_name_shows_usage():
     assert any("/agent" in line for line in lines)
 
 
-# --- the user-facing /<skill-name> command (ADR-0004 §5, task 028) ----------------------------
+# the user-facing /<skill-name> command (ADR-0004 §5, task 028)
 
 
 @pytest.mark.parametrize(
@@ -773,7 +772,7 @@ def test_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
     assert app.parse_mode_command("/mode plan") == "plan"  # the loop's /mode branch matches first
 
 
-# --- the manual /compact command (ADR-0006 §7, task 045) --------------------------------------
+# the manual /compact command (ADR-0006 §7, task 045)
 
 
 async def test_handle_compact_command_idle_true_compacts_and_emits_no_extra_line(mocker):
@@ -832,7 +831,7 @@ def test_compact_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path
     assert app.is_compact_command("/compact") is True  # the loop's /compact branch matches first
 
 
-# --- the /clear command (compaction-to-zero; summarize-before-wipe) ---------------------------
+# the /clear command (compaction-to-zero; summarize-before-wipe)
 
 
 async def test_handle_clear_command_idle_summarizes_then_wipes_and_confirms(mocker, tmp_path):
@@ -901,7 +900,7 @@ def test_slash_completer_includes_clear(tmp_path):
     assert "/clear" in completer._meta  # /clear autocompletes alongside the other built-ins
 
 
-# --- the /ship command: git hand-back of the sandbox Workspace (ADR-0012 §8, task 083) --------
+# the /ship command: git hand-back of the sandbox Workspace (ADR-0012 §8, task 083)
 
 
 def test_slash_completer_includes_ship(tmp_path):
@@ -1010,7 +1009,7 @@ def test_ship_outcome_line_prefixes_the_ship_result_message():
     assert line == "Decode - could not push decode/x ..."
 
 
-# --- the on-exit auto-ship (ADR-0012 §8, task 083 AC5) ----------------------------------------
+# the on-exit auto-ship (ADR-0012 §8, task 083 AC5)
 
 
 def test_ship_on_exit_none_mode_is_a_silent_noop(mocker, tmp_path):
@@ -1079,7 +1078,7 @@ def test_ship_on_exit_swallows_errors(mocker, tmp_path):
     )  # no raise
 
 
-# --- the /<skill-name> resource trailer (ADR-0004 §1,§5; task 033) ----------------------------
+# the /<skill-name> resource trailer (ADR-0004 §1,§5; task 033)
 
 
 def _add_resource_to_skill(skills_dir: Path, name: str, relpath: str = "references/x.md") -> None:
@@ -1176,7 +1175,6 @@ def _completions(completer: app.SlashCompleter, text: str) -> list[str]:
 
 
 def test_slash_completer_suggests_commands_and_skills(tmp_path):
-    """Typing a ``/`` token completes the built-in commands + project skills; prose/args don't."""
     completer = app.SlashCompleter(tmp_path)  # no project skills → built-in commands + skills only
 
     # A bare "/" lists everything, including a built-in command and a built-in skill.

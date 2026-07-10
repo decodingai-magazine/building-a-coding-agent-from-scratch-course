@@ -49,7 +49,7 @@ class _FakeBackend:
         self.destroy_count += 1
 
 
-# --- run: fresh-exec = ensure-created → backend.exec ------------------------------------------
+# run: fresh-exec = ensure-created → backend.exec
 
 
 async def test_run_ensures_created_then_execs_bash_lc(tmp_path):
@@ -87,7 +87,7 @@ async def test_run_ignores_cwd_for_the_workdir_and_derives_the_workspace(tmp_pat
     assert backend.created == [expected]
 
 
-# --- start: the canonical Workspace + skills seeding ------------------------------------------
+# start: the canonical Workspace + skills seeding
 
 
 async def test_start_sets_the_workspace_verbatim_and_seeds_skills(mocker, tmp_path):
@@ -131,7 +131,7 @@ async def test_start_is_idempotent(mocker, tmp_path):
     assert len(backend.created) == 1
 
 
-# --- file_backend: the file/search tools' byte-transport seam (ADR-0012 §4) -------------------
+# file_backend: the file/search tools' byte-transport seam (ADR-0012 §4)
 
 
 async def test_file_backend_ensures_created_and_returns_the_backend(tmp_path):
@@ -159,7 +159,7 @@ async def test_file_backend_reuses_the_backend_bash_already_created(tmp_path):
     assert len(backend.created) == 1  # not re-created — shares the create memo with run()
 
 
-# --- aclose / export: session teardown --------------------------------------------------------
+# aclose / export: session teardown
 
 
 async def test_aclose_exports_then_destroys(tmp_path):
@@ -210,7 +210,7 @@ async def test_export_passthrough_reaches_the_backend():
     assert backend.export_count == 1
 
 
-# --- create failure → a rendered, crash-free infra failure ------------------------------------
+# create failure → a rendered, crash-free infra failure
 
 
 async def test_run_renders_a_create_failure_without_raising(tmp_path):

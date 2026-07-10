@@ -1,18 +1,10 @@
 """Unit tests for the REPL's Opik tracing wiring in ``run_app`` (ADR-0014 §1,4-5, task 092).
 
-Mirrors the three ``tui/app.py`` wiring points:
-
-* ``observability.init_tracing()`` is called ONCE, early — before the agent is built (so the global
-  pydantic-ai instrumentation covers it);
-* when it returns ``True`` a single startup console line — ``Decode - Opik tracing on (project
-  '<name>').`` — is emitted near the banner through the render path (never when it returns ``False``);
-* the session-log id is passed to the turn handler as ``session_id`` (the Opik thread id).
-
-Driven through the **real** ``run_app`` against a piped prompt_toolkit input (``create_pipe_input`` +
-``DummyOutput``), quitting immediately — the startup line + handler are built before the prompt loop, so
-no model turn is needed. No network: ``build_agent`` is stubbed to a ``FunctionModel`` agent and
-``init_tracing`` is a mock, so no real logfire configure / OTLP export ever happens. The rootdir
-``_no_opik_tracing`` fixture blanks the key, so the default path is inactive (byte-identical).
+Covers: ``init_tracing()`` called once BEFORE the agent is built, the single startup line when
+tracing is active (never when inactive), and the session-log id passed to the turn handler as the
+Opik thread id. Driven through the real ``run_app`` on piped prompt_toolkit input, quitting
+immediately. No network: ``build_agent`` is stubbed to a ``FunctionModel`` agent and
+``init_tracing`` is a mock; the rootdir ``_no_opik_tracing`` fixture blanks the key.
 """
 
 from __future__ import annotations
@@ -84,7 +76,6 @@ async def _quit_immediately(buf: io.StringIO, send: Callable[[str], None]) -> No
 
 
 async def test_run_app_calls_init_tracing_once_before_building_the_agent(monkeypatch):
-    """``init_tracing`` runs exactly once and BEFORE ``build_agent`` (§5: global instrument first)."""
     order: list[str] = []
     agent = _chat_agent()
 
@@ -106,7 +97,6 @@ async def test_run_app_calls_init_tracing_once_before_building_the_agent(monkeyp
 
 
 async def test_run_app_prints_the_tracing_line_once_when_active(monkeypatch):
-    """A ``True`` from ``init_tracing`` emits exactly one startup line naming the project."""
     monkeypatch.setattr(app_mod, "build_agent", _chat_agent)
     monkeypatch.setattr("decode.observability.init_tracing", lambda: True)
 
@@ -117,7 +107,6 @@ async def test_run_app_prints_the_tracing_line_once_when_active(monkeypatch):
 
 
 async def test_run_app_prints_no_tracing_line_when_inactive(monkeypatch):
-    """No key → real ``init_tracing`` returns ``False`` → no line (byte-identical launch)."""
     monkeypatch.setattr(app_mod, "build_agent", _chat_agent)
     # No init_tracing patch: the autouse ``_no_opik_tracing`` fixture blanks the key, so the real
     # ``init_tracing`` no-ops and returns False.
@@ -128,7 +117,6 @@ async def test_run_app_prints_no_tracing_line_when_inactive(monkeypatch):
 
 
 async def test_run_app_passes_the_session_log_id_to_the_turn_handler(monkeypatch):
-    """The handler is built with ``session_id == session_log.session_id`` (the Opik thread id, §4)."""
     monkeypatch.setattr(app_mod, "build_agent", _chat_agent)
     captured: dict[str, object] = {}
 

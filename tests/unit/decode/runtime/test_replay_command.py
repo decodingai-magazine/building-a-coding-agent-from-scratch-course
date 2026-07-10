@@ -1,16 +1,10 @@
 """``decode replay <exec_id> [--from] [--model]`` — the what-if subcommand (ADR-0010 §5-6, task 070).
 
 Drives the real Click ``replay`` subcommand through ``CliRunner``, mocking only the kitaru boundary
-(``is_hitl_execution`` / ``replay_agent_task``, re-exported from :mod:`decode.runtime`) so the cli's
-own logic — the guard chain, the ``--from`` requirement, the bypass-only HITL refusal, and the
-friendly rendering of each Kitaru replay failure — is exercised offline without booting a flow. The
-REAL flow-object replay (a model swap re-executing downstream turns) is proven end to end, on an
-isolated Kitaru store, by ``test_model_swap_replay_re_executes_downstream_turns`` in the runtime
-capstone — this file is the cli-contract half.
-
-Detection / replay are patched on the ``decode.runtime`` package because the command binds them with
-``from decode.runtime import is_hitl_execution, replay_agent_task`` at call time (so the package
-attribute is what it reads).
+(``is_hitl_execution`` / ``replay_agent_task``, patched on the ``decode.runtime`` package because the
+command binds them there at call time) — the guard chain, the ``--from`` requirement, the bypass-only
+HITL refusal, and the friendly rendering of each Kitaru failure run offline without booting a flow.
+The REAL flow-object replay is proven in the runtime capstone; this file is the cli-contract half.
 """
 
 from __future__ import annotations
@@ -68,11 +62,10 @@ def _patch_replay(monkeypatch, *, hitl=False, result=None, replay_exc=None, dete
     return calls
 
 
-# --- help + the --from requirement (Kitaru 1:1, no decode-invented default) -------------------------
+# help + the --from requirement (Kitaru 1:1, no decode-invented default)
 
 
 def test_replay_help_documents_from_and_model():
-    """``decode replay --help`` documents ``--from`` and ``--model`` and the bypass-only scope."""
     result = CliRunner().invoke(cli, ["replay", "--help"])
 
     assert result.exit_code == 0
@@ -97,7 +90,7 @@ def test_replay_without_from_surfaces_kitarus_requirement(monkeypatch, _provider
     assert result.stdout == ""
 
 
-# --- task 071: the sandbox backend guard shares the `decode replay` pre-flight (ADR-0011 §1) --------
+# task 071: the sandbox backend guard shares the `decode replay` pre-flight (ADR-0011 §1)
 
 
 def test_replay_sandbox_docker_unreachable_is_a_friendly_line_no_replay(monkeypatch, _provider_ok):
@@ -120,11 +113,10 @@ def test_replay_sandbox_docker_unreachable_is_a_friendly_line_no_replay(monkeypa
     assert calls == {"detect": 0, "replay": 0}  # exited before touching kitaru
 
 
-# --- bypass-only: a HITL exec_id is refused with guidance -------------------------------------------
+# bypass-only: a HITL exec_id is refused with guidance
 
 
 def test_replay_refuses_a_hitl_execution(monkeypatch, _provider_ok):
-    """A HITL exec_id exits non-zero, points at ``kitaru executions replay``, and never replays (AC4)."""
     calls = _patch_replay(monkeypatch, hitl=True)
 
     result = CliRunner().invoke(cli, ["replay", "kr-hitl-1", "--from", "cp", "--model", "x"])
@@ -137,7 +129,7 @@ def test_replay_refuses_a_hitl_execution(monkeypatch, _provider_ok):
     assert not isinstance(result.exception, KitaruStateError)
 
 
-# --- happy path: prints the (possibly changed) answer + the fork hint -------------------------------
+# happy path: prints the (possibly changed) answer + the fork hint
 
 
 def _ok_result():
@@ -147,11 +139,6 @@ def _ok_result():
 
 
 def test_replay_prints_answer_on_stdout_and_fork_hint_on_stderr(monkeypatch, _provider_ok):
-    """A successful replay prints the answer on stdout; the fork id + source + diff hint on stderr (AC1).
-
-    stdout stays pipe-clean (only the answer); the discoverability scaffolding — the new Fork exec_id,
-    the source exec_id, and a CONFIRMED-surface diff hint (``kitaru executions get``) — is on stderr.
-    """
     _patch_replay(monkeypatch, result=_ok_result())
 
     result = CliRunner().invoke(
@@ -172,7 +159,6 @@ def test_replay_prints_answer_on_stdout_and_fork_hint_on_stderr(monkeypatch, _pr
 
 
 def test_replay_without_model_replays_as_is(monkeypatch, _provider_ok):
-    """Omitting ``--model`` forwards ``model=None`` (replay as-is) and still prints + hints."""
     captured = {}
 
     def _detect(exec_id):
@@ -193,11 +179,10 @@ def test_replay_without_model_replays_as_is(monkeypatch, _provider_ok):
     assert "the swapped answer" in result.stdout
 
 
-# --- Kitaru replay failures: each is one friendly stderr line, no raw traceback ---------------------
+# Kitaru replay failures: each is one friendly stderr line, no raw traceback
 
 
 def test_replay_invalid_from_is_a_friendly_line(monkeypatch, _provider_ok):
-    """An ambiguous/invalid ``--from`` (``KitaruStateError``) → one friendly line, non-zero, no traceback (AC5)."""
     exc = KitaruStateError(
         "Unknown checkpoint selector 'nope'. Available checkpoints: _capture_runtime_output, read_tool."
     )
@@ -216,7 +201,6 @@ def test_replay_invalid_from_is_a_friendly_line(monkeypatch, _provider_ok):
 
 
 def test_replay_diverged_swap_is_a_friendly_line(monkeypatch, _provider_ok):
-    """A swap that diverged the recorded call sequence (``KitaruDivergenceError``) → friendly line (AC5)."""
     _patch_replay(
         monkeypatch, replay_exc=KitaruDivergenceError("call sequence compatibility broken")
     )
@@ -231,7 +215,6 @@ def test_replay_diverged_swap_is_a_friendly_line(monkeypatch, _provider_ok):
 
 
 def test_replay_missing_exec_id_is_a_friendly_line(monkeypatch, _provider_ok):
-    """A missing/unloadable exec_id (``KitaruBackendError`` from detection) → friendly line, no traceback."""
     exc = KitaruBackendError("Failed to load execution 'kr-nope': No runs have been found …")
     _patch_replay(monkeypatch, detect_exc=exc)
 
@@ -244,11 +227,10 @@ def test_replay_missing_exec_id_is_a_friendly_line(monkeypatch, _provider_ok):
     assert result.stdout == ""
 
 
-# --- the full run guard chain fires for replay too (no flow/replay attempted) -----------------------
+# the full run guard chain fires for replay too (no flow/replay attempted)
 
 
 def test_replay_disabled_runtime_guard_does_not_replay(monkeypatch, _provider_ok):
-    """``RUNTIME_ENABLED=false`` → friendly line, non-zero, and no detection/replay attempted (AC6)."""
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", False)
     calls = _patch_replay(monkeypatch, result=_ok_result())
 
@@ -260,7 +242,6 @@ def test_replay_disabled_runtime_guard_does_not_replay(monkeypatch, _provider_ok
 
 
 def test_replay_provider_key_guard_does_not_replay(monkeypatch):
-    """A missing provider key trips the same guard as ``decode run``: friendly line, no replay (AC6)."""
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
@@ -274,7 +255,6 @@ def test_replay_provider_key_guard_does_not_replay(monkeypatch):
 
 
 def test_replay_proxy_missing_secret_guard_does_not_replay(monkeypatch, runtime_secret_name):
-    """Proxy on + a missing Kitaru secret → the proxy pre-flight fires for replay too, no replay (AC6)."""
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
     monkeypatch.setattr(cli_mod.settings, "runtime_credentials_proxy_enabled", True)
@@ -290,7 +270,6 @@ def test_replay_proxy_missing_secret_guard_does_not_replay(monkeypatch, runtime_
 
 
 def test_replay_secret_store_missing_secret_guard_does_not_replay(monkeypatch, runtime_secret_name):
-    """Secret-store on + a missing secret → the secret-store pre-flight fires for replay too, no replay (AC6)."""
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
     monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_config", True)

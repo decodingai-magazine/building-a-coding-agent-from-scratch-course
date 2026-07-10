@@ -6,8 +6,10 @@ from pydantic import ValidationError
 from decode.config import settings as singleton
 from decode.config.settings import Settings
 
-# Every provider var introduced by ADR-0005 (task 037). Cleared in default/.env tests so a
-# developer's real environment cannot leak into the assertions.
+# Each *_ENV_VARS tuple below is cleared in default/.env tests so a developer's real
+# environment cannot leak into the assertions.
+
+# Provider vars (ADR-0005).
 _PROVIDER_ENV_VARS = (
     "LLM_PROVIDER",
     "OPENROUTER_API_KEY",
@@ -18,8 +20,7 @@ _PROVIDER_ENV_VARS = (
     "MODAL_PROXY_TOKEN_SECRET",
 )
 
-# Context compaction vars introduced by ADR-0006 (task 041). Cleared in default/invariant tests so a
-# developer's real environment cannot leak into the assertions.
+# Context compaction vars (ADR-0006).
 _COMPACTION_ENV_VARS = (
     "COMPACTION_ENABLED",
     "COMPACTION_CONTEXT_WINDOW_TOKENS",
@@ -29,8 +30,7 @@ _COMPACTION_ENV_VARS = (
     "MEMORY_COMPRESSION_ENABLED",
 )
 
-# LSP / code intelligence vars introduced by ADR-0007 (task 050). Cleared in default tests so a
-# developer's real environment cannot leak into the assertions.
+# LSP / code intelligence vars (ADR-0007).
 _LSP_ENV_VARS = (
     "LSP_ENABLED",
     "LSP_SERVER_COMMAND",
@@ -39,8 +39,7 @@ _LSP_ENV_VARS = (
     "LSP_REQUEST_TIMEOUT_S",
 )
 
-# Kitaru durable runtime vars introduced by ADR-0008 (task 057). Cleared in default tests so a
-# developer's real environment cannot leak into the assertions.
+# Kitaru durable runtime vars (ADR-0008).
 _RUNTIME_ENV_VARS = (
     "RUNTIME_ENABLED",
     "RUNTIME_CHECKPOINT_STRATEGY",
@@ -50,8 +49,7 @@ _RUNTIME_ENV_VARS = (
     "RUNTIME_SECRET_STORE_CONFIG",
 )
 
-# Sandboxing vars introduced by ADR-0011 (task 071). Cleared in default tests so a developer's real
-# environment cannot leak into the assertions.
+# Sandboxing vars (ADR-0011).
 _SANDBOX_ENV_VARS = (
     "SANDBOX_MODE",
     "SANDBOX_IMAGE",
@@ -60,16 +58,14 @@ _SANDBOX_ENV_VARS = (
     "SANDBOX_PROXY_IMAGE",
 )
 
-# Subagent tuning vars introduced by ADR-0013 (task 088). Cleared in default tests so a developer's
-# real environment cannot leak into the assertions.
+# Subagent tuning vars (ADR-0013).
 _SUBAGENT_ENV_VARS = (
     "SUBAGENT_MAX_PARALLEL",
     "SUBAGENT_MAX_REQUESTS",
     "SUBAGENT_RESULT_MAX_BYTES",
 )
 
-# Observability: Opik vars introduced by ADR-0014 (task 091). Cleared in default tests so a
-# developer's real environment cannot leak into the assertions.
+# Observability: Opik vars (ADR-0014).
 _OPIK_ENV_VARS = (
     "OPIK_API_KEY",
     "OPIK_WORKSPACE",
@@ -432,11 +428,8 @@ def test_env_example_lists_every_runtime_var():
         assert var in env_example, f"{var} missing from .env.example"
 
 
-# --- Sandboxing (ADR-0011, task 071) --------------------------------------------------------
-#
-# Config surface only — the executors that READ these land in tasks 072-075. The default
-# ``sandbox_mode="none"`` keeps today's LocalExecutor, so every existing ``.env``/test is
-# byte-unchanged (asserted implicitly: no sandbox var is required to build ``Settings``).
+# Sandboxing — config surface only; the default ``sandbox_mode="none"`` means no sandbox var is
+# required to build ``Settings``.
 
 
 def test_sandbox_defaults(monkeypatch):
@@ -516,7 +509,7 @@ def test_env_example_lists_every_sandbox_var():
         assert var in env_example, f"{var} missing from .env.example"
 
 
-# --- Subagents (ADR-0013 §7,8, task 088) -------------------------------------------------------
+# Subagents
 
 
 def test_subagent_defaults(monkeypatch):
@@ -558,7 +551,7 @@ def test_env_example_lists_every_subagent_var():
         assert var in env_example, f"{var} missing from .env.example"
 
 
-# --- Observability: Opik (ADR-0014, task 091) --------------------------------------------------
+# Observability: Opik
 
 
 def test_opik_defaults(monkeypatch):
@@ -626,13 +619,9 @@ def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):
     assert s.opik_api_key.get_secret_value() == ""
 
 
-# --- Kitaru secret-store config source (ADR-0008 §5, task 064) ----------------------------------
-#
-# These exercise ``KitaruSecretSettingsSource`` and ``reload_settings`` at the pure-settings level: a
-# **fake** ``kitaru`` module is injected so no real Kitaru/ZenML stack boots (the round-trip against
-# the real local stack lives in tests/unit/decode/runtime/test_secret_store_config.py). The
-# REPL-safety invariant — the bare ``decode`` path never imports kitaru — is proven in a clean
-# subprocess so it is order-independent of any other test that may have imported kitaru.
+# Kitaru secret-store config source (ADR-0008 §5): a fake ``kitaru`` module is injected so no real
+# Kitaru/ZenML stack boots; the REPL-safety invariant (bare ``decode`` never imports kitaru) is
+# proven in a clean subprocess so it is order-independent of tests that imported kitaru.
 
 _CLEARED_FOR_SECRET_SOURCE = (
     "GEMINI_API_KEY",

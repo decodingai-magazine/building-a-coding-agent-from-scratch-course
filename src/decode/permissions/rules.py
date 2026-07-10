@@ -1,25 +1,10 @@
 """The Permission Rule engine: parse, load, and match allow/deny rules (ADR-0003 §4).
 
-A **Permission Rule** is the string ``Tool(pattern)`` or a bare ``Tool``, parsed into a
-:class:`Rule` (``tool_name`` + optional ``pattern``). It is matched (glob via :mod:`fnmatch`)
-against a per-kind **subject** — the string the human cares about for that call:
-
-* ``bash`` → the command;
-* file tools (``read`` / ``write`` / ``edit`` / ``glob`` / ``grep``) → the path;
-* ``web_fetch`` → the url;
-* everything else → the tool name (so a bare ``Tool`` rule still matches by name).
-
-A bare ``Tool`` rule (no pattern) matches *any* call of that tool.
-
-Rules come from the user's optional ``.decode/settings.json``
-(``{"permissions": {"allow": [...], "deny": [...]}}``) — the only rule source this task wires;
-the agent catalog (task 020) reuses the same :class:`RuleSet` engine. A missing file yields an
-empty :class:`RuleSet` silently (the file is optional); a malformed file is non-fatal too — it is
-logged and treated as no rules so a typo never breaks a session.
-
-The engine is **policy data**, not the decision: :class:`~decode.permissions.gate.PermissionGate`
-owns precedence (deny → allow → mode). This module only parses, loads, and answers "does this rule
-match this request?".
+A Permission Rule is ``Tool(pattern)`` or a bare ``Tool``, globbed (:mod:`fnmatch`) against a
+per-kind **subject**: ``bash`` → the command, file tools → the path, ``web_fetch`` → the url,
+everything else → the tool name. A bare rule matches any call of that tool. Rules load from the
+optional ``.decode/settings.json`` (missing/malformed files are non-fatal); the agent catalog
+reuses the same :class:`RuleSet`. This module is policy data only — the gate owns precedence.
 """
 
 from __future__ import annotations
@@ -36,9 +21,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The JSON args field that carries each tool kind's subject (the thing rules glob against). A tool
-# whose name is not here (or whose args lack the field) falls back to matching on the tool name,
-# so a bare ``Tool`` rule still matches.
+# The JSON args field carrying each tool's subject; unlisted tools fall back to the tool name.
 _SUBJECT_FIELD: dict[str, str] = {
     "bash": "command",
     "read": "path",
@@ -52,11 +35,9 @@ _SUBJECT_FIELD: dict[str, str] = {
 
 @dataclass(frozen=True, slots=True)
 class Rule:
-    """A parsed Permission Rule: a ``tool_name`` and an optional glob ``pattern`` (ADR-0003 §4).
+    """A parsed Permission Rule: ``tool_name`` + optional glob ``pattern`` (``None`` = bare rule).
 
-    ``pattern is None`` is a **bare** rule (``Tool``) that matches any call of ``tool_name``; a
-    non-``None`` pattern is globbed (``fnmatch``) against the request's subject. Construct via
-    :func:`parse_rule` rather than the raw fields.
+    Construct via :func:`parse_rule` rather than the raw fields.
     """
 
     tool_name: str
@@ -65,13 +46,9 @@ class Rule:
 
 @dataclass(slots=True)
 class RuleSet:
-    """An allow list + a deny list of :class:`Rule` (ADR-0003 §4).
+    """An allow list + a deny list of :class:`Rule`; the gate holds one per rule source (ADR-0003 §4).
 
-    The :class:`~decode.permissions.gate.PermissionGate` holds one of these per rule source (the
-    user ``.decode/settings.json`` here; the active agent's catalog rules from task 020) and
-    evaluates them with deny-beats-allow precedence. :meth:`matching_deny` / :meth:`matching_allow`
-    return the first rule that matches a request (or ``None``), so the gate can cite which rule
-    fired. Mutable (not frozen) because the always-allow flow reloads the user set in place.
+    Mutable (not frozen) because the always-allow flow reloads the user set in place.
     """
 
     allow: list[Rule] = field(default_factory=list)
@@ -87,12 +64,7 @@ class RuleSet:
 
 
 def parse_rule(text: str) -> Rule:
-    """Parse a rule string ``Tool(pattern)`` or bare ``Tool`` into a :class:`Rule`.
-
-    Surrounding whitespace (and whitespace inside the parens) is stripped. Raises
-    :class:`ValueError` when the tool name is empty (e.g. ``""``, ``"()"``, ``"(pattern)"``) — the
-    loader catches it so one bad rule string never sinks a whole settings file.
-    """
+    """Parse ``Tool(pattern)`` or bare ``Tool`` into a :class:`Rule`; ValueError on an empty name."""
     stripped = text.strip()
     open_paren = stripped.find("(")
     if open_paren == -1:
@@ -109,12 +81,7 @@ def parse_rule(text: str) -> Rule:
 
 
 def subject_for(tool_name: str, args_json: str) -> str:
-    """Extract the per-kind **subject** a rule globs against (ADR-0003 §4).
-
-    ``bash`` → the command, file tools → the path, ``web_fetch`` → the url; anything else (or a
-    missing field, or unparseable ``args_json``) falls back to the tool name — which still lets a
-    bare ``Tool`` rule match. Never raises: a malformed args blob yields the tool name.
-    """
+    """Extract the per-kind subject a rule globs against; falls back to the tool name. Never raises."""
     field_name = _SUBJECT_FIELD.get(tool_name)
     if field_name is None:
         return tool_name
@@ -129,11 +96,7 @@ def subject_for(tool_name: str, args_json: str) -> str:
 
 
 def matches(rule: Rule, request: PermissionRequest) -> bool:
-    """Whether ``rule`` matches ``request`` (ADR-0003 §4).
-
-    The tool names must be equal. A bare rule (``pattern is None``) then matches any such call; a
-    pattern rule globs (``fnmatch``) against ``request.subject``.
-    """
+    """Whether ``rule`` matches ``request``: equal tool name, then bare-or-glob on the subject."""
     if rule.tool_name != request.tool_name:
         return False
     if rule.pattern is None:
@@ -142,25 +105,17 @@ def matches(rule: Rule, request: PermissionRequest) -> bool:
 
 
 def allow_rule_string(request: PermissionRequest) -> str:
-    """The persistable allow-rule string for ``request`` (ADR-0003 §4 always-allow).
-
-    ``Tool(subject)`` when the request carries a meaningful subject; a **bare** ``Tool`` when the
-    subject is empty or is just the tool name (no per-kind subject to scope by). This is what the
-    interactive ``a``/``always`` answer writes so the next identical call auto-allows.
-    """
+    """The persistable always-allow rule: ``Tool(subject)``, or bare ``Tool`` without a subject."""
     if request.subject and request.subject != request.tool_name:
         return f"{request.tool_name}({request.subject})"
     return request.tool_name
 
 
 def persist_allow_rule(path: Path, request: PermissionRequest) -> None:
-    """Append a matching allow rule for ``request`` to the user ``.decode/settings.json``.
+    """Append an allow rule for ``request`` to ``permissions.allow`` in the settings file.
 
-    Reads the existing file (treating a missing/malformed file as the empty shape), appends
-    :func:`allow_rule_string` to ``permissions.allow`` if not already present (idempotent), and
-    writes the file back, **preserving** any unrelated top-level keys and the existing ``deny``
-    list. Creates the parent directory if needed. May raise :class:`OSError` (a write failure) —
-    the caller (the TUI resolver) treats that as non-fatal and falls back to allow-once.
+    Idempotent; preserves unrelated keys. May raise :class:`OSError` — the caller treats a write
+    failure as non-fatal (allow-once).
     """
     rule = allow_rule_string(request)
     data = _read_settings(path)
@@ -192,13 +147,10 @@ def _read_settings(path: Path) -> dict[str, object]:
 
 
 def load_rule_set(path: Path) -> RuleSet:
-    """Load the user ``.decode/settings.json`` at ``path`` into a :class:`RuleSet` (ADR-0003 §4).
+    """Load ``{"permissions": {"allow": [...], "deny": [...]}}`` at ``path`` into a :class:`RuleSet`.
 
-    Reads the shape ``{"permissions": {"allow": [...], "deny": [...]}}``. A missing file is the
-    common case (the file is optional) and yields an empty set **silently**. A malformed file
-    (bad JSON, or an unexpected shape) is non-fatal: it is logged at WARNING and yields an empty
-    set, so a typo never breaks a session. One unparseable rule *string* is skipped (logged) while
-    the rest of the file still loads.
+    A missing file yields an empty set silently; a malformed file is logged and yields an empty
+    set; one unparseable rule string is skipped while the rest still loads.
     """
     if not path.exists():
         return RuleSet()

@@ -121,6 +121,7 @@ For each external-service slug below (wrapped in `<!-- stack:* -->` for find-and
 # Key Principles You Will Respect All Over Your Work
 
 - Always prioritize removing instructions over adding more.
+- Always use the minimum number of words needed to explain what you do, write docs or code that achieve the desired goal.
 - Whenever you add a new rule to memory (e.g. `AGENTS.md`), support it with a concise explanation plus good and bad examples. Good: "a 200-token chunk size", "sub-100ms latency". Bad: "a powerful architecture", "a robust pipeline".
 - **Build it step by step.** This is a teaching codebase — favour the simplest thing that works and is readable over the clever or the speculative. One concept per step; no abstraction without a second concrete caller.
 - **Infrastructure is imported, not abstracted.** Call `modal` / `opik` / `pydantic-ai` / `sqlite3` directly. Introduce an interface only when a real second implementation arrives (e.g. the local-vs-remote sandbox split, which is a genuine seam).

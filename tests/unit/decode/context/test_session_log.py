@@ -1,26 +1,10 @@
-"""Unit tests for :mod:`decode.context.session_log` — the JSONL session log (ADR-0002 §9).
+"""Unit tests for :mod:`decode.context.session_log` — the append-only JSONL session log (ADR-0002 §9).
 
-The session log is the M1 persistence layer: an **append-only JSONL** file per session. Line 0
-is a typed ``session`` header (version, session id, cwd, created_at UTC); every later line is a
-typed ``messages`` batch carrying one turn's ``new_messages()`` serialized via Pydantic AI's
-:data:`~pydantic_ai.messages.ModelMessagesTypeAdapter`. ``load`` / ``load_latest`` replay the
-file back into a ``list[ModelMessage]`` that seeds ``decode --resume``.
-
-Five behaviours are exercised:
-
-* **header** — opening a session writes line 0 as a typed ``session`` object with deterministic
-  ``now`` / ``uuid`` (injected) and creates ``sessions_dir`` if absent;
-* **append_turn** — each turn's new messages append one typed ``messages`` line; the file is
-  never rewritten (append-only);
-* **load round-trip** — a real short agent run (``TestModel`` / ``FunctionModel``, no network)
-  produces real ``ModelMessage`` objects; persisting then reloading yields an equal, usable list;
-* **compaction** — a full compaction appends one typed ``compaction`` checkpoint line carrying
-  the serialized summary + kept tail (ADR-0006 §1); replay restarts the history from
-  ``[summary, *tail]`` at that line and continues, so a compacted file replays to the *compacted*
-  history, successive checkpoints land on the last one, and a malformed checkpoint degrades to
-  the un-compacted history (never raised);
-* **resilience** — a truncated / garbage trailing line (a crash mid-write) is skipped, not
-  raised; an empty session (header only) loads to ``[]``; ``load_latest`` picks the newest file.
+Covers the typed line-0 header, append-only ``messages`` turn batches, ``load`` /
+``load_latest`` / ``resolve_session`` replay, compaction + clear checkpoints (replay restarts
+from ``[summary, *tail]`` / ``[]``, file order winning), resilience to truncated or malformed
+trailing lines (skipped, never raised), and the timezone-aware UTC clock boundary. Offline:
+real ``ModelMessage`` objects come from ``TestModel``, never a network model.
 """
 
 from datetime import UTC, datetime
@@ -64,9 +48,7 @@ def _read_lines(path: Path) -> list[str]:
     return [line for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
-# --------------------------------------------------------------------------------------------
-# create — header line 0 (typed, deterministic now/uuid) + sessions_dir creation
-# --------------------------------------------------------------------------------------------
+# create — header line 0 + sessions_dir creation
 
 
 def test_create_makes_the_sessions_dir_when_absent(tmp_path: Path):
@@ -110,9 +92,7 @@ def test_session_id_recovers_the_id_from_the_filename(tmp_path: Path):
     assert log.session_id == str(_UUID)
 
 
-# --------------------------------------------------------------------------------------------
-# append_turn — typed message batches appended, append-only (header never rewritten)
-# --------------------------------------------------------------------------------------------
+# append_turn — typed message batches, append-only
 
 
 def test_append_turn_appends_a_typed_messages_line(tmp_path: Path):
@@ -151,9 +131,7 @@ def test_append_turn_ignores_an_empty_batch(tmp_path: Path):
     assert len(_read_lines(log.path)) == 1  # header only
 
 
-# --------------------------------------------------------------------------------------------
-# load — round-trip a real agent run (TestModel, no network) back to message_history
-# --------------------------------------------------------------------------------------------
+# load — round-trip a real (offline) agent run
 
 
 async def test_load_round_trips_a_real_agent_run(tmp_path: Path):
@@ -191,9 +169,7 @@ def test_load_returns_empty_for_a_header_only_session(tmp_path: Path):
     assert session_log.load(log.path) == []
 
 
-# --------------------------------------------------------------------------------------------
-# append_compaction — one typed checkpoint line (summary + tail), header/prior turns untouched
-# --------------------------------------------------------------------------------------------
+# append_compaction — one typed checkpoint line
 
 
 def test_append_compaction_appends_exactly_one_typed_compaction_line(tmp_path: Path):
@@ -218,9 +194,7 @@ def test_append_compaction_appends_exactly_one_typed_compaction_line(tmp_path: P
     assert ModelMessagesTypeAdapter.validate_python(entry["tail"]) == tail
 
 
-# --------------------------------------------------------------------------------------------
-# load — a compaction checkpoint restarts history from [summary, *tail], in file order
-# --------------------------------------------------------------------------------------------
+# load — compaction/clear checkpoints restart history in file order
 
 
 def test_compact_then_resume_replays_the_compacted_history(tmp_path: Path):
@@ -366,9 +340,7 @@ def test_resolve_session_finds_and_replays_a_compacted_file(tmp_path: Path):
     assert session_log.load(found) == [summary, *tail]
 
 
-# --------------------------------------------------------------------------------------------
-# resilience — a truncated/garbage trailing line (crash mid-write) is tolerated, not raised
-# --------------------------------------------------------------------------------------------
+# resilience — crash-mid-write lines tolerated, not raised
 
 
 def test_load_tolerates_a_truncated_trailing_line(tmp_path: Path):
@@ -403,9 +375,7 @@ def test_load_skips_a_corrupt_header(tmp_path: Path):
     assert session_log.load(path) == []
 
 
-# --------------------------------------------------------------------------------------------
-# load_latest — pick the most recent session file by the timestamped name
-# --------------------------------------------------------------------------------------------
+# load_latest / resolve_session — pick a session file by timestamp or id
 
 
 def test_load_latest_picks_the_newest_session(tmp_path: Path):
@@ -460,9 +430,7 @@ def test_resolve_session_returns_none_when_not_found(tmp_path: Path):
     assert session_log.resolve_session(tmp_path, "nope") is None
 
 
-# --------------------------------------------------------------------------------------------
-# clock — the injected default now is timezone-aware UTC (the package-wide boundary rule)
-# --------------------------------------------------------------------------------------------
+# clock — timezone-aware UTC boundary
 
 
 def test_default_now_is_timezone_aware_utc():

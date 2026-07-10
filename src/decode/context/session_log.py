@@ -1,29 +1,11 @@
 """Append-only JSONL session log with replay (ADR-0002 §9).
 
-The M1 persistence layer: every REPL session gets one JSONL file at
-``{settings.sessions_dir}/{utc-ts}_{uuid}.jsonl``. **Line 0** is a typed ``session`` header
-(``version``, ``session_id``, ``cwd``, ``created_at`` UTC); **every later line** is a typed
-``messages`` batch carrying one turn's ``new_messages()`` serialized via Pydantic AI's
-:data:`~pydantic_ai.messages.ModelMessagesTypeAdapter`. The file is a stream of typed lines,
-**append-only and never rewritten** — a turn appends one line and that is the only mutation.
-
-:class:`SessionLog` is the *writer*: :meth:`SessionLog.create` opens the file and writes the
-header; :meth:`SessionLog.append_turn` appends one turn. The module-level :func:`load` /
-:func:`load_latest` are the *reader*: they replay a file back into a ``list[ModelMessage]`` that
-seeds ``decode --resume``. Replay is **tolerant** — a truncated or garbage line (a crash
-mid-write leaves a half-line at the tail) is skipped, never raised — so a resume after a crash
-recovers every whole turn that made it to disk.
-
-Why ``now`` / ``session_id`` are injected: the filename and the header's ``created_at`` are
-derived from them, so injecting (rather than calling argless ``datetime.now()`` / ``uuid4()``)
-makes both **deterministic in tests**. The defaults (:func:`_utc_now`, :func:`uuid4`) are the
-production clock/id source.
-
-Why the file I/O is **sync**, not async: each call appends a single small line to a local file
-and the tool layer is sequential in v1 (ADR-0002 §7,10), so there is no concurrent writer to
-interleave with and nothing to overlap with other I/O — the same rationale the sibling
-:mod:`decode.memory.extract` filesystem write-back uses. Network and the durable
-(SQLite/Kitaru) store are later milestones.
+One JSONL file per REPL session: line 0 is a typed ``session`` header; every later line is a
+typed ``messages`` batch, a ``compaction`` checkpoint, or a ``clear`` marker. The file is
+append-only and never rewritten; :func:`load` / :func:`load_latest` replay it to seed
+``decode --resume``. Replay is tolerant — a truncated or garbage line is skipped, never raised.
+``now`` / ``session_id`` are injected so filename and header are deterministic in tests; file
+I/O stays sync (small local appends, sequential tool layer — ADR-0002 §7,10).
 """
 
 from __future__ import annotations
@@ -43,19 +25,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The current header schema version: bump if the on-disk line format changes (replay can then
-# branch on it). M1 only ever writes version 1.
+# Header schema version — bump if the on-disk line format changes.
 _HEADER_VERSION = 1
-# Typed-line discriminators: line 0 is the session header, every later line a turn's messages,
-# a full-compaction checkpoint (ADR-0006 §1), or a ``/clear`` marker (compaction-to-zero).
+# Typed-line discriminators: header / turn messages / compaction checkpoint / clear marker.
 _HEADER_TYPE = "session"
 _MESSAGES_TYPE = "messages"
 _COMPACTION_TYPE = "compaction"
 _CLEAR_TYPE = "clear"
-# Session files are JSONL.
 _SUFFIX = ".jsonl"
-# The timestamp format embedded in the filename: compact, UTC, and lexically sortable so the
-# newest file is simply the lexicographic max (what load_latest relies on).
+# Compact UTC filename timestamp, lexically sortable — load_latest takes the lexicographic max.
 _FILENAME_TS_FORMAT = "%Y%m%dT%H%M%SZ"
 
 
@@ -66,11 +44,7 @@ def _utc_now() -> datetime:
 
 @dataclass(slots=True)
 class SessionLog:
-    """The writer side of a session's JSONL log: open once, append per turn (ADR-0002 §9).
-
-    Constructed via :meth:`create` (which writes the header); thereafter :meth:`append_turn`
-    appends one typed ``messages`` line per turn. ``path`` is the file it owns.
-    """
+    """Writer side of a session's JSONL log: open once via :meth:`create`, append per turn."""
 
     path: Path
 
@@ -78,12 +52,8 @@ class SessionLog:
     def session_id(self) -> str:
         """The session id embedded in the log filename (``<timestamp>_<session_id>.jsonl``).
 
-        The single accessor for "which session is this?" — used by the task-083 git hand-back to name
-        its ``decode/<session-id>`` Session Branch (ADR-0012 §8). The filename is
-        ``{now:_FILENAME_TS_FORMAT}_{session_id}{_SUFFIX}`` and the timestamp format carries no ``_``,
-        so the id is exactly the stem's segment after the first ``_`` (falling back to the whole stem if
-        the format ever changes). Recovered from the filename rather than re-read from the header so it
-        needs no file I/O.
+        Names the git hand-back's ``decode/<session-id>`` Session Branch (ADR-0012 §8). The
+        timestamp format carries no ``_``, so the id is the stem's segment after the first ``_``.
         """
         return self.path.stem.split("_", 1)[-1]
 
@@ -98,13 +68,8 @@ class SessionLog:
     ) -> SessionLog:
         """Open a fresh session file under ``sessions_dir`` and write the typed header (§9).
 
-        Creates ``sessions_dir`` (and parents) if absent, derives the filename from ``now`` and
-        ``session_id`` (both injected so tests are deterministic; defaults are the production
-        clock + a random uuid), and writes **line 0**: a typed ``session`` object carrying the
-        schema ``version``, the ``session_id``, the launch ``cwd``, and the UTC ``created_at``.
-
-        ``now`` **must be timezone-aware UTC** — a naive datetime is rejected, the package-wide
-        boundary rule (ADR-0002 §10).
+        ``now`` / ``session_id`` are injected for deterministic tests (defaults: production
+        clock + a random uuid). ``now`` must be timezone-aware UTC — naive is rejected.
         """
         resolved_now = now or _utc_now()
         if resolved_now.tzinfo is None:
@@ -128,14 +93,9 @@ class SessionLog:
         return cls(path=path)
 
     def append_turn(self, new_messages: list[ModelMessage]) -> None:
-        """Append one turn's new messages as a typed ``messages`` line (append-only) (§9).
+        """Append one turn's ``new_messages()`` as a typed ``messages`` line (append-only) (§9).
 
-        ``new_messages`` is the turn's ``new_messages()`` — the messages added on *this* turn,
-        not the whole history — serialized via
-        :data:`~pydantic_ai.messages.ModelMessagesTypeAdapter` and wrapped in a typed
-        ``{"type": "messages", "messages": ...}`` envelope. An empty batch (a turn that added
-        nothing) writes nothing, so the file stays clean. The file is opened in append mode and
-        the header / prior turns are never touched.
+        An empty batch writes nothing; the header and prior lines are never touched.
         """
         if not new_messages:
             return
@@ -148,20 +108,9 @@ class SessionLog:
     def append_compaction(self, summary_message: ModelMessage, tail: list[ModelMessage]) -> None:
         """Append one typed ``compaction`` checkpoint line (append-only) (ADR-0006 §1, §6).
 
-        A **full** compaction (the LLM tier — ADR-0006 §2) persists here: ``summary_message`` is
-        the synthetic summary head and ``tail`` the recent verbatim turns kept past the
-        Compaction Boundary (ADR-0006 §5). Both are serialized via
-        :data:`~pydantic_ai.messages.ModelMessagesTypeAdapter` (the same adapter
-        :meth:`append_turn` uses) and wrapped in a typed
-        ``{"type": "compaction", "summary": <dump([summary_message])>, "tail": <dump(tail)>}``
-        envelope. On replay :func:`load` **discards** everything accumulated before this line and
-        restarts the history from ``[summary_message, *tail]``, then continues — so earlier
-        verbatim copies of the tail are superseded, never double-counted, and successive full
-        compactions merge for free (the prior summary rides as the head). The file is opened in
-        append mode; the header and prior lines are never touched.
-
-        Microcompaction (ADR-0006 §3a) is in-memory only and is deliberately **not** persisted
-        here — the log keeps full fidelity for recovery.
+        On replay :func:`load` discards everything before this line and restarts the history
+        from ``[summary_message, *tail]``, so successive full compactions merge for free.
+        Microcompaction is in-memory only and is never persisted here (ADR-0006 §3a).
         """
         summary_payload = json.loads(ModelMessagesTypeAdapter.dump_json([summary_message]))
         tail_payload = json.loads(ModelMessagesTypeAdapter.dump_json(tail))
@@ -175,15 +124,10 @@ class SessionLog:
         logger.debug("appended compaction checkpoint (tail=%d) to %s", len(tail), self.path)
 
     def append_clear(self) -> None:
-        """Append one typed ``clear`` marker line (append-only) — the ``/clear`` checkpoint.
+        """Append one typed ``clear`` marker line (append-only) — compaction-to-zero.
 
-        ``/clear`` is compaction-to-zero: on replay :func:`load` **discards** everything
-        accumulated before this line and restarts the history from ``[]`` (the same
-        discard-and-restart path a ``compaction`` checkpoint uses, with nothing kept), so a
-        ``--resume`` after a ``/clear`` continues the post-clear conversation instead of
-        resurrecting the wiped turns. The file stays append-only — the wiped turns remain on
-        disk above the marker (full-fidelity history, like the compaction checkpoint's
-        superseded prefix), they just no longer replay.
+        On replay :func:`load` discards everything before this line and restarts from ``[]``;
+        the wiped turns remain on disk above the marker but no longer replay.
         """
         entry = {"type": _CLEAR_TYPE}
         with self.path.open("a", encoding="utf-8") as handle:
@@ -194,20 +138,11 @@ class SessionLog:
 def load(path: Path) -> list[ModelMessage]:
     """Replay a session file into a flat ``message_history`` list (ADR-0002 §9, ADR-0006 §1).
 
-    Reads every line **in file order**. The header and any malformed line are skipped; a
-    ``messages`` entry is deserialized via
-    :data:`~pydantic_ai.messages.ModelMessagesTypeAdapter` and **appended**; a ``compaction``
-    checkpoint **discards everything accumulated so far** and restarts the history from its
-    serialized ``[summary, *tail]``, after which later lines continue to extend it. So a
-    compacted file replays to the *compacted* history (summary + kept tail + any later turns),
-    and successive compactions land on the **last** checkpoint — the earlier verbatim turns it
-    superseded are never double-counted. The result is what ``decode --resume`` seeds the turn
-    handler with.
-
-    **Tolerant by design**: a truncated or garbage line — most likely the tail, from a crash
-    mid-write — is logged at debug and skipped, never raised; a malformed ``compaction`` line is
-    likewise skipped, degrading to the un-compacted history. So a resume recovers every whole
-    turn that reached disk. A missing file replays to ``[]``.
+    Reads every line in file order: a ``messages`` entry extends the history; a ``compaction``
+    checkpoint restarts it from ``[summary, *tail]``; a ``clear`` marker restarts it from
+    ``[]``. Tolerant by design: any malformed line (e.g. a crash-truncated tail) is skipped,
+    never raised — a malformed checkpoint degrades to the un-compacted history. A missing file
+    replays to ``[]``.
     """
     if not path.is_file():
         return []
@@ -228,12 +163,9 @@ def load(path: Path) -> list[ModelMessage]:
 
 
 def load_latest(sessions_dir: Path) -> list[ModelMessage] | None:
-    """Replay the most recent session file in ``sessions_dir`` (ADR-0002 §9).
+    """Replay the most recent session file (lexicographic max of the timestamped names) (§9).
 
-    "Most recent" is the lexicographic max of the timestamped filenames (the ``%Y%m%dT%H%M%SZ``
-    prefix is sortable). Returns the replayed history, or ``None`` when there is no session to
-    resume (empty or absent directory) — the signal ``decode --resume`` turns into a friendly
-    "nothing to resume" message rather than a crash.
+    Returns ``None`` when there is no session to resume (empty or absent directory).
     """
     latest = _latest_session_file(sessions_dir)
     if latest is None:
@@ -244,9 +176,7 @@ def load_latest(sessions_dir: Path) -> list[ModelMessage] | None:
 def resolve_session(sessions_dir: Path, identifier: str) -> Path | None:
     """Resolve a ``--resume <id-or-filename>`` argument to a session file path (§9).
 
-    Accepts either a full filename (``20260619T123045Z_<uuid>.jsonl``) or just the embedded
-    session id; matches against the ``.jsonl`` files in ``sessions_dir``. Returns the matching
-    path, or ``None`` when nothing matches (the friendly "no such session" signal for the CLI).
+    Accepts a full filename or just the embedded session id; ``None`` when nothing matches.
     """
     if not sessions_dir.is_dir():
         return None
@@ -262,14 +192,12 @@ def resolve_session(sessions_dir: Path, identifier: str) -> Path | None:
 
 
 def _session_files(sessions_dir: Path) -> list[Path]:
-    """All ``.jsonl`` session files in ``sessions_dir`` (empty if the dir is absent)."""
     if not sessions_dir.is_dir():
         return []
     return [p for p in sessions_dir.iterdir() if p.is_file() and p.suffix == _SUFFIX]
 
 
 def _latest_session_file(sessions_dir: Path) -> Path | None:
-    """The newest session file by sortable timestamped name, or ``None`` when there are none."""
     files = _session_files(sessions_dir)
     if not files:
         return None
@@ -277,13 +205,7 @@ def _latest_session_file(sessions_dir: Path) -> Path | None:
 
 
 def _parse_messages_line(line: str) -> list[ModelMessage] | None:
-    """Deserialize one ``messages`` line, or ``None`` for the header / a corrupt line.
-
-    Blank lines, the typed ``session`` header, and any line that does not parse as a
-    well-formed ``messages`` entry (truncated JSON, garbage, wrong type, or a payload the type
-    adapter rejects) yield ``None`` — replay skips them. This is what makes :func:`load`
-    tolerant of a crash mid-write.
-    """
+    """Deserialize one ``messages`` line; ``None`` for any other or malformed line (skipped)."""
     stripped = line.strip()
     if not stripped:
         return None
@@ -302,12 +224,7 @@ def _parse_messages_line(line: str) -> list[ModelMessage] | None:
 
 
 def _is_clear_line(line: str) -> bool:
-    """True for a well-formed ``clear`` marker line (the ``/clear`` checkpoint-to-zero).
-
-    Mirrors the sibling parsers' tolerance: blank lines, unparseable JSON, and every other typed
-    line yield ``False`` so :func:`load` falls through to the compaction / messages parse — never
-    raises.
-    """
+    """True for a well-formed ``clear`` marker line; any other or malformed line is ``False``."""
     stripped = line.strip()
     if not stripped:
         return False
@@ -321,17 +238,8 @@ def _is_clear_line(line: str) -> bool:
 def _parse_compaction_line(line: str) -> list[ModelMessage] | None:
     """Deserialize one ``compaction`` checkpoint into ``[*summary, *tail]``, or ``None`` (§1).
 
-    A well-formed ``compaction`` line carries a serialized ``summary`` (the synthetic one-message
-    summary head) and a verbatim ``tail`` (the recent turns kept past the Compaction Boundary),
-    both via :data:`~pydantic_ai.messages.ModelMessagesTypeAdapter`; this reconstructs the
-    **compacted** history ``[*summary, *tail]`` that :func:`load` restarts from at this line.
-
-    Any other line yields ``None`` so :func:`load` falls through to the ``messages`` parse / skip:
-    the header, a ``messages`` batch, blank lines, and unparseable JSON return ``None`` silently
-    (the unparseable case is logged by :func:`_parse_messages_line`, the second parse attempt),
-    while a ``compaction``-typed line the type adapter rejects — a crash mid-write — is logged at
-    debug and skipped, degrading to the un-compacted history. Mirrors
-    :func:`_parse_messages_line`'s tolerance; never raises.
+    Any other or malformed line yields ``None`` (never raises) — a rejected checkpoint is
+    skipped, degrading to the un-compacted history.
     """
     stripped = line.strip()
     if not stripped:

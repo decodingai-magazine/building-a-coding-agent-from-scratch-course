@@ -1,24 +1,10 @@
 """Unit tests for :mod:`decode.memory.extract` — the on-exit memory write-back (ADR-0002 §8).
 
-The extractor is the deliberately minimal M1 write-back: one cheap LLM call summarizes the
-session into a single sentence, which is appended (dated) to the project-root ``MEMORY.md`` and
-trimmed to the configured caps. It is the seam M4 compaction grows from, so the cheap-summary
-helper (:func:`~decode.memory.extract.summarize_session`) stays clean and reusable.
-
-Three layers are exercised independently:
-
-* :func:`summarize_session` — the one cheap LLM call. Driven by ``TestModel`` /
-  ``FunctionModel`` (no network): returns the model's sentence, returns ``None`` on an
-  empty/trivial conversation (no call made), and returns ``None`` when the call fails.
-* :func:`append_session_summary` — pure filesystem. Creates ``cwd/.decode/MEMORY.md`` (and its
-  ``.decode/`` parent) if absent, appends a dated line, and trims the file to
-  ``settings.memory_max_lines`` / ``settings.memory_max_bytes`` keeping the most-recent lines.
-  ``now`` is injected (timezone-aware UTC) for determinism.
-* :func:`extract_on_exit` — the orchestrator. Fully non-fatal: it must never raise, even when the
-  summarizer blows up, so it can never block process exit.
-
-A final round-trip proves a written summary is discoverable by
-:func:`decode.memory.service.assemble_memory` on the next session.
+Covers ``summarize_session`` (one cheap LLM call — ``TestModel``/``FunctionModel``, no network;
+None on empty/trivial/failed), ``append_session_summary`` (dated line + line/byte cap trim,
+injected UTC ``now``), the fully non-fatal ``extract_on_exit`` orchestrator (never raises,
+never blocks exit), the ``compress_memory_file`` second-level compression hook, and a
+round-trip through ``assemble_memory``.
 """
 
 from datetime import UTC, datetime
@@ -61,9 +47,7 @@ def _conversation(user: str, assistant: str) -> list[ModelMessage]:
     ]
 
 
-# --------------------------------------------------------------------------------------------
-# summarize_session — the one cheap LLM call (driven by TestModel / FunctionModel, no network)
-# --------------------------------------------------------------------------------------------
+# summarize_session
 
 
 async def test_summarize_session_returns_the_model_sentence():
@@ -152,9 +136,7 @@ async def test_summarize_session_returns_none_when_the_model_returns_blank():
     assert summary is None
 
 
-# --------------------------------------------------------------------------------------------
-# append_session_summary — pure filesystem (tmp_path), dated line + cap trim, injected `now`
-# --------------------------------------------------------------------------------------------
+# append_session_summary
 
 
 def test_append_creates_memory_md_under_decode_dir_when_absent(tmp_path: Path):
@@ -234,9 +216,7 @@ def test_append_trims_to_the_byte_cap_keeping_most_recent(tmp_path: Path):
     assert "fresh" in content
 
 
-# --------------------------------------------------------------------------------------------
-# extract_on_exit — orchestration; fully non-fatal (must never raise, never block exit)
-# --------------------------------------------------------------------------------------------
+# extract_on_exit — orchestration; fully non-fatal
 
 
 async def test_extract_on_exit_writes_a_summary(tmp_path: Path, mocker):
@@ -331,9 +311,7 @@ async def test_extract_on_exit_never_raises_when_append_blows_up(tmp_path: Path,
     await extract_on_exit(_conversation("do it", "done"), tmp_path)
 
 
-# --------------------------------------------------------------------------------------------
-# extract_on_exit — the second-level MEMORY.md compression hook (task 046 / ADR-0006 §8)
-# --------------------------------------------------------------------------------------------
+# extract_on_exit — the MEMORY.md compression hook
 
 
 async def test_extract_on_exit_compresses_after_append_when_enabled(tmp_path: Path, mocker):
@@ -400,9 +378,7 @@ async def test_extract_on_exit_never_raises_when_compression_blows_up(tmp_path: 
     assert "- 2026-06-19: Built it" in _memory(tmp_path).read_text(encoding="utf-8")
 
 
-# --------------------------------------------------------------------------------------------
-# compress_memory_file — second-level LLM compression at the 200-line cap (task 046)
-# --------------------------------------------------------------------------------------------
+# compress_memory_file
 
 
 def _over_cap_memory(cwd: Path, *, lines: int) -> Path:
@@ -555,9 +531,7 @@ async def test_compress_hard_clamps_an_oversized_model_result_by_byte_cap(tmp_pa
     assert len(content.encode("utf-8")) <= settings.memory_max_bytes
 
 
-# --------------------------------------------------------------------------------------------
-# Round-trip: a written summary is discoverable by assemble_memory next session (ADR-0002 §8)
-# --------------------------------------------------------------------------------------------
+# round-trip: a written summary is discoverable by assemble_memory next session
 
 
 def test_written_summary_is_picked_up_by_assemble_memory_next_session(tmp_path: Path):

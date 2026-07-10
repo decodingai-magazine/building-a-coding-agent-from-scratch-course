@@ -177,7 +177,6 @@ def test_build_agent_registers_a_single_instructions_hook(mocker):
 
 
 async def test_memory_is_injected_into_the_first_request_instructions(tmp_path, mocker):
-    """End-to-end: AGENTS.md content reaches the model via the first ModelRequest instructions."""
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
@@ -336,7 +335,7 @@ async def test_no_memory_files_yields_only_the_static_base(tmp_path, mocker):
     assert "# From" not in first.instructions
 
 
-# --- per-agent tool restriction via the per-tool prepare= callback (ADR-0003 §6) ------------
+# per-agent tool restriction via the per-tool prepare= callback (ADR-0003 §6)
 
 
 async def test_plan_agent_run_omits_write_edit_and_bash_from_the_visible_tools(tmp_path, mocker):
@@ -367,7 +366,6 @@ async def test_plan_agent_run_omits_write_edit_and_bash_from_the_visible_tools(t
 
 
 async def test_build_agent_run_offers_the_full_mutating_tool_set(tmp_path, mocker):
-    """With ``active_agent = build`` the mutating tools are visible (the full M1 set)."""
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
@@ -383,7 +381,6 @@ async def test_build_agent_run_offers_the_full_mutating_tool_set(tmp_path, mocke
 
 
 async def test_tool_visibility_follows_the_active_agent_per_run_without_rebuild(tmp_path, mocker):
-    """Switching ``deps.active_agent`` changes the visible tools on the next run — one agent."""
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
@@ -400,11 +397,10 @@ async def test_tool_visibility_follows_the_active_agent_per_run_without_rebuild(
     assert "bash" in _tool_names_called(build_run.all_messages())
 
 
-# --- per-agent system prompt via the dynamic instructions hook (ADR-0003 §6,7) --------------
+# per-agent system prompt via the dynamic instructions hook (ADR-0003 §6,7)
 
 
 async def test_active_agent_prompt_is_injected_into_the_run_instructions(tmp_path, mocker):
-    """The code-reviewer prompt rides the assembled instructions when it is the active agent."""
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
@@ -424,7 +420,6 @@ async def test_active_agent_prompt_is_injected_into_the_run_instructions(tmp_pat
 
 
 async def test_switching_active_agent_changes_the_prompt_on_the_next_turn(tmp_path, mocker):
-    """Reassigning ``deps.active_agent`` swaps the injected prompt next run — no rebuild."""
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
@@ -445,11 +440,10 @@ async def test_switching_active_agent_changes_the_prompt_on_the_next_turn(tmp_pa
     assert "code-reviewer agent" not in (second.instructions or "")
 
 
-# --- the Skills Catalog injected via the dynamic instructions hook (ADR-0004 §1,§9) ---------
+# the Skills Catalog injected via the dynamic instructions hook (ADR-0004 §1,§9)
 
 
 async def test_skills_catalog_is_injected_into_the_run_instructions(tmp_path, mocker):
-    """The catalog (skill names + the skill(\"…\") cue) rides the assembled run instructions."""
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
@@ -489,7 +483,7 @@ async def test_skills_catalog_is_injected_regardless_of_active_agent(tmp_path, m
         assert 'skill("<name>")' in instructions
 
 
-# --- the _build_model() Provider Seam: one model per llm_provider (ADR-0005 §3-5) -----------
+# the _build_model() Provider Seam: one model per llm_provider (ADR-0005 §3-5)
 #
 # Construction is offline for every provider — building the agent issues no model request — so
 # these tests assert the model *type* + the client *shape* (base_url / headers / placeholder
@@ -563,7 +557,6 @@ def _patch_provider(mocker, provider, *, modal_authenticated=True):
 def test_build_agent_constructs_the_model_for_the_configured_provider(
     mocker, provider, modal_authenticated
 ):
-    """``build_agent()`` delegates to ``_build_model()``, which builds the selected provider."""
     expected_cls, expected_system, expected_model_name = _patch_provider(
         mocker, provider, modal_authenticated=modal_authenticated
     )
@@ -576,7 +569,6 @@ def test_build_agent_constructs_the_model_for_the_configured_provider(
 
 
 def test_modal_authenticated_client_carries_both_proxy_headers(mocker):
-    """Both proxy tokens set → custom ``base_url`` + dual Modal-Key / Modal-Secret headers."""
     _patch_provider(mocker, "modal", modal_authenticated=True)
 
     agent = build_agent()
@@ -591,7 +583,6 @@ def test_modal_authenticated_client_carries_both_proxy_headers(mocker):
 
 
 def test_modal_unauthenticated_client_has_no_modal_headers_and_placeholder_api_key(mocker):
-    """Neither proxy token set (``--unauthenticated``) → no Modal headers, ``api_key == "EMPTY"``."""
     _patch_provider(mocker, "modal", modal_authenticated=False)
 
     agent = build_agent()
@@ -612,7 +603,7 @@ def test_build_model_rejects_an_unsupported_provider(mocker):
         _build_model()
 
 
-# --- Model Override: the model id threaded as a flow parameter (ADR-0010 §2, task 067) -------
+# Model Override: the model id threaded as a flow parameter (ADR-0010 §2, task 067)
 #
 # ``_build_model`` / ``build_agent`` take ``model: str | None = None``. ``None`` reads
 # ``settings.<provider>_model`` (byte-unchanged — the interactive REPL path); a value overrides
@@ -635,7 +626,6 @@ _PROVIDER_CASE_IDS = ["gemini", "openrouter", "modal-authenticated", "modal-unau
     ("provider", "modal_authenticated"), _PROVIDER_CASES, ids=_PROVIDER_CASE_IDS
 )
 def test_build_model_with_none_matches_the_settings_default(mocker, provider, modal_authenticated):
-    """``_build_model(model=None)`` builds the ``settings.<provider>_model`` id — byte-unchanged."""
     _, expected_system, expected_model_name = _patch_provider(
         mocker, provider, modal_authenticated=modal_authenticated
     )
@@ -650,7 +640,6 @@ def test_build_model_with_none_matches_the_settings_default(mocker, provider, mo
     ("provider", "modal_authenticated"), _PROVIDER_CASES, ids=_PROVIDER_CASE_IDS
 )
 def test_build_model_override_sets_only_the_model_id(mocker, provider, modal_authenticated):
-    """A ``model=`` override changes ONLY the id — the provider class + system stay LLM_PROVIDER's."""
     expected_cls, expected_system, _ = _patch_provider(
         mocker, provider, modal_authenticated=modal_authenticated
     )
@@ -663,7 +652,6 @@ def test_build_model_override_sets_only_the_model_id(mocker, provider, modal_aut
 
 
 def test_gemini_override_keeps_the_google_provider_and_settings_key(mocker):
-    """gemini + override → still ``GoogleModel`` on ``GoogleProvider``; the auth key is untouched."""
     _patch_provider(mocker, "gemini")
 
     model = _build_model(model="gemini-2.5-pro")
@@ -676,7 +664,6 @@ def test_gemini_override_keeps_the_google_provider_and_settings_key(mocker):
 
 
 def test_openrouter_override_keeps_the_openrouter_provider_and_key(mocker):
-    """openrouter + override → still ``OpenAIChatModel`` on ``OpenRouterProvider`` (the AC3 headline)."""
     _patch_provider(mocker, "openrouter")
 
     model = _build_model(model="some-openrouter-id")
@@ -688,7 +675,6 @@ def test_openrouter_override_keeps_the_openrouter_provider_and_key(mocker):
 
 
 def test_modal_override_keeps_the_custom_client_and_proxy_headers(mocker):
-    """modal + override → still ``OpenAIChatModel`` on the custom ``AsyncOpenAI`` client (auth intact)."""
     _patch_provider(mocker, "modal", modal_authenticated=True)
 
     model = _build_model(model="some-modal-id")
@@ -704,7 +690,6 @@ def test_modal_override_keeps_the_custom_client_and_proxy_headers(mocker):
 
 
 def test_build_agent_threads_the_model_override_to_the_model(mocker):
-    """``build_agent(model=…)`` passes the override straight through to ``_build_model``."""
     _patch_provider(mocker, "gemini")
 
     agent = build_agent(model="gemini-2.5-pro")
@@ -713,7 +698,6 @@ def test_build_agent_threads_the_model_override_to_the_model(mocker):
 
 
 def test_build_agent_without_a_model_is_the_settings_default(mocker):
-    """``build_agent()`` (no ``model``) still builds the settings id — the interactive REPL path."""
     _patch_provider(mocker, "gemini")
 
     agent = build_agent()

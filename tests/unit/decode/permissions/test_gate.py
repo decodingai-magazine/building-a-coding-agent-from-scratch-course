@@ -36,7 +36,7 @@ def test_gate_defaults_to_default_mode(gate):
     assert gate.mode is PermissionMode.DEFAULT
 
 
-# --- read-only requests auto-ALLOW under every mode (ADR-0003 §1) ---------------------------
+# read-only requests auto-ALLOW under every mode
 
 
 @pytest.mark.parametrize(
@@ -52,7 +52,7 @@ def test_read_only_request_allows_under_every_mode(gate, mode):
     assert decision.mode is mode
 
 
-# --- file-edit requests: ASK (default), ALLOW (edit), DENY (plan), ALLOW (bypass) -----------
+# file-edit requests: ASK (default), ALLOW (edit), DENY (plan), ALLOW (bypass)
 
 
 def test_file_edit_asks_under_default(gate):
@@ -88,7 +88,7 @@ def test_file_edit_allows_under_bypass(gate):
     assert decision.outcome is PermissionOutcome.ALLOW
 
 
-# --- other (bash) requests: ASK (default), ASK (edit), DENY (plan), ALLOW (bypass) ----------
+# other (bash) requests: ASK (default), ASK (edit), DENY (plan), ALLOW (bypass)
 
 
 def test_other_asks_under_default(gate):
@@ -124,7 +124,7 @@ def test_other_allows_under_bypass(gate):
     assert decision.outcome is PermissionOutcome.ALLOW
 
 
-# --- the mode is mutable (ADR-0003 §3) ------------------------------------------------------
+# the mode is mutable
 
 
 def test_set_mode_makes_the_mode_mutable(gate):
@@ -136,7 +136,7 @@ def test_set_mode_makes_the_mode_mutable(gate):
     assert gate.check(_request(ToolKind.OTHER)).outcome is PermissionOutcome.DENY
 
 
-# --- rule layer: deny → allow → mode → ask (ADR-0003 §4) -------------------------------------
+# rule layer: deny → allow → mode → ask
 
 
 def _bash(subject: str) -> PermissionRequest:
@@ -191,7 +191,7 @@ def test_set_user_rules_reloads_in_place(gate):
     assert gate.check(_bash("npm run test:unit")).outcome is PermissionOutcome.ALLOW
 
 
-# --- the active-agent rule source (ADR-0003 §4,7; task 020) ----------------------------------
+# the active-agent rule source
 
 
 def test_agent_rules_default_empty_so_the_gate_is_mode_only(gate):

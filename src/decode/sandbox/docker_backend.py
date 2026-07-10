@@ -1,40 +1,13 @@
 """The Docker sandbox backend — fresh ``docker exec`` per call + pathlib file ops (ADR-0012 §2,4).
 
-:class:`DockerBackend` is a :class:`~decode.sandbox.executor.SandboxBackend` driven by the one
-:class:`~decode.sandbox.executor.SandboxExecutor`. It replaces the ADR-0011 §2
-``DockerExecutor`` — deleting its persistent bash shell, its marker/``$?`` command protocol, and its
-kill-and-restart-on-timeout shell-reset machinery — with the far simpler **fresh-exec** shape ADR-0012
-settles on:
-
-* **create** — ``docker run -d --rm -v <workspace>:/workspace -w /workspace <image> sleep infinity``:
-  one keeper container per session, the host Workspace (``settings.sandbox_workspace_dir``)
-  bind-mounted at ``/workspace``. The Credential-Proxy wiring is kept intact (ADR-0011 §6, retained):
-  an optional ``--network`` + ``proxy_env`` + a read-only CA mount, with a **synchronous**
-  ``update-ca-certificates`` after create so the very first command already trusts the proxy CA. Every
-  worker then gets a best-effort ``apt-get install git`` + the ``SANDBOX_GIT_USER_*`` identity (the slim
-  base ships none) — the **proxy-wired** worker included, its apt reaching the mirrors *through* the
-  proxy, so a model ``git push`` to ``github.com`` has a client to consume the proxy's Basic rule (§10).
-* **exec** — a fresh ``docker exec -w /workspace <id> bash -lc <command>`` per call, with **separate**
-  stdout/stderr (no merge, unlike the old shell), bounded by ``timeout_s``. On timeout only the one
-  ``docker exec`` **client** process group is killed — the **container and its filesystem survive**
-  (mirroring modal's exec-dies-sandbox-survives rule), ``timed_out=True`` with an empty ``note``.
-* **file ops** — plain :mod:`pathlib` on the bind-mounted Workspace (``self._workspace / rel``). The
-  mount makes the host directory *be* the sandbox filesystem, so ``read_bytes`` / ``write_bytes`` /
-  ``stat`` / ``list_dir`` / ``make_directory`` / ``remove`` are always truthful with **zero** remote
-  plumbing — a file written by ``bash`` is immediately visible via ``read_bytes`` and vice-versa.
-* **export** — a no-op (the mount is already live); **destroy** — ``docker rm -f <id>``.
-
-**Docker CLI, not the SDK (ADR-0011 Alternatives, retained).** Every docker interaction is the
-standard ``docker`` CLI shelled out with :mod:`asyncio` subprocesses — dependency-free, mirroring
-:class:`~decode.tools.exec.LocalExecutor`, and making gVisor / Kata zero-code daemon-config upgrades.
-No docker type ever leaks past this module: callers see only :class:`~decode.tools.exec.ExecResult`
-and :class:`~decode.sandbox.executor.FileStat`.
-
-**Loop-independence, for free.** Fresh-exec holds **no** subprocess or pipe transport across ``run``
-calls — each ``docker exec`` is spawned and fully reaped inside one :meth:`exec`, on that call's own
-loop. So :meth:`destroy` (``docker rm -f``, a fresh subprocess) needs no old event loop and reaps
-correctly from the headless reaper's fresh loop — retiring the ADR-0011 §4 loop-free shell-teardown
-helpers (the whole family that tore a loop-bound persistent shell down from a foreign loop) entirely.
+One keeper container per session (``docker run -d --rm -v <workspace>:/workspace … sleep infinity``).
+**Fresh-exec**: each command is a new ``docker exec`` (``cd`` / ``export`` do not persist; the
+filesystem does); on timeout only the exec client dies — the container and its filesystem survive.
+File ops are plain :mod:`pathlib` on the **live bind mount** (always truthful, zero remote plumbing),
+so ``export`` is a no-op. Optional Credential-Proxy wiring (ADR-0011 §6) keeps the worker token-free.
+Docker is driven via the CLI (no SDK) with fresh subprocesses per call, so teardown is
+loop-independent. No docker type leaks past this module: callers see only
+:class:`~decode.tools.exec.ExecResult` and :class:`~decode.sandbox.executor.FileStat`.
 """
 
 from __future__ import annotations
@@ -58,52 +31,41 @@ logger = logging.getLogger(__name__)
 # The container-side Workspace: the bind-mount target and every command's working directory.
 _WORKSPACE = "/workspace"
 
-# Where the Credential Proxy's mitmproxy CA is bind-mounted inside the worker (ADR-0011 §6, retained).
-# A ``.crt`` under ``/usr/local/share/ca-certificates`` is exactly what ``update-ca-certificates`` folds
-# into the system trust store, so an outbound HTTPS request through the proxy validates. Proxy path only.
+# Proxy CA bind-mount target in the worker: a ``.crt`` under this dir is exactly what
+# ``update-ca-certificates`` folds into the system trust store. Proxy path only (ADR-0011 §6).
 _WORKER_CA_PATH = "/usr/local/share/ca-certificates/mitmproxy-ca-cert.crt"
 
-# Bound (seconds) for the synchronous ``docker exec update-ca-certificates`` that folds the proxy CA
-# into the worker's trust store before the first command (ADR-0011 §6). Sub-second in practice; this is
-# a safety net against a wedged ``docker exec``. Proxy path only.
+# Bound (seconds) for the synchronous CA-trust exec — sub-second in practice; caps a wedged exec.
 _CA_TRUST_TIMEOUT_S = 60.0
 
-# Grace between SIGTERM and the SIGKILL escalation for a timed-out ``docker exec`` client — short
-# (mirrors ``LocalExecutor._KILL_GRACE_S``; a timed-out command is already over its deadline).
+# Grace between SIGTERM and the SIGKILL escalation for a timed-out ``docker exec`` client.
 _KILL_GRACE_S = 2.0
 
-# Killed-by-signal sentinel for a timeout (mirrors ``LocalExecutor`` / the retired docker executor).
+# Killed-by-signal sentinel for a timeout (mirrors ``LocalExecutor``).
 _TIMEOUT_EXIT = -signal.SIGKILL
 
-# The docker "container failed to run" exit-code convention, rendered when ``docker exec`` cannot even
-# be spawned (the ``docker`` CLI itself is gone) so a ``bash`` call surfaces a failure, never a crash.
+# Rendered when ``docker exec`` cannot even be spawned (the CLI itself is gone): a ``bash`` call
+# surfaces a failure (125 = docker's "failed to run" convention), never a crash.
 _DAEMON_LOST_EXIT = 125
 _DAEMON_LOST_NOTE = "The docker sandbox became unreachable — the session was lost."
 
-# The slim uv base image ships no git, so a model ``git`` command in the Workspace would fail with
-# ``command not found``. ``_install_git`` runs this once per default (unwired) session container — cheap
-# next to baking a 5x-larger full image, and it keeps the worker's ``ancestor=<image>`` identity intact.
+# The slim uv base ships no git; installed once per session container (see ``_install_git``).
 _GIT_INSTALL_CMD = "apt-get update && apt-get install -y --no-install-recommends git"
-# Bound (seconds) for that install — ~15s on a warm network; this only caps a wedged / offline apt.
+# Bound (seconds) for that install — ~15s on a warm network; only caps a wedged / offline apt.
 _GIT_INSTALL_TIMEOUT_S = 120.0
 
 
 class DockerBackend:
     """Run commands + file ops in one session container, fresh-exec (ADR-0012 §2,4).
 
-    Construction is **inert** — no container, no subprocess: the keeper container starts on
-    :meth:`create` (called by the :class:`~decode.sandbox.executor.SandboxExecutor` lazily on the first
+    Construction is **inert** — the keeper container starts on :meth:`create` (lazily on the first
     ``run`` or eagerly via ``start``). Not safe for concurrent :meth:`exec` calls on one instance.
 
-    **Optional Credential-Proxy wiring (ADR-0011 §6, retained).** When the headless flow runs the
-    Credential Proxy it constructs the backend with plain-typed proxy params — a docker ``network`` to
-    join, ``proxy_env`` (``http_proxy`` / ``https_proxy`` → the proxy container), and
-    ``ca_cert_host_path`` (the host path to the proxy's mitmproxy CA, bind-mounted into the worker). On
-    :meth:`create` the CA is folded into the worker's trust store by a **synchronous** ``docker exec
-    update-ca-certificates`` — *before* create returns — so the very first ``bash`` already trusts the
-    CA and an HTTPS tool call validates, with no race. With all three at their ``None`` defaults (every
-    non-proxy caller) the ``docker run`` is byte-identical and no CA step runs. **No proxy type leaks
-    in** — they are ``str`` / ``dict`` / ``Path``.
+    Optional Credential-Proxy wiring (ADR-0011 §6): a docker ``network``, ``proxy_env``, and
+    ``ca_cert_host_path`` (the proxy's mitmproxy CA, bind-mounted then trusted **synchronously** on
+    :meth:`create`, so the very first command already validates). With all three at their ``None``
+    defaults the ``docker run`` is byte-identical and no CA step runs. No proxy type leaks in — they
+    are ``str`` / ``dict`` / ``Path``.
     """
 
     def __init__(
@@ -118,20 +80,17 @@ class DockerBackend:
         self._proxy_env = proxy_env
         self._ca_cert_host_path = ca_cert_host_path
         self._container_id: str | None = None
-        # The resolved host Workspace bind-mounted at ``/workspace``; the base of every file op. Set on
-        # :meth:`create`, cleared on :meth:`destroy`.
+        # The resolved host Workspace bind-mounted at ``/workspace``; the base of every file op.
         self._workspace: Path | None = None
 
     # --- lifecycle ------------------------------------------------------------------------------
 
     async def create(self, workspace: Path) -> None:
-        """Start the keeper container, bind-mounting ``workspace`` at ``/workspace`` (ADR-0012 §2).
+        """Start the keeper container, bind-mounting ``workspace`` at ``/workspace``.
 
-        ``docker run -d --rm -v <workspace>:/workspace -w /workspace <image> sleep infinity`` (plus the
-        optional proxy flags). Idempotent — a second call with a container already up returns. A failed
-        ``docker run`` raises :class:`RuntimeError` (the executor renders it; the warm-up call site
-        degrades to lazy). On the proxy path the CA is trusted synchronously after create; if that fails
-        the just-created container is reaped and the error re-raised (no leak, no untrusted worker).
+        Idempotent. A failed ``docker run`` raises :class:`RuntimeError` (the executor renders it; the
+        warm-up call site degrades to lazy). On the proxy path the CA is trusted synchronously after
+        create; if that fails the just-created container is reaped and the error re-raised.
         """
         if self._container_id is not None:
             return
@@ -147,8 +106,7 @@ class DockerBackend:
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            # The task-071 startup guard already proved the daemon reachable, so a failure here is a bad
-            # image / mount, not a down daemon — surface it clearly (the executor renders it).
+            # The startup guard already proved the daemon reachable — a failure here is a bad image / mount.
             raise RuntimeError(
                 f"docker run failed (exit {proc.returncode}): {_decode(stderr).strip()}"
             )
@@ -166,14 +124,9 @@ class DockerBackend:
                 # The CA step reaped the container; drop the id so a later run re-creates from scratch.
                 self._container_id = None
                 raise
-        # The slim base ships no git, so install it in EVERY worker — the proxy-wired one included. Its
-        # ``git push`` to ``github.com`` over HTTPS is exactly what the Credential Proxy's ``github-git``
-        # Basic rule authenticates (ADR-0012 §10), so the git client MUST be present to consume it. apt
-        # reaches the Debian mirrors THROUGH the proxy (``http_proxy`` is set and the proxy
-        # passthrough-forwards unconfigured hosts) and the proxy CA is already trusted above, so the
-        # install completes on the wired worker too — and the worker still holds no token (§10; the token
-        # lives only in the proxy container). Best-effort on every path (a failed install leaves the
-        # session up with no git, never a crash).
+        # Install git in EVERY worker (the slim base ships none), the proxy-wired one included: apt
+        # egresses THROUGH the proxy with its CA already trusted, and the worker stays token-free
+        # (ADR-0012 §10). Best-effort — a failed install leaves the session up with no git.
         await self._install_git(self._container_id)
 
     async def export(self) -> None:
@@ -181,11 +134,10 @@ class DockerBackend:
         return None
 
     async def destroy(self) -> None:
-        """Force-remove the session container — ``docker rm -f`` (loop-free, best-effort; ADR-0012 §2).
+        """Force-remove the session container — ``docker rm -f`` (loop-free, idempotent, best-effort).
 
-        A *fresh* subprocess that needs no old event loop, so it reaps correctly from the headless
-        reaper's fresh loop. Idempotent (a no-op when nothing was created) and best-effort (``--rm`` is
-        the crash backstop; a "no such container" race with ``--rm`` is expected and swallowed).
+        A *fresh* subprocess needs no old event loop, so it reaps correctly from the headless reaper's
+        fresh loop; ``--rm`` is the crash backstop and a "no such container" race is swallowed.
         """
         container_id, self._container_id = self._container_id, None
         self._workspace = None
@@ -197,20 +149,17 @@ class DockerBackend:
     # --- command exec ---------------------------------------------------------------------------
 
     async def exec(self, *args: str, timeout_s: float) -> ExecResult:
-        """Run one fresh ``docker exec -w /workspace <id> <args>``; kill only it on timeout (ADR-0012 §2).
+        """Run one fresh ``docker exec -w /workspace <id> <args>``; kill only it on timeout.
 
         Separate stdout/stderr (no merge). On timeout the ``docker exec`` **client** process group is
-        killed (SIGTERM→SIGKILL) — the container and its filesystem survive — and the partial output is
-        returned with ``timed_out=True`` and an empty ``note`` (mirroring modal; nothing session-level
-        was lost). ``ponytail:`` killing the client does not surgically stop the in-container process; it
-        is reaped when the container is destroyed — the simple honest rule (a per-command cgroup +
-        ``docker exec … kill`` is the upgrade path). A spawn :class:`OSError` (the ``docker`` CLI itself
-        vanished) renders the exit-125 failure instead of crashing the tool (the never-crash contract).
+        killed (SIGTERM→SIGKILL) — the container and its filesystem survive — and the partial output
+        returns with ``timed_out=True``. ``ponytail:`` killing the client does not surgically stop the
+        in-container process; it is reaped when the container is destroyed (a per-command cgroup is
+        the upgrade path). A spawn :class:`OSError` renders the exit-125 failure (never-crash).
         """
         container_id = self._container_id
         if container_id is None:
-            # Defensive: the executor renders create failures itself, so exec is normally reached only
-            # after a successful create. Render rather than crash if it is ever called cold.
+            # Defensive: exec is normally reached only after a successful create; render, never crash.
             return ExecResult(
                 "",
                 "the docker sandbox container is not running",
@@ -261,9 +210,8 @@ class DockerBackend:
     ) -> tuple[bytes, bytes]:
         """Kill the timed-out ``docker exec`` client's process group and drain its partial output.
 
-        SIGTERM the group first, SIGKILL after :data:`_KILL_GRACE_S` if it lingers, then ``await`` the
-        already-running ``communicate`` task (not a fresh one — that would return empty) so the partial
-        output the client buffered before the kill is returned. Mirrors ``LocalExecutor._terminate``.
+        SIGTERM, then SIGKILL after :data:`_KILL_GRACE_S`; ``await`` the already-running
+        ``communicate`` task (a fresh one would return empty). Mirrors ``LocalExecutor._terminate``.
         """
         _signal_group(proc, signal.SIGTERM)
         done, _ = await asyncio.wait({comm}, timeout=_KILL_GRACE_S)
@@ -318,17 +266,10 @@ class DockerBackend:
     def _path(self, rel: str) -> Path:
         """Resolve a logical Workspace path ``rel`` to its **contained** host path on the bind mount.
 
-        Containment is layered (ADR-0012 §4). ``_resolve_logical`` above the seam already rejected ``..``
-        / absolute escapes with string math for both backends — but string math cannot see a **symlink**:
-        because the mount is shared with the host, a symlink planted inside the Workspace (by sandboxed
-        ``bash``) could otherwise be *followed* off the mount onto the host by a plain ``self._workspace /
-        rel`` pathlib op (a host ``/etc/passwd`` read, a host-file write). So this adds the physical
-        layer: resolve the joined path (following symlinks) and raise :class:`WorkspaceEscape` if it
-        lands outside the Workspace root — the file layer renders that as a model-readable refusal (it is
-        an :class:`OSError`). ``self._workspace`` is already ``.resolve()``d in :meth:`create`, so this is
-        a resolved-vs-resolved comparison; a brand-new nested path (nothing on disk yet) resolves
-        lexically and stays contained, and an in-workspace symlink pointing INSIDE resolves to its real
-        (contained) target.
+        String math above the seam already rejects ``..`` / absolute escapes, but cannot see a
+        **symlink**: the mount is shared with the host, so a symlink planted by sandboxed ``bash``
+        could be followed off the mount. Resolve physically (following symlinks) and raise
+        :class:`WorkspaceEscape` if the path lands outside the Workspace root (ADR-0012 §4).
         """
         if self._workspace is None:
             raise RuntimeError("DockerBackend file ops require a created workspace")
@@ -344,13 +285,10 @@ class DockerBackend:
     def _run_args(self, workspace: Path) -> list[str]:
         """Build the ``docker run`` argv for the keeper container (proxy wiring is additive).
 
-        The base mounts ``workspace`` at ``/workspace`` and runs ``sleep infinity``. On the proxy path
-        (ADR-0011 §6) it additionally joins ``--network``, sets each ``proxy_env`` var, and bind-mounts
-        the mitmproxy CA read-only — the entry stays ``sleep infinity`` (the CA is trusted by a
-        synchronous :meth:`_trust_proxy_ca` after create, which is what closes the first-command
-        CA-trust race). No skills mount: skills are seeded host-side into the Workspace by
-        :func:`~decode.sandbox.workspace.seed_skills` (ADR-0012 §5). Order is fixed so the base prefix
-        never shifts.
+        Base: mount ``workspace`` at ``/workspace``, run ``sleep infinity``. The proxy path adds
+        ``--network``, the ``proxy_env`` vars, and a read-only CA mount (trusted afterwards by the
+        synchronous :meth:`_trust_proxy_ca`). No skills mount — skills are seeded host-side into the
+        Workspace (ADR-0012 §5).
         """
         args = ["run", "-d", "--rm", "-v", f"{workspace}:{_WORKSPACE}", "-w", _WORKSPACE]
         if self._network is not None:
@@ -365,11 +303,9 @@ class DockerBackend:
     async def _trust_proxy_ca(self, container_id: str) -> None:
         """Fold the mounted mitmproxy CA into the worker's trust store, synchronously (ADR-0011 §6).
 
-        Runs ``docker exec <id> update-ca-certificates`` and **waits** so the CA is trusted before
-        :meth:`create` returns — the fix for the first-command CA-trust race. Bounded by
-        :data:`_CA_TRUST_TIMEOUT_S`. On failure (non-zero / timeout) the just-created container is reaped
-        and a :class:`RuntimeError` is raised (rendered by the executor; never a silent leak). Proxy
-        path only.
+        **Waits** so the CA is trusted before :meth:`create` returns (closing the first-command
+        CA-trust race), bounded by :data:`_CA_TRUST_TIMEOUT_S`. On failure the just-created container
+        is reaped and a :class:`RuntimeError` raised. Proxy path only.
         """
         proc = await asyncio.create_subprocess_exec(
             "docker",
@@ -397,24 +333,15 @@ class DockerBackend:
         logger.info("[sandbox] proxy CA trusted in worker %s", container_id[:12])
 
     async def _install_git(self, container_id: str) -> None:
-        """Best-effort ``apt-get install git`` **+ git-identity config** in the fresh keeper container.
+        """Best-effort ``apt-get install git`` + git-identity config in the fresh keeper container.
 
-        The slim base ships no git, so one ``sh -c`` installs it and (chained with ``&&``, so only after a
-        successful install) sets the ``SANDBOX_GIT_USER_*`` identity via ``git config --global`` — folded
-        into this same exec so it adds no extra ``docker exec`` (see :func:`_git_setup_command`), and a
-        model ``git commit`` in the Workspace then works out of the box.
-
-        Runs on **every** worker, the proxy-wired one included: there apt egresses through the mitmproxy
-        proxy (``http_proxy`` set, CA trusted by :meth:`_trust_proxy_ca` first), which passthrough-forwards
-        the Debian mirrors — so ``git`` lands to consume the proxy's ``github-git`` push rule (ADR-0012
-        §10). The token never enters the worker regardless (the proxy injects it after egress).
-
-        ``ponytail:`` installed per session into the container rather than baking a fatter image — this
-        keeps the 278 MB slim base AND the worker's ``ancestor=<image>`` identity (so every hygiene reap
-        filter and ``docker run`` argv test stays valid), at the cost of a one-off ~15 s apt at session
-        start (bake git into a custom ``SANDBOX_IMAGE`` to skip it). **Best-effort** — a failure (offline
-        / restricted apt) logs a warning and leaves the session running with no git (the model would see
-        ``git: command not found``), never a crash. Bounded by :data:`_GIT_INSTALL_TIMEOUT_S`.
+        One ``sh -c`` installs git and (``&&``-chained, only after a successful install) sets the
+        ``SANDBOX_GIT_USER_*`` identity (:func:`_git_setup_command`). Runs on **every** worker, the
+        proxy-wired one included — apt egresses through the proxy and the token never enters the
+        worker. ``ponytail:`` installed per session rather than baking a fatter image — keeps the slim
+        base and the worker's ``ancestor=<image>`` identity, at the cost of a one-off ~15 s apt (bake
+        git into a custom ``SANDBOX_IMAGE`` to skip it). A failure logs a warning and leaves the
+        session running with no git, never a crash. Bounded by :data:`_GIT_INSTALL_TIMEOUT_S`.
         """
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -456,9 +383,8 @@ class DockerBackend:
 def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
     """Send ``sig`` to the ``docker exec`` client's whole process group; tolerate an already-dead one.
 
-    With ``start_new_session=True`` the client's PID is its process-group id, so ``os.killpg(pid, sig)``
-    reaches it (mirrors ``LocalExecutor``). This kills the ``docker exec`` **client**; ``ponytail:`` the
-    in-container command may outlive it — it is reaped when the container is destroyed.
+    ``start_new_session=True`` makes the client's PID its process-group id (mirrors ``LocalExecutor``).
+    ``ponytail:`` the in-container command may outlive it — reaped when the container is destroyed.
     """
     if process.returncode is not None:
         return
@@ -484,12 +410,9 @@ def _decode(raw: bytes) -> str:
 
 
 def _git_setup_command() -> str:
-    """The ``sh -c`` line that installs git and (if configured) sets its identity, ``&&``-chained.
+    """The ``sh -c`` line that installs git and (only after a successful install) sets its identity.
 
-    Config runs only after a successful install (no git → nothing to configure). The identity comes from
-    :func:`~decode.sandbox.workspace.git_config_pairs` (default ``decode`` / ``decode@localhost``), each
-    value ``shlex.quote``d so a name with spaces / quotes stays one safe shell token — so a model ``git
-    commit`` in the Workspace works out of the box.
+    Each identity value is ``shlex.quote``d so a spaced / quoted name stays one safe shell token.
     """
     parts = [_GIT_INSTALL_CMD]
     parts += [

@@ -1,61 +1,17 @@
-"""The context-compaction capstone: one scripted conversation through the FULL real stack.
+"""Context-compaction capstone (ADR-0006): setup → micro → full → wrap-up through the real stack.
 
-This is the living proof for the context-compaction feature (ADR-0006) — and it doubles as
-documentation, in the style of :mod:`tests.integration.test_milestone1_capstone`. It drives a
-multi-turn conversation that crosses **both** window-relative compaction tiers through the **real**
-wiring, swapping out only the network boundary:
+Proves both window-relative compaction tiers end to end: real build_agent + Runner +
+AgentTurnHandler (two-tier auto-compaction wired), real render_event on every event, real
+SessionLog persist + ``--resume`` replay of a compacted log. Swapped/faked: a scripted
+streaming FunctionModel plays the model, a second FunctionModel returns the fixed summary
+skeleton, GEMINI_API_KEY is faked so build_agent constructs, and the session log dir is
+redirected under tmp_path. Fully offline — no network, no API key, no skipif.
 
-* the real :func:`decode.agent.factory.build_agent` (the real flat tool registry + the real
-  deferred-tool / permission seam);
-* the real :class:`decode.harness.runner.Runner` + :class:`decode.agent.loop.AgentTurnHandler`,
-  with the real two-tier auto-compaction cascade wired (``compaction_model_or_settings=``) so the
-  *real* :meth:`~decode.agent.loop.AgentTurnHandler._maybe_auto_compact` ⇄ ``compact()`` ⇄
-  ``microcompact()`` chain runs at the would-stop boundary (ADR-0006 §3-7);
-* the real :func:`decode.tui.render.render_event` on every emitted event (so the new
-  ``ContextMicrocompacted`` / ``ContextCompacted`` render paths are proven not to crash);
-* the real :class:`decode.context.session_log.SessionLog` + :func:`decode.context.session_log.load`
-  (so the JSONL ``messages`` / ``compaction`` lines are written and the ``--resume`` replay of a
-  *compacted* log is proven).
-
-**No network, no API key.** The model is a scripted
-:class:`~pydantic_ai.models.function.FunctionModel` (``GEMINI_API_KEY`` is faked only so
-``build_agent`` constructs) and the full-compaction summarizer is a second ``FunctionModel`` that
-returns the fixed skeleton. The session log dir is redirected under ``tmp_path``.
-
-**How the two tiers fire deterministically (the token arithmetic).** pydantic-ai's *streaming*
-``FunctionModel`` reports a **fixed** ``input_tokens`` of 50 *per model-request leg*
-(``FunctionStreamedResponse`` estimates the request from an empty message list), and through
-decode's deferred-tool architecture every *gated* tool call splits the run into a pause + resume
-across two ``agent.iter`` runs — so a gated turn's measured usage is just the final resume leg (50).
-The **ungated** ``sleep`` control tool (ADR-0003 §8) instead runs *inline* within a single
-``agent.iter`` run, so each ``sleep`` call adds one model-request leg to that run's aggregate. That
-is the knob this capstone uses to make the **real** measured ``input_tokens`` genuinely grow as the
-conversation does more work, against a single fixed (patched-small) window:
-
-* 0 inline sleeps → 1 leg  → ``input_tokens == 50``
-* 1 inline sleep  → 2 legs → ``input_tokens == 100``
-* 2 inline sleeps → 3 legs → ``input_tokens == 150``
-
-With the window patched to 150 and the reserves at their **defaults** (micro 0.40 / full 0.20):
-
-* micro line = ``int(150 * (1 - 0.40)) == 90``
-* full line  = ``int(150 * (1 - 0.20)) == 120``
-
-so the scripted turns cross the tiers in order:
-
-1. **setup** — a gated ``write`` (approved): usage 50 < 90 → no tier. Lays down the gated
-   tool call/result pair whose result the micro tier later blanks.
-2. **micro** — one inline ``sleep``: usage 100, in ``[90, 120)`` → **microcompaction** blanks the
-   setup turn's now-old ``write`` result *in memory*; nothing is persisted.
-3. **full** — two inline ``sleep``s: usage 150, ``>= 120`` → **full compaction** summarizes the
-   older turns and keeps a recent verbatim tail, persisting one ``compaction`` checkpoint.
-4. **wrap-up** — plain text: usage 50 < 90 → no tier. The turn that lands *after* the compaction
-   checkpoint, so the resume replay proves ``[summary, *tail, *later-turn]``.
-
-Each "recent tail" cut is forced with a huge driven prompt (>> the patched keep-recent budget), so
-the kept tail is exactly the final turn and every earlier message is "old" — no fragile token
-arithmetic on the tail (the trigger reads provider-authoritative usage; the tail uses the coarse
-char estimate).
+Tier arithmetic: the streaming FunctionModel reports a fixed 50 input tokens per leg; a gated
+turn measures only its final resume leg (50) while each inline ``sleep`` adds a leg (1 sleep =
+100, 2 = 150). Window patched to 150 with default reserves (0.40/0.20) → micro line 90, full
+line 120, so the turns cross the tiers in order; a huge prompt forces each kept tail to be
+exactly the final turn.
 """
 
 from __future__ import annotations
@@ -344,10 +300,8 @@ async def test_compaction_capstone_micro_full_persist_resume(tmp_path, monkeypat
         await _run_turn(runner, "wrap up and summarize what is left")
         assert handler.last_input_tokens == _USAGE_PER_LEG
 
-    # ========================================================================================
     # AC 1 — MICRO tier: in-memory blanking, the ContextMicrocompacted event, NO compaction line,
-    #        and full fidelity on disk.
-    # ========================================================================================
+    # and full fidelity on disk.
     micro_events = [e for e in emitted if isinstance(e, events.ContextMicrocompacted)]
     assert len(micro_events) == 1, "exactly one microcompaction fired (the usage-100 turn)"
     assert micro_events[0].elided_count == 1  # only the setup turn's now-old write result
@@ -371,10 +325,8 @@ async def test_compaction_capstone_micro_full_persist_resume(tmp_path, monkeypat
     assert _SETUP_RESULT in raw_log, "the log keeps the original full tool output"
     assert _MICRO_PLACEHOLDER not in raw_log, "the micro placeholder never reaches disk"
 
-    # ========================================================================================
     # AC 2 — FULL tier: the ContextCompacted event, [summary, *tail], _persisted_count == len,
-    #        exactly one compaction line.
-    # ========================================================================================
+    # exactly one compaction line.
     full_events = [e for e in emitted if isinstance(e, events.ContextCompacted)]
     assert len(full_events) == 1, "exactly one full compaction fired (the usage-150 turn)"
     assert full_events[0].before_tokens == _USAGE_FULL
@@ -393,16 +345,12 @@ async def test_compaction_capstone_micro_full_persist_resume(tmp_path, monkeypat
     # Exactly one compaction checkpoint line on disk (only full compaction persists, ADR-0006 §6).
     assert _log_line_types(log).count("compaction") == 1
 
-    # ========================================================================================
     # AC 4 — NO ORPHAN: the compacted tail never starts on an orphaned tool result (the tail snaps
-    #        to a user-turn boundary, ADR-0006 §5). Asserted on both the live and replayed history.
-    # ========================================================================================
+    # to a user-turn boundary, ADR-0006 §5). Asserted on both the live and replayed history.
     assert not _has_orphan_tool_return(compacted_history), "live compacted tail has no orphan"
 
-    # ========================================================================================
     # AC 3 — RESUME: replaying the SAME log yields the COMPACTED history (summary + tail), NOT the
-    #        full pre-compaction transcript; the wrap-up turn replays as [summary, *tail, *later].
-    # ========================================================================================
+    # full pre-compaction transcript; the wrap-up turn replays as [summary, *tail, *later].
     replayed = session_log.load(log.path)
     # It replays the compacted history, not the full transcript: shorter than every persisted
     # message, and it carries the summary head — not the dropped older turns.
@@ -429,9 +377,7 @@ async def test_compaction_capstone_micro_full_persist_resume(tmp_path, monkeypat
     # And the replayed compacted+later history is still orphan-free.
     assert not _has_orphan_tool_return(replayed), "replayed tail has no orphan"
 
-    # ========================================================================================
     # The real renderer ran on every event without raising; the compaction transcript is visible.
-    # ========================================================================================
     rendered = render_buffer.getvalue()
     assert "microcompacted context" in rendered, "the microcompaction line renders in the TUI"
     # "compacted context" is a substring of "microcompacted context", so assert a fragment unique to

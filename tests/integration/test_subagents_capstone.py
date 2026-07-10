@@ -1,62 +1,18 @@
-"""The explore-subagents capstone: parallel fan-out through the FULL real stack (ADR-0013).
+"""Explore-subagents capstone (ADR-0013): parallel fan-out through the FULL real stack.
 
-The living proof for the explore-subagents feature (tasks 087-090) — and it doubles as
-documentation, in the style of :mod:`tests.integration.test_milestone1_capstone` (drive the real
-wiring, swap out only the model boundary). A primary persona (``build``) spawns read-only **Explore
-Subagents** via the model-callable ``agent`` tool: N ``agent(...)`` calls in one model response fan
-out concurrently, each child reads a scoped slice of a working tree in parallel and hands back one
-compressed report, and the reports fold back inline as the ``agent`` tool's results.
-
-**REAL (exercised end to end):**
-
-* the real :func:`decode.agent.factory.build_agent` — so the real flat tool registry, the real
-  per-agent ``prepare=`` tool narrowing, the dynamic instructions hook, AND the set-once
-  ``set_main_agent`` subagent-spawn seam are all wired (ADR-0013 §6);
-* the real :func:`decode.tools.agent.agent` tool + the in-process Explore-subagent runner — the
-  per-running-loop :class:`asyncio.Semaphore` (``subagent_max_parallel``), the fresh **BYPASS**
-  child deps, the per-child ``UsageLimits`` cap, and the :func:`decode.tools.truncate.truncate`
-  report fold (ADR-0013 §5-8);
-* the real :class:`decode.harness.runner.Runner` + :class:`decode.agent.loop.AgentTurnHandler` +
-  :class:`decode.permissions.gate.PermissionGate` — so the whole turn lifecycle, the gate routing,
-  and history carry-over run for real;
-* the real :func:`decode.tui.render.render_event` on **every** emitted event — so the whole render
-  path is proven not to crash on the fan-out, and the "silent-until-done" contract (no child event
-  reaches the parent sink) is asserted against what actually rendered;
-* the real :class:`decode.context.session_log.SessionLog` + :func:`decode.context.session_log.load`
-  — so ``--resume`` replay of a fan-out turn is proven, and the child transcripts are proven
-  **ephemeral** (never persisted);
-* the children's real read-only tools (``read`` / ``glob`` / ``grep``) run against a real working
-  tree under ``tmp_path``.
-
-**FAKED (the only seams swapped):** the model is a scripted
-:class:`~pydantic_ai.models.function.FunctionModel` that drives BOTH the parent and the children on
-the *same* ``Agent`` object (``agent.override(model=…)`` is contextvar-scoped, so it covers the
-child's nested run too — ADR-0013 §6); ``GEMINI_API_KEY`` is faked only so ``build_agent``
-constructs; the working tree is a handful of files under ``tmp_path``. No network, no key, no kitaru
-in the always-run slice.
-
-Each hermetic test pins one guarantee from ADR-0013:
-
-1. :func:`test_parallel_fanout_overlaps_and_is_bounded_by_subagent_max_parallel` — the N children
-   genuinely overlap (an :class:`asyncio.Barrier` rendezvous proves true concurrency) and are bounded
-   by ``subagent_max_parallel`` (a low cap; overlap reaches it but never exceeds it) — §7.
-2. :func:`test_children_run_real_read_only_tools_without_touching_any_resolver` — the ``agent`` tool
-   and the children auto-allow (no ``PermissionRequested``), the children's real ``read``/``glob``/
-   ``grep`` never reach any resolver, and each report folds back as an ``agent`` tool result — §5.
-3. :func:`test_child_report_is_truncated_to_the_byte_cap_through_the_fold` — a long child report is
-   truncated to ``subagent_result_max_bytes`` through the fold — §8.
-4. :func:`test_parent_usage_gauge_excludes_child_counts` — no child spawn threads ``usage=ctx.usage``,
-   so the parent's ``last_input_tokens`` gauge stays parent-only — §7,10.
-5. :func:`test_child_toolset_excludes_agent_recursion_default_deny` — a child sees exactly
-   ``{read, glob, grep, lsp}`` — never ``agent`` — so recursion is structurally impossible — §6.
-6. :func:`test_ephemeral_child_transcripts_survive_resume` — the parent history + the JSONL log carry
-   only the spawn calls + folded summaries (no child transcript), and ``--resume`` replays cleanly — §8.
-7. :func:`test_headless_flow_cache_disable_set_covers_only_bash_never_agent` — the headless flow's
-   replay-safety config cache-disables only ``bash`` (sandbox modes); ``agent`` is never in it, so a
-   read-only child's summary is replay-safe — §9. (Guarded by the kitaru-availability ``skipif``.)
-
-Finally :func:`test_live_gemini_fanout_smoke` drives ONE real Gemini fan-out over this repo
-(presence-only), SKIPPED when ``GEMINI_API_KEY`` is unset.
+Proves the ``agent`` tool's N-way fan-out end to end: real build_agent (per-agent tool
+narrowing + the set-once subagent-spawn seam), real ``agent`` tool + in-process runner
+(per-loop semaphore, fresh BYPASS child deps, per-child UsageLimits, truncate fold), real
+Runner + AgentTurnHandler + gate, real render_event on every event (silent-until-done
+asserted), real SessionLog persist + ``--resume`` replay (child transcripts proven
+ephemeral), and real child read/glob/grep against a tmp_path tree. Swapped/faked: one
+scripted FunctionModel drives parent AND children (``agent.override`` is contextvar-scoped,
+so it covers the child's nested run); GEMINI_API_KEY is faked so build_agent constructs.
+The hermetic tests pin: bounded genuine overlap, permission-free children, byte-cap
+truncation, parent-only usage gauge, recursion default-deny, ephemeral transcripts + resume,
+and the headless cache-disable contract (bash only, never agent — kitaru-skipif). Offline vs
+live: everything runs with no network/key except test_live_gemini_fanout_smoke, skipif-gated
+on GEMINI_API_KEY.
 """
 
 from __future__ import annotations
@@ -132,9 +88,7 @@ def _configured_gemini_key() -> str:
 _LIVE_GEMINI_KEY = _configured_gemini_key()
 
 
-# ================================================================================================
 # Fixtures
-# ================================================================================================
 
 
 @pytest.fixture
@@ -156,9 +110,7 @@ def parent_agent(_fake_gemini_key):
     return build_agent()
 
 
-# ================================================================================================
 # Scripted-model plumbing — one FunctionModel drives the streamed parent AND the non-streamed child.
-# ================================================================================================
 
 
 def _tool_returned(messages: list[ModelMessage], name: str) -> bool:
@@ -223,10 +175,8 @@ def _fan_out(n_children: int) -> ModelResponse:
     )
 
 
-# ================================================================================================
 # Recording harness — a sink that renders every event through the REAL render_event, plus resolvers
 # that must never be consulted (a read-only fan-out prompts for nothing).
-# ================================================================================================
 
 
 class _RecordingSink:
@@ -324,9 +274,7 @@ def _tool_calls_in_history(messages: list[ModelMessage], name: str) -> list[Tool
     ]
 
 
-# ================================================================================================
 # 1. Parallel fan-out — the N children genuinely overlap, bounded by ``subagent_max_parallel``.
-# ================================================================================================
 
 
 async def test_parallel_fanout_overlaps_and_is_bounded_by_subagent_max_parallel(
@@ -396,9 +344,7 @@ async def test_parallel_fanout_overlaps_and_is_bounded_by_subagent_max_parallel(
     assert _PARENT_FINAL in sink.rendered
 
 
-# ================================================================================================
 # 2. Permission-free read-only children — real read/glob/grep, no resolver, reports fold back.
-# ================================================================================================
 
 
 async def test_children_run_real_read_only_tools_without_touching_any_resolver(
@@ -471,9 +417,7 @@ async def test_children_run_real_read_only_tools_without_touching_any_resolver(
         assert child_tool not in sink.tool_result_names()
 
 
-# ================================================================================================
 # 3. Result folding is truncated to the byte cap through the fold.
-# ================================================================================================
 
 
 async def test_child_report_is_truncated_to_the_byte_cap_through_the_fold(
@@ -513,9 +457,7 @@ async def test_child_report_is_truncated_to_the_byte_cap_through_the_fold(
     assert head in sink.rendered  # and the truncated panel rendered through the real renderer
 
 
-# ================================================================================================
 # 4. No usage threading — the parent gauge excludes the children's request/token counts.
-# ================================================================================================
 
 
 async def test_parent_usage_gauge_excludes_child_counts(parent_agent, tmp_path):
@@ -569,9 +511,7 @@ async def test_parent_usage_gauge_excludes_child_counts(parent_agent, tmp_path):
     assert handler.last_input_tokens > 0
 
 
-# ================================================================================================
 # 5. Recursion default-deny — a child's visible toolset excludes ``agent``.
-# ================================================================================================
 
 
 async def test_child_toolset_excludes_agent_recursion_default_deny(parent_agent, tmp_path):
@@ -603,9 +543,7 @@ async def test_child_toolset_excludes_agent_recursion_default_deny(parent_agent,
     assert AGENT_TOOL_NAME not in seen[0]  # the agent tool is hidden from the child (no recursion)
 
 
-# ================================================================================================
 # 6. Ephemeral child transcripts — the history + JSONL log carry only the spawn calls + summaries.
-# ================================================================================================
 
 
 async def test_ephemeral_child_transcripts_survive_resume(parent_agent, tmp_path, monkeypatch):
@@ -669,9 +607,7 @@ async def test_ephemeral_child_transcripts_survive_resume(parent_agent, tmp_path
     assert session_log.load_latest(sessions_dir) == handler.message_history
 
 
-# ================================================================================================
 # 7. Headless no-special-casing (contract pin) — the flow cache-disables ONLY bash, never agent.
-# ================================================================================================
 
 
 @pytest.mark.filterwarnings("ignore:'crypt' is deprecated:DeprecationWarning")
@@ -715,9 +651,7 @@ def test_headless_flow_cache_disable_set_covers_only_bash_never_agent(monkeypatc
     assert AGENT_TOOL_NAME not in cache_disabled
 
 
-# ================================================================================================
 # 8. Live-Gemini fan-out smoke — one real fan-out; SKIPPED when GEMINI_API_KEY is unset.
-# ================================================================================================
 
 
 @pytest.mark.filterwarnings("ignore::ResourceWarning")

@@ -1,31 +1,11 @@
-"""The ungated ``sleep`` control tool — a bounded ``await asyncio.sleep`` (ADR-0003 §8).
+"""The ungated ``sleep`` control tool — a bounded ``await asyncio.sleep``.
 
-``sleep`` lets the model pause its own turn — e.g. to back off before re-checking a long-running
-job. It is a one-line ``await asyncio.sleep(...)`` with two guardrails:
-
-* it is **capped** at ``settings.sleep_max_s`` so a model can never stall a turn indefinitely — a
-  request larger than the cap is *clamped* to the cap (not rejected), and the confirmation reports
-  the duration actually slept;
-* a **non-negative** ``seconds`` is required: a negative *or* ``nan`` request is rejected with a
-  model-readable :class:`pydantic_ai.ModelRetry` so the model corrects the call instead of stalling
-  the turn (``nan`` would defeat the cap — ``min(nan, …)`` is ``nan`` and ``asyncio.sleep(nan)``
-  never returns; ``inf`` is harmless because it falls through to be clamped by the cap).
-
-**Ungated (ADR-0003 §8).** Like ``ask_user`` and the plan-mode controls, ``sleep`` touches no
-filesystem and never raises :class:`pydantic_ai.ApprovalRequired`, so it never reaches the
-permission gate — it is a pure control signal, usable in any mode (including plan mode). Its
-``SLEEP_TOOL_NAME`` constant lives in :mod:`decode.tools.orchestration` (the one place the tools
-package owns the orchestration tool-name constants the agents-catalog loader validates against).
-
-**Mode-aware via the ``_SLEEPER`` seam (ADR-0008 §4).** The *await* differs by entry path while the
-guardrails do not. The module-level :data:`_SLEEPER` callable — mirroring bash ``_EXECUTOR`` / web
-``_TRANSPORT`` / lsp ``_spawn_process`` — is the in-process :func:`asyncio.sleep` by default
-(interactive TUI), so interactive behaviour is byte-unchanged. The Headless Runtime
-(:mod:`decode.runtime.flow`) swaps in :func:`_durable_sleep` (a flow-scope ``kitaru.wait``) around a
-durable run and resets it on flow exit, so a durable run's ``sleep`` can pause the execution and the
-process exit, then resume — and no in-process REPL ever inherits the durable sleeper. The clamp and
-the negative/``nan`` rejection run *before* the seam in both modes, so a bad request never reaches
-``kitaru.wait``.
+Two guardrails: the duration is clamped to ``settings.sleep_max_s``, and a negative/``nan``
+request raises a model-readable :class:`pydantic_ai.ModelRetry`. Ungated: a pure control signal
+that never raises :class:`pydantic_ai.ApprovalRequired` (ADR-0003 §8). The await goes through
+the mode-aware :data:`_SLEEPER` seam — in-process :func:`asyncio.sleep` interactively, a durable
+flow-scope ``kitaru.wait`` under the Headless Runtime (ADR-0008 §4); the guardrails run before
+the seam in both modes.
 """
 
 from __future__ import annotations
@@ -49,41 +29,32 @@ __all__ = [
     "sleep",
 ]
 
-# The single argument every sleeper takes: the **already-capped** duration in seconds (so the cap and
-# the negative/``nan`` rejection are applied once, in ``sleep``, before either implementation runs).
+# Every sleeper takes the **already-capped** duration: the guardrails run once, in ``sleep``.
 Sleeper = Callable[[float], Awaitable[None]]
 
 
 async def _interactive_sleep(capped: float) -> None:
-    """The default seam: the interactive in-process ``await asyncio.sleep(capped)`` (pre-ADR-0008).
+    """The default seam: in-process ``await asyncio.sleep(capped)``.
 
-    A thin wrapper rather than a bare ``asyncio.sleep`` reference so ``asyncio.sleep`` is resolved by
-    module-global lookup at call time — this keeps the in-process behaviour byte-identical and lets a
-    test patch ``decode.tools.sleep.asyncio.sleep`` exactly as before the seam existed.
+    A thin wrapper (not a bare reference) so ``asyncio.sleep`` resolves at call time and a test
+    can still patch ``decode.tools.sleep.asyncio.sleep``.
     """
     await asyncio.sleep(capped)
 
 
-# The mode-aware seam (ADR-0008 §4). Defaults to the interactive in-process sleeper; patched to
-# :func:`_durable_sleep` by the Headless Runtime for the duration of a durable run and reset
-# afterwards via :func:`reset_sleeper`. The interactive TUI never touches it.
+# The mode-aware seam (ADR-0008 §4): defaults interactive; the Headless Runtime swaps in
+# :func:`_durable_sleep` for a durable run and resets it afterwards.
 _SLEEPER: Sleeper = _interactive_sleep
 
 
 async def _durable_sleep(capped: float) -> None:
     """The headless durable sleeper: pause on a flow-scope ``kitaru.wait`` instead of sleeping inline.
 
-    Installed by :mod:`decode.runtime.flow` for a durable run (ADR-0008 §4). ``capped`` is the
-    duration ``sleep`` already clamped to ``settings.sleep_max_s``, so this never re-derives it. It
-    calls the **sync** :func:`kitaru.wait` directly from this ``async`` body — the same async→sync
-    bridge :func:`decode.runtime.flow.flow_resolve_user_question` uses (task 059): under
-    ``KitaruAgent.run_sync`` with ``allow_sync_tool_body_waits=True`` the agent's event loop runs on
-    Kitaru's workflow thread, which is exactly where a flow-scope wait must be created, so the
-    blocking call is correct (offloading it to a worker thread would trip Kitaru's "waits must be at
-    flow scope" guard). ``kitaru.wait``'s ``timeout`` is typed ``int`` (it counts whole seconds before
-    the runner pauses + exits the execution), so the capped float is coerced to ``int`` — the same
-    ``int(...)`` coercion task 059 applies to ``runtime_wait_timeout_s``. ``name="sleep"`` names the
-    wait point; no ``schema`` is passed (a pure timer gate, not a request for human input).
+    Installed by :mod:`decode.runtime.flow` (ADR-0008 §4). Calling the sync :func:`kitaru.wait`
+    from this async body is correct: under ``KitaruAgent.run_sync`` the agent's loop runs on
+    Kitaru's workflow thread, exactly where a flow-scope wait must be created (offloading to a
+    worker thread would trip Kitaru's flow-scope guard). ``timeout`` is typed ``int``, hence the
+    coercion; no ``schema`` — a pure timer gate, not a request for human input.
     """
     import kitaru
 
@@ -131,8 +102,7 @@ async def sleep(ctx: RunContext[AgentDeps], seconds: float) -> str:
     Runtime (ADR-0008 §4). The clamp and the negative/``nan`` rejection run *before* the seam, so a
     bad request never reaches the durable ``kitaru.wait`` and the cap is never defeated in either mode.
     """
-    # ``not (seconds >= 0)`` rejects negatives AND nan (``nan >= 0`` is False); inf is >= 0 so it
-    # falls through to be clamped by ``min`` below. A bare ``seconds < 0`` would let nan slip past.
+    # ``not (seconds >= 0)`` rejects negatives AND nan; inf falls through to the clamp below.
     if not (seconds >= 0):
         logger.debug("sleep rejected seconds=%r", seconds)
         raise ModelRetry("seconds must be a non-negative number")

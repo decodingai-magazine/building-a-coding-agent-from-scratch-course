@@ -3,11 +3,7 @@
 These run the **real** Kitaru ``@flow`` + ``KitaruAgent`` on the local stack — no server, no network
 — swapping only the model boundary (a scripted ``FunctionModel`` agent through the
 ``_build_hitl_runtime_agent`` seam) and resolving each durable wait inline via the
-``inline_wait_resolver`` fixture (the hermetic stand-in for ``kitaru executions input``). Together
-they prove the de-risk the task called for: the async-resolver → sync-``wait_for_input`` bridge works
-under ``run_sync``, ``ask_user`` and a gated ``write`` pause on **named** durable waits, an injected
-allow/deny verdict drives the tool, read-only tools run inline (no wait), and an unanswered wait
-leaves the run **paused** for out-of-band resolution.
+``inline_wait_resolver`` fixture (the hermetic stand-in for ``kitaru executions input``).
 """
 
 from __future__ import annotations
@@ -128,13 +124,10 @@ def _fast_approval_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(kitaru, "wait", fast_wait)
 
 
-# ---------------------------------------------------------------------------
 # ask_user → named durable question wait
-# ---------------------------------------------------------------------------
 def test_ask_user_pauses_on_a_named_wait_and_the_answer_becomes_the_tool_result(
     monkeypatch, inline_wait_resolver
 ):
-    """``ask_user`` resolves through a flow-scope ``wait_for_input``; the answer is the tool result."""
     inline_wait_resolver.answers = ["staging"]
     question = "which environment should I target?"
     _patch_hitl_seam(
@@ -155,11 +148,8 @@ def test_ask_user_pauses_on_a_named_wait_and_the_answer_becomes_the_tool_result(
     assert inline_wait_resolver.questions == [question]
 
 
-# ---------------------------------------------------------------------------
 # write → durable approval wait (allow / deny)
-# ---------------------------------------------------------------------------
 def test_write_approval_allow_runs_the_tool(monkeypatch, inline_wait_resolver, tmp_path):
-    """An injected ``true`` verdict lets a gated ``write`` run — the file lands on disk."""
     inline_wait_resolver.answers = ["true"]
     _patch_hitl_seam(
         monkeypatch,
@@ -208,11 +198,8 @@ def test_write_approval_deny_stops_the_run_without_writing(
     assert result.output is not None and "denied" in result.output.lower()
 
 
-# ---------------------------------------------------------------------------
 # read-only tools run inline (no wait)
-# ---------------------------------------------------------------------------
 def test_read_only_tool_runs_inline_without_a_wait(monkeypatch, inline_wait_resolver, tmp_path):
-    """A read-only ``read`` runs inline under the gating HITL gate — it never creates a wait."""
     (tmp_path / "note.txt").write_text("hello from note", encoding="utf-8")
     _patch_hitl_seam(
         monkeypatch,
@@ -228,11 +215,8 @@ def test_read_only_tool_runs_inline_without_a_wait(monkeypatch, inline_wait_reso
     assert result.output is not None and "hello from note" in result.output
 
 
-# ---------------------------------------------------------------------------
 # an unanswered wait leaves the run paused
-# ---------------------------------------------------------------------------
 def test_unanswered_wait_leaves_the_run_paused(monkeypatch, inline_wait_resolver):
-    """With no operator answer the durable wait stays pending and the run pauses for out-of-band resolution."""
     inline_wait_resolver.answers = []  # never resolved
     monkeypatch.setattr(flow_mod.settings, "runtime_wait_timeout_s", 1.0)  # give up polling quickly
     _patch_hitl_seam(
@@ -280,9 +264,7 @@ def test_unanswered_write_approval_leaves_the_run_paused(
     assert inline_wait_resolver.names  # the approval wait was created (and named) before pausing
 
 
-# ---------------------------------------------------------------------------
 # sleep → durable timer: the async→sync kitaru.wait bridge, end-to-end (task 060, ADR-0008 §4)
-# ---------------------------------------------------------------------------
 def test_sleep_becomes_a_durable_flow_scope_wait(monkeypatch, inline_wait_resolver):
     """A ``sleep`` in the durable run pauses on a flow-scope ``kitaru.wait`` named "sleep", not ``asyncio.sleep``.
 
@@ -313,7 +295,6 @@ def test_sleep_becomes_a_durable_flow_scope_wait(monkeypatch, inline_wait_resolv
 
 
 def test_durable_sleeper_context_installs_then_resets_the_seam():
-    """:func:`_durable_sleeper` swaps in the durable seam inside the block and restores it on exit."""
     assert sleep_module._SLEEPER is sleep_module._interactive_sleep
     with flow_mod._durable_sleeper():
         assert sleep_module._SLEEPER is sleep_module._durable_sleep
@@ -321,16 +302,13 @@ def test_durable_sleeper_context_installs_then_resets_the_seam():
 
 
 def test_durable_sleeper_context_resets_even_on_error():
-    """The reset is in a ``finally`` — an exception inside the run must not leak the durable seam."""
     with pytest.raises(RuntimeError), flow_mod._durable_sleeper():
         assert sleep_module._SLEEPER is sleep_module._durable_sleep
         raise RuntimeError("boom")
     assert sleep_module._SLEEPER is sleep_module._interactive_sleep
 
 
-# ---------------------------------------------------------------------------
 # unit: the resolver bridge + deps + agent config (fast, no flow)
-# ---------------------------------------------------------------------------
 def test_hitl_wait_name_is_deterministic_and_question_derived():
     """A wait name is a pure function of the question, so a Replay reuses the saved answer."""
     question = "which env?"
@@ -341,7 +319,6 @@ def test_hitl_wait_name_is_deterministic_and_question_derived():
 
 
 def test_flow_resolve_user_question_bridges_to_wait_for_input(monkeypatch):
-    """The async resolver calls the sync ``wait_for_input`` with the stable name + str schema + timeout."""
     captured: dict = {}
 
     def fake_wait_for_input(*, question, name, schema, timeout):
@@ -363,7 +340,6 @@ def test_flow_resolve_user_question_bridges_to_wait_for_input(monkeypatch):
 
 
 def test_build_hitl_deps_is_gating_with_the_durable_resolver():
-    """HITL deps run a gating gate, flag the durable-wait path, and use the wait bridge resolver."""
     deps = _build_hitl_deps()
 
     assert deps.gate.mode is PermissionMode.DEFAULT  # gating (not BYPASS)
@@ -372,7 +348,6 @@ def test_build_hitl_deps_is_gating_with_the_durable_resolver():
 
 
 def test_build_hitl_deps_splits_the_workspace_from_harness_home(tmp_path):
-    """ADR-0012 §6: HITL deps carry the Workspace as ``cwd`` and the launch cwd as ``harness_home``."""
     from pathlib import Path
 
     workspace = tmp_path / "ws"
@@ -385,7 +360,6 @@ def test_build_hitl_deps_splits_the_workspace_from_harness_home(tmp_path):
 
 
 def test_to_hitl_durable_agent_forces_calls_and_opts_out_the_waiting_tools():
-    """The HITL ``KitaruAgent`` forces ``calls`` granularity and opts the wait-capable tools out."""
     from kitaru.adapters.pydantic_ai import KitaruAgent
 
     agent = _echo_agent(ModelResponse(parts=[TextPart(content="done")]))
@@ -403,9 +377,7 @@ def test_to_hitl_durable_agent_forces_calls_and_opts_out_the_waiting_tools():
     )
 
 
-# ---------------------------------------------------------------------------
 # CLI: ``decode run --hitl``
-# ---------------------------------------------------------------------------
 @pytest.fixture
 def _provider_ok(monkeypatch):
     """Seed the gemini provider config so the ``decode run`` provider guard passes (offline)."""
@@ -417,7 +389,6 @@ def _provider_ok(monkeypatch):
 
 
 def test_cli_run_hitl_prints_the_resolved_output(monkeypatch, inline_wait_resolver, _provider_ok):
-    """``decode run --hitl`` drives the HITL flow and prints the agent's text once the wait resolves."""
     from decode.cli import cli
 
     inline_wait_resolver.answers = ["staging"]
@@ -437,7 +408,6 @@ def test_cli_run_hitl_prints_the_resolved_output(monkeypatch, inline_wait_resolv
 
 
 def test_cli_run_hitl_reports_a_paused_execution(monkeypatch, inline_wait_resolver, _provider_ok):
-    """An unresolved wait makes ``decode run --hitl`` exit zero with the out-of-band resolution hint."""
     from decode.cli import cli
 
     inline_wait_resolver.answers = []  # never resolved → the run pauses
@@ -487,7 +457,7 @@ def test_cli_run_hitl_reports_a_paused_write_approval(
     assert "kitaru executions input" in result.stderr
 
 
-# --- task 069: `--model` composes with `--hitl`; a completed HITL run points at kitaru replay -------
+# task 069: `--model` composes with `--hitl`; a completed HITL run points at kitaru replay
 
 
 def test_run_hitl_threads_the_model_override_through_the_seam(

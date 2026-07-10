@@ -1,33 +1,13 @@
 """The interactive REPL: a persistent input line + append-style Rich output.
 
-ADR-0002 §6: input is a concurrent ``prompt_async()`` wrapped in ``patch_stdout()`` so any
-output written while the user is typing scrolls *above* the prompt instead of corrupting
-it (the prompt stays pinned). Output is append-style -- no full-screen renderer -- and the
-harness streams :mod:`decode.entities.events` to :func:`decode.tui.render.render_event`.
-
-Input routing (ADR-0002 §4-5), via :meth:`decode.harness.runner.Runner.submit`. There is
-**one** input surface (the main ``prompt_async()``); it has two modes:
-
-* **normal** — the default. idle ``Enter`` -> starts a new turn; plain ``Enter`` while busy
-  -> **steering** (injected at the next model-request boundary); ``Alt+Enter`` -> **follow-up**
-  (drained only at the would-stop boundary); ``Esc`` -> cooperative **abort**.
-* **awaiting-decision** — when a turn pauses to ask the human something (the permission gate
-  in task 005, ``AskUser`` in task 011), a requester awaits a line on the
-  :class:`~decode.harness.decisions.DecisionChannel`. The next submitted line fulfils that
-  request (parsed by :func:`parse_permission_answer`) instead of steering / starting a turn.
-  This is the **one general mid-turn HITL channel** — opening a second ``prompt_async()`` on
-  the live session is illegal (prompt_toolkit guards ``Application._is_running``) and would
-  deadlock the REPL, so the decision rides the single input surface.
-
-The harness keeps the turn off the input coroutine (it runs as its own task), so the REPL
-stays responsive while a turn streams. ``Ctrl-D`` or typing ``/quit`` exits cleanly.
-
-The interactive loop reads real stdin, so its plumbing is exercised by the
-``run_app`` regression test (a piped prompt_toolkit input); the decidable pieces
-(:func:`is_quit_command`, :func:`is_compact_command`, :func:`footer_hint`, :class:`InputIntent`,
-:func:`parse_permission_answer`, the control-surface parsers
-:func:`parse_agent_command` / :func:`parse_mode_command` / :func:`parse_mode_name` /
-:func:`parse_skill_command`, and the Shift+Tab :func:`next_mode` cycle) are pure and unit-tested.
+A concurrent ``prompt_async()`` wrapped in ``patch_stdout()`` keeps the prompt pinned while
+output scrolls above it. There is ONE input surface with two modes: normal (idle Enter starts
+a turn; Enter while busy steers; Alt+Enter queues a follow-up; Esc aborts) and
+awaiting-decision (a pending permission / ``ask_user`` request on the ``DecisionChannel``
+consumes the next line). Opening a second ``prompt_async()`` on the live session would
+deadlock the REPL, so every mid-turn HITL exchange rides this single surface. The pure
+helpers (parsers, intents) are unit-tested; the loop itself is covered by the ``run_app``
+regression test. See ADR-0002 §4-6, ADR-0003 §9.
 """
 
 from __future__ import annotations
@@ -75,8 +55,7 @@ from decode.tools.bash import close_executor, export_executor, warm_executor
 from decode.tui import render
 
 if TYPE_CHECKING:
-    # Typing only: a runtime import would pull the sandbox hand-back module into the ``none`` path and
-    # break its laziness (ADR-0012 §9). ``from __future__ import annotations`` keeps this a string.
+    # Typing only: a runtime import would break the ``none`` path's sandbox laziness (ADR-0012 §9).
     from decode.sandbox.handback import ShipResult
 
 logger = logging.getLogger(__name__)
@@ -84,29 +63,20 @@ logger = logging.getLogger(__name__)
 # The flag value the bare ``--resume`` (no argument) carries: resume the latest session.
 _RESUME_LATEST = "latest"
 
-# The startup Agent persona when none is given (ADR-0003 §7,9): the full-tool build agent.
+# The startup Agent persona when none is given (ADR-0003 §7,9).
 _DEFAULT_AGENT = "build"
 
 _QUIT_COMMAND = "/quit"
-# The mid-session control slash commands (ADR-0003 §9): switch the active agent / mode. Parsed on
-# the single input surface alongside ``/quit`` (never a second ``prompt_async``).
+# Mid-session control slash commands (ADR-0003 §9), parsed on the single input surface.
 _AGENT_COMMAND = "/agent"
 _MODE_COMMAND = "/mode"
-# The manual full-compaction command (ADR-0006 §7): forces a full compaction now, wired like
-# ``/quit`` and idle-only. Reserved among the slash commands (matched before ``parse_skill_command``)
-# so a project skill named ``compact`` can never shadow it.
+# Reserved slash commands (matched before ``parse_skill_command`` so a same-named project skill
+# can never shadow them), all idle-only: manual full compaction (ADR-0006 §7), conversation wipe
+# (summarize-to-memory then clear), and the git hand-back (ADR-0012 §8).
 _COMPACT_COMMAND = "/compact"
-# The conversation-wipe command: compaction-to-zero, wired exactly like ``/compact`` (idle-only,
-# reserved before the skill branch). Summarize-then-wipe: the pre-clear history feeds the same
-# MEMORY.md write-back the quit path runs, THEN the handler resets and a clear marker rides the
-# session log so ``--resume`` replays to the post-clear state.
 _CLEAR_COMMAND = "/clear"
-# The git hand-back command (ADR-0012 §8): ship the sandbox Workspace back as a decode/<session-id>
-# branch. Reserved among the slash commands (matched before ``parse_skill_command``) so a project skill
-# named ``ship`` can never shadow it, and idle-only like ``/compact`` / ``/clear``.
 _SHIP_COMMAND = "/ship"
-# The order Shift+Tab cycles the gate mode through (ADR-0003 §9): default -> edit -> plan ->
-# bypass -> back to default. A tuple so :func:`next_mode` is a pure index step.
+# The Shift+Tab mode cycle order (ADR-0003 §9); a tuple so :func:`next_mode` is a pure index step.
 _MODE_CYCLE: tuple[PermissionMode, ...] = (
     PermissionMode.DEFAULT,
     PermissionMode.EDIT,
@@ -114,31 +84,25 @@ _MODE_CYCLE: tuple[PermissionMode, ...] = (
     PermissionMode.BYPASS,
 )
 _PROMPT = "> "
-# The capital-D label printed once before a turn's first streamed answer chunk (Fix 2). The
-# trailing space separates it from the answer; it is added in the event sink (the deltas stream,
-# so the once-per-turn prefix cannot live in the pure renderer).
+# Printed once before a turn's first streamed answer chunk — deltas stream, so the once-per-turn
+# prefix lives in the event sink, not the pure renderer.
 _ASSISTANT_PREFIX = "Decode "
-# A minimal inline affordance shown when a decision is pending; the full request was already
-# rendered once by the loop's PermissionRequested event (single render path — no re-print). ``a``
-# is "always" — allow AND persist a rule so the next identical call auto-allows (task 018).
+# Minimal inline affordances: the full permission request / ask_user question was already rendered
+# once by its event (single render path). ``a`` = allow AND persist a rule so the next identical
+# call auto-allows.
 _PERMISSION_AFFORDANCE = "allow this tool call? [y/N/a=always]"
-# The matching affordance for an ask_user question: the full question was already rendered once
-# by the tool's AskUserRequested event, so this is only the "type your answer" cue (any line is
-# the answer — no parsing, unlike the permission y/N).
 _ASK_USER_AFFORDANCE = "type your answer:"
-# Answers that mean "always": allow AND persist a matching allow rule (task 018 / ADR-0003 §4).
+# Answers that mean "always": allow AND persist a matching allow rule (ADR-0003 §4).
 _ALWAYS_ANSWERS = frozenset({"a", "always"})
-# Answers that count as "yes" (allow); everything else denies (the safe default — ADR-0002 §3).
-# ``always`` answers also allow, so they are a subset of the affirmative set.
+# Anything outside this set denies — the safe default (ADR-0002 §3).
 _AFFIRMATIVE_ANSWERS = frozenset({"y", "yes", "allow"}) | _ALWAYS_ANSWERS
 
 
 class InputIntent(enum.Enum):
-    """What the user signalled with the line they just submitted (ADR-0002 §4-5).
+    """What the user signalled with the submitted line (ADR-0002 §4-5).
 
-    ``STEER`` is plain ``Enter`` (start a turn when idle, steer when busy); ``FOLLOW_UP`` is
-    ``Alt+Enter``; ``ABORT`` is ``Esc``. The runner maps ``STEER``/``FOLLOW_UP`` onto the two
-    queues and ``ABORT`` onto the cooperative-abort flag.
+    Plain ``Enter`` → STEER (new turn when idle, steer when busy); ``Alt+Enter`` → FOLLOW_UP;
+    ``Esc`` → ABORT.
     """
 
     STEER = "steer"
@@ -152,39 +116,25 @@ def is_quit_command(line: str) -> bool:
 
 
 def is_compact_command(line: str) -> bool:
-    """True when ``line`` is the ``/compact`` command (ignoring surrounding whitespace).
-
-    Pure (mirrors :func:`is_quit_command`): exact match after a strip — ``"/compact"`` and
-    ``"  /compact  "`` are the command; ``"/compactx"`` / ``"compact"`` / ``"/quit"`` are not.
-    """
+    """True when ``line`` is the ``/compact`` command (ignoring surrounding whitespace)."""
     return line.strip() == _COMPACT_COMMAND
 
 
 def is_clear_command(line: str) -> bool:
-    """True when ``line`` is the ``/clear`` command (ignoring surrounding whitespace).
-
-    Pure (mirrors :func:`is_compact_command`): exact match after a strip — ``"/clear"`` and
-    ``"  /clear  "`` are the command; ``"/clearx"`` / ``"clear"`` / ``"/compact"`` are not.
-    """
+    """True when ``line`` is the ``/clear`` command (ignoring surrounding whitespace)."""
     return line.strip() == _CLEAR_COMMAND
 
 
 def is_ship_command(line: str) -> bool:
-    """True when ``line`` is the ``/ship`` command (ignoring surrounding whitespace).
-
-    Pure (mirrors :func:`is_clear_command`): exact match after a strip — ``"/ship"`` and ``"  /ship  "``
-    are the command; ``"/shipx"`` / ``"ship"`` / ``"/clear"`` are not.
-    """
+    """True when ``line`` is the ``/ship`` command (ignoring surrounding whitespace)."""
     return line.strip() == _SHIP_COMMAND
 
 
 def footer_hint(agent: str, mode: str) -> str:
     """The bottom-toolbar hint: the live agent + mode, then the interaction keys (plain text).
 
-    Kept pure and string-returning so it is unit-testable; :func:`_bottom_toolbar` wraps it for
-    prompt_toolkit and supplies the **live** ``agent`` / ``mode`` each render (ADR-0003 §9), so the
-    footer updates after a ``/agent`` / ``/mode`` switch or a Shift+Tab cycle. Lists steer (plain
-    Enter), follow-up (Alt+Enter), abort (Esc), the Shift+Tab mode cycle, and the slash commands.
+    Pure and string-returning; :func:`_bottom_toolbar` supplies the live ``agent`` / ``mode`` each
+    render (ADR-0003 §9) so the footer updates after a switch.
     """
     return (
         f"agent:{agent} mode:{mode} | Enter steer | Alt+Enter follow-up | "
@@ -195,11 +145,8 @@ def footer_hint(agent: str, mode: str) -> str:
 def startup_banner(provider: str, model: str, sandbox_mode: str) -> str:
     """The one-line startup banner: provider:model (+ the sandbox mode when one is active).
 
-    Pure and string-returning (mirrors :func:`footer_hint`) so it is unit-testable. ``none`` —
-    the plain REPL — renders **byte-identical** to before sandboxing existed; ``docker`` /
-    ``modal`` insert a ``sandbox:<mode>`` segment so the user can SEE the session's ``bash``
-    commands run in a sandbox (the mode is fixed per session — ADR-0011 §1 — so the banner, not
-    the live footer, is its home).
+    ``none`` renders byte-identical to before sandboxing existed; the mode is fixed per session
+    (ADR-0011 §1), so the banner — not the live footer — is its home.
     """
     if sandbox_mode == "none":
         return f"Decode - {provider}:{model} - type a line; /quit exits."
@@ -209,30 +156,19 @@ def startup_banner(provider: str, model: str, sandbox_mode: str) -> str:
 def parse_agent_command(line: str) -> str | None:
     """Return the name argument of a ``/agent <name>`` line, or ``None`` if not that command.
 
-    Pure (mirrors :func:`is_quit_command`): ``"/agent build"`` → ``"build"``; bare ``"/agent"`` →
-    ``""`` (the command with no name — the handler turns that into a usage line); anything that is
-    not the ``/agent`` command (``"hello"``, ``"/agentx"``, ``"/mode plan"``) → ``None`` so the
-    main loop falls through to its normal routing.
+    ``""`` means the command was typed with no name (the handler shows usage); ``None`` lets the
+    main loop fall through to normal routing.
     """
     return _parse_slash_arg(line, _AGENT_COMMAND)
 
 
 def parse_mode_command(line: str) -> str | None:
-    """Return the mode argument of a ``/mode <name>`` line, or ``None`` if not that command.
-
-    Pure (mirrors :func:`parse_agent_command`): ``"/mode plan"`` → ``"plan"``; bare ``"/mode"`` →
-    ``""``; not the command → ``None``.
-    """
+    """Return the mode argument of a ``/mode <name>`` line, or ``None`` if not that command."""
     return _parse_slash_arg(line, _MODE_COMMAND)
 
 
 def _parse_slash_arg(line: str, command: str) -> str | None:
-    """Split a ``<command> <arg>`` slash line, returning the (stripped) arg or ``None``.
-
-    ``None`` means the line is not ``command`` at all (fall through to normal routing); ``""`` means
-    ``command`` was typed with no argument (a usage error for the caller); otherwise the trailing
-    argument, stripped.
-    """
+    """Split a ``<command> <arg>`` slash line: ``None`` = not this command, ``""`` = no argument."""
     stripped = line.strip()
     if stripped == command:
         return ""
@@ -243,17 +179,11 @@ def _parse_slash_arg(line: str, command: str) -> str | None:
 
 
 def parse_skill_command(line: str) -> tuple[str, str] | None:
-    """Split a ``/<skill-name> [trailing]`` line into ``(name, trailing)``, or ``None`` (§5).
+    """Split a ``/<skill-name> [trailing]`` line into ``(name, trailing)``, or ``None`` (ADR-0004 §5).
 
-    The user-facing second entry point into a skill body (ADR-0004 §5), alongside the model's
-    ``skill`` dispatcher (task 026) — both resolve through the same ``load_skills(cwd)``. Pure
-    (mirrors :func:`parse_agent_command`): ``"/commit"`` → ``("commit", "")``; ``"/commit fix the
-    bug"`` → ``("commit", "fix the bug")`` (name + trailing text, both stripped). A non-slash line
-    (``"hello"``) → ``None`` so the main loop falls through to its normal ``runner.submit`` routing.
-    A bare ``"/"`` (no name) → ``None``. A reserved slash command (``/quit`` / ``/agent …`` /
-    ``/mode …``) parses here too, but never reaches this branch: the ``run_app`` loop matches and
-    ``continue``s on those *before* the skill branch, so precedence is the loop's job, not this
-    parser's (a same-named skill stays reachable via the dispatcher).
+    A non-slash line or a bare ``"/"`` → ``None`` (fall through to normal routing). Reserved slash
+    commands parse here too, but the ``run_app`` loop matches them *before* the skill branch —
+    precedence is the loop's job, not this parser's.
     """
     stripped = line.strip()
     if not stripped.startswith("/"):
@@ -266,13 +196,10 @@ def parse_skill_command(line: str) -> tuple[str, str] | None:
 
 
 class SlashCompleter(Completer):
-    """Autocomplete the slash commands + project skills as the user types ``/`` (like Claude Code).
+    """Autocomplete the slash commands + project skills as the user types ``/``.
 
-    Built once per session from ``load_skills(cwd)`` so the menu lists every reachable ``/<skill>``
-    (its ``description`` as the meta) alongside the four built-in commands the ``run_app`` loop
-    matches before the skill branch. Fires **only** while the line-before-cursor is a single ``/``
-    token (no space yet) — so normal prose, and the ``<arg>`` after ``/agent``/``/mode``, never
-    trigger it. ``prompt_toolkit`` renders the menu; this just supplies the candidates.
+    Built once per session from ``load_skills(cwd)``. Fires **only** while the line-before-cursor
+    is a single ``/`` token (no space yet), so normal prose and command arguments never trigger it.
     """
 
     def __init__(self, cwd: Path) -> None:
@@ -302,8 +229,7 @@ class SlashCompleter(Completer):
 def parse_mode_name(name: str) -> PermissionMode | None:
     """Map a typed mode name to a :class:`PermissionMode`, or ``None`` if it is not one (§1,9).
 
-    Case-insensitive and whitespace-tolerant (``"  PLAN  "`` → ``PLAN``). Pure so it is
-    unit-testable; ``None`` lets the caller render a friendly "unknown mode" line instead of crashing.
+    Case-insensitive and whitespace-tolerant; ``None`` lets the caller render a friendly line.
     """
     try:
         return PermissionMode(name.strip().lower())
@@ -312,11 +238,7 @@ def parse_mode_name(name: str) -> PermissionMode | None:
 
 
 def next_mode(mode: PermissionMode) -> PermissionMode:
-    """The next mode in the Shift+Tab ring: default → edit → plan → bypass → default (§9).
-
-    Pure (a single index step around :data:`_MODE_CYCLE`) so the cycle is unit-testable; the
-    keybind just calls it, sets the gate, and renders the new mode.
-    """
+    """The next mode in the Shift+Tab ring: default → edit → plan → bypass → default (§9)."""
     index = _MODE_CYCLE.index(mode)
     return _MODE_CYCLE[(index + 1) % len(_MODE_CYCLE)]
 
@@ -327,11 +249,7 @@ def mode_switch_confirmation(mode: str) -> str:
 
 
 def agent_switch_confirmation(name: str, mode: str) -> str:
-    """The one-line confirmation rendered after an agent switch (``/agent``; §9).
-
-    Names the new agent and the mode it reset the gate to (selecting an agent resets the mode to
-    that agent's default — ADR-0003 §7).
-    """
+    """The one-line confirmation after an agent switch — names the agent and the reset mode (§7,9)."""
     return f"Decode - agent: {name} (mode: {mode})."
 
 
@@ -349,10 +267,8 @@ def _handle_agent_command(
 ) -> None:
     """Apply a ``/agent <name>`` switch: select the agent, render one confirmation (§7,9).
 
-    Runs the task-020 :func:`~decode.agents.select.select_agent` helper (sets ``deps.active_agent``,
-    resets the gate to the agent's default mode, loads its catalog rules). An empty ``name`` shows a
-    usage line; an unknown name renders a friendly inline error (``select_agent`` leaves ``deps`` /
-    ``gate`` untouched on failure) and the REPL stays alive — never a crash.
+    Empty ``name`` → usage line; unknown name → friendly inline error (``select_agent`` leaves
+    ``deps`` / ``gate`` untouched on failure) — never a crash.
     """
     if not name:
         emit(_AGENT_USAGE)
@@ -373,11 +289,7 @@ def _handle_mode_command(
     gate: PermissionGate,
     emit: Callable[[str], None],
 ) -> None:
-    """Apply a ``/mode <name>`` switch: set the gate mode, render one confirmation (§3,9).
-
-    An empty ``name`` shows a usage line; an unknown mode renders a friendly inline error (listing
-    the valid modes) and leaves the gate untouched — never a crash.
-    """
+    """Apply a ``/mode <name>`` switch: set the gate mode, render one confirmation (§3,9)."""
     if not name:
         emit(_MODE_USAGE)
         return
@@ -392,9 +304,8 @@ def _handle_mode_command(
     emit(mode_switch_confirmation(mode.value))
 
 
-# The two inline lines the ``/compact`` command renders itself (the success path renders nothing —
-# the handler's ``ContextCompacted`` event is the feedback). ``_COMPACT_NOTHING`` is the idle no-op;
-# ``_COMPACT_BUSY`` is shown when a turn is in flight (we never compact mid-turn).
+# Inline lines for ``/compact`` (the success path renders nothing — the ContextCompacted event is
+# the feedback).
 _COMPACT_NOTHING = "Decode - nothing to compact yet."
 _COMPACT_BUSY = "Decode - busy; try /compact again once the turn finishes."
 
@@ -407,12 +318,9 @@ async def _handle_compact_command(
 ) -> None:
     """Force a full compaction now — the manual ``/compact`` command (ADR-0006 §7).
 
-    Idle-only, wired like ``/quit``: if a turn is in flight we never compact mid-turn (the handler
-    owns the live ``message_history``), so we emit the busy line and leave the turn untouched. When
-    idle, run the handler's full-compaction tier — an explicit user request compacts regardless of
-    the window-relative thresholds or ``compaction_enabled``. ``True`` means it already emitted
-    :class:`~decode.entities.events.ContextCompacted` (history replaced with ``[summary, *tail]``),
-    so we add no extra line; ``False`` means there was nothing to compact and we say so.
+    Idle-only (the handler owns the live ``message_history`` — never compact mid-turn). An
+    explicit request compacts regardless of the thresholds or ``compaction_enabled``; ``False``
+    from ``handler.compact()`` means there was nothing to compact.
     """
     if runner.phase is not Phase.IDLE:
         emit(_COMPACT_BUSY)
@@ -421,8 +329,7 @@ async def _handle_compact_command(
         emit(_COMPACT_NOTHING)
 
 
-# The inline lines the ``/clear`` command renders (mirroring the ``/compact`` pair, plus a
-# confirmation — unlike ``/compact`` there is no event to render, so the command says what it did).
+# Inline lines for ``/clear`` (unlike ``/compact`` there is no event to render, so it confirms).
 _CLEAR_DONE = "Decode - conversation cleared."
 _CLEAR_NOTHING = "Decode - nothing to clear yet."
 _CLEAR_BUSY = "Decode - busy; try /clear again once the turn finishes."
@@ -437,14 +344,9 @@ async def _handle_clear_command(
 ) -> None:
     """Wipe the conversation now — the ``/clear`` command (compaction-to-zero).
 
-    Idle-only, exactly like ``/compact`` (the handler owns the live ``message_history``; wiping
-    mid-turn would corrupt the leg mutating it): busy → one line, turn untouched. Idle with an
-    empty history → nothing to wipe, say so. Otherwise **summarize, then wipe**: the pre-clear
-    history first feeds the same non-fatal MEMORY.md write-back the quit path runs (``/clear`` is
-    a soft session boundary — every segment still contributes to cross-session memory; a missing
-    key / failure no-ops), then :meth:`~decode.agent.loop.AgentTurnHandler.clear` resets the
-    handler and rides a ``clear`` marker into the session log so ``--resume`` replays to the
-    post-clear state. One confirmation line renders.
+    Idle-only, like ``/compact``. **Summarize, then wipe**: the pre-clear history feeds the same
+    non-fatal MEMORY.md write-back the quit path runs, then ``handler.clear()`` resets and rides a
+    ``clear`` marker into the session log so ``--resume`` replays to the post-clear state.
     """
     if runner.phase is not Phase.IDLE:
         emit(_CLEAR_BUSY)
@@ -457,21 +359,15 @@ async def _handle_clear_command(
     emit(_CLEAR_DONE)
 
 
-# The inline lines the ``/ship`` command renders. ``_SHIP_BUSY`` is the mid-turn guard (we never ship
-# while a turn holds the live Workspace); ``_SHIP_NO_WORKSPACE`` is the ``none``-mode / no-repo case
-# (there is no isolated Workspace to hand back). The success/skip/failure text comes from the
-# ShipResult's own message via :func:`_ship_outcome_line`.
+# Inline lines for ``/ship``; the success/skip/failure text comes from the ShipResult's own message.
 _SHIP_BUSY = "Decode - busy; try /ship again once the turn finishes."
 _SHIP_NO_WORKSPACE = "Decode - no sandbox workspace to ship."
 
 
 def _ship_outcome_line(result: ShipResult) -> str:
-    """Render a :class:`~decode.sandbox.handback.ShipResult` as one ``Decode - `` line (ADR-0012 §8).
+    """Prefix a ShipResult's own friendly message with ``Decode - `` (ADR-0012 §8).
 
-    The ShipResult owns the friendly, credential-free sentence (shipped / skipped / push-failed —
-    naming the branch and its ``.decode/sandbox`` location on a failure); this only adds the REPL's
-    ``Decode - `` prefix, matching the ``/compact`` / ``/clear`` confirmation style. Duck-typed on
-    ``.message`` so no runtime sandbox import is needed on the ``none`` path (§9).
+    Duck-typed on ``.message`` so no runtime sandbox import is needed on the ``none`` path (§9).
     """
     return f"Decode - {result.message}"
 
@@ -486,14 +382,10 @@ async def _handle_ship_command(
 ) -> None:
     """Ship the sandbox Workspace back as a ``decode/<session-id>`` branch — the ``/ship`` command (§8).
 
-    Idle-only, wired like ``/compact`` / ``/clear`` (busy → one line, never ship mid-turn — the running
-    leg holds the live Workspace). In ``none`` mode or with no ``--repo`` there is no isolated Workspace,
-    so it prints a friendly line and does nothing (no export, no sandbox import). Otherwise it (a) runs
-    the executor :func:`~decode.tools.bash.export_executor` **first** — the modal mid-session sweep so
-    ``/workspace`` is host-visible for the host-side git (a docker no-op, its mount is already live) —
-    then (b) runs the host-side :func:`~decode.sandbox.handback.ship_workspace` and prints the outcome
-    (the branch + push result, or a friendly skip/failure line). The hand-back import stays lazy so the
-    ``none`` path pulls in no sandbox module (§9).
+    Idle-only; a friendly no-op in ``none`` mode / no-repo (no export, no sandbox import).
+    Otherwise: export the executor FIRST (the modal sweep so ``/workspace`` is host-visible for
+    the host-side git; a docker no-op), then run the host-side ``ship_workspace`` and print the
+    outcome. The hand-back import stays lazy so the ``none`` path pulls in no sandbox module (§9).
     """
     if runner.phase is not Phase.IDLE:
         emit(_SHIP_BUSY)
@@ -501,11 +393,9 @@ async def _handle_ship_command(
     if settings.sandbox_mode == "none" or repo is None:
         emit(_SHIP_NO_WORKSPACE)
         return
-    # Sweep the live sandbox Workspace down to the host first (modal copy_to_local; docker no-op), so the
-    # host-side git below sees the final ``/workspace`` state (ADR-0012 §5,8).
+    # Modal sweep first so the host-side git below sees the final /workspace state (ADR-0012 §5,8).
     await export_executor()
-    # Lazy import: only a sandbox-mode ``/ship`` pulls in the hand-back module (the ``none`` path never
-    # touches ``decode.sandbox`` — §9).
+    # Lazy import: the ``none`` path never touches ``decode.sandbox`` (§9).
     from decode.sandbox.handback import ship_workspace
 
     result = ship_workspace(harness_home, repo=repo, session_id=session_id)
@@ -521,14 +411,10 @@ def _ship_on_exit(
 ) -> None:
     """Ship the Workspace back on REPL exit — best-effort, non-fatal, silent no-op otherwise (§8).
 
-    The exit counterpart to the ``/ship`` command (task 083 AC5). Runs in the shutdown sequence *after*
-    ``close_executor`` (which already ran the modal export sweep), so it reads the final host Workspace
-    directly — no export here. **Silent no-op** in ``none`` mode / no-repo (returning before importing
-    the hand-back keeps the ``none`` path free of any sandbox module — §9) and on a skip (an unchanged /
-    non-git Workspace → ``branch=None``), so those sessions stay byte-identical (AC7). Only a real ship
-    (or a push failure) emits its one outcome line — which names the branch on failure. Fully
-    **best-effort**: any hand-back error is logged, never raised, so it can never block exit or mask the
-    ``Decode - bye.`` line — exactly like the memory / LSP / executor teardown steps beside it.
+    Runs after ``close_executor`` (which already ran the modal export sweep), so no export here.
+    Silent no-op in ``none`` mode / no-repo (returning before the import keeps the ``none`` path
+    sandbox-free — §9) and on a skip (``branch=None``). Any error is logged, never raised, so it
+    can never block exit or mask the ``Decode - bye.`` line.
     """
     if settings.sandbox_mode == "none" or repo is None:
         return
@@ -543,28 +429,21 @@ def _ship_on_exit(
         emit(_ship_outcome_line(result))
 
 
-# The friendly inline line for an unrecognised ``/<skill-name>`` (ADR-0004 §5). Mirrors the
-# ``/agent`` / ``/mode`` unknown-argument style (a single ``Decode - …`` line); the available-skills
-# list doubles as discovery. The catalog is never empty — the built-ins always ship.
+# Friendly inline line for an unrecognised ``/<skill-name>`` (ADR-0004 §5); the available-skills
+# list doubles as discovery.
 _SKILL_NO_MATCH = "Decode - unknown command '/{name}'; available skills: {skills}."
 
 
 def _handle_skill_command(
     name: str, trailing: str, *, cwd: Path, emit: Callable[[str], None]
 ) -> str | None:
-    """Resolve a ``/<name>`` skill into the turn input, or ``emit`` a discovery line (§5).
+    """Resolve a ``/<name>`` skill into the turn input, or ``emit`` a discovery line (ADR-0004 §5).
 
-    The user-facing entry point into a skill body (ADR-0004 §5): resolves ``name`` against the
-    merged catalog (:func:`decode.skills.loader.load_skills` for ``cwd`` — the **same** loader the
-    model's ``skill`` dispatcher uses) and formats the result through the **same**
-    :func:`decode.skills.payload.format_skill_payload` helper the dispatcher uses, so both entry
-    points inject an identical payload — the skill ``body`` plus a resource trailer when (and only
-    when) the skill ships bundled resources. On a match, returns that payload as the turn input (the
-    caller submits it through the existing ``runner.submit`` pipeline); a non-empty ``trailing`` is
-    appended after a blank line (``f"{payload}\\n\\n{trailing}"``). On no match, ``emit`` a friendly
-    one-line message listing the available (sorted) skill names — discovery — and return ``None`` so
-    no turn runs. ``name`` is used **only** as a dict key (never interpolated into a filesystem path
-    or shell command — ADR-0004 §3,7), so a bad name just yields the available-skills line.
+    Resolves through the SAME ``load_skills`` + ``format_skill_payload`` the model's ``skill``
+    dispatcher uses, so both entry points inject an identical payload. A non-empty ``trailing`` is
+    appended after a blank line; no match → a discovery line and ``None`` (no turn runs). ``name``
+    is used ONLY as a dict key — never interpolated into a filesystem path or shell command
+    (ADR-0004 §3,7).
     """
     catalog = load_skills(cwd)
     found = catalog.get(name)
@@ -582,11 +461,8 @@ def _handle_skill_command(
 def parse_permission_answer(answer: str) -> PermissionDecision:
     """Map a typed allow/deny answer to a :class:`PermissionDecision` (ADR-0002 §3, ADR-0003 §4).
 
-    ``y`` / ``yes`` / ``allow`` and ``a`` / ``always`` (case-insensitive) all allow; **anything
-    else denies** — the safe default. ``a``/``always`` *also* persists a rule (see
-    :func:`is_always_answer`), but the verdict itself is just allow. A denial carries a
-    human-facing reason that is fed back to the model. Kept pure (string in, decision out) so it
-    is unit-testable; the interactive prompt that reads the answer is not.
+    ``y``/``yes``/``allow`` and ``a``/``always`` (case-insensitive) allow; **anything else
+    denies** — the safe default. A denial carries a human-facing reason fed back to the model.
     """
     if answer.strip().lower() in _AFFIRMATIVE_ANSWERS:
         return PermissionDecision.allow()
@@ -594,21 +470,12 @@ def parse_permission_answer(answer: str) -> PermissionDecision:
 
 
 def is_always_answer(answer: str) -> bool:
-    """Whether ``answer`` is the "always" allow (``a`` / ``always``, case-insensitive; §4).
-
-    An "always" answer allows the call **and** signals the resolver to persist a matching allow
-    rule to the user ``.decode/settings.json`` so the next identical call auto-allows. ``y``/``yes``
-    is allow-once and returns ``False`` here. Pure so it is unit-testable.
-    """
+    """Whether ``answer`` is the "always" allow — allow AND persist a matching rule (§4)."""
     return answer.strip().lower() in _ALWAYS_ANSWERS
 
 
 async def deny_permission_resolver(request: PermissionRequest) -> PermissionDecision:
-    """The safe headless default: deny every tool call (ADR-0002 §3).
-
-    Used when there is no interactive terminal to ask. Denying (rather than allowing) is the
-    safe default — an unattended run never executes a gated side effect.
-    """
+    """The safe headless default: deny every tool call when no terminal can ask (ADR-0002 §3)."""
     logger.debug("headless permission resolver denying tool=%s", request.tool_name)
     return PermissionDecision.deny(reason="No interactive terminal to approve this tool call.")
 
@@ -622,17 +489,11 @@ def _make_permission_resolver(
 ) -> PermissionResolver:
     """Build the interactive allow/deny resolver bound to the decision ``channel`` (ADR-0003 §4).
 
-    The full request was already rendered once by the loop's ``PermissionRequested`` event
-    (single render path), so the resolver only shows a minimal inline ``allow/deny?``
-    affordance and then **awaits the next submitted line on the channel** — it never opens a
-    second ``prompt_async()`` on the live session (that would deadlock the REPL). The answer
-    is parsed by :func:`parse_permission_answer`. An ``a``/``always`` answer additionally
-    **persists** a matching allow rule to the user ``permissions_file`` and **reloads** the
-    gate's user rules so the next identical call auto-allows; a persist write failure is
-    non-fatal (logged, falls back to allow-once). If the request is cancelled (turn aborted /
-    REPL shutting down) it denies — the safe default. Not unit-tested directly; the
-    end-to-end ``run_app`` regression test drives the real channel + main loop, and the
-    decidable parsing lives in :func:`parse_permission_answer`.
+    Shows only a minimal affordance (the full request was already rendered by the
+    ``PermissionRequested`` event) and awaits the next submitted line on the channel — never a
+    second ``prompt_async()`` (that would deadlock the REPL). ``a``/``always`` also persists an
+    allow rule and reloads the gate (a write failure degrades to allow-once). A cancelled
+    request denies — the safe default.
     """
 
     async def resolver(request: PermissionRequest) -> PermissionDecision:
@@ -654,10 +515,7 @@ def _persist_always_rule(
 ) -> None:
     """Persist an allow rule for ``request`` and reload the gate's user rules (ADR-0003 §4).
 
-    Called when the human answers ``a``/``always``: write a matching allow rule to the user
-    ``permissions_file`` and reload it onto the gate so the next identical call auto-allows. A
-    write failure (e.g. a read-only dir) is **non-fatal** — it is logged and the turn proceeds as
-    a plain allow-once, never breaking the turn (ADR-0003 §4 / Consequences).
+    A write failure is non-fatal: logged, and the turn proceeds as a plain allow-once.
     """
     try:
         rules.persist_allow_rule(permissions_file, request)
@@ -672,16 +530,10 @@ def _make_user_question_resolver(
 ) -> UserQuestionResolver:
     """Build the interactive ``ask_user`` resolver bound to the decision ``channel`` (§2,7).
 
-    The full question was already rendered once by the tool's ``AskUserRequested`` event (single
-    render path), so the resolver only shows a minimal "type your answer" affordance and then
-    **awaits the next submitted line on the same channel** the permission resolver uses — it
-    never opens a second ``prompt_async()`` (that would deadlock the REPL). Unlike the permission
-    resolver there is no parsing: the raw typed line *is* the answer, returned straight to the
-    model as the ``ask_user`` tool result. A cancelled request (turn aborted / REPL shutting
-    down) propagates :class:`asyncio.CancelledError` out of the channel, which
-    :func:`decode.tools.askuser.ask_user` maps to a model-readable ``ModelRetry`` — so the turn
-    winds down cleanly instead of hanging. Not unit-tested directly; the end-to-end ``run_app``
-    regression test drives the real channel + main loop.
+    Shows only the "type your answer" affordance and awaits the next line on the SAME channel the
+    permission resolver uses — never a second ``prompt_async()``. No parsing: the raw line IS the
+    answer. A cancelled request propagates ``asyncio.CancelledError``, which the ``ask_user`` tool
+    maps to a model-readable ``ModelRetry`` so the turn winds down instead of hanging.
     """
 
     async def resolver(question: str) -> str:
@@ -691,9 +543,8 @@ def _make_user_question_resolver(
     return resolver
 
 
-# Footer animation cadence: prompt_toolkit re-renders the bottom toolbar every this many seconds
-# (PromptSession ``refresh_interval``) so the "working…" spinner animates while a turn runs — the
-# footer otherwise only repaints on keystrokes. Also the spinner's tick unit: one frame per refresh.
+# Footer re-render cadence (PromptSession ``refresh_interval``) — animates the "working…" spinner
+# (the footer otherwise only repaints on keystrokes); also the spinner's tick unit.
 _FOOTER_REFRESH_S = 0.1
 
 
@@ -706,28 +557,13 @@ def _bottom_toolbar(
 ) -> HTML:
     """The footer as prompt_toolkit formatted text: a busy spinner + context fill gauge + live hint.
 
-    Called by prompt_toolkit on every render with the session's ``deps`` + ``gate`` + ``handler`` +
-    ``runner`` + ``decisions``, so the footer reflects the current ``deps.active_agent`` /
-    ``gate.mode`` (updating immediately after a ``/agent`` / ``/mode`` switch or Shift+Tab cycle) and
-    the live context fill.
-
-    While a turn is **actively working** the footer leads with an animated braille spinner +
-    ``working…`` so the user knows to wait — an indeterminate busy indicator, not a 0→1 bar. The
-    frame advances each refresh; the PromptSession's ``refresh_interval`` (``_FOOTER_REFRESH_S``)
-    drives the animation while the turn runs as a background task. "Actively working" means
-    ``runner.phase`` is not :data:`~decode.harness.runner.Phase.IDLE` **and** the turn is not paused
-    awaiting a human decision: during an ``ask_user`` question or a permission prompt the turn task
-    is suspended on the :class:`~decode.harness.decisions.DecisionChannel` (``decisions.pending``),
-    where the agent is waiting on the *user* — so the spinner is hidden (else it would read
-    "working…" while the user is the one being asked to type). When idle or awaiting the human the
-    spinner is absent and the footer is just the gauge + hint.
-
-    The gauge (ADR-0006 §9, task 047) reads the handler's **public** ``last_input_tokens`` property
-    (never the private attr) over the single source of truth ``compaction_context_window_tokens``,
-    and colors itself by the same reserve fractions the compaction cascade fires on — ``warn_at`` /
-    ``danger_at`` are the *fill* lines ``1 - microcompaction_reserve_fraction`` (0.60 default) and
-    ``1 - compaction_reserve_fraction`` (0.80 default). Before the first turn ``last_input_tokens``
-    is ``0`` → the gauge renders ``○ 0%`` in green.
+    Called on every render with live state, so the footer updates immediately after an agent/mode
+    switch. The spinner shows only while the turn is ACTIVELY working — hidden when idle and when
+    the turn is paused on the DecisionChannel awaiting a human (else it would read "working…"
+    while the user is the one being asked to type). The gauge (ADR-0006 §9) reads the handler's
+    public ``last_input_tokens`` over ``compaction_context_window_tokens``; ``warn_at`` /
+    ``danger_at`` are the fill lines derived from the same reserve fractions the compaction
+    cascade fires on.
     """
     window = settings.compaction_context_window_tokens
     fraction = handler.last_input_tokens / window if window > 0 else 0.0
@@ -735,8 +571,6 @@ def _bottom_toolbar(
     danger_at = 1 - settings.compaction_reserve_fraction
     label, color = render.context_gauge(fraction, warn_at=warn_at, danger_at=danger_at)
     hint = footer_hint(deps.active_agent.name, gate.mode.value)
-    # Show the spinner only while the turn is ACTIVELY working — not when idle, and not while it is
-    # paused awaiting a human decision (ask_user / permission), where the user must type, not wait.
     if runner.phase is Phase.IDLE or decisions.pending:
         spinner = ""
     else:
@@ -748,12 +582,9 @@ def _bottom_toolbar(
 def _build_key_bindings(*, on_cycle_mode: Callable[[], None]) -> KeyBindings:
     """Register the follow-up (Alt+Enter), abort (Esc), and mode-cycle (Shift+Tab) keybindings.
 
-    Alt+Enter / Esc accept the prompt with an explicit ``(intent, text)`` result so the loop can
-    route it (``Alt+Enter`` arrives as the ``escape, enter`` sequence). **Shift+Tab** (``s-tab`` /
-    ``Keys.BackTab``, ADR-0003 §9) is different: it does *not* submit a line — it calls
-    ``on_cycle_mode`` (which cycles the gate mode and renders the new one) and invalidates the app
-    so the bottom toolbar redraws with the new mode, leaving the typed buffer intact. The three
-    bindings are distinct keys (``s-tab`` never collides with ``escape`` / ``escape enter``).
+    Alt+Enter / Esc accept the prompt with an explicit ``(intent, text)`` result. Shift+Tab does
+    NOT submit: it cycles the gate mode and invalidates the app so the toolbar redraws, leaving
+    the typed buffer intact (ADR-0003 §9).
     """
     bindings = KeyBindings()
 
@@ -786,14 +617,10 @@ def _interpret(submitted: object) -> tuple[InputIntent, str]:
 
 
 def _load_resume_history(resume: str | None, console: Console) -> list[ModelMessage]:
-    """Replay the requested session into a seed ``message_history`` (ADR-0002 §9, task 014).
+    """Replay the requested session into a seed ``message_history`` (ADR-0002 §9).
 
-    ``None`` → no resume, a fresh conversation (empty history). ``"latest"`` (the bare
-    ``--resume`` flag) → the most recent session under ``settings.sessions_dir``; any other
-    value → the session whose filename embeds that id / filename. When there is nothing to
-    resume the user is told so **once** (a friendly line, not an error) and a fresh
-    conversation starts — a resume should never crash the REPL. Returns the replayed messages
-    (possibly empty).
+    ``None`` → fresh; ``"latest"`` → the most recent session; else the session matching that id.
+    Nothing to resume → one friendly line and a fresh conversation — never a crash.
     """
     if resume is None:
         return []
@@ -826,27 +653,18 @@ def _load_resume_history(resume: str | None, console: Console) -> list[ModelMess
 def _make_event_sink(console: Console) -> Callable[[events.Event], None]:
     """Build the harness event sink that renders events append-style above the pinned prompt.
 
-    Beyond rendering each event via the pure :func:`decode.tui.render.render_event`, the sink
-    owns the one piece of state the pure renderer cannot: the once-per-turn ``Decode `` prefix
-    (Fix 2). Assistant answer text **streams** as many :class:`~decode.entities.events.AssistantTextDelta`
-    events, so the capital-D label must be printed **once**, just before the first delta of a
-    turn — and the small ``need_prefix`` flag is **reset on each**
-    :class:`~decode.entities.events.TurnStarted` so every turn gets exactly one prefix. Keeping
-    this flag here (not in the renderer) is what lets the render functions stay pure and
-    stateless.
+    Owns the one piece of state the pure renderer cannot: the once-per-turn ``Decode `` prefix,
+    printed before a turn's first answer delta and re-armed on each ``TurnStarted``.
     """
-    # Streamed answer/thinking deltas are LINE-BUFFERED. prompt_toolkit's ``patch_stdout()`` redraws
-    # output above the live prompt and corrupts *partial*-line writes (each redraw overwrites the
-    # start of the line, leaving only tail fragments), so we accumulate deltas and print only
-    # COMPLETE lines — split on the model's own ``\n`` — flushing the partial tail when the turn ends
-    # or any non-streamed event interrupts. A complete line wider than the terminal is wrapped by
-    # Rich, so a new visual line happens only at the width or a model newline, never once per chunk.
+    # Streamed deltas are LINE-BUFFERED: ``patch_stdout()`` redraws output above the live prompt
+    # and corrupts partial-line writes, so we accumulate and print only COMPLETE lines (split on
+    # the model's own ``\n``), flushing the partial tail when the turn ends or any non-streamed
+    # event interrupts.
     state = {"need_prefix": False, "buffer": "", "style": render.CONVERSATION_BG}
 
     def _emit_line(text: str) -> None:
         style = state["style"]
         if state["need_prefix"] and style == render.CONVERSATION_BG:
-            # The `Decode ` label (Fix 2) leads the first answer line of the turn.
             console.print(Text(_ASSISTANT_PREFIX + text, style=style))
             state["need_prefix"] = False
         else:
@@ -873,9 +691,8 @@ def _make_event_sink(console: Console) -> Callable[[events.Event], None]:
         if isinstance(event, events.ThinkingDelta):
             _stream(event.text, "dim italic")
             return
-        # Non-streamed event (the echoed user line, tool panels, errors, ``[done]``): flush the
-        # buffered partial line first (carrying its prefix), arm a new turn's prefix on TurnStarted,
-        # then render the event on its own line.
+        # Non-streamed event: flush the buffered partial line, arm a new turn's prefix on
+        # TurnStarted, then render the event on its own line.
         _flush()
         if isinstance(event, events.TurnStarted):
             state["need_prefix"] = True
@@ -887,8 +704,8 @@ def _make_event_sink(console: Console) -> Callable[[events.Event], None]:
 def _apply_startup_mode(mode: str | None, gate: PermissionGate) -> None:
     """Override the gate mode from the optional ``--mode`` startup flag (ADR-0003 §9).
 
-    ``None`` keeps the selected agent's default mode. An unknown value (the CLI validates first, so
-    this is belt-and-suspenders) is logged and ignored rather than crashing the launch.
+    ``None`` keeps the agent's default; an unknown value (the CLI validates first) is logged
+    and ignored rather than crashing the launch.
     """
     if mode is None:
         return
@@ -910,87 +727,46 @@ async def run_app(
 ) -> None:
     """Run the REPL until ``Ctrl-D`` or ``/quit``, routing input into the harness.
 
-    ``console`` is injectable so callers/tests can capture output; defaults to a real
-    stdout-backed :class:`rich.console.Console`. The harness drives the real Pydantic AI
-    loop behind the turn-handler seam; gated tool calls (task 005) pause the turn, surface a
-    permission prompt via :func:`_make_permission_resolver`, and resume on the answer.
-
-    ``resume`` wires ``decode --resume`` (ADR-0002 §9): ``"latest"`` (the bare flag) replays the
-    most recent session, a session id / filename replays that specific one, and ``None`` (the
-    default) starts fresh. The replayed history seeds the turn handler so the conversation
-    continues; if there is nothing to resume the user is told so and a fresh session starts.
-    Every ``run_app`` opens a **new** session log file, so a resumed run continues the
-    conversation into a fresh append-only log.
-
-    ``agent`` is the startup Agent persona (ADR-0003 §7,9; default ``build``). Before the loop,
-    :func:`~decode.agents.select.select_agent` sets it as ``deps.active_agent`` (so the factory's
-    instructions hook + per-tool ``prepare=`` scope the prompt and tool set to it), resets the gate
-    to the agent's default mode, and loads the agent's catalog rules. The CLI already validated the
-    name, so selection here does not fail for a startup launch.
-
-    ``mode`` is the optional startup permission mode (``--mode``; ADR-0003 §9). ``None`` keeps the
-    selected agent's default mode; otherwise it **overrides** that default (applied *after*
-    ``select_agent``, which resets the gate to the agent's default). The CLI validated it, so an
-    unknown value here is logged and ignored (never crashes the launch).
-
-    ``repo`` / ``local`` are the sandbox Workspace clone-at-launch (``--repo`` / ``--local``,
-    resolved against ``SANDBOX_REPO`` by the cli; ADR-0012 §3). In a sandbox mode a ``repo`` is
-    ``git clone``d into the isolated Workspace (``local`` → a fast local clone), degrading to an
-    empty Workspace on a clone failure. The CLI guards ``--repo`` in ``none`` mode, so here ``repo``
-    is ``None`` whenever ``SANDBOX_MODE=none`` and the plain REPL stays byte-identical.
-
-    The single input loop has three control surfaces, all on the **one** input surface (ADR-0003
-    §9): the ``/agent`` / ``/mode`` slash commands (parsed before submit) and the Shift+Tab mode
-    cycle keybind, alongside the two awaiting-decision modes (see module docstring): when the
-    :class:`~decode.harness.decisions.DecisionChannel` is *awaiting a decision*, the next line
-    fulfils the pending mid-turn request; otherwise it routes to the runner normally.
+    ``console`` is injectable so tests can capture output. ``resume`` replays a prior session
+    (``"latest"`` or an id) to seed the handler; every run opens a NEW append-only session log
+    (ADR-0002 §9). ``agent`` is the startup persona and ``mode`` the optional permission-mode
+    override, applied AFTER ``select_agent`` so ``--mode`` wins over the agent default
+    (ADR-0003 §7,9). ``repo`` / ``local`` drive the sandbox Workspace clone-at-launch
+    (ADR-0012 §3); the CLI guards ``--repo`` in ``none`` mode, so the plain REPL stays
+    byte-identical. All control surfaces (slash commands, Shift+Tab, mid-turn decisions) ride
+    the ONE input surface (see module docstring).
     """
     console = console or Console()
 
-    # Opik tracing (ADR-0014 §4-5): configure ONCE, early — before the agent is built, so the global
-    # ``instrument_pydantic_ai`` covers it and every downstream Agent (memory write-back, compaction,
-    # subagents). Presence-based (``OPIK_API_KEY``): a silent no-op returning ``False`` when unset, so a
-    # no-key REPL is byte-identical. The on/off result is captured here; the one startup console line is
-    # emitted near the banner below, where ``emit_line`` (the render path) exists.
+    # Opik tracing (ADR-0014 §4-5): configure ONCE, before the agent is built, so the global
+    # ``instrument_pydantic_ai`` covers every downstream Agent. No key → silent no-op, byte-identical.
+    # The one startup console line is emitted near the banner below, where ``emit_line`` exists.
     opik_tracing_active = observability.init_tracing()
 
-    # Capture the startup persona name now: ``agent`` is rebound below to the built Pydantic AI
-    # Agent, so the persona string must be saved before that shadows it (one Agent runs every
-    # persona — ADR-0003 §7 — and the persona rides ``deps.active_agent``, not the Agent object).
+    # ``agent`` is rebound below to the built Pydantic AI Agent, so save the persona name first
+    # (the persona rides ``deps.active_agent``, not the Agent object — ADR-0003 §7).
     agent_name = agent
 
-    # The harness streams events into this sink; it renders append-style above the pinned prompt
-    # and owns the once-per-turn ``Decode `` answer prefix (Fix 2 — the pure renderer can't).
+    # The harness streams events into this sink (append-style; owns the once-per-turn prefix).
     _on_event = _make_event_sink(console)
 
-    # The agent loop is the turn handler: build the Gemini agent, bind the event sink so
-    # streamed deltas reach the renderer, the gate (policy) + the interactive allow/deny
-    # resolver (ADR-0002 §3) and the interactive ask_user resolver (§2,7). Both resolvers await
-    # on the SAME decision channel — the single mid-turn HITL surface — so a permission ask and
-    # an ask_user question can never collide (the channel is single-flight). One handler per
-    # session carries history (§1).
+    # Both resolvers await on the SAME single-flight decision channel — the one mid-turn HITL
+    # surface — so a permission ask and an ask_user question can never collide.
     decisions = DecisionChannel()
     agent = build_agent()
 
-    # Harness Home is the launch cwd (ADR-0012 §6): every harness artifact — the permission file, the
-    # session log, MEMORY.md, the skills catalog — anchors here, even when the agent's tool scope
-    # (``deps.cwd``) moves into an isolated Workspace in a sandbox mode. The permission file is anchored
-    # explicitly to Harness Home so it survives the tool-scope move (``none`` mode: the two are equal).
+    # Harness Home is the launch cwd (ADR-0012 §6): every harness artifact — permission file,
+    # session log, MEMORY.md, skills — anchors here even when the tool scope moves into a Workspace.
     harness_home = Path.cwd()
     permissions_file = harness_home / settings.permissions_file
 
-    # The gate loads the user's optional allow/deny rules from ``.decode/settings.json`` (ADR-0003
-    # §4); a missing/malformed file is non-fatal (empty rules → mode-only). The interactive
-    # ``a``/``always`` answer persists into and reloads this same file via the resolver below.
+    # A missing/malformed rules file is non-fatal (empty rules → mode-only). ADR-0003 §4.
     gate = PermissionGate(user_rules=rules.load_rule_set(permissions_file))
 
-    # In a sandbox mode the agent's whole tool scope becomes the isolated Workspace (ADR-0012 §3,6):
-    # ``deps.cwd`` = ``.decode/sandbox`` (a ``git clone`` of ``--repo`` / ``SANDBOX_REPO``, else empty),
-    # so the file/search tools + ``bash`` operate there while harness artifacts stay at Harness Home.
-    # Only the Workspace PATH is resolved here (deps needs it below); the actual clone + eager warm-up
-    # run together in the sandbox block further down, where ``emit_line`` exists to show progress. The
-    # path is stable, so cloning into it after ``deps`` is built is fine. ``none`` keeps
-    # ``cwd == harness_home`` — byte-identical. The sandbox import stays lazy (§9).
+    # In a sandbox mode ``deps.cwd`` (the whole tool scope) becomes the isolated Workspace
+    # (ADR-0012 §3,6). Only the PATH is resolved here; the clone + eager warm-up run in the sandbox
+    # block below, where ``emit_line`` exists to show progress (the path is stable, so cloning after
+    # ``deps`` is built is fine). ``none`` keeps ``cwd == harness_home``; the import stays lazy (§9).
     tool_scope = harness_home
     if settings.sandbox_mode != "none":
         from decode.sandbox.workspace import workspace_dir
@@ -1007,19 +783,14 @@ async def run_app(
         ),
         resolve_user_question=_make_user_question_resolver(decisions, console),
     )
-    # Select the startup Agent persona (ADR-0003 §7,9): set ``deps.active_agent`` (the prompt + tool
-    # allowlist the factory reads per turn), reset the gate to the agent's default mode, and load the
-    # agent's catalog rules. The CLI validated the name already, so this does not fail at startup.
+    # Startup persona (ADR-0003 §7,9): sets ``deps.active_agent``, resets the gate to the agent's
+    # default mode, loads its catalog rules. The CLI validated the name already.
     select_agent(agent_name, deps=deps, gate=gate)
-    # Apply the optional ``--mode`` override AFTER selection (which reset the gate to the agent's
-    # default mode): an explicit ``--mode`` wins over the agent default (ADR-0003 §9). The CLI
-    # already validated it; an unexpected value is logged and ignored (never crashes the launch).
+    # Applied AFTER selection so an explicit ``--mode`` wins over the agent default (ADR-0003 §9).
     _apply_startup_mode(mode, gate)
 
-    # The single input surface (ADR-0003 §9): a confirmation sink that renders one line through the
-    # existing event/render path (no second render surface), plus the Shift+Tab mode-cycle closure
-    # the keybind calls. The bottom toolbar reads ``deps`` / ``gate`` live each render, so the footer
-    # updates the moment a switch lands.
+    # One confirmation sink through the existing event/render path (no second render surface),
+    # plus the Shift+Tab mode-cycle closure the keybind calls.
     def emit_line(text: str) -> None:
         console.print(render.render_event(events.AssistantTextDelta(text=text)))
 
@@ -1030,55 +801,42 @@ async def run_app(
 
     session: PromptSession[object] = PromptSession(
         key_bindings=_build_key_bindings(on_cycle_mode=cycle_mode),
-        # The slash-command menu lists the project skills — a harness artifact, so from Harness Home
-        # (not the Workspace ``deps.cwd``, which in a sandbox mode holds only the seeded copy). §6.
+        # Skills are a harness artifact → complete from Harness Home, not the Workspace (§6).
         completer=SlashCompleter(harness_home),
         complete_while_typing=True,
-        # Re-render the footer on a timer so the "working…" spinner animates while a turn runs in
-        # the background (without this the footer only repaints on keystrokes).
+        # Re-render the footer on a timer so the spinner animates while a turn runs.
         refresh_interval=_FOOTER_REFRESH_S,
-        # ``handler`` / ``runner`` are bound a few lines below; the toolbar lambda is invoked only
-        # during the prompt loop (after they exist), so the late-bound reference is safe and lets the
-        # footer read the live ``handler.last_input_tokens`` and ``runner.phase`` each render.
+        # ``handler`` / ``runner`` are bound a few lines below; the lambda runs only during the
+        # prompt loop (after they exist), so the late-bound reference is safe.
         bottom_toolbar=lambda: _bottom_toolbar(deps, gate, handler, runner, decisions),
     )
-    # Persistence (ADR-0002 §9): replay a prior session if asked, then open a fresh append-only
-    # JSONL log this run writes its turns to. The replayed history seeds the handler so the
-    # conversation continues; the new log starts after the replayed prefix (already-persisted).
+    # Persistence (ADR-0002 §9): replay a prior session if asked, then open a fresh append-only log.
     resumed_history = _load_resume_history(resume, console)
-    # The session log is a harness artifact: its header records Harness Home (the launch cwd), not the
-    # sandbox Workspace ``deps.cwd`` (ADR-0012 §6). ``sessions_dir`` is process-cwd-relative and so
-    # already lands at Harness Home (decode never chdirs).
+    # The session log's header records Harness Home, not the Workspace ``deps.cwd`` (ADR-0012 §6).
     session_log = SessionLog.create(settings.sessions_dir, cwd=harness_home)
 
-    # Hold the handler directly: it owns the cross-turn ``message_history`` the on-exit memory
-    # write-back summarizes (the runner keeps it private). One handler per session (§1). Wiring
-    # ``compaction_model_or_settings=settings`` arms the window-relative two-tier compaction
-    # cascade (ADR-0006 §3-7): the summarizer is built from the same Settings as the main model.
+    # The handler owns the cross-turn ``message_history`` the on-exit write-back summarizes; one
+    # per session (§1). ``compaction_model_or_settings=settings`` arms the two-tier compaction
+    # cascade (ADR-0006 §3-7).
     handler = AgentTurnHandler(
         agent,
         deps=deps,
         session_log=session_log,
-        # The Opik Thread id for this session's per-turn root spans (ADR-0014 §4): the session-log id
-        # groups every turn's ``chat_turn`` trace under one conversation thread. Inert when tracing is off.
+        # Also the Opik Thread id grouping the session's per-turn traces (ADR-0014 §4).
         session_id=session_log.session_id,
         message_history=resumed_history,
         compaction_model_or_settings=settings,
     )
     runner = Runner(handler, on_event=_on_event)
 
-    # Eager sandbox block (ADR-0011 §4; ADR-0012 §3): clone the Workspace, then bring the docker/modal
-    # sandbox up NOW — visibly — instead of invisibly mid-first-turn (the container shows in ``docker
-    # ps`` from launch and the first bash skips the start latency). Every progress line prints BEFORE
-    # its (slow) await — a cold image pull / a large clone would otherwise hang silently. ``none`` skips
-    # the whole block — byte-identical.
+    # Eager sandbox block (ADR-0011 §4; ADR-0012 §3): clone + warm up NOW, visibly, instead of
+    # invisibly mid-first-turn. Every progress line prints BEFORE its (slow) await — a cold image
+    # pull / large clone would otherwise hang silently. ``none`` skips the block — byte-identical.
     if settings.sandbox_mode != "none":
         from decode.sandbox.workspace import prepare_workspace_or_empty
 
-        # (1) Clone the repo into the Workspace host-side (ADR-0012 §3). The "cloning" progress line only
-        # prints when a clone will actually happen — a repo is requested AND the Workspace is still empty
-        # (a non-empty Workspace is reused, never re-cloned). A clone failure degrades to an empty
-        # Workspace + one friendly line (never a crash); ``deps.cwd`` is unchanged (same stable path).
+        # (1) Clone host-side; the progress line prints only when a clone will actually happen (a
+        # non-empty Workspace is reused, never re-cloned). Failure degrades to an empty Workspace.
         if repo is not None and not any(deps.cwd.iterdir()):
             emit_line(f"Decode - cloning {repo} into the workspace…")
         _workspace, clone_error = prepare_workspace_or_empty(harness_home, repo=repo, local=local)
@@ -1087,12 +845,9 @@ async def run_app(
                 f"Decode: could not clone {repo} ({clone_error}); starting with an empty workspace."
             )
 
-        # (2) Warm the executor against the resolved Workspace — ``deps.cwd`` IS the Workspace (the
-        # single tree both ``bash`` and the file tools operate on, ADR-0012 §4,6), passed verbatim
-        # (never re-derived — that would double-nest a ``.decode/sandbox``). For modal the warm-up also
-        # uploads the Workspace, so it gets its own progress line before the (slow) await. A warm-up
-        # failure degrades to the lazy path (memo kept; the first op retries), config-level failures
-        # having already been caught by the CLI preflight.
+        # (2) Warm the executor against ``deps.cwd`` passed VERBATIM — re-deriving it would
+        # double-nest ``.decode/sandbox``. Modal also uploads the Workspace here (own progress
+        # line). A warm-up failure degrades to the lazy path (the first op retries).
         emit_line(f"Decode - starting {settings.sandbox_mode} sandbox ({settings.sandbox_image})…")
         if settings.sandbox_mode == "modal":
             emit_line("Decode - uploading the workspace to the modal sandbox…")
@@ -1104,14 +859,11 @@ async def run_app(
                 f"Decode: sandbox startup failed ({exc}); will retry on the first bash command."
             )
 
-    # One tracing line near the banner when Opik is active (ADR-0014 §1,4), styled like the sandbox
-    # lines and naming the configured project. Emitted through the render path (never ``print``); a
-    # no-op when tracing is off, so a no-key launch is byte-identical.
+    # One tracing line near the banner when Opik is active (ADR-0014 §1,4); no-op when off.
     if opik_tracing_active:
         emit_line(f"Decode - Opik tracing on (project '{settings.opik_project_name}').")
 
-    # Which provider/model this session is talking to (the active model id lives in a per-provider
-    # settings field — same mapping as factory._build_model's branches).
+    # The active model id per provider (same mapping as factory._build_model's branches).
     active_model = {
         "gemini": settings.gemini_model,
         "openrouter": settings.openrouter_model,
@@ -1134,11 +886,8 @@ async def run_app(
 
             intent, text = _interpret(submitted)
 
-            # Awaiting-decision mode: the next line answers whatever mid-turn request is pending
-            # — a permission approval (parsed y/N inside the permission resolver) OR an ask_user
-            # question (the raw line is the free-text answer inside the ask_user resolver) —
-            # instead of steering / starting a turn. The main loop routes the raw line either
-            # way; the awaiting resolver does any parsing, so the channel stays one input surface.
+            # Awaiting-decision mode: the next line answers the pending mid-turn request
+            # (permission y/N or ask_user free text — the awaiting resolver does any parsing).
             if decisions.pending:
                 logger.debug("decision pending: routing %r to the decision channel", text)
                 decisions.resolve(text)
@@ -1152,9 +901,7 @@ async def run_app(
                 runner.abort()
                 continue
 
-            # Control slash commands (ADR-0003 §9), parsed on the single input surface *before*
-            # submit: switch the active agent / mode and render one confirmation (or a friendly
-            # inline line on a bad name). Never opens a second prompt — the line is consumed here.
+            # Control slash commands (ADR-0003 §9), consumed here — never a second prompt.
             agent_arg = parse_agent_command(text)
             if agent_arg is not None:
                 _handle_agent_command(agent_arg, deps=deps, gate=gate, emit=emit_line)
@@ -1165,25 +912,18 @@ async def run_app(
                 _handle_mode_command(mode_arg, gate=gate, emit=emit_line)
                 continue
 
-            # The manual full-compaction command (ADR-0006 §7), reserved among the slash commands
-            # (before the skill branch) so a ``compact`` skill can never shadow it: forces a full
-            # compaction now when idle, or reports busy mid-turn — never opening a second prompt.
+            # Reserved before the skill branch so a ``compact`` skill can never shadow it.
             if is_compact_command(text):
                 await _handle_compact_command(handler, runner, emit=emit_line)
                 continue
 
-            # The conversation-wipe command, reserved like ``/compact`` (before the skill branch)
-            # so a ``clear`` skill can never shadow it: summarize-then-wipe when idle, a busy line
-            # mid-turn — never opening a second prompt.
+            # Reserved like ``/compact``: summarize-then-wipe when idle, a busy line mid-turn.
             if is_clear_command(text):
                 # ``/clear``'s summarize-to-MEMORY.md write-back is a harness artifact → Harness Home.
                 await _handle_clear_command(handler, runner, cwd=harness_home, emit=emit_line)
                 continue
 
-            # The git hand-back command (ADR-0012 §8), reserved like ``/compact`` / ``/clear`` (before
-            # the skill branch) so a ``ship`` skill can never shadow it: idle-only, it exports the live
-            # Workspace then ships it as a ``decode/<session-id>`` branch (a friendly line in
-            # ``none``/no-repo). ``session_log.session_id`` names the branch (ADR-0012 §8, task 083).
+            # Reserved like ``/compact`` / ``/clear``; ``session_log.session_id`` names the branch.
             if is_ship_command(text):
                 await _handle_ship_command(
                     runner,
@@ -1194,11 +934,8 @@ async def run_app(
                 )
                 continue
 
-            # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved
-            # ``/agent`` / ``/mode`` checks so a same-named built-in command always wins. A
-            # resolved skill injects its body as the turn input through the existing submit
-            # pipeline; an unrecognised ``/<x>`` (neither reserved nor a known skill) is
-            # intercepted with the available-skills discovery line and runs no turn.
+            # The user-facing skill entry point (ADR-0004 §5), parsed AFTER the reserved commands
+            # so a same-named built-in always wins; an unknown ``/<x>`` gets the discovery line.
             skill_cmd = parse_skill_command(text)
             if skill_cmd is not None:
                 name, trailing = skill_cmd
@@ -1221,35 +958,25 @@ async def run_app(
     decisions.cancel()
     await runner.wait_idle()
 
-    # On-exit memory write-back (ADR-0002 §8): one cheap Gemini call summarizes the session into
-    # a dated line appended to MEMORY.md, picked up next session by assemble_memory. MEMORY.md is a
-    # harness artifact, so it anchors at Harness Home (the launch cwd), NOT the sandbox Workspace
-    # ``deps.cwd`` (ADR-0012 §6). Fully non-fatal — extract_on_exit never raises, so it cannot block exit.
+    # On-exit memory write-back (ADR-0002 §8): summarize the session into MEMORY.md — a harness
+    # artifact, so Harness Home, not ``deps.cwd`` (ADR-0012 §6). Non-fatal: never blocks exit.
     await extract_on_exit(handler.message_history, harness_home)
 
-    # On-exit LSP teardown (ADR-0007 §6): shut down every Language Server spawned this session so no
-    # ``ty server`` child orphans. A cheap no-op when none was spawned (lazy — the common case) and
-    # idempotent. Best-effort like the memory write-back: any failure is logged and swallowed so it
-    # can never block exit or mask the ``Decode - bye.`` line.
+    # On-exit LSP teardown (ADR-0007 §6): best-effort + idempotent; never blocks exit or masks
+    # the ``Decode - bye.`` line.
     try:
         await shutdown_lsp_servers()
     except Exception:
         logger.warning("lsp shutdown on exit failed; continuing shutdown", exc_info=True)
 
-    # On-exit sandbox teardown (ADR-0011 §4): reap the session's Docker container / Modal sandbox if
-    # ``SANDBOX_MODE`` selected one this session. A cheap no-op in ``none`` mode (``LocalExecutor`` has
-    # no teardown) and when no ``bash`` ran. Best-effort like the LSP + memory steps above: any failure
-    # is logged and swallowed so it can never block exit or mask the ``Decode - bye.`` line.
+    # On-exit sandbox teardown (ADR-0011 §4): a no-op in ``none`` mode; best-effort like the rest.
     try:
         await close_executor()
     except Exception:
         logger.warning("sandbox teardown on exit failed; continuing shutdown", exc_info=True)
 
-    # On-exit git hand-back (ADR-0012 §8): ship the Workspace back as a decode/<session-id> Session
-    # Branch host-side, after ``close_executor`` has run the modal export sweep. Best-effort/non-fatal
-    # like the memory/LSP/executor steps above — never blocks exit, on failure its one line names the
-    # branch; a silent no-op in ``none`` mode / no-repo / unchanged (byte-identical, AC7). ``repo`` is
-    # the launch flag (None in ``none`` mode by the CLI guard); the branch is named from the SessionLog.
+    # On-exit git hand-back (ADR-0012 §8): runs after ``close_executor`` (the modal export sweep);
+    # best-effort, silent no-op in ``none`` / no-repo / unchanged.
     _ship_on_exit(harness_home, repo=repo, session_id=session_log.session_id, emit=emit_line)
 
     console.print(render.render_event(events.AssistantTextDelta(text="Decode - bye.")))

@@ -1,16 +1,10 @@
 """The sandbox seams the headless flow adds (ADR-0011 §5-6), proven hermetically — no docker.
 
-Two things this task wires into ``runtime/flow.py``:
-
-* **Replay-safety (ADR-0011 §5):** the bypass ``_build_runtime_agent`` disables ``bash``'s checkpoint
-  cache when a sandbox is active, so a ``decode replay`` re-executes side-effectful shell commands
-  instead of serving a stale cached turn. Proven by spying on the ``KitaruAgent`` constructor (no real
-  infra), and asserting ``none`` mode is byte-identical to task 070.
-* **The Credential Proxy context (ADR-0011 §6):** ``_sandbox_proxy()`` is a **no-op** unless
-  ``sandbox_mode == "docker"`` and ``sandbox_credential_proxy_enabled`` — proven by asserting it leaves
-  the ``bash`` executor seam untouched for ``none`` / ``modal`` / proxy-disabled configs, so those
-  flows stay byte-unchanged. The engaged path (a live mitmproxy container) is the ``@skipif``-guarded
-  integration test.
+Replay-safety: the bypass ``_build_runtime_agent`` disables ``bash``'s checkpoint cache when a
+sandbox is active — spied on the ``KitaruAgent`` constructor — so a ``decode replay`` re-executes
+side-effectful shell commands; ``none`` mode stays byte-identical. The Credential Proxy context
+``_sandbox_proxy()`` is a no-op unless docker + an engagement signal, asserted by checking the
+``bash`` executor seam stays inert; the engaged path is the ``@skipif``-guarded integration test.
 """
 
 from __future__ import annotations
@@ -34,7 +28,7 @@ def _spy_kitaru_agent(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return spy
 
 
-# --- Replay-safety: bash cache disabled iff a sandbox is active -------------------------------
+# Replay-safety: bash cache disabled iff a sandbox is active
 
 
 def test_build_runtime_agent_disables_bash_cache_in_docker_mode(monkeypatch):
@@ -74,7 +68,7 @@ def test_build_runtime_agent_is_byte_identical_in_none_mode(monkeypatch):
     assert set(spy.call_args.kwargs) == {"name", "checkpoint_strategy"}
 
 
-# --- _sandbox_proxy(): a no-op unless docker + proxy enabled ----------------------------------
+# _sandbox_proxy(): a no-op unless docker + proxy enabled
 
 
 def _assert_seam_untouched(

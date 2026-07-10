@@ -1,18 +1,9 @@
-"""Unit tests for the command-executor seam (``decode.tools.exec``).
+"""Unit tests for the command-executor seam (``decode.tools.exec``) — ADR-0002 §7,10.
 
-ADR-0002 §7,10: ``bash`` runs commands through a :class:`CommandExecutor`; M1 ships
-:class:`LocalExecutor` (a local ``asyncio`` subprocess), and M8 swaps a sandbox in behind the
-same ``run`` method. These tests pin the executor's contract directly — no model, no agent —
-with **real short commands** so they are hermetic and fast:
-
-* stdout / stderr / exit-code capture for a normal command;
-* a non-zero exit reported faithfully;
-* **a timeout kills the process *and a child it spawned*** (the orphaned child must not keep
-  running after the deadline) and returns ``timed_out=True`` with partial output;
-* undecodable bytes do not crash the decode path.
-
-The timeout tests use a tiny ``0.2s`` deadline and a child that would otherwise outlive it, so
-the "no orphaned process" guarantee is provable in well under a second with no flakiness.
+Pins :class:`LocalExecutor`'s contract directly (no model, no agent) with real short commands:
+stdout/stderr/exit-code capture, cwd, shell features, timeout kills the process AND a spawned
+child (returning ``timed_out=True`` with partial output), undecodable bytes replaced not
+raised, and the optional backward-compatible ``ExecResult.note`` field.
 """
 
 import asyncio
@@ -146,7 +137,7 @@ async def test_run_decodes_undecodable_bytes_without_crashing(tmp_path: Path):
     assert "�" in result.stdout  # the Unicode replacement character
 
 
-# --- ExecResult.note (ADR-0011 §2): optional, backward-compatible, unused by LocalExecutor --------
+# ExecResult.note: optional, backward-compatible, unused by LocalExecutor
 
 
 def test_exec_result_note_defaults_to_empty():

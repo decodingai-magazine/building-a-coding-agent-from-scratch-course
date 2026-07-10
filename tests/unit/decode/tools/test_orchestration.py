@@ -1,20 +1,10 @@
-"""Unit tests for the orchestration controls (``decode.tools.orchestration``).
+"""Unit tests for the orchestration controls (``decode.tools.orchestration``) — ADR-0003 §8.
 
-ADR-0003 §8: ``enter_plan_mode`` switches the gate to ``PLAN``; ``exit_plan_mode`` presents the
-plan and asks the human to approve leaving plan mode via the **same single Decision Channel**
-``ask_user`` uses (``deps.resolve_user_question``) — on approve it switches to ``EDIT`` (so the
-just-approved plan can be implemented), on deny it stays ``PLAN``. Both are **ungated** (they never
-raise ``ApprovalRequired`` and never reach the permission gate), so they stay callable in plan mode.
-
-Two layers of test:
-
-* **direct** — call the tool function with a hand-built ``RunContext`` (mirroring
-  ``test_askuser``) to pin the mode flips, the surfaced approval cue, the y/N parsing, and the
-  clean ``ModelRetry`` on a headless / cancelled approval;
-* **loop-driven** — drive the tools through the *real* ``build_agent`` + ``AgentTurnHandler`` + gate
-  (model swapped for a scripted ``FunctionModel``, no network) so the acceptance criteria hold end
-  to end: after ``enter_plan_mode`` a ``write`` is auto-denied; after an approved ``exit_plan_mode``
-  a ``write`` auto-allows; after a denied one it stays denied; neither emits ``PermissionRequested``.
+Both tools are ungated. Direct tests pin the mode flips, the surfaced approval cue, y/N
+parsing, and the clean ``ModelRetry`` on headless/cancelled approval; loop-driven tests ride
+the real ``build_agent`` + ``AgentTurnHandler`` + gate (scripted ``FunctionModel``, no network)
+to prove a write is denied in PLAN, auto-allowed after an approved ``exit_plan_mode`` (EDIT),
+and still denied after a rejected one — with no ``PermissionRequested`` from either tool.
 """
 
 import asyncio
@@ -39,7 +29,7 @@ from decode.permissions.types import PermissionMode
 from decode.tools import orchestration
 from decode.tools.askuser import NoInteractiveUserError
 
-# --- direct-call harness (mirrors tests/unit/decode/tools/test_askuser.py) -------------------
+# direct-call harness
 
 
 async def _deny_permission_resolver(request: PermissionRequest) -> PermissionDecision:
@@ -67,7 +57,7 @@ def _ctx(
     return RunContext(deps=deps, model=None, usage=None, tool_call_approved=False)  # type: ignore[arg-type]
 
 
-# --- enter_plan_mode (direct) ----------------------------------------------------------------
+# enter_plan_mode (direct)
 
 
 async def test_enter_plan_mode_sets_plan_and_confirms():
@@ -91,7 +81,7 @@ async def test_enter_plan_mode_is_callable_from_any_mode():
     assert gate.mode is PermissionMode.PLAN
 
 
-# --- exit_plan_mode (direct) -----------------------------------------------------------------
+# exit_plan_mode (direct)
 
 
 async def test_exit_plan_mode_approve_switches_to_edit_and_confirms():
@@ -214,7 +204,7 @@ async def test_orchestration_tool_names_are_stable():
     assert orchestration.SLEEP_TOOL_NAME == "sleep"
 
 
-# --- loop-driven harness (mirrors tests/unit/decode/agent/test_loop.py) ----------------------
+# loop-driven harness
 
 
 @pytest.fixture

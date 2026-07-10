@@ -1,31 +1,13 @@
 """The sandbox Credential Proxy — host-side rules + a mitmproxy container (ADR-0011 §6).
 
-The headless + docker-only Credential Proxy, adapted from the kitaru
-``examples/end_to_end/agent_harness_platform`` canonical shape (``secrets.py`` +
-``stage_4_credential_proxy.py`` — those classes are **not** in the ``kitaru`` package; decode adapts
-them). It lets a sandboxed **Worker** make authenticated tool calls while holding **no** secret:
-
-* :class:`SandboxProxyRule` + :func:`build_credential_map` — **host-side** template resolution. Each
-  rule maps a set of hosts to header templates (``{{ secret-name.key }}``); the map is resolved once,
-  at flow start, in the decode host process via :func:`kitaru.get_secret`, into a plain
-  ``{host: {header: value}}`` dict. The resolved values are handed **only** to the proxy container's
-  env — never the worker's (AGENTS.md: *secrets never reach the model or the sandbox payload*).
-* :class:`DockerCredentialProxy` — the **topology**: a ``mitmproxy/mitmproxy`` container running the
-  mounted :mod:`decode.sandbox.proxy_addon` on a per-run docker network, holding the credential map in
-  its own env and writing its CA to a host-shared dir. The worker (a proxy-wired
-  ``SandboxExecutor(DockerBackend(...))``) is pointed at it via ``http_proxy`` / ``https_proxy`` and
-  trusts its CA, so the addon injects the matching host's headers **after** a request leaves the
-  token-free worker.
-
-**Built only inside the headless flow.** :func:`decode.runtime.flow._sandbox_proxy` imports this
-module lazily, only when ``sandbox_mode == "docker"`` **and** ``sandbox_credential_proxy_enabled``, so
-the interactive REPL never imports it and **bare ``decode`` never imports kitaru** (the invariant
-holds). :data:`DEFAULT_PROXY_RULES` ships **empty** (opt-in; an empty map is a passthrough proxy).
-
-**Cooperative egress ceiling.** `ponytail:` the worker is *pointed* at the proxy (``http_proxy`` +
-trusted CA), not *forced* through it — this is not an exfiltration barrier. An internal-only network
-with default-deny egress is the upgrade path (ADR-0011 §6). The credential claim — the worker never
-holds a token — holds regardless, and is proven by scanning the worker's env in the integration test.
+Headless + docker only: lets a sandboxed **Worker** make authenticated tool calls while holding
+**no** secret. Rule templates are resolved host-side at flow start into a ``{host: {header: value}}``
+map handed **only** to the proxy container's env — never the worker's; the mitmproxy addon injects
+the headers after a request leaves the token-free worker. Built only inside the headless flow
+(lazily imported), so the REPL never imports this module and bare ``decode`` never imports kitaru.
+:data:`DEFAULT_PROXY_RULES` ships **empty** = opt-in (an empty map is a passthrough proxy).
+`ponytail:` egress is cooperative — the worker is *pointed* at the proxy, not forced through it;
+not an exfiltration barrier, but the worker-never-holds-a-token claim holds regardless.
 """
 
 from __future__ import annotations
@@ -46,9 +28,7 @@ from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
-# ``{{ secret-name.key }}`` — the template a rule's header value may embed. Resolved host-side via
-# ``kitaru.get_secret(name).values[key]``. Names/keys allow word chars, dots, and hyphens (kitaru
-# secret names are hyphenated, e.g. ``github-token``).
+# ``{{ secret-name.key }}`` — resolved host-side via ``kitaru.get_secret(name).values[key]``.
 _TEMPLATE_RE = re.compile(r"\{\{\s*(?P<name>[A-Za-z0-9._\-]+)\.(?P<key>[A-Za-z0-9._\-]+)\s*\}\}")
 
 
@@ -56,9 +36,8 @@ _TEMPLATE_RE = re.compile(r"\{\{\s*(?P<name>[A-Za-z0-9._\-]+)\.(?P<key>[A-Za-z0-
 class SandboxProxyRule:
     """One credential-injection rule: inject ``headers`` on every request to any of ``hosts``.
 
-    ``headers`` values may embed ``{{ secret-name.key }}`` templates that :func:`build_credential_map`
-    resolves host-side from a Kitaru secret. Frozen so a rule is an immutable declaration; ``hosts`` /
-    ``headers`` are declared inline (required fields, so no mutable-default footgun).
+    Header values may embed ``{{ secret-name.key }}`` templates that :func:`build_credential_map`
+    resolves host-side from a Kitaru secret.
     """
 
     name: str
@@ -66,15 +45,10 @@ class SandboxProxyRule:
     headers: dict[str, str]
 
 
-# Ships EMPTY — the Credential Proxy is opt-in and an empty map is a passthrough proxy that injects
-# nothing. Populate it to route a sandboxed tool call through the proxy with a credential the worker
-# never holds; the ``{{ name.key }}`` template resolves host-side from a Kitaru secret at flow start.
-#
-# Example — let the sandboxed agent push a branch AND open a PR straight to GitHub while holding NO
-# token (results go remote → remote; nothing is synced back to the host first). TWO rules, because
-# git-over-HTTPS and the REST API want DIFFERENT auth — and the ``api.github.com`` rule MUST come first:
-# ``proxy_addon._match_host`` returns the FIRST match and ``github.com`` parent-matches ``api.github.com``,
-# so order decides which header wins for the API host.
+# Ships EMPTY = opt-in; an empty map is a passthrough proxy. Example — let the sandboxed agent push a
+# branch AND open a PR to GitHub while holding NO token. TWO rules, because git-over-HTTPS and the
+# REST API want DIFFERENT auth — and ``api.github.com`` MUST come first (``proxy_addon._match_host``
+# returns the FIRST match and ``github.com`` parent-matches ``api.github.com``):
 #
 #     DEFAULT_PROXY_RULES = [
 #         # PR / REST API (gh, curl → api.github.com): a Bearer PAT.
@@ -83,8 +57,7 @@ class SandboxProxyRule:
 #             hosts=["api.github.com"],
 #             headers={"Authorization": "Bearer {{ github-token.value }}"},
 #         ),
-#         # git push over HTTPS (→ github.com): Basic base64("x-access-token:<PAT>") — GitHub's git
-#         # transport wants Basic, not Bearer (the actions/checkout http.extraheader format).
+#         # git push over HTTPS (→ github.com): Basic base64("x-access-token:<PAT>"), not Bearer.
 #         SandboxProxyRule(
 #             name="github-git",
 #             hosts=["github.com"],
@@ -92,30 +65,24 @@ class SandboxProxyRule:
 #         ),
 #     ]
 #
-# then create the two host-side secrets (the worker holds neither) and run headless docker with an
-# HTTPS git remote:
+# then create the two host-side secrets (the worker holds neither) and run headless docker:
 #     kitaru secrets set github-token --private --value=<PAT>
 #     kitaru secrets set github-basic --private --value="$(printf 'x-access-token:%s' <PAT> | base64 | tr -d '\n')"
 #     SANDBOX_CREDENTIAL_PROXY_ENABLED=true SANDBOX_MODE=docker decode run "…push a branch, open a PR…"
 #
-# `ponytail:` for exactly this GitHub push+PR case, ``SANDBOX_GIT_TOKEN`` is the one-knob shortcut:
-# :func:`github_token_rules` builds these same two rules from that single PAT and
-# ``_sandbox_proxy`` auto-engages the proxy when it is set (no Kitaru secret, no rule edit; the same
-# token modal direct-injects). ``DEFAULT_PROXY_RULES`` + Kitaru secrets remain for any OTHER host.
+# `ponytail:` for exactly this GitHub case, ``SANDBOX_GIT_TOKEN`` is the one-knob shortcut —
+# :func:`github_token_rules` builds these same two rules and ``_sandbox_proxy`` auto-engages the
+# proxy. ``DEFAULT_PROXY_RULES`` + Kitaru secrets remain for any OTHER host.
 DEFAULT_PROXY_RULES: list[SandboxProxyRule] = []
 
 
 def github_token_rules(token: str) -> list[SandboxProxyRule]:
     """Build the GitHub push+PR proxy rules from one PAT — the ``SANDBOX_GIT_TOKEN`` convenience path.
 
-    The REST API (``api.github.com``, used by ``gh`` / the PR calls) wants a **Bearer** PAT; git push
-    over HTTPS (``github.com``) wants **Basic** ``base64("x-access-token:<PAT>")`` (GitHub's git
-    transport rejects Bearer — the actions/checkout ``http.extraheader`` format). The header values are
-    **literal** (already resolved), so :func:`build_credential_map` passes them through with no Kitaru
-    fetch. ``api.github.com`` comes **first** so :func:`proxy_addon._match_host` (first match;
-    ``github.com`` parent-matches ``api.github.com``) picks Bearer for the API host. The worker still
-    holds no token — the proxy injects these **after** egress (the docker cred-free posture, ADR-0012
-    §10); only the host-side *source* is the setting instead of a Kitaru secret.
+    Bearer for the REST API (``api.github.com``); Basic ``base64("x-access-token:<PAT>")`` for git
+    push over HTTPS (GitHub's git transport rejects Bearer). ``api.github.com`` comes **first** so
+    the addon's first-match wins over the ``github.com`` parent match. Values are literal (no Kitaru
+    fetch) and the worker still holds no token — the proxy injects after egress (ADR-0012 §10).
     """
     basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
     return [
@@ -135,11 +102,8 @@ def github_token_rules(token: str) -> list[SandboxProxyRule]:
 def _resolve_templates(value: str, *, cache: dict[str, dict[str, str]]) -> str:
     """Replace every ``{{ name.key }}`` in ``value`` with ``kitaru.get_secret(name).values[key]``.
 
-    ``cache`` memoizes each fetched secret's values for the span of one :func:`build_credential_map`
-    call, so a secret referenced by several headers/rules is fetched once. A **missing secret**
-    surfaces Kitaru's own error from ``get_secret`` (``KitaruRuntimeError``) and a **missing key**
-    raises ``KeyError`` — both propagate (never a silent skip; ADR-0011 §6 / the task AC). ``kitaru``
-    is imported lazily so this module stays kitaru-free until a headless docker flow calls it.
+    ``cache`` memoizes per :func:`build_credential_map` call. A missing secret/key propagates —
+    never a silent skip. ``kitaru`` is imported lazily so this module stays kitaru-free until used.
     """
     from kitaru import get_secret
 
@@ -156,11 +120,8 @@ def _resolve_templates(value: str, *, cache: dict[str, dict[str, str]]) -> str:
 def build_credential_map(rules: list[SandboxProxyRule]) -> dict[str, dict[str, str]]:
     """Resolve ``rules`` into the ``{host: {header: value}}`` map the proxy container consumes.
 
-    Runs **host-side, at flow start** (ADR-0011 §6): each rule's ``{{ name.key }}`` header templates
-    are resolved via :func:`kitaru.get_secret`, then folded into a per-host header map (multiple rules
-    on the same host merge). An **empty** ``rules`` yields ``{}`` (a passthrough proxy). Never logs the
-    resolved **values** — only rule/host/header **names** (task-061 discipline), so the ``[sandbox]``
-    log lines let an operator correlate an injection without leaking a secret.
+    Runs **host-side, at flow start** (ADR-0011 §6); rules on the same host merge; empty ``rules``
+    yields ``{}`` (a passthrough proxy). Logs rule/host/header **names** only — never the values.
     """
     cache: dict[str, dict[str, str]] = {}
     result: dict[str, dict[str, str]] = {}
@@ -170,8 +131,7 @@ def build_credential_map(rules: list[SandboxProxyRule]) -> dict[str, dict[str, s
         }
         for host in rule.hosts:
             result.setdefault(host, {}).update(resolved)
-        # NAMES only — never the resolved values (they are secrets). Lets an operator map a
-        # ``[decode-proxy] injected headers for <host>`` line back to the rule that produced it.
+        # NAMES only — never the resolved values (they are secrets).
         logger.debug(
             "[sandbox] proxy rule %r resolved (hosts=%s, headers=%s)",
             rule.name,
@@ -183,19 +143,16 @@ def build_credential_map(rules: list[SandboxProxyRule]) -> dict[str, dict[str, s
 
 # --- DockerCredentialProxy: the mitmproxy container topology ----------------------------------
 
-# The container-side path the standalone addon is mounted (read-only) at, and passed to ``mitmdump
-# -s``. ``proxy_addon.py`` is this module's sibling on the host.
+# The standalone addon (this module's sibling) is mounted read-only and passed to ``mitmdump -s``.
 _ADDON_HOST_PATH = Path(__file__).parent / "proxy_addon.py"
 _ADDON_CONTAINER_PATH = "/opt/proxy_addon.py"
-# mitmproxy's confdir inside the container; bind-mounted to a host temp dir so the CA it generates
-# there (``mitmproxy-ca-cert.pem``) is readable host-side for the worker to mount + trust.
+# mitmproxy's confdir, bind-mounted to a host temp dir so the generated CA is readable host-side.
 _PROXY_CONFDIR = "/certs"
 _CA_FILENAME = "mitmproxy-ca-cert.pem"
 # The env var the addon reads the credential map (JSON) from — set on the PROXY container ONLY.
 _CREDENTIAL_MAP_ENV = "DECODE_CREDENTIAL_MAP"
 _LISTEN_PORT = 8080
-# Bounds for the readiness wait (CA file appears + the listen port answers). Generous: a cold image
-# start is a few seconds; a stall past this is a real failure worth surfacing.
+# Readiness-wait bounds (CA written + listen port answering); a stall past this is a real failure.
 _READY_TIMEOUT_S = 20.0
 _READY_POLL_S = 0.2
 _DOCKER_CALL_TIMEOUT_S = 30.0
@@ -205,17 +162,10 @@ _STOP_TIMEOUT_S = 2
 class DockerCredentialProxy:
     """A ``mitmproxy/mitmproxy`` addon container that injects tool credentials per host (ADR-0011 §6).
 
-    Lifecycle is explicit (:meth:`start` / :meth:`stop`), driven by
-    :func:`decode.runtime.flow._sandbox_proxy`. On :meth:`start` it creates a per-run docker network,
-    starts the proxy container (the mounted :mod:`decode.sandbox.proxy_addon`, the credential map in
-    the container's **own** env, ``mitmdump`` writing its CA to a host-shared dir), and waits until the
-    CA is written and the proxy is listening. On :meth:`stop` it removes the container + network +
-    temp dir — best-effort, safe to call even if :meth:`start` failed partway. All docker access is the
-    standard CLI via **sync** ``subprocess`` (the host flow thread is sync), so teardown is
-    loop-independent (ADR-0011 §4 lesson).
-
-    Uniquely-named per instance (a uuid suffix), so concurrent headless runs never collide on the
-    network / container name. Access is CLI-only (no docker SDK), mirroring
+    :meth:`start` creates a per-run docker network + the proxy container (credential map in its
+    **own** env, CA written to a host-shared dir) and waits until ready; :meth:`stop` tears it all
+    down best-effort, safe even after a partial start. Uniquely named per instance so concurrent
+    runs never collide. Docker access is CLI-only via sync ``subprocess``, mirroring
     :class:`~decode.sandbox.docker_backend.DockerBackend`.
     """
 
@@ -234,11 +184,9 @@ class DockerCredentialProxy:
 
     @property
     def worker_proxy_env(self) -> dict[str, str]:
-        """The ``http_proxy`` / ``https_proxy`` env the worker gets, pointing at this proxy container.
+        """The ``http_proxy`` / ``https_proxy`` env pointing the worker at this proxy container.
 
-        Docker's embedded DNS resolves the proxy's container name on the shared network. Both the
-        lower- and upper-case variants are set (different HTTP clients read different casings), plus a
-        ``no_proxy`` for loopback. These carry **no** secret — just the proxy URL.
+        Both casings plus a loopback ``no_proxy``; these carry **no** secret — just the proxy URL.
         """
         url = f"http://{self._container_name}:{_LISTEN_PORT}"
         return {
@@ -260,9 +208,8 @@ class DockerCredentialProxy:
     def start(self) -> None:
         """Create the network, start the proxy container, and wait until it is ready (ADR-0011 §6)."""
         self._cert_dir = Path(tempfile.mkdtemp(prefix="decode-proxy-certs-"))
-        # World-writable so mitmdump (a non-root user inside the container) can write its CA into the
-        # bind-mounted confdir. The dir holds only the generated CA — no decode secret ever lands here
-        # (the credential map rides an ``--env-file``, not this mounted dir; see below).
+        # World-writable so mitmdump (non-root in the container) can write its CA into the mounted
+        # confdir; no secret lands here — the credential map rides an ``--env-file``.
         self._cert_dir.chmod(0o777)
         _docker("network", "create", self._network_name)
         self._container_id = self._run_proxy_container()
@@ -277,10 +224,9 @@ class DockerCredentialProxy:
     def _run_proxy_container(self) -> str:
         """``docker run`` the mitmproxy container; hand the credential map via a private ``--env-file``.
 
-        The resolved map goes through an ``--env-file`` (a ``0600`` temp file, deleted the moment
-        ``docker run`` has consumed it) rather than ``-e DECODE_CREDENTIAL_MAP=<json>`` — so the resolved
-        secret never appears in the ``docker run`` argv (host ``ps``) nor lingers on disk. It still lands
-        only in the **proxy** container's env (never the worker's), as before.
+        A ``0600`` temp file deleted once ``docker run`` has consumed it, so the resolved secret
+        never appears in the argv (host ``ps``) nor lingers on disk; it lands only in the **proxy**
+        container's env — never the worker's.
         """
         env_fd, env_path = tempfile.mkstemp(prefix="decode-proxy-cred-", suffix=".env")
         try:
@@ -316,8 +262,7 @@ class DockerCredentialProxy:
                 _ADDON_CONTAINER_PATH,
             ).strip()
         finally:
-            # Consumed by ``docker run`` (the env is baked into the container) — delete it immediately
-            # so the resolved secret's on-disk lifetime is a few milliseconds.
+            # Consumed by ``docker run`` — delete immediately so the on-disk lifetime is milliseconds.
             with contextlib.suppress(OSError):
                 os.unlink(env_path)
 
@@ -326,9 +271,8 @@ class DockerCredentialProxy:
         if self._container_id is not None:
             logger.info("[sandbox] proxy stop %s", self._container_id[:12])
         _docker_quiet("stop", "--time", str(_STOP_TIMEOUT_S), self._container_name)
-        # ``docker rm -f`` on the worker (the flow reaps it before us) detaches its endpoint, but the
-        # daemon's network-endpoint cleanup can lag a beat behind container removal — a bounded retry
-        # keeps the "network is gone after teardown" guarantee (AGENTS.md-style best-effort teardown).
+        # The daemon's network-endpoint cleanup can lag container removal — a bounded retry keeps
+        # the "network is gone after teardown" guarantee.
         for _ in range(10):
             if _docker_quiet("network", "rm", self._network_name):
                 break

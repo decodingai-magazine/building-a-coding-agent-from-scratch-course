@@ -209,7 +209,6 @@ def test_build_runtime_agent_threads_the_model_override_to_the_inner_agent(monke
 
 
 def test_build_hitl_runtime_agent_threads_the_model_override_to_the_inner_agent(monkeypatch):
-    """The HITL seam forwards ``model=`` into ``build_agent`` too (parallels the bypass seam)."""
     default_id = _seed_gemini(monkeypatch)
 
     overridden = flow_mod._build_hitl_runtime_agent(model="gemini-2.5-pro")
@@ -220,11 +219,10 @@ def test_build_hitl_runtime_agent_threads_the_model_override_to_the_inner_agent(
     assert default.model.model_name == default_id
 
 
-# --- Harness-Home split + headless tool scope (ADR-0012 §6) -----------------------------------
+# Harness-Home split + headless tool scope (ADR-0012 §6)
 
 
 def test_build_headless_deps_defaults_cwd_to_harness_home():
-    """none mode: ``cwd`` defaults to the launch cwd and ``harness_home`` equals it (byte-identical)."""
     deps = flow_mod._build_headless_deps()
 
     assert deps.cwd == Path.cwd()
@@ -232,7 +230,6 @@ def test_build_headless_deps_defaults_cwd_to_harness_home():
 
 
 def test_build_headless_deps_splits_the_workspace_from_harness_home(tmp_path):
-    """A sandbox mode: ``cwd`` is the Workspace (tool scope), ``harness_home`` stays the launch cwd."""
     workspace = tmp_path / "ws"
     deps = flow_mod._build_headless_deps(workspace)
 
@@ -241,7 +238,6 @@ def test_build_headless_deps_splits_the_workspace_from_harness_home(tmp_path):
 
 
 def test_prepare_headless_tool_scope_is_the_launch_cwd_in_none_mode(monkeypatch):
-    """none mode: no Workspace, no warm — the tool scope is just the launch cwd (§6)."""
     monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "none")
 
     assert flow_mod._prepare_headless_tool_scope() == Path.cwd()
@@ -250,7 +246,6 @@ def test_prepare_headless_tool_scope_is_the_launch_cwd_in_none_mode(monkeypatch)
 def test_prepare_headless_tool_scope_prepares_and_warms_the_workspace_in_a_sandbox(
     monkeypatch, tmp_path
 ):
-    """A sandbox mode: prepare the Workspace, warm the executor against it, and return it as the scope."""
     from unittest.mock import AsyncMock
 
     workspace = tmp_path / ".decode" / "sandbox"
@@ -269,7 +264,6 @@ def test_prepare_headless_tool_scope_prepares_and_warms_the_workspace_in_a_sandb
 
 
 def test_prepare_headless_tool_scope_threads_repo_and_local_to_the_clone(monkeypatch, tmp_path):
-    """A sandbox mode with ``--repo`` / ``--local``: the resolved repo + local flag reach the clone (§3)."""
     from unittest.mock import AsyncMock
 
     workspace = tmp_path / ".decode" / "sandbox"
@@ -293,7 +287,6 @@ def test_prepare_headless_tool_scope_threads_repo_and_local_to_the_clone(monkeyp
 
 
 def test_prepare_headless_tool_scope_degrades_to_empty_on_a_clone_failure(monkeypatch, tmp_path):
-    """A clone failure degrades to an empty Workspace instead of crashing the headless run (§3)."""
     from unittest.mock import AsyncMock
 
     workspace = tmp_path / ".decode" / "sandbox"

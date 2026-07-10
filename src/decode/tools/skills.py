@@ -1,32 +1,11 @@
-"""The ungated ``skill`` dispatcher — returns a skill's payload on demand (ADR-0004 §2,§5,§7).
+"""The ungated ``skill`` dispatcher — returns a skill's payload on demand.
 
-``skill`` is the model-facing, on-demand half of progressive disclosure: the Skills Catalog
-advertises each skill's ``name`` + ``description`` cheaply on every turn, and this dispatcher returns
-the named skill's full Markdown ``body`` as the tool result so the model can follow it. It is the
-catalog's read side — it loads instructions, it does not act.
-
-The returned payload is formatted by the shared :func:`decode.skills.payload.format_skill_payload`
-helper (the same one the user-facing ``/<skill-name>`` TUI command uses, so the two paths never
-diverge): for a skill that ships bundled resources it is the body **plus a resource trailer** naming
-the skill's cwd-relative directory so the model knows where to ``read`` tier-3 files from; for a
-built-in or a resource-less project skill it is the body **unchanged** (ADR-0004 §5).
-
-It mirrors the ungated control tools (:mod:`decode.tools.sleep`, :mod:`decode.tools.orchestration`)
-to the letter:
-
-* the signature is ``skill(name)`` only — **no structured** ``args`` (ADR-0004 §2: the lazy v1
-  catalog has no built-in that needs them; adding ``args`` later is forward-compatible);
-* an **unknown** ``name`` is a model mistake, not a crash: it raises a model-readable
-  :class:`pydantic_ai.ModelRetry` listing the available skill names so the model corrects the call,
-  exactly like ``sleep``'s ``ModelRetry`` on a bad ``seconds``.
-
-**Ungated (ADR-0004 §7).** Loading instructions is harmless, so — like ``ask_user`` and the
-orchestration controls — ``skill`` never raises :class:`pydantic_ai.ApprovalRequired` and so never
-reaches the permission gate; it stays callable in any mode, including plan mode. Crucially, the
-*actions a skill describes* still ride **their own** tool gates: the ``commit`` skill's body tells
-the model to run ``git add`` / ``git commit`` via the gated ``bash`` tool, so default mode asks
-before that commit and plan mode denies it. Returning the skill body grants no new authority — it is
-the gated ``bash`` / ``write`` / ``edit`` calls the body induces that the gate still governs.
+The on-demand half of progressive disclosure: the catalog advertises name + description cheaply;
+this dispatcher returns the named skill's full body (via the shared ``format_skill_payload``
+helper the ``/<skill-name>`` TUI command also uses). An unknown name raises a model-readable
+:class:`pydantic_ai.ModelRetry` listing the available skills. Ungated — loading instructions is
+harmless and grants no new authority: the gated ``bash``/``write``/``edit`` calls a body induces
+are what the gate still governs. See ADR-0004 §2,§5,§7.
 """
 
 from __future__ import annotations
@@ -65,11 +44,9 @@ async def skill(ctx: RunContext[AgentDeps], name: str) -> str:
     ``git commit`` run through the gated ``bash`` tool, which default mode asks for and plan mode
     denies (ADR-0004 §7).
     """
-    # Skills are HARNESS artifacts: load them from ``harness_home`` (the launch cwd), not ``cwd`` — in a
-    # sandbox mode ``cwd`` is the Workspace, but the project's ``.decode/skills`` catalog stays anchored at
-    # Harness Home (ADR-0012 §6). The payload's resource paths are ``harness_home``-relative and, because
-    # skills are seeded into ``<workspace>/.decode/skills`` too, the SAME relative path resolves for the
-    # workspace-scoped ``read`` / ``bash`` (ADR-0012 §5). In ``none`` mode the two roots are equal.
+    # Skills are HARNESS artifacts: load from ``harness_home`` (the launch cwd), not ``cwd`` — in a
+    # sandbox mode the catalog stays anchored at Harness Home, and because skills are seeded into
+    # the workspace too, the same relative path resolves for workspace-scoped tools (ADR-0012 §5,6).
     home = ctx.deps.harness_home or ctx.deps.cwd
     catalog = load_skills(home)
     found = catalog.get(name)

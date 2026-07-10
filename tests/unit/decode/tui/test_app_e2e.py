@@ -1,25 +1,10 @@
 """End-to-end regression tests for the real ``run_app`` mid-turn HITL flows (ADR-0002 §2-4,7).
 
-These close the gap that let the concurrent-prompt deadlock ship: every other test uses a
-stub/headless resolver against an idle session, so the collision between the resolver's input
-and the main loop's in-flight ``prompt_async()`` never occurs. Here we drive the **real**
-``run_app`` — real main input loop, real :func:`decode.tui.app._make_permission_resolver` /
-:func:`decode.tui.app._make_user_question_resolver`, real
-:class:`~decode.harness.decisions.DecisionChannel`, real renderer — through a mid-turn pause
-with a programmatically-driven prompt_toolkit input (``create_pipe_input`` + ``DummyOutput``
-inside a ``create_app_session``):
-
-* a **gated tool** (task 005): a typed ``y`` approves and the turn resumes to completion; a
-  typed ``n`` denies (the tool body never runs, the denial is fed back to the model);
-* the **ask_user tool** (task 011): the model asks a question mid-turn, the question surfaces,
-  and the next typed line *is* the free-text answer that becomes the tool result.
-
-If a resolver opened a second ``prompt_async()`` on the live session, or if a permission and an
-ask_user request could be pending at once, this would deadlock and the test would time out —
-which is exactly the regression we are guarding.
-
-No network: the agent is built directly on a streaming ``FunctionModel`` (no Gemini), so the
-gated ``noop`` / blocking ``ask_user`` tools drive a real mid-turn pause/resume.
+Drives the REAL ``run_app`` — main input loop, permission/ask_user resolvers, DecisionChannel,
+renderer — through mid-turn pauses via a piped prompt_toolkit input (``create_pipe_input`` +
+``DummyOutput``). Guards the concurrent-prompt deadlock: a resolver opening a second
+``prompt_async()`` on the live session would hang, so everything runs under hard timeouts.
+No network: agents are built directly on streaming ``FunctionModel``s (no Gemini).
 """
 
 import asyncio
@@ -181,7 +166,6 @@ async def test_run_app_approves_a_gated_tool_and_resumes_to_completion(monkeypat
 
 
 async def test_run_app_denies_a_gated_tool_and_feeds_the_denial_back(monkeypatch):
-    """A typed ``n`` denies the gated call; the tool body never runs, the denial is fed back."""
     captured: list[list[ModelMessage]] = []
     agent = _build_gated_agent(final_text=_AFTER_DENY_TEXT, captured=captured)
 
@@ -394,13 +378,6 @@ async def test_run_app_swallows_lsp_shutdown_failure_and_still_exits(monkeypatch
 
 
 async def test_run_app_renders_you_quote_decode_prefix_and_capital_goodbye(monkeypatch):
-    """Fix 2/4 through the real wiring: `you "…"`, one `Decode ` answer prefix, capital goodbye.
-
-    Drives the real ``run_app`` (real ``_make_event_sink``, real renderer) with a one-turn chat
-    and asserts the rendered conversation: the user line is double-quoted after ``you``, the
-    streamed answer is prefixed with ``Decode `` exactly once for the turn, and the goodbye prose
-    is capitalized.
-    """
     agent = _build_chat_agent()
 
     async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
@@ -419,12 +396,6 @@ async def test_run_app_renders_you_quote_decode_prefix_and_capital_goodbye(monke
 
 
 async def test_run_app_persists_the_session_to_a_jsonl_log(monkeypatch, sessions_dir):
-    """ADR-0002 §9: ``run_app`` opens a session log and persists the turn's messages.
-
-    A fresh ``run_app`` opens a new ``.jsonl`` file under ``settings.sessions_dir``; after a
-    turn finishes, replaying that file yields the conversation (the user prompt is in it). No
-    network: the agent runs on a streaming ``FunctionModel``.
-    """
     from decode.context import session_log
 
     agent = _build_chat_agent()
@@ -450,12 +421,6 @@ async def test_run_app_persists_the_session_to_a_jsonl_log(monkeypatch, sessions
 
 
 async def test_run_app_resume_seeds_history_from_the_prior_session(monkeypatch, sessions_dir):
-    """``run_app(resume="latest")`` replays the latest session into the new turn handler (§9).
-
-    A prior session file in ``sessions_dir`` carries an earlier user turn; resuming seeds the
-    handler's ``message_history`` with it, so the model on the next turn sees the replayed
-    prefix. We assert the replayed prompt reaches the model on the resumed turn.
-    """
     from datetime import UTC, datetime
     from uuid import UUID
 
@@ -518,7 +483,7 @@ async def test_run_app_resume_seeds_history_from_the_prior_session(monkeypatch, 
     assert "EARLIER-RESUMED-TURN" in flat
 
 
-# --- control surfaces: /agent, /mode, Shift+Tab cycle (ADR-0003 §9, task 022) -----------------
+# control surfaces: /agent, /mode, Shift+Tab cycle (ADR-0003 §9, task 022)
 
 # Marker the gated ``write`` test tool echoes once it actually runs (proves the body executed —
 # i.e. the call was auto-allowed, not just un-prompted).
@@ -629,7 +594,6 @@ async def test_run_app_agent_slash_switches_and_rejections_stay_alive(monkeypatc
 
 
 async def test_run_app_mode_slash_switches_and_an_unknown_mode_stays_alive(monkeypatch):
-    """``/mode bypass`` switches + confirms; ``/mode nope`` is a friendly inline error."""
     agent = _build_chat_agent()
 
     async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
@@ -790,7 +754,6 @@ async def test_run_app_skill_slash_injects_the_body_and_runs_a_turn(monkeypatch)
 
 
 async def test_run_app_skill_slash_appends_trailing_text(monkeypatch):
-    """Trailing text after ``/commit`` is appended to the body and submitted with it."""
     captured: list[list[ModelMessage]] = []
     agent = _build_capturing_chat_agent(captured)
 
@@ -830,7 +793,7 @@ async def test_run_app_unknown_slash_is_intercepted_and_runs_no_turn(monkeypatch
     assert any("still here?" in p for p in prompts)  # the REPL kept running
 
 
-# --- the manual /compact command (ADR-0006 §7, task 045) --------------------------------------
+# the manual /compact command (ADR-0006 §7, task 045)
 
 # A huge, distinctive old turn that full compaction folds into the summary (so its marker must
 # be ABSENT from the post-compaction history), plus a small recent turn kept verbatim.
@@ -1207,7 +1170,6 @@ async def test_run_app_clear_wipes_the_history_and_summarizes_first(monkeypatch,
 
 
 async def test_run_app_clear_on_an_empty_session_is_a_friendly_line(monkeypatch):
-    """``/clear`` with nothing said yet: one friendly line, no crash, the session stays usable."""
     agent = _build_chat_agent()
 
     async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
@@ -1223,7 +1185,7 @@ async def test_run_app_clear_on_an_empty_session_is_a_friendly_line(monkeypatch)
     assert _CHAT_REPLY in output  # the REPL kept working after the no-op clear
 
 
-# --- Harness-Home split end-to-end (ADR-0012 §6): sandbox writes vs harness artifacts -----------
+# Harness-Home split end-to-end (ADR-0012 §6): sandbox writes vs harness artifacts
 
 
 class _WorkspaceBackend:
@@ -1400,7 +1362,6 @@ async def test_run_app_repo_clones_into_the_workspace_and_shows_progress(
 async def test_run_app_repo_clone_failure_degrades_to_empty_workspace(
     monkeypatch, tmp_path, sessions_dir
 ):
-    """A bad ``--repo`` never crashes the launch — one friendly line, and an empty Workspace (§3)."""
     from unittest.mock import AsyncMock
 
     from decode.sandbox.workspace import workspace_dir
