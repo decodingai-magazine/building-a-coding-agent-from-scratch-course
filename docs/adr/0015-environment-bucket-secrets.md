@@ -2,6 +2,11 @@
 
 Status: Accepted
 Date: 2026-07-13
+Amended: 2026-07-13 — **§6 is moot**: it decided that Credential-Proxy rules resolve `{{ settings_field }}`
+templates from the hydrated `Settings` (amending ADR-0011 §6). [ADR-0016](0016-drop-credential-proxy.md)
+then deleted the Credential Proxy outright, so there are no rules left to resolve. Everything else here
+stands — §6 was only ever about *where a proxy rule reads its value from*, never about the config surface
+itself, which is exactly what ADR-0016 keeps.
 
 ## Context
 
