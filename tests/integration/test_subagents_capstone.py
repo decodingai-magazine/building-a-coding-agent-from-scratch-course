@@ -1,8 +1,9 @@
-"""Explore-subagents capstone (ADR-0013): parallel fan-out through the FULL real stack.
+"""Explore-subagents capstone (ADR-0013, ADR-0017): parallel fan-out through the FULL real stack.
 
-Proves the ``agent`` tool's N-way fan-out end to end: real build_agent (per-agent tool
-narrowing + the set-once subagent-spawn seam), real ``agent`` tool + in-process runner
-(per-loop semaphore, fresh BYPASS child deps, per-child UsageLimits, truncate fold), real
+Proves the ``agent`` tool's N-way fan-out end to end — ONE ``agent(prompts=[…])`` call, N
+concurrent children, one labelled aggregate: real build_agent (per-agent tool narrowing + the
+set-once subagent-spawn seam), real ``agent`` tool + in-process runner (harness gather, per-loop
+semaphore, fresh BYPASS child deps, per-child UsageLimits, shared-budget truncate fold), real
 Runner + AgentTurnHandler + gate, real render_event on every event (silent-until-done
 asserted), real SessionLog persist + ``--resume`` replay (child transcripts proven
 ephemeral), and real child read/glob/grep against a tmp_path tree. Swapped/faked: one
@@ -22,6 +23,7 @@ import gc
 import inspect
 import io
 import json
+import re
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -165,14 +167,43 @@ def _function_model(function: Callable[..., object]) -> FunctionModel:
     return FunctionModel(function, stream_function=stream_function)
 
 
+def _child_prompt(index: int) -> str:
+    """One well-formed exploration prompt: the question, the scope to search, the report to produce."""
+    return (
+        f"How does subsystem {index} of this repository work? Search the source tree for its module "
+        f"and report its entry points and call flow with file:line evidence."
+    )
+
+
 def _fan_out(n_children: int) -> ModelResponse:
-    """The parent's first response: ``n_children`` ``agent(...)`` tool calls in ONE turn (fan-out)."""
+    """The parent's first response: ONE ``agent(prompts=[…])`` call spawning ``n_children`` (ADR-0017 §1).
+
+    The fan-out no longer depends on the model volunteering N tool calls — one call carries the N
+    angles and the HARNESS gathers the children.
+    """
     return ModelResponse(
         parts=[
-            ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompt": f"explore area {i}"})
-            for i in range(n_children)
+            ToolCallPart(
+                tool_name=AGENT_TOOL_NAME,
+                args={"prompts": [_child_prompt(i) for i in range(n_children)]},
+            )
         ]
     )
+
+
+_SECTION_RE = re.compile(r'^## Subagent \d+ — ".*"$', re.MULTILINE)
+
+
+def _sections(aggregate: str) -> list[str]:
+    """The ``## Subagent i — "…"`` section headings in one folded aggregate (ADR-0017 §5)."""
+    return _SECTION_RE.findall(aggregate)
+
+
+def _section_bodies(aggregate: str) -> list[str]:
+    """Each section's body — what the per-child byte budget caps (ADR-0017 §6)."""
+    matches = list(_SECTION_RE.finditer(aggregate))
+    bounds = [m.start() for m in matches] + [len(aggregate)]
+    return [aggregate[m.end() : bounds[i + 1]].strip() for i, m in enumerate(matches)]
 
 
 # Recording harness — a sink that renders every event through the REAL render_event, plus resolvers
@@ -280,16 +311,17 @@ def _tool_calls_in_history(messages: list[ModelMessage], name: str) -> list[Tool
 async def test_parallel_fanout_overlaps_and_is_bounded_by_subagent_max_parallel(
     parent_agent, tmp_path, monkeypatch
 ):
-    """N ``agent(...)`` calls in one response fan out concurrently, capped by ``subagent_max_parallel``.
+    """ONE ``agent(prompts=[…])`` call fans out concurrently, capped by ``subagent_max_parallel``.
 
-    Sets a low cap and spawns ``2 * cap`` children. Each child rendezvous at an
-    :class:`asyncio.Barrier` sized to the cap: the barrier only trips when ``cap`` children are
-    *simultaneously* inside (proving the fan-out is genuinely concurrent through pydantic-ai's
-    native ``asyncio.create_task`` scheduling — a sequential run would never gather ``cap`` waiters
-    and would time out), while the per-loop semaphore guarantees no more than ``cap`` are ever inside.
-    So the observed peak equals the cap exactly. It also confirms the spawn is permission-free and
-    silent-until-done in one shot: no ``PermissionRequested`` fires, and only the ``agent`` tool
-    surfaces on the parent sink (the children run silent).
+    The stronger ADR-0017 §1,4 claim: the parallelism is a HARNESS guarantee (the tool's own
+    ``asyncio.gather``), not a model courtesy — the parent emits exactly ONE tool call and the
+    children still overlap. Sets a low cap and one call carrying ``2 * cap`` prompts. Each child
+    rendezvous at an :class:`asyncio.Barrier` sized to the cap: the barrier only trips when ``cap``
+    children are *simultaneously* inside (a sequential fan-out would never gather ``cap`` waiters and
+    would time out), while the per-loop semaphore — taken per child attempt — guarantees no more than
+    ``cap`` are ever inside. So the observed peak equals the cap exactly. It also confirms the spawn
+    is permission-free and silent-until-done in one shot: no ``PermissionRequested`` fires, and only
+    the ``agent`` tool surfaces on the parent sink (the children run silent).
     """
     cap = 2
     n_children = 2 * cap  # a multiple of the cap so the barrier trips in clean waves (no deadlock)
@@ -329,17 +361,19 @@ async def test_parallel_fanout_overlaps_and_is_bounded_by_subagent_max_parallel(
     # Genuine concurrency reached the cap — and the semaphore never let it exceed the cap.
     assert concurrency["peak"] == cap
     assert concurrency["peak"] <= settings.subagent_max_parallel
-    # Every child folded a report back (the fan-out completed).
+    # ONE aggregate folded back, carrying one labelled section per prompt (ADR-0017 §5).
     folded = _folded_reports(handler)
-    assert len(folded) == n_children
-    assert all(_CHILD_REPORT in report for report in folded)
+    assert len(folded) == 1
+    aggregate = folded[0]
+    assert len(_sections(aggregate)) == n_children
+    assert aggregate.count(_CHILD_REPORT) == n_children
     # Permission-free: no prompt event, and the human resolver was never consulted (READ_ONLY inline).
     assert sink.permission_events() == []
     assert resolvers.permission_requests == []
     # Silent-until-done: ONLY the ``agent`` tool surfaced on the parent sink — no child event leaked.
     assert sink.tool_call_names() == {AGENT_TOOL_NAME}
     assert sink.tool_result_names() == {AGENT_TOOL_NAME}
-    assert len(sink.tool_calls()) == n_children
+    assert len(sink.tool_calls()) == 1  # ONE call did the whole fan-out (the harness gathered it)
     # The parent's final text streamed and rendered through the real renderer.
     assert _PARENT_FINAL in sink.rendered
 
@@ -350,7 +384,7 @@ async def test_parallel_fanout_overlaps_and_is_bounded_by_subagent_max_parallel(
 async def test_children_run_real_read_only_tools_without_touching_any_resolver(
     parent_agent, tmp_path, mocker
 ):
-    """Three children each drive a DIFFERENT real read-only tool; none reaches a resolver; reports fold.
+    """One call, three children each driving a DIFFERENT real read-only tool; no resolver; reports fold.
 
     Proves the ADR-0013 §5 "permissions come free" claim end to end: the ``agent`` tool auto-allows
     (inline, no prompt), and a child's real ``read`` / ``glob`` / ``grep`` runs under the fresh BYPASS
@@ -375,15 +409,22 @@ async def test_children_run_real_read_only_tools_without_touching_any_resolver(
             )
         return "read", ToolCallPart(tool_name="read", args={"path": "notes.txt"})
 
+    child_prompts = [
+        "Which Python modules exist here? Use glob over **/*.py and report every path you find.",
+        "Where are functions defined? Use grep for 'def ' across **/*.py and report each hit with "
+        "its file:line.",
+        "What do the project notes say? Use read on notes.txt and report its contents verbatim.",
+    ]
+
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         visible = {tool.name for tool in info.function_tools}
-        if AGENT_TOOL_NAME in visible:  # PARENT: fan out to one child per read-only tool
+        if AGENT_TOOL_NAME in visible:  # PARENT: ONE call, one child per read-only tool
             if not _tool_returned(messages, AGENT_TOOL_NAME):
                 return ModelResponse(
                     parts=[
-                        ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompt": "glob the code"}),
-                        ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompt": "grep the code"}),
-                        ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompt": "read the notes"}),
+                        ToolCallPart(
+                            tool_name=AGENT_TOOL_NAME, args={"prompts": list(child_prompts)}
+                        )
                     ]
                 )
             return ModelResponse(parts=[TextPart(content=_PARENT_FINAL)])
@@ -400,10 +441,13 @@ async def test_children_run_real_read_only_tools_without_touching_any_resolver(
     with parent_agent.override(model=_function_model(model)):
         await _run_turn(runner, "explore three areas")
 
-    # Each child's report folded back as an ``agent`` result — one per read-only tool.
+    # ONE aggregate folded back, carrying all three children's reports — one per read-only tool.
     folded = _folded_reports(handler)
-    assert len(folded) == 3
-    assert {report.rsplit("via ", 1)[-1] for report in folded} == {"glob", "grep", "read"}
+    assert len(folded) == 1
+    aggregate = folded[0]
+    assert len(_sections(aggregate)) == 3
+    for child_tool in ("glob", "grep", "read"):
+        assert f"{_CHILD_REPORT} via {child_tool}" in aggregate
     # The real read-only tools ran — yet NO resolver (parent human, child perm-deny, child ask-deny)
     # was ever consulted, and no permission prompt surfaced.
     assert resolvers.permission_requests == []
@@ -423,13 +467,16 @@ async def test_children_run_real_read_only_tools_without_touching_any_resolver(
 async def test_child_report_is_truncated_to_the_byte_cap_through_the_fold(
     parent_agent, tmp_path, monkeypatch
 ):
-    """A long child report is truncated to ``subagent_result_max_bytes`` when folded (ADR-0013 §8).
+    """Two children SHARE the byte budget: each report is capped to ``max_bytes // N`` (ADR-0017 §6).
 
-    The child returns a report far over a small byte cap; the ``agent`` tool folds it through the
-    shared ``truncate()`` idiom, so the result the parent sees is capped (snapped to a line boundary,
-    head preserved) and rendered through the real renderer.
+    Each child returns a report far over a small byte cap; the ``agent`` tool folds each through the
+    shared ``truncate()`` idiom at the DIVIDED budget, so the fold's total cost is width-independent
+    (~``subagent_result_max_bytes`` at any width) — capped at a line boundary, head preserved — and it
+    renders through the real renderer.
     """
-    monkeypatch.setattr(settings, "subagent_result_max_bytes", 64)
+    monkeypatch.setattr(settings, "subagent_result_max_bytes", 128)
+    n_children = 2
+    per_child = 128 // n_children
     head = "explore-subagent HEAD line"
     long_report = head + "\n" + "\n".join(f"detail line {i}" for i in range(50))
 
@@ -437,7 +484,7 @@ async def test_child_report_is_truncated_to_the_byte_cap_through_the_fold(
         visible = {tool.name for tool in info.function_tools}
         if AGENT_TOOL_NAME in visible:
             if not _tool_returned(messages, AGENT_TOOL_NAME):
-                return _fan_out(1)
+                return _fan_out(n_children)
             return ModelResponse(parts=[TextPart(content=_PARENT_FINAL)])
         return ModelResponse(parts=[TextPart(content=long_report)])
 
@@ -450,10 +497,14 @@ async def test_child_report_is_truncated_to_the_byte_cap_through_the_fold(
 
     folded = _folded_reports(handler)
     assert len(folded) == 1
-    report = folded[0]
-    assert len(report.encode("utf-8")) <= 64  # the byte cap bit
-    assert head in report  # the line-aligned head survived
-    assert report != long_report  # content was dropped
+    bodies = _section_bodies(folded[0])
+    assert len(bodies) == n_children
+    for body in bodies:
+        assert (
+            len(body.encode("utf-8")) <= per_child
+        )  # the SHARED budget, split across the children
+        assert head in body  # the line-aligned head survived
+        assert body != long_report  # content was dropped
     assert head in sink.rendered  # and the truncated panel rendered through the real renderer
 
 
@@ -547,12 +598,12 @@ async def test_child_toolset_excludes_agent_recursion_default_deny(parent_agent,
 
 
 async def test_ephemeral_child_transcripts_survive_resume(parent_agent, tmp_path, monkeypatch):
-    """The parent history + JSONL log carry only the spawn calls + folded summaries; ``--resume`` works.
+    """The parent history + JSONL log carry only the ONE spawn call + its fold; ``--resume`` works.
 
-    A child transcript (its glob call/return) is discarded — only the child's final text folds back.
-    So the parent history and the session log carry the two ``agent`` calls + their folded summaries
-    and NOTHING from inside the children, and :func:`session_log.load` replays byte-for-byte into a
-    fresh handler (ADR-0013 §8).
+    A child transcript (its glob call/return) is discarded — only each child's final text folds back.
+    So the parent history and the session log carry the single ``agent`` fan-out call + its labelled
+    aggregate and NOTHING from inside the children, and :func:`session_log.load` replays byte-for-byte
+    into a fresh handler (ADR-0013 §8, ADR-0017 §1).
     """
     (tmp_path / "one.py").write_text("x = 1\n", encoding="utf-8")
     sessions_dir = tmp_path / "sessions"
@@ -586,9 +637,11 @@ async def test_ephemeral_child_transcripts_survive_resume(parent_agent, tmp_path
     with parent_agent.override(model=_function_model(model)):
         await _run_turn(runner, "explore two areas")
 
-    # The parent history carries the two spawn calls + their folded summaries — but NO child transcript.
-    assert len(_folded_reports(handler)) == 2
-    assert len(_tool_calls_in_history(handler.message_history, AGENT_TOOL_NAME)) == 2
+    # The parent history carries ONE spawn call + its 2-section fold — but NO child transcript.
+    folded = _folded_reports(handler)
+    assert len(folded) == 1
+    assert len(_sections(folded[0])) == 2
+    assert len(_tool_calls_in_history(handler.message_history, AGENT_TOOL_NAME)) == 1
     assert (
         _tool_calls_in_history(handler.message_history, "glob") == []
     )  # child transcript discarded
@@ -695,11 +748,12 @@ async def test_live_gemini_fanout_smoke(monkeypatch):
     runner = Runner(handler, on_event=sink)
 
     prompt = (
-        "Use the explore subagent (the `agent` tool) to investigate two files of this repository IN "
-        "PARALLEL: spawn one explore subagent to read and summarize `src/decode/tools/truncate.py`, "
-        "and a second explore subagent to read and summarize `src/decode/config/settings.py`. Give "
-        "each subagent a focused prompt that names its file, then combine their two summaries. Explore "
-        "only by reading the named files with the subagents; do not write files or run shell commands."
+        "Use the explore subagents (the `agent` tool) to investigate two files of this repository IN "
+        "PARALLEL: make ONE `agent` call whose `prompts` list holds two prompts — the first asking a "
+        "subagent to read and summarize `src/decode/tools/truncate.py`, the second asking a subagent "
+        "to read and summarize `src/decode/config/settings.py`. Give each prompt a focused question "
+        "that names its file, then combine the two summaries the tool returns. Explore only by reading "
+        "the named files with the subagents; do not write files or run shell commands."
     )
     await _run_turn(runner, prompt)
 

@@ -1,12 +1,18 @@
-"""The model-callable ``agent`` tool + the in-process Explore-subagent runner.
+"""The model-callable ``agent`` fan-out tool + the in-process Explore-subagent runner.
 
-``agent(prompt)`` spawns a read-only **Explore Subagent**: the *same* Pydantic-AI Agent re-entered
-via a nested ``agent.run()`` with fresh, narrowed deps (``active_agent=explore``, gate in BYPASS,
-no-op event sink, deny resolvers), so ``prepare=`` collapses the child's toolset to
-``read/glob/grep/lsp`` and recursion is structurally impossible. Three seams: the set-once
-main-agent seam (mirrors bash's ``_EXECUTOR``), a per-running-loop fan-out semaphore, and the
-read-only child deps. The child's truncated final text is the tool result; its transcript is
-ephemeral, and its usage is not threaded into the parent's. See ADR-0013 §1,5-10.
+``agent(prompts)`` spawns ONE read-only **Explore Subagent** per prompt, concurrently, and folds ONE
+labelled aggregate back (ADR-0017 §1). Each child is the *same* Pydantic-AI Agent re-entered via a
+nested ``agent.run()`` with fresh, narrowed deps (``active_agent=explore``, gate in BYPASS, no-op
+event sink, deny resolvers), so ``prepare=`` collapses the child's toolset to ``read/glob/grep/lsp``
+and recursion is structurally impossible. Deterministic guards run BEFORE any child spawns (empty
+list, width cap); the harness then ``asyncio.gather``s the children, each attempt taking the
+per-loop semaphore (``subagent_max_parallel`` — a CONCURRENCY ceiling, distinct from the width cap).
+A child that raises still gets its section, carrying a failure note: partial results beat an
+exception that discards the siblings. Every child's report is truncated to a SHARED budget
+(``subagent_result_max_bytes // len(prompts)``), so the fold's cost is width-independent. Three
+seams: the set-once main-agent seam (mirrors bash's ``_EXECUTOR``), the per-running-loop fan-out
+semaphore, and the read-only child deps. Child transcripts stay ephemeral and child usage is never
+threaded into the parent's. See ADR-0017 §1-2,4-6 and ADR-0013 §1,5-10.
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ import logging
 import weakref
 from typing import TYPE_CHECKING
 
-from pydantic_ai import DeferredToolRequests, RunContext, UsageLimits
+from pydantic_ai import DeferredToolRequests, ModelRetry, RunContext, UsageLimits
 
 from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
@@ -35,6 +41,15 @@ AGENT_TOOL_NAME = "agent"
 
 # The ONE subagent persona that ships (ADR-0013 §3): a read-only Explore child.
 _SUBAGENT_PERSONA = "explore"
+
+# Widest fan-out one ``agent`` call may request (ADR-0017 §2). A module constant, NOT a setting:
+# least mechanism for a number nobody tunes. Distinct from ``settings.subagent_max_parallel`` (the
+# CONCURRENCY ceiling) — a 6-wide fan-out under a cap of 4 runs 4 children, then the last 2.
+MAX_FANOUT_PROMPTS = 6
+
+# The per-tool retry budget the registry gives ``agent``: pydantic-ai's default is 1, so two
+# consecutive ``ModelRetry`` nags would abort the run with ``UnexpectedModelBehavior`` (ADR-0017 §3).
+AGENT_TOOL_RETRIES = 3
 
 # Set-once module seam holding the running Agent (mirrors bash's ``_EXECUTOR``); installed by
 # ``build_agent`` via :func:`set_main_agent`, so children reuse the parent's model + HTTP client.
@@ -104,8 +119,43 @@ async def _deny_permission_resolver(request: PermissionRequest) -> PermissionDec
     return PermissionDecision.deny(reason="A subagent runs read-only with no interactive approver.")
 
 
-async def agent(ctx: RunContext[AgentDeps], prompt: str) -> str:
-    """Spawn a read-only Explore subagent to investigate ``prompt`` and return its report (ADR-0013).
+async def agent(ctx: RunContext[AgentDeps], prompts: list[str]) -> str:
+    """Spawn one read-only Explore subagent per prompt, in parallel, and return their reports (ADR-0017).
+
+    Give each prompt a DISTINCT angle on the question — the subagents run concurrently and their
+    reports come back as one labelled document, one ``## Subagent i`` section per prompt, in the
+    order you listed them. A single-angle exploration is a one-element list; at most
+    ``MAX_FANOUT_PROMPTS`` prompts per call.
+    """
+    if not prompts:
+        raise ModelRetry(
+            "The agent tool needs at least one exploration prompt. Call it again with "
+            "prompts=[<one prompt per angle you want investigated>]."
+        )
+    if len(prompts) > MAX_FANOUT_PROMPTS:
+        raise ModelRetry(
+            f"You asked for {len(prompts)} subagents; the limit is {MAX_FANOUT_PROMPTS} per call. "
+            f"Consolidate your angles into at most {MAX_FANOUT_PROMPTS} prompts and call the agent "
+            "tool again."
+        )
+
+    # The SHARED context budget (ADR-0017 §6): the fold costs ~subagent_result_max_bytes at ANY
+    # width, so a wide fan-out is a free default rather than a tax on the parent's context.
+    child_max_bytes = settings.subagent_result_max_bytes // len(prompts)
+    logger.debug("fanning out %d explore subagents (%d bytes each)", len(prompts), child_max_bytes)
+
+    sections = await asyncio.gather(
+        *(_spawn_child(ctx, prompt, max_bytes=child_max_bytes) for prompt in prompts)
+    )
+    # Labelled concatenation, NO synthesis LLM call — the parent model is the synthesizer (§5).
+    return "\n\n".join(
+        f'## Subagent {index} — "{prompt}"\n\n{section}'
+        for index, (prompt, section) in enumerate(zip(prompts, sections, strict=True), start=1)
+    )
+
+
+async def _spawn_child(ctx: RunContext[AgentDeps], prompt: str, *, max_bytes: int) -> str:
+    """Run ONE Explore child on ``prompt`` and return its section body (ADR-0013 §5,7,8).
 
     Builds FRESH, narrowed deps — the parent's ``cwd`` + ``harness_home`` (the child's read scope), a
     no-op event sink (silent in the TUI), a fresh :class:`~decode.permissions.gate.PermissionGate`, a
@@ -114,10 +164,12 @@ async def agent(ctx: RunContext[AgentDeps], prompt: str) -> str:
     The child is bounded by ``UsageLimits(request_limit=settings.subagent_max_requests)`` and does
     **not** thread ``usage=ctx.usage`` (so the parent's context gauge stays parent-only, ADR-0013 §7,10).
 
-    The child's final text — truncated to ``settings.subagent_result_max_bytes`` — is returned as the
-    tool result. Defensive: a :class:`pydantic_ai.DeferredToolRequests` output is theoretically
-    impossible for a read-only child (its tools never raise :class:`pydantic_ai.ApprovalRequired`), so
-    that case returns a short note rather than the raw object.
+    Returns the child's final text truncated to ``max_bytes``. Never raises: a child that blows up
+    (e.g. ``UsageLimitExceeded``) folds an explicit failure note into its own section instead of
+    discarding its siblings' reports (ADR-0017 §5). Defensive: a
+    :class:`pydantic_ai.DeferredToolRequests` output is theoretically impossible for a read-only child
+    (its tools never raise :class:`pydantic_ai.ApprovalRequired`), so that case returns a short note
+    rather than the raw object.
     """
     # Lazy imports: ``load_agent`` would form a tools -> agents -> tools cycle at module load.
     from decode.agents.loader import load_agent
@@ -143,12 +195,17 @@ async def agent(ctx: RunContext[AgentDeps], prompt: str) -> str:
     )
 
     logger.debug("spawning explore subagent (prompt=%r)", prompt)
-    async with _semaphore():
-        result = await _require_main_agent().run(
-            prompt,
-            deps=child_deps,
-            usage_limits=UsageLimits(request_limit=settings.subagent_max_requests),
-        )
+    try:
+        async with _semaphore():  # per child ATTEMPT: the ceiling bounds a fan-out wider than it
+            result = await _require_main_agent().run(
+                prompt,
+                deps=child_deps,
+                usage_limits=UsageLimits(request_limit=settings.subagent_max_requests),
+            )
+    except Exception:
+        # One broken child must not discard its siblings — fold an honest note into ITS section.
+        logger.warning("explore subagent failed (prompt=%r)", prompt, exc_info=True)
+        return "This subagent failed before producing a report."
 
     output = result.output
     if isinstance(output, DeferredToolRequests):
@@ -159,5 +216,5 @@ async def agent(ctx: RunContext[AgentDeps], prompt: str) -> str:
     return truncate(
         str(output),
         max_lines=settings.max_output_lines,
-        max_bytes=settings.subagent_result_max_bytes,
+        max_bytes=max_bytes,
     ).text

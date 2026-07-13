@@ -177,11 +177,19 @@ def _function_model(function: Callable[..., ModelResponse]) -> FunctionModel:
 
 
 def _fan_out(n_children: int) -> ModelResponse:
-    """The parent's first response: ``n_children`` ``agent(...)`` tool calls in ONE turn (fan-out)."""
+    """The parent's first response: ONE ``agent(prompts=[…])`` call spawning ``n_children`` (ADR-0017 §1)."""
     return ModelResponse(
         parts=[
-            ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompt": f"explore area {i}"})
-            for i in range(n_children)
+            ToolCallPart(
+                tool_name=AGENT_TOOL_NAME,
+                args={
+                    "prompts": [
+                        f"How does subsystem {i} of this repo work? Search the tree for its module "
+                        f"and report its entry points with file:line evidence."
+                        for i in range(n_children)
+                    ]
+                },
+            )
         ]
     )
 
@@ -194,7 +202,7 @@ def _read_then_report(messages: list[ModelMessage], info: AgentInfo) -> ModelRes
 
 
 def _fanout_then_children_glob(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-    """Parent fans out two ``agent(...)`` calls; each child runs a real ``glob`` then reports.
+    """Parent fans out ONE ``agent(prompts=[…])`` call spawning two children; each runs a real ``glob``.
 
     The child leg produces a child ``chat`` (model) span AND a child ``running tool`` (glob) span, both
     of which must nest inside the parent turn's ``chat_turn`` trace (ADR-0013 §9). The parent context is

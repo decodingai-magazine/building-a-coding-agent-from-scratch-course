@@ -1,17 +1,20 @@
-"""Unit tests for the ``agent`` tool + the in-process Explore-subagent runner (ADR-0013 §1,5-9).
+"""Unit tests for the ``agent`` fan-out tool + the in-process Explore-subagent runner (ADR-0017).
 
-Covers the set-once main-Agent seam, fresh narrowed read-only child deps, the no-usage-threading
-rule, the ``UsageLimits`` cap, report truncation, the concurrency semaphore, persona grants, and
-kitaru-free imports. Direct tests use a hand-built :class:`RunContext` / stub main agent;
-loop-driven tests ride the real ``build_agent`` + ``AgentTurnHandler`` with one scripted
-:class:`FunctionModel` driving BOTH parent and child (``override`` is contextvar-scoped),
-branching on whether the ``agent`` tool is visible. No network anywhere.
+Covers the structural guards (empty list / width cap), the harness ``asyncio.gather`` fan-out, the
+labelled aggregation, the shared per-child byte budget, per-child failure isolation, plus the
+ADR-0013 invariants re-pinned under the new shape: the set-once main-Agent seam, fresh narrowed
+read-only child deps, no usage threading, the ``UsageLimits`` cap, the concurrency semaphore,
+persona grants, and kitaru-free imports. Direct tests use a hand-built :class:`RunContext` / stub
+main agent; loop-driven tests ride the real ``build_agent`` + ``AgentTurnHandler`` with one scripted
+:class:`FunctionModel` driving BOTH parent and child (``override`` is contextvar-scoped), branching
+on whether the ``agent`` tool is visible. No network anywhere.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 import sys
 from collections.abc import AsyncIterator
@@ -20,7 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import SecretStr
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -44,6 +47,31 @@ from decode.tools import KNOWN_TOOL_NAMES, tool_kind
 from decode.tools import agent as agent_module
 from decode.tools.agent import AGENT_TOOL_NAME
 from decode.tools.registry import TOOL_SPECS
+
+# Well-formed exploration prompts (question + scope + expected report content) — the shape the
+# hardened tool description asks for, so these survive the substance guard task 104 adds later.
+_PROMPT_A = (
+    "How does the permission gate decide allow/ask/deny? Search src/decode/permissions/ and report "
+    "the decision path with file:line evidence."
+)
+_PROMPT_B = (
+    "How does the sandbox executor seam dispatch bash? Search src/decode/sandbox/ and report the "
+    "backends and their entry points with file:line evidence."
+)
+_PROMPT_C = (
+    "How is tool output truncated before it reaches the model? Search src/decode/tools/ and report "
+    "the caps and where they are applied, with file:line evidence."
+)
+
+
+def _prompts(n: int) -> list[str]:
+    """``n`` distinct well-formed exploration prompts (each carries question + scope + report ask)."""
+    return [
+        f"How does subsystem {i} of decode work? Search src/decode/ for its module and report its "
+        f"entry points and call flow with file:line evidence."
+        for i in range(n)
+    ]
+
 
 # direct-call harness
 
@@ -75,11 +103,12 @@ def test_agent_tool_name_is_stable():
     assert agent_module.AGENT_TOOL_NAME == "agent"
 
 
-def test_agent_takes_ctx_and_prompt_only():
+def test_agent_takes_ctx_and_prompts_only():
     import inspect
 
+    # ADR-0017 §1: ONE call carries the whole fan-out — a list of prompts, one per Explore child.
     params = list(inspect.signature(agent_module.agent).parameters)
-    assert params == ["ctx", "prompt"]
+    assert params == ["ctx", "prompts"]
 
 
 def test_require_main_agent_raises_a_clear_error_when_unset():
@@ -109,6 +138,24 @@ def test_agent_is_registered_as_a_read_only_spec():
     # READ_ONLY → runs inline, never prompts, auto-allows in every mode (ADR-0013 §5).
     assert by_name["agent"].kind is ToolKind.READ_ONLY
     assert by_name["agent"].func is agent_module.agent
+
+
+def test_agent_registers_with_a_raised_retry_budget(mocker):
+    """The ``agent`` tool must register with ``retries >= 2`` (ADR-0017 §3).
+
+    pydantic-ai's per-tool retry budget defaults to 1, so two consecutive ``ModelRetry`` nags (the
+    width cap, then a substance nag) would abort the whole run with ``UnexpectedModelBehavior``
+    instead of coaching the model. Pinned on the spec AND on the tool as registered on the Agent.
+    """
+    by_name = {spec.name: spec for spec in TOOL_SPECS}
+    assert by_name["agent"].retries is not None
+    assert by_name["agent"].retries >= 2
+
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    built = build_agent()
+    assert built._function_toolset.tools["agent"].max_retries == by_name["agent"].retries
 
 
 def test_agent_is_a_known_tool_name():
@@ -207,13 +254,14 @@ def _model(function) -> FunctionModel:
     return FunctionModel(function, stream_function=stream_function)
 
 
-def _fanout_model(child_fn, *, spawn_prompt="investigate the codebase", parent_final="DONE"):
-    """A :class:`FunctionModel` driving the PARENT (spawn once, then finish) and the CHILD.
+def _fanout_model(child_fn, *, spawn_prompts=(_PROMPT_A,), parent_final="DONE"):
+    """A :class:`FunctionModel` driving the PARENT (ONE fan-out call, then finish) and the CHILDREN.
 
-    It branches on whether the ``agent`` tool is visible: the parent sees it — it spawns a child on its
-    first request, then returns text; the child does NOT (``prepare=`` hid it), so control falls to the
-    ``child_fn`` behavior the individual test scripts. One model object drives both because
-    ``agent.override(model=…)`` is contextvar-scoped (ADR-0013 §6).
+    It branches on whether the ``agent`` tool is visible: the parent sees it — it emits ONE
+    ``agent(prompts=[…])`` call on its first request (the harness spawns the children), then returns
+    text; a child does NOT (``prepare=`` hid it), so control falls to the ``child_fn`` behavior the
+    individual test scripts. One model object drives both because ``agent.override(model=…)`` is
+    contextvar-scoped (ADR-0013 §6, ADR-0017 §1).
     """
 
     def function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -221,7 +269,11 @@ def _fanout_model(child_fn, *, spawn_prompt="investigate the codebase", parent_f
         if AGENT_TOOL_NAME in visible:  # PARENT context
             if not _tool_returned(messages, AGENT_TOOL_NAME):
                 return ModelResponse(
-                    parts=[ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompt": spawn_prompt})]
+                    parts=[
+                        ToolCallPart(
+                            tool_name=AGENT_TOOL_NAME, args={"prompts": list(spawn_prompts)}
+                        )
+                    ]
                 )
             return ModelResponse(parts=[TextPart(content=parent_final)])
         return child_fn(messages, info)  # CHILD context
@@ -329,7 +381,7 @@ async def test_child_run_does_not_thread_parent_usage(agent, tmp_path):
     ctx = _tool_ctx(tmp_path, usage=parent_usage)
 
     with agent.override(model=_child_model("REPORT")):
-        out = await agent_module.agent(ctx, "investigate the config module")
+        out = await agent_module.agent(ctx, [_PROMPT_A])
 
     assert "REPORT" in out
     # The child made a model request, but it was NOT folded into the passed-in parent usage.
@@ -385,44 +437,213 @@ async def test_child_read_only_tool_runs_without_touching_any_resolver(agent, tm
     deny_user.assert_not_called()
 
 
-# direct: report truncation
+# direct: the structural guards (deterministic, pre-spawn — ADR-0017 §2)
 
 
-async def test_long_child_report_is_truncated_to_the_byte_cap(agent, tmp_path, monkeypatch):
-    """A long child report is capped to ``subagent_result_max_bytes`` and returned as a plain str."""
-    monkeypatch.setattr(settings, "subagent_result_max_bytes", 100, raising=False)
-    big = "\n".join(f"finding number {i}" for i in range(500))  # many short lines, well over 100 B
+async def test_empty_prompts_raises_model_retry_before_any_child_spawns(tmp_path, mocker):
+    """``prompts=[]`` → ``ModelRetry`` naming the fix, and NOT ONE child is spawned."""
+    spawn = mocker.patch.object(agent_module, "_require_main_agent")
     ctx = _tool_ctx(tmp_path)
 
-    with agent.override(model=_child_model(big)):
-        out = await agent_module.agent(ctx, "investigate everything")
+    with pytest.raises(ModelRetry, match="at least one"):
+        await agent_module.agent(ctx, [])
 
-    assert isinstance(out, str)
-    assert len(out.encode("utf-8")) <= 100  # the byte cap bit
-    assert out != big
-    assert big.startswith(out)  # the kept head is a line-aligned prefix of the report
+    spawn.assert_not_called()  # the guard fires BEFORE the fan-out
 
 
-async def test_deferred_tool_requests_output_returns_a_fallback_note(agent, tmp_path, mocker):
-    """Defensive: a ``DeferredToolRequests`` child output → a short note, never the object (§8)."""
+async def test_more_than_six_prompts_raises_model_retry_telling_the_model_to_consolidate(
+    tmp_path, mocker
+):
+    """A 7-wide fan-out → ``ModelRetry`` asking the model to consolidate; no child spawns (§2)."""
+    spawn = mocker.patch.object(agent_module, "_require_main_agent")
+    ctx = _tool_ctx(tmp_path)
+
+    with pytest.raises(ModelRetry, match=r"(?i)consolidate"):
+        await agent_module.agent(ctx, _prompts(agent_module.MAX_FANOUT_PROMPTS + 1))
+
+    spawn.assert_not_called()
+
+
+async def test_the_width_cap_is_six_and_six_prompts_pass_the_guard(tmp_path, mocker):
+    """The cap is a module constant (6): exactly six prompts fan out — six labelled sections back."""
+    assert agent_module.MAX_FANOUT_PROMPTS == 6
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=_StubAgent(_report("ok")))
+    ctx = _tool_ctx(tmp_path)
+
+    out = await agent_module.agent(ctx, _prompts(6))
+
+    assert len(_sections(out)) == 6
+
+
+# direct: the labelled aggregation (ADR-0017 §5)
+
+
+async def test_one_prompt_folds_one_labelled_section(tmp_path, mocker):
+    """A one-element list is a single-child exploration: exactly one ``## Subagent 1 — "…"`` section."""
+    mocker.patch.object(
+        agent_module, "_require_main_agent", return_value=_StubAgent(_report("REPORT-A"))
+    )
+    ctx = _tool_ctx(tmp_path)
+
+    out = await agent_module.agent(ctx, [_PROMPT_A])
+
+    assert out.startswith(f'## Subagent 1 — "{_PROMPT_A}"')
+    assert _sections(out) == [(_PROMPT_A, "REPORT-A")]
+
+
+async def test_n_prompts_fold_n_sections_in_prompt_order_each_headed_by_its_own_prompt(
+    tmp_path, mocker
+):
+    """Sections are 1-based, in PROMPT order, each heading carrying its own prompt verbatim (§5)."""
+    prompts = [_PROMPT_A, _PROMPT_B, _PROMPT_C]
+    mocker.patch.object(
+        agent_module, "_require_main_agent", return_value=_EchoAgent()
+    )  # child report = its own prompt
+    ctx = _tool_ctx(tmp_path)
+
+    out = await agent_module.agent(ctx, prompts)
+
+    assert _sections(out) == [(p, f"report for: {p}") for p in prompts]
+    assert '## Subagent 1 — "' in out and '## Subagent 3 — "' in out
+
+
+async def test_duplicate_prompts_are_not_deduped(tmp_path, mocker):
+    """Two identical prompts → two children → two sections (dedupe is a prompt-quality issue, §2)."""
+    tracker = _ConcurrencyTracker()
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=tracker)
+    ctx = _tool_ctx(tmp_path)
+
+    out = await agent_module.agent(ctx, [_PROMPT_A, _PROMPT_A])
+
+    assert _sections(out) == [(_PROMPT_A, "report"), (_PROMPT_A, "report")]
+    assert tracker.spawns == 2
+
+
+# direct: the shared context budget (ADR-0017 §6)
+
+
+async def test_each_child_report_is_truncated_to_the_shared_byte_budget(
+    tmp_path, mocker, monkeypatch
+):
+    """Each child's report is capped to ``subagent_result_max_bytes // len(prompts)`` — total stays flat."""
+    monkeypatch.setattr(settings, "subagent_result_max_bytes", 300, raising=False)
+    big = "\n".join(f"finding number {i}" for i in range(500))  # many short lines, way over the cap
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=_StubAgent(_report(big)))
+    prompts = [_PROMPT_A, _PROMPT_B, _PROMPT_C]
+    ctx = _tool_ctx(tmp_path)
+
+    out = await agent_module.agent(ctx, prompts)
+
+    per_child = 300 // len(prompts)
+    bodies = [body for _prompt, body in _sections(out)]
+    assert len(bodies) == 3
+    for body in bodies:
+        assert len(body.encode("utf-8")) <= per_child  # the shared budget, split evenly
+        assert body != big
+        assert big.startswith(body)  # the kept head is a line-aligned prefix of the report
+
+
+async def test_a_single_child_still_gets_the_whole_byte_budget(tmp_path, mocker, monkeypatch):
+    """One prompt → the divisor is 1, so a lone child keeps the full ``subagent_result_max_bytes``."""
+    monkeypatch.setattr(settings, "subagent_result_max_bytes", 100, raising=False)
+    big = "\n".join(f"finding number {i}" for i in range(500))
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=_StubAgent(_report(big)))
+    ctx = _tool_ctx(tmp_path)
+
+    out = await agent_module.agent(ctx, [_PROMPT_A])
+
+    body = _sections(out)[0][1]
+    assert 0 < len(body.encode("utf-8")) <= 100
+    assert big.startswith(body)
+
+
+# direct: per-child failure isolation (ADR-0017 §5) + the defensive deferred case
+
+
+async def test_a_child_that_raises_gets_a_failure_note_and_its_siblings_still_fold(
+    tmp_path, mocker, caplog
+):
+    """A raising child NEVER discards its siblings: its section carries a failure note, theirs survive."""
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    class _OneChildExplodes:
+        async def run(self, prompt, *, deps, usage_limits):
+            if prompt == _PROMPT_B:
+                raise UsageLimitExceeded("the request limit was exceeded")
+            return _report(f"report for: {prompt}")
+
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=_OneChildExplodes())
+    ctx = _tool_ctx(tmp_path)
+
+    with caplog.at_level("WARNING", logger="decode.tools.agent"):
+        out = await agent_module.agent(ctx, [_PROMPT_A, _PROMPT_B, _PROMPT_C])
+
+    sections = _sections(out)
+    assert len(sections) == 3
+    # The failed angle is honest about failing — and named, so the parent model can re-plan.
+    assert sections[1][0] == _PROMPT_B
+    assert "failed" in sections[1][1].lower()
+    # ...while both siblings' reports folded intact (no exception escaped the tool).
+    assert sections[0][1] == f"report for: {_PROMPT_A}"
+    assert sections[2][1] == f"report for: {_PROMPT_C}"
+    assert "UsageLimitExceeded" in caplog.text  # the exception was logged, not swallowed silently
+
+
+async def test_deferred_tool_requests_output_returns_a_fallback_note(tmp_path, mocker):
+    """Defensive: a ``DeferredToolRequests`` child output → a short note as that child's section (§8)."""
     from pydantic_ai import DeferredToolRequests
 
     stub = SimpleNamespace(output=DeferredToolRequests())
     mocker.patch.object(agent_module, "_require_main_agent", return_value=_StubAgent(stub))
     ctx = _tool_ctx(tmp_path)
 
-    out = await agent_module.agent(ctx, "investigate")
+    out = await agent_module.agent(ctx, [_PROMPT_A])
 
-    assert isinstance(out, str)
-    assert "could not complete" in out.lower()
+    body = _sections(out)[0][1]
+    assert "could not complete" in body.lower()
+
+
+# stand-in main agents + the section parser
+
+
+def _report(text: str) -> SimpleNamespace:
+    """A stand-in ``AgentRunResult`` whose ``output`` is ``text`` (what the runner reads)."""
+    return SimpleNamespace(output=text)
 
 
 class _StubAgent:
+    """A stand-in main agent handing every child the SAME canned result."""
+
     def __init__(self, result):
         self._result = result
 
     async def run(self, prompt, *, deps, usage_limits):
         return self._result
+
+
+class _EchoAgent:
+    """A stand-in main agent whose child report echoes its own spawn prompt (proves section pairing)."""
+
+    async def run(self, prompt, *, deps, usage_limits):
+        await asyncio.sleep(0)  # yield, so a broken (sequential) gather still can't reorder results
+        return _report(f"report for: {prompt}")
+
+
+_SECTION_RE = re.compile(r'^## Subagent (\d+) — "(.*)"$', re.MULTILINE)
+
+
+def _sections(aggregate: str) -> list[tuple[str, str]]:
+    """Parse the labelled aggregate into ``(prompt, body)`` pairs — the model-facing contract (§5).
+
+    Also asserts the headings are 1-based and contiguous, so a mis-numbered fold fails loudly here.
+    """
+    matches = list(_SECTION_RE.finditer(aggregate))
+    assert [m.group(1) for m in matches] == [str(i) for i in range(1, len(matches) + 1)], aggregate
+    bounds = [m.start() for m in matches] + [len(aggregate)]
+    return [
+        (match.group(2), aggregate[match.end() : bounds[i + 1]].strip())
+        for i, match in enumerate(matches)
+    ]
 
 
 # direct: the concurrency semaphore
@@ -434,26 +655,34 @@ class _ConcurrencyTracker:
     def __init__(self) -> None:
         self.live = 0
         self.max_concurrent = 0
+        self.spawns = 0
 
     async def run(self, prompt, *, deps, usage_limits):
         self.live += 1
+        self.spawns += 1
         self.max_concurrent = max(self.max_concurrent, self.live)
         await asyncio.sleep(0.05)  # hold the slot so overlap is observable
         self.live -= 1
-        return SimpleNamespace(output="report")
+        return _report("report")
 
 
 async def test_semaphore_bounds_concurrent_children(mocker, monkeypatch, tmp_path):
-    """With ``subagent_max_parallel=2`` at most two children run at once (the overlap counter caps)."""
+    """With ``subagent_max_parallel=2`` at most two of a 6-wide fan-out's children run at once.
+
+    The width cap (6) and the concurrency ceiling are DIFFERENT limits (ADR-0017 §2): one call may
+    carry six prompts, but the per-loop semaphore — acquired per child ATTEMPT — still admits only
+    ``subagent_max_parallel`` at a time (here 2, then 2, then 2).
+    """
     monkeypatch.setattr(settings, "subagent_max_parallel", 2, raising=False)
     agent_module._reset_semaphores()  # rebuild the per-loop semaphore at the patched size
     tracker = _ConcurrencyTracker()
     mocker.patch.object(agent_module, "_require_main_agent", return_value=tracker)
+    ctx = _tool_ctx(tmp_path)
 
-    ctxs = [_tool_ctx(tmp_path) for _ in range(6)]
-    results = await asyncio.gather(*(agent_module.agent(c, "investigate") for c in ctxs))
+    out = await agent_module.agent(ctx, _prompts(6))
 
-    assert all("report" in r for r in results)
+    assert tracker.spawns == 6
+    assert len(_sections(out)) == 6
     assert tracker.max_concurrent <= settings.subagent_max_parallel
     assert tracker.max_concurrent == 2  # concurrency reached — but never exceeded — the cap
 

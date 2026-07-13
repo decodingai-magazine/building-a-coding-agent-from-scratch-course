@@ -35,17 +35,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
-    """One registered tool: ``name``, ``func``, and its :class:`~decode.permissions.types.ToolKind`.
+    """One registered tool: ``name``, ``func``, its :class:`~decode.permissions.types.ToolKind`, ``retries``.
 
     ``kind`` is the tool's permission classification (ADR-0003 §2): the gate evaluates it against
     the active mode to decide allow/ask/deny. ``func`` is the bare tool function (it takes ``ctx``
     as its first parameter) — Pydantic AI builds the model-facing schema from its signature and
-    docstring.
+    docstring. ``retries`` is the per-tool ``ModelRetry`` budget: ``None`` = the Agent default (1),
+    raised only by a tool that *coaches* the model with ``ModelRetry`` (``agent``, ADR-0017 §3).
     """
 
     name: str
     func: Callable[..., object]
     kind: ToolKind
+    retries: int | None = None
 
 
 # The flat catalogue. Source of truth for registration and the tool-kind map.
@@ -107,12 +109,15 @@ TOOL_SPECS: list[ToolSpec] = [
         func=skills_module.skill,
         kind=ToolKind.OTHER,
     ),
-    # Agent tool (ADR-0013): spawns a read-only Explore subagent in-process. READ_ONLY → runs
-    # inline, auto-allowed; explore itself omits it (recursion default-deny).
+    # Agent tool (ADR-0013, ADR-0017): ONE call fans out N read-only Explore subagents in-process.
+    # READ_ONLY → runs inline, auto-allowed; explore itself omits it (recursion default-deny). Its
+    # structural guards nag via ``ModelRetry``, so it needs a budget above the default 1 — otherwise
+    # two consecutive nags abort the run with ``UnexpectedModelBehavior`` (ADR-0017 §3).
     ToolSpec(
         name=agent_module.AGENT_TOOL_NAME,
         func=agent_module.agent,
         kind=ToolKind.READ_ONLY,
+        retries=agent_module.AGENT_TOOL_RETRIES,
     ),
 ]
 
@@ -128,10 +133,11 @@ def register_tools(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:
     with a per-tool ``prepare=`` callback (:func:`_restrict_to_active_agent`) that hides the tool —
     returns ``None`` so it is absent from the model's schema **for that run** — when it is not in
     ``ctx.deps.active_agent.tools``. One Agent, no rebuild: switching the active agent changes the
-    visible tool set on the next turn (spike-confirmed against pydantic-ai 1.107).
+    visible tool set on the next turn (spike-confirmed against pydantic-ai 1.107). ``retries=None``
+    (every tool but ``agent``) leaves the Agent's default budget in place.
     """
     for spec in TOOL_SPECS:
-        agent.tool(spec.func, prepare=_prepare_for(spec.name))
+        agent.tool(spec.func, prepare=_prepare_for(spec.name), retries=spec.retries)
     logger.debug("registered %d tools: %s", len(TOOL_SPECS), [s.name for s in TOOL_SPECS])
 
 
