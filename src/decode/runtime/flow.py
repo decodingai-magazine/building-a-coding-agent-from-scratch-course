@@ -3,11 +3,13 @@
 Two flows, one ``build_agent()``: :func:`run_agent_task` (BYPASS — every gated tool inline, no
 human wait) and :func:`run_agent_task_hitl` (gating — ``write``/``edit``/``bash`` and ``ask_user``
 pause on durable Kitaru waits resolved out-of-band). Each turn is checkpointed, so a crash replays
-finished turns from cache. Kitaru imports stay inside this package so the REPL path never imports
-kitaru. Opik tracing is one Trace per run, initialized inside the flow after secret-store hydration;
-run-level nesting is best-effort under a real provider (worker-thread loops drop OTel context, so
-some model spans may export as siblings — tokens are still captured).
-See ADR-0008, ADR-0010 (replay), ADR-0012 (sandbox), ADR-0014 (tracing).
+finished turns from cache. Kitaru imports stay inside this package so a ``DECODE_ENV=local`` REPL
+never imports kitaru. Config (including any Environment-Bucket-hydrated key) is already in
+``settings`` when a flow starts — hydration is process-scoped, at singleton construction (ADR-0015
+§5). Opik tracing is one Trace per run, initialized inside the flow; run-level nesting is best-effort
+under a real provider (worker-thread loops drop OTel context, so some model spans may export as
+siblings — tokens are still captured).
+See ADR-0008, ADR-0010 (replay), ADR-0012 (sandbox), ADR-0014 (tracing), ADR-0015 (config).
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from pydantic_ai import DeferredToolRequests
 from decode import observability
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
-from decode.config.settings import reload_settings, set_secret_hydration_active, settings
+from decode.config.settings import settings
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
@@ -80,32 +82,6 @@ _HITL_WAIT_TOOL_NAMES: frozenset[str] = frozenset(
 
 
 @contextmanager
-def _config_from_secret_store() -> Iterator[None]:
-    """Hydrate ``settings`` from a Kitaru secret for the span of a flow, restore on exit (ADR-0008 §5).
-
-    The restore is load-bearing: the settings singleton is a module-level global shared by every
-    reader, so without it a later in-process read (or the next flow) would inherit the hydrated
-    config. A pure no-op when ``runtime_secret_store_config`` is off.
-    """
-    if not settings.runtime_secret_store_config:
-        yield
-        return
-    # Snapshot the exact pre-flow field state so the restore is byte-identical even on error.
-    snapshot = dict(settings.__dict__)
-    snapshot_fields_set = set(settings.__pydantic_fields_set__)
-    set_secret_hydration_active(True)
-    try:
-        reload_settings()  # rebuilds the singleton in place, pulling the secret through the source
-        yield
-    finally:
-        set_secret_hydration_active(False)
-        settings.__dict__.clear()
-        settings.__dict__.update(snapshot)
-        settings.__pydantic_fields_set__.clear()
-        settings.__pydantic_fields_set__.update(snapshot_fields_set)
-
-
-@contextmanager
 def _durable_sleeper() -> Iterator[None]:
     """Install the durable ``sleep`` seam for a durable run, reset on exit (ADR-0008 §4).
 
@@ -152,30 +128,12 @@ def _reap_runtime_executor() -> None:
         loop.close()
 
 
-def _start_runtime_executor(executor: Any, workspace: Path) -> None:
-    """Eagerly start the installed sandbox ``executor`` against ``workspace`` — best-effort (ADR-0012 §2).
-
-    Brings the proxy-wired worker up before the first ``bash`` so its CA is trusted. Runs on a
-    dedicated short-lived loop (never :func:`asyncio.run` — see :func:`_reap_runtime_executor`).
-    A warm-up failure is logged, never raised — the first ``bash`` retries the create lazily.
-    """
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(executor.start(workspace))
-    except Exception:
-        logger.warning(
-            "[sandbox] headless sandbox warm-up failed; degrading to lazy start", exc_info=True
-        )
-    finally:
-        loop.close()
-
-
 def _warm_headless_executor(workspace: Path) -> None:
     """Eagerly warm the headless sandbox executor against ``workspace`` — best-effort (ADR-0012 §2,6).
 
-    Idempotent with the :func:`_sandbox_proxy` path (a started executor's ``start`` is a no-op).
-    Runs on a dedicated short-lived loop (never :func:`asyncio.run`). A failure is logged, never
-    raised — the first ``bash`` / file op retries lazily. A no-op in ``none`` mode.
+    Runs on a dedicated short-lived loop (never :func:`asyncio.run` — see
+    :func:`_reap_runtime_executor`). A failure is logged, never raised — the first ``bash`` / file op
+    retries lazily. A no-op in ``none`` mode.
     """
     from decode.tools.bash import warm_executor
 
@@ -204,74 +162,6 @@ def _prepare_headless_tool_scope(repo: str | None = None, local: bool = False) -
     workspace, _clone_error = prepare_workspace_or_empty(Path.cwd(), repo=repo, local=local)
     _warm_headless_executor(workspace)
     return workspace
-
-
-@contextmanager
-def _sandbox_proxy(repo: str | None = None, local: bool = False) -> Iterator[None]:
-    """Run the docker Credential Proxy for a headless flow span, tear it down on exit (ADR-0011 §6).
-
-    Engaged only when ``sandbox_mode == "docker"`` and either the proxy flag or a non-empty
-    ``sandbox_git_token`` is set (ADR-0012 §10); otherwise a pure no-op that imports nothing, so the
-    REPL never imports :mod:`decode.sandbox.proxy` or kitaru. When engaged: resolve the credential
-    map host-side, start the mitmproxy container on a per-run docker network, install a proxy-wired
-    ``SandboxExecutor`` as ``bash``'s executor and warm it against the (cloned) Workspace, then tear
-    down. Teardown order is load-bearing: reap the worker BEFORE stopping the proxy —
-    ``docker network rm`` fails while the worker is still attached; ``proxy.stop()`` runs even if
-    ``proxy.start()`` raised partway. Nests inside :func:`_config_from_secret_store` so proxy rules
-    read secret-hydrated config.
-    """
-    # `ponytail:` a NON-EMPTY SANDBOX_GIT_TOKEN auto-engages the proxy (the one-knob GitHub path).
-    # Gate on the resolved VALUE: an explicit ``SANDBOX_GIT_TOKEN=`` parses to ``SecretStr("")``,
-    # which must inject NOTHING and leave the proxy down — not prepend empty Bearer/Basic headers.
-    token = (
-        settings.sandbox_git_token.get_secret_value()
-        if settings.sandbox_git_token is not None
-        else ""
-    )
-    proxy_wanted = settings.sandbox_credential_proxy_enabled or bool(token)
-    if not (settings.sandbox_mode == "docker" and proxy_wanted):
-        yield
-        return
-    # Lazy imports: only an enabled docker headless flow pulls in the sandbox proxy.
-    from decode.sandbox.docker_backend import DockerBackend
-    from decode.sandbox.executor import SandboxExecutor
-    from decode.sandbox.proxy import (
-        DEFAULT_PROXY_RULES,
-        DockerCredentialProxy,
-        build_credential_map,
-        github_token_rules,
-    )
-    from decode.sandbox.workspace import prepare_workspace_or_empty
-    from decode.tools.bash import install_executor
-
-    # GitHub rules go FIRST so ``api.github.com`` precedes ``github.com`` (parent-domain matching);
-    # explicit ``DEFAULT_PROXY_RULES`` on the same host then override.
-    rules = list(DEFAULT_PROXY_RULES)
-    if token:
-        rules = github_token_rules(token) + rules
-    proxy = DockerCredentialProxy(build_credential_map(rules))
-    try:
-        proxy.start()
-        executor = SandboxExecutor(
-            DockerBackend(
-                network=proxy.network,
-                proxy_env=proxy.worker_proxy_env,
-                ca_cert_host_path=proxy.ca_cert_host_path,
-            )
-        )
-        install_executor(executor)
-        # Warm the worker against the (cloned) Workspace so its CA is trusted before the first bash;
-        # a clone failure degrades to an empty Workspace. The flow body reuses this populated tree.
-        workspace, _clone_error = prepare_workspace_or_empty(Path.cwd(), repo=repo, local=local)
-        _start_runtime_executor(executor, workspace)
-        try:
-            yield
-        finally:
-            # Reap the worker BEFORE the proxy (``docker network rm`` fails while it is attached);
-            # the outer flow ``finally`` calls it again — harmless, it is idempotent.
-            _reap_runtime_executor()
-    finally:
-        proxy.stop()
 
 
 def _build_runtime_agent(
@@ -344,19 +234,19 @@ def run_agent_task(
     runs under a ``finally`` that reaps the sandbox executor on completion and on error.
     """
     try:
-        with _config_from_secret_store(), _sandbox_proxy(repo, local):
-            # Init tracing INSIDE the flow, AFTER _config_from_secret_store so a secret-store-hydrated
-            # OPIK_API_KEY is honored; idempotent + a silent no-op without a key (ADR-0014 §4-5).
-            observability.init_tracing()
-            tool_scope = _prepare_headless_tool_scope(repo, local)
-            durable_agent = _build_runtime_agent(model)
-            deps = _build_headless_deps(tool_scope)
-            # One root span per run, keyed on the Kitaru exec_id (a nullcontext when tracing is off).
-            with observability.root_span(
-                "decode_run", thread_id=current_execution_id(), input=task
-            ) as span:
-                result = durable_agent.run_sync(task, deps=deps)
-                observability.record_output(span, result.output)
+        # Init tracing INSIDE the flow: idempotent + a silent no-op without a key (ADR-0014 §4-5).
+        # An Environment-Bucket-hydrated OPIK_API_KEY is simply already in ``settings`` — hydration
+        # is process-scoped now, at singleton construction (ADR-0015 §5).
+        observability.init_tracing()
+        tool_scope = _prepare_headless_tool_scope(repo, local)
+        durable_agent = _build_runtime_agent(model)
+        deps = _build_headless_deps(tool_scope)
+        # One root span per run, keyed on the Kitaru exec_id (a nullcontext when tracing is off).
+        with observability.root_span(
+            "decode_run", thread_id=current_execution_id(), input=task
+        ) as span:
+            result = durable_agent.run_sync(task, deps=deps)
+            observability.record_output(span, result.output)
         output = result.output
         if not isinstance(output, str):
             # Defensive: under BYPASS every tool runs inline, so a deferred request here is a bug.
@@ -461,29 +351,29 @@ def run_agent_task_hitl(
     ``finally``. Launch + read-back via :func:`run_hitl_agent_task`.
     """
     try:
-        with _config_from_secret_store(), _sandbox_proxy(repo, local):
-            # Init tracing INSIDE the flow, AFTER _config_from_secret_store so a secret-store-hydrated
-            # OPIK_API_KEY is honored; idempotent + a silent no-op without a key (ADR-0014 §4-5).
-            observability.init_tracing()
-            tool_scope = _prepare_headless_tool_scope(repo, local)
-            durable_agent = _build_hitl_runtime_agent(model)
-            deps = _build_hitl_deps(tool_scope)
-            # The durable sleeper spans only ``run_sync`` and resets on exit, so a later in-process
-            # interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).
-            with _durable_sleeper():
-                try:
-                    # One root span per run, keyed on the Kitaru exec_id (a nullcontext when tracing
-                    # is off). A denied approval unwinds it exactly once before the except below.
-                    with observability.root_span(
-                        "decode_run_hitl", thread_id=current_execution_id(), input=task
-                    ) as span:
-                        result = durable_agent.run_sync(task, deps=deps)
-                        observability.record_output(span, result.output)
-                except _ToolApprovalDenied:
-                    # The adapter raises on a deny (no feed-back-to-model path), so the run stops
-                    # here — the denied tool never ran.
-                    logger.debug("HITL run stopped: an operator denied a tool approval")
-                    return _capture_runtime_output(_HITL_DENIED_MESSAGE)
+        # Init tracing INSIDE the flow: idempotent + a silent no-op without a key (ADR-0014 §4-5).
+        # An Environment-Bucket-hydrated OPIK_API_KEY is simply already in ``settings`` — hydration
+        # is process-scoped now, at singleton construction (ADR-0015 §5).
+        observability.init_tracing()
+        tool_scope = _prepare_headless_tool_scope(repo, local)
+        durable_agent = _build_hitl_runtime_agent(model)
+        deps = _build_hitl_deps(tool_scope)
+        # The durable sleeper spans only ``run_sync`` and resets on exit, so a later in-process
+        # interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).
+        with _durable_sleeper():
+            try:
+                # One root span per run, keyed on the Kitaru exec_id (a nullcontext when tracing
+                # is off). A denied approval unwinds it exactly once before the except below.
+                with observability.root_span(
+                    "decode_run_hitl", thread_id=current_execution_id(), input=task
+                ) as span:
+                    result = durable_agent.run_sync(task, deps=deps)
+                    observability.record_output(span, result.output)
+            except _ToolApprovalDenied:
+                # The adapter raises on a deny (no feed-back-to-model path), so the run stops
+                # here — the denied tool never ran.
+                logger.debug("HITL run stopped: an operator denied a tool approval")
+                return _capture_runtime_output(_HITL_DENIED_MESSAGE)
         output = result.output
         if not isinstance(output, str):
             # A deferred request escaping ``run_sync`` means a wait-capable tool was not opted out

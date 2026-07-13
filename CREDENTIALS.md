@@ -1,308 +1,317 @@
-# Credentials — where decode's secrets live, and how to test it end to end
+# Credentials — one config surface
 
-decode hides two *different* secrets from two *different* observers. Only one of them is a proxy.
-Both ship **off** — with neither on, every key comes from your `.env`.
+`Settings` ([`config/settings.py`](src/decode/config/settings.py)) is the **single source of truth** for
+every credential decode holds. Nothing else reads one. So there is only ever one interesting question —
+**how does a value get *into* `Settings`?** — and `DECODE_ENV` is the whole answer:
 
-| | **Sandbox Credential Proxy** | **Model-key secret resolution** |
+| `DECODE_ENV` | The source chain (highest first) |
+|---|---|
+| `local` (default) | process env → **`.env`** → defaults. Kitaru is never imported. |
+| `dev` / `staging` / `prod` | process env → **the Environment Bucket** (`decode-<env>`) → defaults. **`.env` is dropped from the chain entirely.** |
+
+One surface, two injection mechanisms, selected by one variable ([ADR-0015](docs/adr/0015-environment-bucket-secrets.md)).
+Values land in `Settings` **only** — never `os.environ` — so a model-chosen `bash` never inherits one.
+
+There is a **second, much smaller question**, and it is worth keeping separate: *which of those values does
+the **sandbox** get?* Exactly one, and only if you ask for it — `SANDBOX_GIT_TOKEN` ([Part 2](#part-2--the-sandbox-git-token-sandbox_git_token)).
+Everything else in `Settings` stays in the harness process.
+
+**How much of this is Kitaru?** Exactly one line. The Environment Bucket **is** a Kitaru secret, and that
+settings source is **the only `get_secret` seam in the whole codebase**
+([ADR-0015 §6](docs/adr/0015-environment-bucket-secrets.md)). (`MODAL_PROXY_TOKEN_ID` / `_SECRET` are an
+unrelated third thing wearing the word "proxy": Modal's own endpoint-auth headers — see
+[`MODAL_MODELS.md`](MODAL_MODELS.md).)
+
+The rest of this file is a manual e2e tutorial. Every case is an **A/B**: the same command with one thing
+flipped, and a different observable. Part 4 is an automated backstop that proves the same claims with no
+network, no PAT, and no Kitaru.
+
+> **Clean break — the Credential Proxy is gone ([ADR-0016](docs/adr/0016-drop-credential-proxy.md)).**
+> decode used to hide a tool credential from the docker Worker behind a mitmproxy sidecar that injected the
+> header *after* egress. It only ever worked in one of three sandbox modes (modal already direct-injected the
+> same token), and it bought a property — "the Worker holds no token" — that was therefore already false in
+> the mode where isolation matters most. `SANDBOX_CREDENTIAL_PROXY_ENABLED` and `SANDBOX_PROXY_IMAGE` are
+> **deleted**, no shim: a stale line in your `.env` is silently ignored (`extra="ignore"`). What replaces it
+> is [Part 2](#part-2--the-sandbox-git-token-sandbox_git_token) — one token, direct-injected, both backends,
+> and an honest warning that the model can read it.
+
+## Part 0 — prerequisites
+
+```bash
+cp .env.example .env                          # set GEMINI_API_KEY
+uv run kitaru secrets list                    # Parts 1b+ only: must print a (possibly empty) list, not hang
+docker info >/dev/null && echo "docker ok"    # Part 2 only
+```
+
+Part 1a needs **none** of that — at `DECODE_ENV=local` (the default) decode never touches Kitaru or Docker.
+
+If `kitaru secrets list` retries `HTTPConnection(host='127.0.0.1', port=8383) … Connection refused`, stored
+auth state from an earlier `kitaru login` is pointing at a server that is no longer running. Pick either:
+
+```bash
+uv run kitaru logout    # no server at all — the server-less local database (simplest)
+uv run kitaru login     # or bring the local server + web dashboard back up on 127.0.0.1:8383
+```
+
+On macOS the local Kitaru server can also die mid-run with an ObjC fork-safety abort — the
+`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` fix is in the [README](README.md#headless-runtime-decode-run).
+
+## Part 1 — the config surface (`DECODE_ENV`)
+
+> **Coming from an older `.env` ([ADR-0015 §4](docs/adr/0015-environment-bucket-secrets.md))?**
+> `RUNTIME_SECRET_NAME`, `RUNTIME_SECRET_STORE_CONFIG` and `RUNTIME_SECRET_STORE_MODEL_KEY` are **deleted** —
+> no shim, no deprecation warning, no fail-fast guard. Pydantic's `extra="ignore"` means a stale line in your
+> `.env` is now **silently ignored**: decode will start, read your `.env` like any other local run, and never
+> tell you the knob did nothing. *This paragraph is the only thing standing between you and that silent no-op.*
+> The migration is two commands — `make sync-secrets ENV=<env>` once, then `DECODE_ENV=<env>` on every run.
+> Per-credential secrets from the old world (a `decode-llm-creds`, a lone `github-token`) are now dead weight:
+> `uv run kitaru secrets delete <name>`.
+
+`DECODE_ENV` decides **where `Settings` gets its values, and nothing else** — not session dirs, not log paths,
+not `MEMORY.md`. It is the bootstrap variable, so it is read out-of-band (your `.env` file, overlaid by the
+process env) *before* the chain is built.
+
+### 1a. OFF — `local`, and the invariant that comes with it
+
+The claim: at the default env, decode does not import kitaru at all. It is a one-liner to check, and the same
+one-liner is the B side of the A/B:
+
+```bash
+uv run python -c "
+import sys, decode.cli
+print('kitaru imported:', any(m.split('.')[0] == 'kitaru' for m in sys.modules))
+from decode.config.settings import settings
+print('DECODE_ENV =', settings.decode_env, '| opik project =', settings.opik_project_name)"
+# → kitaru imported: False
+# → DECODE_ENV = local | opik project = decode-local
+
+DECODE_ENV=staging uv run python -c "
+import sys, decode.cli
+print('kitaru imported:', any(m.split('.')[0] == 'kitaru' for m in sys.modules))
+from decode.config.settings import settings
+print('DECODE_ENV =', settings.decode_env, '| opik project =', settings.opik_project_name)"
+# → kitaru imported: True
+# → DECODE_ENV = staging | opik project = decode-staging
+```
+
+Working: `False` at `local`, `True` at a remote env. That second import is the cost of an environment — a
+ZenML stack and a network touch before the first prompt — and it is exactly why `local` is the default.
+Note the free side-effect: the Opik project follows the environment (`decode-local` / `decode-staging`), so
+traces self-sort. Set `OPIK_PROJECT_NAME` explicitly and your value always wins.
+
+`local` reads `.env` and there is nothing to mirror, so the sync script refuses outright:
+
+```bash
+make sync-secrets ENV=local
+# → Error: `local` reads your .env directly — there is nothing to sync. Pick dev, staging or prod.
+```
+
+### 1b. ON — mirror `.env` into the Environment Bucket
+
+The bucket name is **derived** (`decode-<env>`); there is no override knob, so "`DECODE_ENV=staging` pointed at
+the prod bucket" is unrepresentable. One command writes it:
+
+```bash
+make sync-secrets ENV=staging       # → uv run python scripts/sync_secrets.py --env staging
+```
+
+```
+Mirroring .env → decode-staging (key names only; values are never printed).
+decode-staging does not exist yet — it will be created.
+Skipped (not a Settings field): MODAL_TOKEN_ID
+  + GEMINI_API_KEY
+  + OPENROUTER_API_KEY
+This REPLACES the entire contents of decode-staging with these 2 key(s) — `kitaru secrets set` overwrites the whole key set.
+Proceed? [y/N]:
+```
+
+Read that output — every line of it is a design decision:
+
+- **Key names only, never values** — in the diff (`+` added, `-` removed, `~` changed, `=` unchanged), in the
+  confirmation, and even in a kitaru error (its stderr echoes the argv, so it is redacted before printing).
+- **REPLACES.** `kitaru secrets set` overwrites the *whole* key set — a partial update destroys the other keys.
+  So the push is one full-surface call, which is what makes the bucket an exact **mirror** of your file rather
+  than a pile of merged history. A key you delete from `.env` is gone from the bucket on the next sync.
+- **Skipped** keys are the ones that are not `Settings` fields (`MODAL_TOKEN_ID`, `DECODE_LOG_FILE`, …). They
+  are read from `os.environ`, so the bucket could never feed them anyway — mirroring one would just add an
+  unreadable secret to the store.
+- **One-way.** `.env` → Kitaru, never back. There is deliberately no pull: dumping a prod bucket into a
+  developer's working tree is the failure this whole design exists to prevent. Add `--yes` (CI) to skip the
+  prompt.
+
+Confirm it landed (names only — `--show-values` exists, and you do not need it):
+
+```bash
+uv run kitaru secrets list                    # → decode-staging: … (private)
+uv run kitaru secrets show decode-staging     # metadata + key names
+```
+
+### 1c. ON — run against the bucket, with the key absent from your environment
+
+```bash
+env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode run "say hi in exactly three words"
+env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode                    # the TUI, identically
+```
+
+Working: it answers. No provider key was in the process env, `.env` was not in the chain, and nothing was
+written to `os.environ` — the whole surface was hydrated into `Settings` from `decode-staging` at singleton
+construction, so the TUI and the headless flow behave identically (hydration is process-scoped, not a
+headless-only toggle).
+
+### 1d. Negatives — the four ways this must fail (and win)
+
+| Command | Working looks like |
+|---|---|
+| **Missing bucket** (or Kitaru local server down): `DECODE_ENV=prod uv run decode run "hi"` | ONE friendly stderr line, exit 1, **no traceback** — and it names the fix, not the missing key: *Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded (it is missing, or the Kitaru local server is down) — run `make sync-secrets ENV=prod` (see CREDENTIALS.md).* |
+| Same, in the **TUI**: `DECODE_ENV=prod uv run decode` | The **same** line, exit 1 — the REPL is guarded before it starts. Both surfaces or it isn't a config surface. |
+| **No backfill**: delete `GEMINI_API_KEY` from the bucket (`make sync-secrets ENV=staging` after removing it from `.env`), put it back in `.env`, then `env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode run "hi"` | `Decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example).` — it fails **loudly** even though the key is sitting right there in `.env`. That file is not in the chain at a remote env. **This is the point of having environments at all**: a provisioning gap must not be masked by a developer's laptop. |
+| **Process env wins**: `GEMINI_API_KEY=<a-real-key> DECODE_ENV=staging uv run decode run "hi"` | It answers, using *your* key — precedence is always `process env > (.env \| bucket) > defaults`. Handy for a one-off override; also the escape hatch when a bucket key is stale. |
+
+## Part 2 — the sandbox git token (`SANDBOX_GIT_TOKEN`)
+
+One knob, one mechanism, **both backends** ([ADR-0016 §2](docs/adr/0016-drop-credential-proxy.md)). Set it and
+the token enters the **Worker**'s env as `GITHUB_TOKEN`:
+
+| | how the value gets in | what it buys |
 |---|---|---|
-| What it is | a mitmproxy sidecar container | a `kitaru.get_secret()` call — *not* a proxy at all |
-| Whose secret | a tool credential (e.g. a GitHub PAT) | your LLM provider API key (Gemini / OpenRouter) |
-| Hidden from | the model / the worker container | the Kitaru flow payload + checkpoints |
-| Where the secret lives | the proxy container's env | the harness process' memory |
-| How it is applied | HTTP header, injected *after* egress | passed to the model client |
-| Knob | `SANDBOX_CREDENTIAL_PROXY_ENABLED` (or a non-empty `SANDBOX_GIT_TOKEN`) | `RUNTIME_SECRET_STORE_MODEL_KEY` |
-| Needs | a Docker daemon | a Kitaru secret |
-| Where | headless (`decode run` / `decode replay`) + `SANDBOX_MODE=docker` only | headless only |
-| Code | [`sandbox/proxy.py`](src/decode/sandbox/proxy.py), [`sandbox/proxy_addon.py`](src/decode/sandbox/proxy_addon.py) | [`agent/factory.py`](src/decode/agent/factory.py) `resolve_provider_key_from_secret_store` |
-| ADR | [0011 §6](docs/adr/0011-sandboxing-and-credential-proxy.md), [0012 §10](docs/adr/0012-isolated-workspace.md) | [0008 §5](docs/adr/0008-kitaru-durable-runtime.md) |
+| `docker` | a **value-less** `-e GITHUB_TOKEN` on `docker run`; the value rides the docker **client's env**, so it never sits in a host-visible argv (no `ps`, no rendered error can read it) | the model can `git push` / `gh pr create` from inside `/workspace` |
+| `modal` | a `modal.Secret` on the sandbox | the same |
+| `none` | n/a — `none` *is* the host, with your own ambient credentials | n/a |
 
-They compose: one headless run can have both on, hiding two different secrets in two different places.
+Both backends then chain the **same** git credential-helper (`x-access-token:$GITHUB_TOKEN`), so git's
+HTTPS transport authenticates; `gh` reads `GITHUB_TOKEN` natively. Unset or empty → **no env var, no
+credential helper, and a `docker run` argv byte-identical to the no-token case**. The sandbox holds no
+credential at all.
 
-> **A note on the name.** Model-key secret resolution shipped as `RUNTIME_CREDENTIALS_PROXY_ENABLED`,
-> which read exactly like the sandbox Credential Proxy while being an unrelated mechanism.
-> [ADR-0008 §5](docs/adr/0008-kitaru-durable-runtime.md) retired that name; the knob is now
-> `RUNTIME_SECRET_STORE_MODEL_KEY`. **An old `RUNTIME_CREDENTIALS_PROXY_ENABLED=true` in a `.env` is
-> now silently ignored** — rename it. "Credential Proxy" means header injection, and nothing else.
+> **⚠️ A sandboxed process CAN read `$GITHUB_TOKEN`.** That is the deliberate cost of deleting the Credential
+> Proxy, stated plainly ([ADR-0016](docs/adr/0016-drop-credential-proxy.md), *Consequences*). A prompt-injected
+> agent can `echo $GITHUB_TOKEN`. The mitigation is **policy, not code**: hand it a **fine-grained,
+> repo-scoped, revocable** PAT — never a broadly-scoped or organisation-wide one — and revoke it when you are
+> done. Want the stronger property? **Leave `SANDBOX_GIT_TOKEN` unset** and take host-side hand-back (2a).
 
-A third knob, `RUNTIME_SECRET_STORE_CONFIG`, is the *superset* of model-key resolution: it hydrates
-the whole `Settings` surface (provider, model, keys, tuning) from the **same** Kitaru secret named by
-`RUNTIME_SECRET_NAME`, into `Settings` only — never `os.environ`. Take the model key alone, or take
-everything. (`MODAL_PROXY_TOKEN_ID` / `_SECRET` are a fourth thing wearing the word "proxy": Modal's
-own endpoint auth headers, unrelated to all of the above.)
+**Where does the token itself come from?** The one config surface — this is not a separate mechanism. Your
+`.env` at `DECODE_ENV=local`, the Environment Bucket at a remote env; `sandbox_git_token()` is a plain read of
+the already-hydrated `Settings`, with no second lookup anywhere. Mirror it into a bucket like any other key
+(`make sync-secrets ENV=staging`) and `DECODE_ENV=staging SANDBOX_MODE=docker decode run --repo …` works with
+the token absent from your shell entirely.
 
-The rest of this file is a manual e2e tutorial. Every case is an **A/B**: the same command with the
-flag flipped, and a different observable. Run the automated backstop (Part 5) before reaching for a
-real PAT — it already proves the same claims with no network and no secret.
+> **Where a tool call actually runs.** Only `bash` (and the file/search tools) run inside the Worker.
+> **`web_fetch` runs host-side** — a plain `httpx` call in the decode process ([`tools/web.py`](src/decode/tools/web.py)) —
+> so it sees the *host's* network and none of the sandbox's environment. Ask the model to "GET this URL" and it
+> will reach for `web_fetch`, never touching the Worker or its `GITHUB_TOKEN`. If you mean to exercise the
+> sandbox, say **"use the bash tool"** in the prompt and check the run log for `running tool: bash`.
 
-## 0. Prerequisites
+### 2a. OFF — the default: no credential in the sandbox, and the branch still comes back
 
 ```bash
-docker info >/dev/null && echo "docker ok"    # only the Sandbox Credential Proxy needs this
-export GEMINI_API_KEY=<your-key>
-uv run kitaru secrets list                    # must print (a possibly empty) list, not hang
+rm -rf .decode/sandbox        # ← REQUIRED before any --repo run; see the box below
+
+env -u SANDBOX_GIT_TOKEN SANDBOX_MODE=docker \
+  uv run decode run --repo https://github.com/<you>/<repo> \
+  "create NOTES.md with one line and commit it"
 ```
 
-Both features read their secret through the `kitaru secrets` store, so that last command has to work
-before anything below does. Two ways to get there — pick either:
-
-```bash
-uv run kitaru login     # starts a local server on 127.0.0.1:8383, with a web dashboard
-uv run kitaru logout    # or: no server at all — clears the auth state, uses the local database
-```
-
-`kitaru secrets list` retrying `HTTPConnection(host='127.0.0.1', port=8383) … Connection refused`
-means stored auth state from an earlier `kitaru login` is pointing at a server that is no longer
-running. Either bring it back up (`kitaru login`) or drop the state (`kitaru logout`).
-
-## Part 1 — Model-key secret resolution (the LLM key, from Kitaru)
-
-No Docker. Headless only. Not a proxy — a `get_secret()` lookup at model construction.
-
-### 1a. OFF — baseline
-
-```bash
-uv run decode run "say hi in three words"
-```
-
-Working: an answer on stdout, exit `0`. The key came from `settings.gemini_api_key` — i.e. your env.
-
-### 1b. ON — the key comes from Kitaru, not the env
-
-```bash
-uv run kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=<your-key>
-
-env -u GEMINI_API_KEY RUNTIME_SECRET_STORE_MODEL_KEY=true \
-  uv run decode run "say hi in three words"
-```
-
-Working: the same answer, exit `0` — **with `GEMINI_API_KEY` unset in the environment**. That is the
-whole claim: the key was resolved from the Kitaru secret at run time, so a deployed flow payload
-carries the secret *name*, never the raw key.
-
-Control — prove the `env -u` actually bit:
-
-```bash
-env -u GEMINI_API_KEY uv run decode run "hi"
-# → Decode: set GEMINI_API_KEY … , exit 1
-```
-
-### 1c. Negative — flag on, secret missing
-
-```bash
-env -u GEMINI_API_KEY RUNTIME_SECRET_STORE_MODEL_KEY=true \
-  RUNTIME_SECRET_NAME=does-not-exist uv run decode run "hi"
-```
-
-Working: one friendly stderr line naming the real fix (`kitaru secrets set does-not-exist
---GEMINI_API_KEY=…`), exit non-zero, no traceback — and **no silent fallback** to the settings key.
-
-### 1d. Negative — the TUI ignores the flag (flow-mode only)
-
-```bash
-env -u GEMINI_API_KEY RUNTIME_SECRET_STORE_MODEL_KEY=true uv run decode
-```
-
-Working: `Decode: set GEMINI_API_KEY …`, exit 1. The REPL guard deliberately ignores the flag: the
-lookup is `flow_mode`-gated, so the TUI never reaches Kitaru. A green REPL here would be the bug.
-
-## Part 2 — Sandbox Credential Proxy (header injection)
-
-Docker + headless only. The worker never holds the real token.
-
-> **How much of this is Kitaru?** Less than the name suggests. The proxy itself — the mitmproxy
-> container, the per-run docker network, the CA trust, the header injection — is plain docker, with no
-> Kitaru anywhere. Kitaru enters at exactly **one** seam: `build_credential_map()` resolves
-> `{{ secret-name.key }}` header templates via `kitaru.get_secret()`. So **2b (below) is the only
-> Credential-Proxy scenario that touches Kitaru at all**; **2c (`SANDBOX_GIT_TOKEN`) bypasses it
-> entirely** — `github_token_rules()` builds literal header values with no secret-store fetch. If you
-> are here to see Kitaru work, Part 1 and 2b are the demos; 2c is a docker/mitmproxy demo.
-
-> **The request must come from `bash`, or the proxy is not in the picture at all.** Only `bash` runs
-> inside the worker container. **`web_fetch` runs host-side** — a plain `httpx` call in the decode
-> process ([`tools/web.py`](src/decode/tools/web.py)) with no `http_proxy`, no CA, no injection. Ask
-> the model to "GET this URL" and it will reach for `web_fetch`, sail past the proxy, and hand you a
-> **401 that has nothing to do with your credential map**. Every prompt below therefore *names the
-> `bash` tool explicitly*. If your run log shows `running tool: web_fetch`, you are testing nothing —
-> re-run with a prompt that forces `bash`.
-
-### 2a. OFF — baseline, and the call that fails
-
-```bash
-SANDBOX_MODE=docker uv run decode run \
-  "use the bash tool to run exactly this, and show me the output:
-   python3 -c \"import urllib.request; print(urllib.request.urlopen('https://api.github.com/user').read().decode())\""
-```
-
-Working: the model reports **401 / `Requires authentication`** — and the log shows `running tool:
-bash`, not `web_fetch`. No proxy container exists — verify during the run, from a second terminal:
-
-```bash
-docker ps --filter name=decode-proxy                                        # empty
-docker ps --filter ancestor=ghcr.io/astral-sh/uv:python3.12-bookworm-slim   # the worker, alone
-```
-
-This 401 is the control: the request left the worker un-injected. In 2b the same request becomes a
-`200`. (A 401 from `web_fetch` would prove nothing — it never entered the worker.)
-
-### 2b. ON — the general rule path (any host)
-
-Add a rule to `DEFAULT_PROXY_RULES` in [`src/decode/sandbox/proxy.py`](src/decode/sandbox/proxy.py)
-— it ships empty (opt-in):
-
-```python
-DEFAULT_PROXY_RULES: list[SandboxProxyRule] = [
-    SandboxProxyRule(
-        name="github-api",
-        hosts=["api.github.com"],
-        headers={"Authorization": "Bearer {{ github-token.value }}"},
-    ),
-]
-```
-
-```bash
-uv run kitaru secrets set github-token --private --value=<PAT>
-
-# Unset SANDBOX_GIT_TOKEN for this one — a non-empty value (in your shell OR your .env) auto-engages
-# github_token_rules() and would inject the LITERAL token, so you'd be testing 2c, not the Kitaru path.
-env -u SANDBOX_GIT_TOKEN \
-  SANDBOX_CREDENTIAL_PROXY_ENABLED=true SANDBOX_MODE=docker uv run decode run \
-  "use the bash tool to run exactly this, and show me the output:
-   python3 -c \"import json,urllib.request; print(json.load(urllib.request.urlopen('https://api.github.com/user'))['login'])\""
-```
-
-Working: your GitHub login is printed. Same request as 2a, now authenticated — and the worker never
-held the PAT. The startup line names the rules that loaded, which is how you tell the two paths apart:
-`hosts=['api.github.com']` is **this** (your Kitaru-resolved `DEFAULT_PROXY_RULES`);
-`hosts=['api.github.com', 'github.com']` is `github_token_rules()`, i.e. a stray `SANDBOX_GIT_TOKEN`
-took over and Kitaru was never consulted.
-
-Watch it live. The proxy container runs with `--rm`, so its logs vanish at teardown; start this in a
-second terminal **before** the run:
-
-```bash
-until docker ps -q -f name=decode-proxy | grep -q .; do sleep 0.2; done
-docker logs -f "$(docker ps -q -f name=decode-proxy)" | tee /tmp/proxy.log
-# → [decode-proxy] credentials loaded for hosts: ['api.github.com']
-# → [decode-proxy] injected headers for api.github.com: ['Authorization']
-```
-
-Prove the worker is token-free, while the run is still in flight:
+Working: the model commits inside `/workspace`, and on completion **hand-back** pushes a `decode/<session-id>`
+branch to your repo — with your **ambient host git credentials**, because every hand-back git command is a
+*host* subprocess against `.decode/sandbox` ([`sandbox/handback.py`](src/decode/sandbox/handback.py),
+[ADR-0012 §8](docs/adr/0012-isolated-workspace.md)). Prove the Worker is credential-free, during the run, from a
+second terminal:
 
 ```bash
 WORKER=$(docker ps -q --filter ancestor=ghcr.io/astral-sh/uv:python3.12-bookworm-slim)
-docker exec $WORKER env | grep -i token     # GH_TOKEN=decode-proxy-injects-the-real-token  ← a DECOY
-docker exec $WORKER env | grep -i proxy     # http_proxy=http://decode-proxy-…:8080
-docker exec $WORKER gh --version            # gh is installed, alongside git
+docker exec $WORKER env | grep -i token     # EMPTY — no GITHUB_TOKEN, nothing
+docker exec $WORKER git config --global --get credential.helper   # EMPTY — no helper either
 ```
 
-The worker holds a **decoy** `GH_TOKEN`, not the real one — and that decoy is load-bearing. `gh`
-refuses to issue *any* request when it finds no token in its env: it fails locally with `gh auth
-login` and never emits the request the proxy would have authenticated. So the worker is handed a
-placeholder, `gh` sends `Authorization: token <decoy>`, and the proxy **overwrites** that header with
-your real PAT after the request has left the worker. The claim to verify is therefore *"what the
-worker holds is not the secret"*, not *"the worker holds nothing"*:
+**This is the safe default, and it already ships your work back.** You only need Part 2b for the strictly
+larger ask: letting the **model itself** push and open the PR.
+
+> ### `rm -rf .decode/sandbox` before *any* `--repo` run — not optional
+>
+> `--repo` clones **only into an empty Workspace**. A populated `.decode/sandbox` is **reused, never
+> re-cloned** (re-cloning would discard in-progress work), so `--repo` is **silently ignored** — there is no
+> `origin`, and the push dies with a baffling `'origin' does not appear to be a git repository`. Any earlier
+> run without `--repo` leaves exactly such a tree behind (an empty scratch dir the model `git init`'d).
+> Confirm before you blame the token: `git -C .decode/sandbox remote -v` — a clone has an `origin`, a leftover
+> scratch tree has none.
+
+### 2b. ON — the model pushes the branch and opens the PR itself
 
 ```bash
-docker exec $WORKER env | grep -F "<your-PAT>"   # EMPTY — the real credential is never here
-```
+rm -rf .decode/sandbox        # ← 2a left a populated Workspace behind
 
-### 2c. ON — the one-knob GitHub path (no rule edit, no Kitaru secret)
-
-Revert `DEFAULT_PROXY_RULES` to `[]` first. **Then clear the Workspace** — this step is not optional:
-
-```bash
-rm -rf .decode/sandbox   # ← REQUIRED: 2a/2b left a populated Workspace behind
-
-SANDBOX_GIT_TOKEN=<PAT> SANDBOX_MODE=docker \
+SANDBOX_GIT_TOKEN=<fine-grained-PAT> SANDBOX_MODE=docker \
   uv run decode run --repo https://github.com/<you>/<repo> \
   "create NOTES.md with one line, commit it, push the branch, then open a PR against main"
 ```
 
-**Why the `rm` matters.** `--repo` clones **only into an empty Workspace** — a populated one is reused,
-never re-cloned (re-cloning would discard in-progress work). Parts 2a and 2b ran with no `--repo`, so
-they left an empty-scratch tree that the model `git init`'d and committed into. Run 2c against that
-leftover and `--repo` is **silently ignored**: there is no `origin`, the push fails, and the proxy gets
-blamed for a Workspace problem. Confirm with `git -C .decode/sandbox remote -v` — a clone has an
-`origin`, a leftover scratch tree has none.
+Working: the branch is pushed and the PR opens — from *inside* the sandbox, off the injected token. Both
+`git` **and** `gh` are installed in the Worker (docker installs them per session; modal bakes them into a
+cached image layer), so `git push` authenticates through the credential helper and `gh pr create` off
+`GITHUB_TOKEN`. Verify the injection during the run:
 
-Working: the branch is pushed and the PR opens. A non-empty `SANDBOX_GIT_TOKEN` **auto-engages** the
-proxy without the flag, and `github_token_rules()` builds two rules from that one token — `Bearer` on
-`api.github.com` (the REST API) and `Basic base64("x-access-token:<PAT>")` on `github.com` (GitHub's
-git-over-HTTPS transport rejects `Bearer`). Both `git` **and `gh`** are installed in the proxy-wired
-worker — `git` gives the Basic rule a client, `gh` opens the PR off the Bearer rule (driven by the
-decoy `GH_TOKEN` from 2b) — and the real PAT is in neither.
+```bash
+WORKER=$(docker ps -q --filter ancestor=ghcr.io/astral-sh/uv:python3.12-bookworm-slim)
+docker exec $WORKER env | grep GITHUB_TOKEN                       # → GITHUB_TOKEN=<your PAT>  ← YES, it prints
+docker exec $WORKER git config --global --get credential.helper   # → the x-access-token helper
+ps aux | grep -F "<your-PAT>"                                     # EMPTY — never in a host argv
+```
 
-### 2d. Negatives — every way it must stay off
+**That first line printing your PAT is the expected result**, and it is the whole honest cost of this design:
+the Worker holds the token, so anything running in the Worker can read it. The third line is the one property
+the docker path still buys you — the value rides the docker client's env, so it is not in `docker run`'s argv
+and cannot be scraped from the host process table.
+
+`SANDBOX_MODE=modal` is the same story with a `modal.Secret`, and the same warning applies (the token is in
+the remote sandbox's env).
+
+### 2c. Negatives — every way it must stay off
 
 | Command | Working looks like |
 |---|---|
-| `SANDBOX_CREDENTIAL_PROXY_ENABLED=true uv run decode run "hi"` (mode `none`) | no-op; `docker ps -f name=decode-proxy` empty |
-| `SANDBOX_CREDENTIAL_PROXY_ENABLED=true SANDBOX_MODE=docker uv run decode` (TUI) | no-op; the REPL never builds it and never imports kitaru |
-| `SANDBOX_GIT_TOKEN= SANDBOX_MODE=docker uv run decode run "hi"` (explicit empty) | proxy stays **down** — gated on the value, not on presence; an empty token must inject nothing, not an empty `Bearer` |
-| flag on, `DEFAULT_PROXY_RULES = []` | the proxy container starts, logs `no credential map … passthrough, no injection`, and injects nothing |
+| `SANDBOX_GIT_TOKEN= SANDBOX_MODE=docker uv run decode run "hi"` (explicit empty) | **nothing injected** — gated on the *value*, not on presence: no `GITHUB_TOKEN`, no credential helper, and an argv identical to the unset case |
+| `SANDBOX_GIT_TOKEN=<PAT> uv run decode run "hi"` (mode `none`) | no-op — `none` *is* the host; there is no Worker env to inject into |
+| A stale `SANDBOX_CREDENTIAL_PROXY_ENABLED=true` / `SANDBOX_PROXY_IMAGE=…` in your `.env` | **silently ignored** — both keys are deleted ([ADR-0016 §1](docs/adr/0016-drop-credential-proxy.md)); no proxy container exists to start. `docker ps` shows the Worker, alone. |
 | Docker daemon stopped, `SANDBOX_MODE=docker` | one friendly stderr line, exit non-zero, no flow built |
 
-## Part 3 — both features on at once
-
-Different secrets, different hiding places. Both resolved from Kitaru.
+## Part 3 — cleanup
 
 ```bash
-uv run kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=<key>
-uv run kitaru secrets set github-token --private --value=<PAT>
-# with the api.github.com rule from 2b in DEFAULT_PROXY_RULES
-
-env -u GEMINI_API_KEY -u SANDBOX_GIT_TOKEN \
-  RUNTIME_SECRET_STORE_MODEL_KEY=true \
-  SANDBOX_CREDENTIAL_PROXY_ENABLED=true \
-  SANDBOX_MODE=docker \
-  uv run decode run \
-  "use the bash tool to run exactly this, and show me the output:
-   python3 -c \"import json,urllib.request; print(json.load(urllib.request.urlopen('https://api.github.com/user'))['login'])\""
+rm -rf .decode/sandbox                                # the Workspace Part 2 left behind
+uv run kitaru secrets delete decode-staging           # the bucket, if you ran Part 1b
+docker ps -a --filter ancestor=ghcr.io/astral-sh/uv:python3.12-bookworm-slim   # empty — the Worker is reaped
 ```
 
-Working: the login is printed, and the log shows `running tool: bash`. The LLM key was never in the
-env; the PAT was never in the worker. Pre-flight order is load-bearing — secret-store hydration runs
-before the model-key pre-flight, so the two never emit conflicting error lines.
+And revoke the PAT you handed the sandbox in 2b. It was scoped and revocable — that was the point.
 
-Two ways this run lies to you if you take the shortcuts:
-
-- **`running tool: web_fetch` in the log** → the model went around the sandbox entirely (host-side
-  `httpx`, no proxy) and the 401 you get back says nothing about your credential map. Force `bash`.
-- **`hosts=['api.github.com', 'github.com']` in the `proxy start` line** → a `SANDBOX_GIT_TOKEN` in
-  your shell *or your `.env`* auto-engaged `github_token_rules()` and injected the literal token.
-  It "works", but Kitaru was never consulted. `env -u SANDBOX_GIT_TOKEN` (above) rules that out;
-  the Kitaru path shows `hosts=['api.github.com']`.
-
-## Part 4 — cleanup, and the teardown proof
-
-After **any** run there must be no Docker litter:
-
-```bash
-docker ps -a --filter name=decode-proxy               # empty
-docker network ls --filter name=decode-sandbox-net    # empty
-uv run kitaru secrets delete decode-llm-creds
-uv run kitaru secrets delete github-token
-```
-
-A leftover network means the worker was not reaped before `proxy.stop()` — `docker network rm` fails
-while a container is still attached, which is why that ordering is load-bearing.
-
-## Part 5 — the automated backstop
+## Part 4 — the automated backstop
 
 Everything above is covered without a PAT and without network:
 
 ```bash
-# unit — rules, template resolution, map merge, secret-off-argv, log-names-only. No docker.
-uv run pytest tests/unit/decode/sandbox/test_proxy.py \
-              tests/unit/decode/runtime/test_sandbox_proxy.py \
-              tests/unit/decode/runtime/test_credentials_proxy.py \
-              tests/unit/decode/agent/test_factory_credentials_proxy.py -v
+# Environment Bucket — the chain per DECODE_ENV, the no-backfill property, the captured failure.
+uv run pytest tests/unit/decode/config/test_env_bucket.py \
+              tests/unit/decode/config/test_settings.py \
+              tests/unit/decode/config/test_env_example_drift.py -v
 
-# integration — a REAL mitmproxy container + a real worker + a stub upstream. Needs docker.
-uv run pytest tests/integration/test_credential_proxy.py -v
+# The sync script — full-surface replace, key-names-only output, one-way, the local refusal.
+uv run pytest tests/unit/scripts/test_sync_secrets.py -v
+
+# Token injection — the value-less -e passthrough, the shared credential helper, the empty-token
+# byte-identical argv. Both backends, no docker, no modal.
+uv run pytest tests/unit/decode/sandbox/test_docker_backend.py \
+              tests/unit/decode/sandbox/test_modal_backend.py \
+              tests/unit/decode/sandbox/test_workspace.py -v
+
+# The capstone's one-mechanism claims: both backends share ONE helper + ONE gate; unset → no machinery.
+uv run pytest tests/integration/test_sandbox_capstone.py -k token -v
 ```
 
-[`tests/integration/test_credential_proxy.py`](tests/integration/test_credential_proxy.py) asserts
-exactly the manual claims from 2b: the injected header **arrived** at the upstream, the secret is
-**absent** from the worker's own env, the mitmproxy CA is trusted on the worker's **first** command,
-and teardown leaves no container or network behind.
+[`test_sandbox_capstone.py`](tests/integration/test_sandbox_capstone.py) asserts exactly the manual claims of
+Part 2 — `test_the_git_token_is_direct_injected_in_both_backends` (one helper constant, one token gate, and
+the secret in **no** argv), `test_no_token_means_no_credential_machinery_anywhere` (2a's default), and, when a
+daemon or Modal credentials are actually present, `test_real_docker_injects_the_git_token_into_the_worker` /
+`test_real_modal_injects_the_git_token_into_the_sandbox` against a **live** sandbox with a dummy token (no
+GitHub call). [`test_env_example_drift.py`](tests/unit/decode/config/test_env_example_drift.py) is why
+[`.env.example`](.env.example) cannot lie: its `KEY=` lines and the `Settings` fields must match in **both**
+directions, with no allowlist — which is also what guarantees the retired proxy keys are really gone.

@@ -254,33 +254,23 @@ def test_replay_provider_key_guard_does_not_replay(monkeypatch):
     assert calls == {"detect": 0, "replay": 0}
 
 
-def test_replay_proxy_missing_secret_guard_does_not_replay(monkeypatch, runtime_secret_name):
+def test_replay_unloadable_bucket_guard_does_not_replay(monkeypatch):
+    """A remote ``DECODE_ENV`` whose bucket failed to load: one friendly line, no replay (ADR-0015 §5).
+
+    The guard fires FIRST — ahead of the provider guard, which would otherwise mis-blame the missing
+    ``GEMINI_API_KEY`` the bucket was supposed to supply.
+    """
+    monkeypatch.setattr(cli_mod.settings, "decode_env", "dev")
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
-    monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_model_key", True)
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
+    monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
+    monkeypatch.setattr(cli_mod, "bucket_load_error", lambda: "decode-dev: secret not found")
     calls = _patch_replay(monkeypatch, result=_ok_result())
 
     result = CliRunner().invoke(cli, ["replay", "kr-abc123", "--from", "cp"])
 
     assert result.exit_code != 0
-    assert runtime_secret_name in result.stderr
-    assert "kitaru secrets set" in result.stderr
-    assert calls == {"detect": 0, "replay": 0}
-
-
-def test_replay_secret_store_missing_secret_guard_does_not_replay(monkeypatch, runtime_secret_name):
-    monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
-    monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_config", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_model_key", False)
-    monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
-    for var in ("GEMINI_API_KEY", "GEMINI_MODEL", "LLM_PROVIDER"):
-        monkeypatch.delenv(var, raising=False)
-    calls = _patch_replay(monkeypatch, result=_ok_result())
-
-    result = CliRunner().invoke(cli, ["replay", "kr-abc123", "--from", "cp"])
-
-    assert result.exit_code != 0
-    assert "RUNTIME_SECRET_STORE_CONFIG" in result.stderr
+    assert "DECODE_ENV=dev" in result.stderr
+    assert "make sync-secrets ENV=dev" in result.stderr
+    assert "set GEMINI_API_KEY in your environment" not in result.stderr
     assert calls == {"detect": 0, "replay": 0}

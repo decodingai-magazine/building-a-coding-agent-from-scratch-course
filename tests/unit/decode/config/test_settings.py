@@ -39,23 +39,20 @@ _LSP_ENV_VARS = (
     "LSP_REQUEST_TIMEOUT_S",
 )
 
-# Kitaru durable runtime vars (ADR-0008).
+# Kitaru durable runtime vars (ADR-0008). The secret knobs are gone — config comes from DECODE_ENV
+# (ADR-0015 §4); the gate + the Environment Bucket have their own file (test_env_bucket.py).
 _RUNTIME_ENV_VARS = (
     "RUNTIME_ENABLED",
     "RUNTIME_CHECKPOINT_STRATEGY",
     "RUNTIME_WAIT_TIMEOUT_S",
-    "RUNTIME_SECRET_STORE_MODEL_KEY",
-    "RUNTIME_SECRET_NAME",
-    "RUNTIME_SECRET_STORE_CONFIG",
 )
 
-# Sandboxing vars (ADR-0011).
+# Sandboxing vars (ADR-0011). The Credential-Proxy knobs are gone with the proxy (ADR-0016 §1) —
+# a clean break: a retired key left in a ``.env`` is simply ignored (``extra="ignore"``).
 _SANDBOX_ENV_VARS = (
     "SANDBOX_MODE",
     "SANDBOX_IMAGE",
     "SANDBOX_TIMEOUT_S",
-    "SANDBOX_CREDENTIAL_PROXY_ENABLED",
-    "SANDBOX_PROXY_IMAGE",
 )
 
 # Subagent tuning vars (ADR-0013).
@@ -337,13 +334,6 @@ def test_rejects_a_non_positive_lsp_request_timeout(monkeypatch, bad):
         Settings(_env_file=None)
 
 
-def test_env_example_lists_every_lsp_var():
-    """Drift guard: each LSP setting has a matching line in .env.example (AGENTS.md gate)."""
-    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
-    for var in _LSP_ENV_VARS:
-        assert var in env_example, f"{var} missing from .env.example"
-
-
 def test_runtime_defaults(monkeypatch):
     for var in _RUNTIME_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -353,25 +343,33 @@ def test_runtime_defaults(monkeypatch):
     # wired provider (ADR-0010 §3). "turn" is the cheaper coarse opt-out (asserted in the literal test).
     assert s.runtime_checkpoint_strategy == "calls"
     assert s.runtime_wait_timeout_s == 600.0
-    assert s.runtime_secret_store_model_key is False
-    assert s.runtime_secret_name == "decode-llm-creds"
-    assert s.runtime_secret_store_config is False
+
+
+def test_stale_secret_store_env_vars_are_silently_ignored(monkeypatch):
+    """ADR-0015 §4 (clean break): the retired ``RUNTIME_SECRET_*`` family is deleted, not shimmed.
+
+    An env / ``.env`` still carrying one of the retired knobs must change nothing and print nothing —
+    ``extra="ignore"`` swallows it, and the fields are gone, so no reader can branch on them. Config
+    now comes from ``DECODE_ENV``: ``.env`` at ``local``, the Environment Bucket at a remote env (the
+    stale names are spelled out only in ``.env.example``, which is where the loud notice lives).
+    """
+    for stale in ("_STORE_MODEL_KEY", "_STORE_CONFIG", "_NAME"):
+        monkeypatch.setenv(f"RUNTIME_SECRET{stale}", "true")
+
+    s = Settings(_env_file=None)
+
+    assert [f for f in Settings.model_fields if f.startswith("runtime_secret")] == []
+    assert s.decode_env == "local"  # the surviving selector is untouched by the stale entries
 
 
 def test_reads_runtime_vars_from_process_env(monkeypatch):
     monkeypatch.setenv("RUNTIME_ENABLED", "false")
     monkeypatch.setenv("RUNTIME_CHECKPOINT_STRATEGY", "calls")
     monkeypatch.setenv("RUNTIME_WAIT_TIMEOUT_S", "120.0")
-    monkeypatch.setenv("RUNTIME_SECRET_STORE_MODEL_KEY", "true")
-    monkeypatch.setenv("RUNTIME_SECRET_NAME", "my-creds")
-    monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
     s = Settings(_env_file=None)
     assert s.runtime_enabled is False
     assert s.runtime_checkpoint_strategy == "calls"
     assert s.runtime_wait_timeout_s == 120.0
-    assert s.runtime_secret_store_model_key is True
-    assert s.runtime_secret_name == "my-creds"
-    assert s.runtime_secret_store_config is True
 
 
 def test_loads_runtime_vars_from_a_dotenv_file(tmp_path, monkeypatch):
@@ -379,20 +377,12 @@ def test_loads_runtime_vars_from_a_dotenv_file(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     env = tmp_path / ".env"
     env.write_text(
-        "RUNTIME_ENABLED=false\n"
-        "RUNTIME_CHECKPOINT_STRATEGY=calls\n"
-        "RUNTIME_WAIT_TIMEOUT_S=300.0\n"
-        "RUNTIME_SECRET_STORE_MODEL_KEY=true\n"
-        "RUNTIME_SECRET_NAME=dotenv-creds\n"
-        "RUNTIME_SECRET_STORE_CONFIG=true\n"
+        "RUNTIME_ENABLED=false\nRUNTIME_CHECKPOINT_STRATEGY=calls\nRUNTIME_WAIT_TIMEOUT_S=300.0\n"
     )
     s = Settings(_env_file=str(env))
     assert s.runtime_enabled is False
     assert s.runtime_checkpoint_strategy == "calls"
     assert s.runtime_wait_timeout_s == 300.0
-    assert s.runtime_secret_store_model_key is True
-    assert s.runtime_secret_name == "dotenv-creds"
-    assert s.runtime_secret_store_config is True
 
 
 @pytest.mark.parametrize("strategy", ["turn", "calls"])
@@ -421,13 +411,6 @@ def test_rejects_a_non_positive_runtime_wait_timeout(monkeypatch, bad):
         Settings(_env_file=None)
 
 
-def test_env_example_lists_every_runtime_var():
-    """Drift guard: each runtime setting has a matching line in .env.example (AGENTS.md gate)."""
-    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
-    for var in _RUNTIME_ENV_VARS:
-        assert var in env_example, f"{var} missing from .env.example"
-
-
 # Sandboxing — config surface only; the default ``sandbox_mode="none"`` means no sandbox var is
 # required to build ``Settings``.
 
@@ -439,41 +422,49 @@ def test_sandbox_defaults(monkeypatch):
     assert s.sandbox_mode == "none"
     assert s.sandbox_image == "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
     assert s.sandbox_timeout_s == 600.0
-    assert s.sandbox_credential_proxy_enabled is False
-    assert s.sandbox_proxy_image == "mitmproxy/mitmproxy"
 
 
 def test_reads_sandbox_vars_from_process_env(monkeypatch):
     monkeypatch.setenv("SANDBOX_MODE", "docker")
     monkeypatch.setenv("SANDBOX_IMAGE", "python:3.13-slim")
     monkeypatch.setenv("SANDBOX_TIMEOUT_S", "120.0")
-    monkeypatch.setenv("SANDBOX_CREDENTIAL_PROXY_ENABLED", "true")
-    monkeypatch.setenv("SANDBOX_PROXY_IMAGE", "mitmproxy/mitmproxy:latest")
     s = Settings(_env_file=None)
     assert s.sandbox_mode == "docker"
     assert s.sandbox_image == "python:3.13-slim"
     assert s.sandbox_timeout_s == 120.0
-    assert s.sandbox_credential_proxy_enabled is True
-    assert s.sandbox_proxy_image == "mitmproxy/mitmproxy:latest"
 
 
 def test_loads_sandbox_vars_from_a_dotenv_file(tmp_path, monkeypatch):
     for var in _SANDBOX_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     env = tmp_path / ".env"
-    env.write_text(
-        "SANDBOX_MODE=modal\n"
-        "SANDBOX_IMAGE=python:3.11-slim\n"
-        "SANDBOX_TIMEOUT_S=300.0\n"
-        "SANDBOX_CREDENTIAL_PROXY_ENABLED=true\n"
-        "SANDBOX_PROXY_IMAGE=custom/mitmproxy\n"
-    )
+    env.write_text("SANDBOX_MODE=modal\nSANDBOX_IMAGE=python:3.11-slim\nSANDBOX_TIMEOUT_S=300.0\n")
     s = Settings(_env_file=str(env))
     assert s.sandbox_mode == "modal"
     assert s.sandbox_image == "python:3.11-slim"
     assert s.sandbox_timeout_s == 300.0
-    assert s.sandbox_credential_proxy_enabled is True
-    assert s.sandbox_proxy_image == "custom/mitmproxy"
+
+
+def test_a_retired_credential_proxy_key_in_a_dotenv_is_ignored(tmp_path, monkeypatch):
+    """ADR-0016 §1 (clean break): a stale ``SANDBOX_CREDENTIAL_PROXY_ENABLED`` must not blow up.
+
+    The knobs are deleted with no shim, so an old ``.env`` carrying them still loads — ``extra="ignore"``
+    swallows the retired key exactly as ADR-0015 §9 handled its own — and the field is simply gone.
+    """
+    for var in _SANDBOX_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    env = tmp_path / ".env"
+    env.write_text(
+        "SANDBOX_MODE=docker\n"
+        "SANDBOX_CREDENTIAL_PROXY_ENABLED=true\n"
+        "SANDBOX_PROXY_IMAGE=mitmproxy/mitmproxy\n"
+    )
+
+    s = Settings(_env_file=str(env))
+
+    assert s.sandbox_mode == "docker"
+    assert not hasattr(s, "sandbox_credential_proxy_enabled")
+    assert not hasattr(s, "sandbox_proxy_image")
 
 
 @pytest.mark.parametrize("mode", ["none", "docker", "modal"])
@@ -500,13 +491,6 @@ def test_rejects_a_non_positive_sandbox_timeout(monkeypatch, bad):
     monkeypatch.setenv("SANDBOX_TIMEOUT_S", bad)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
-
-
-def test_env_example_lists_every_sandbox_var():
-    """Drift guard: each sandbox setting has a matching line in .env.example (AGENTS.md gate)."""
-    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
-    for var in _SANDBOX_ENV_VARS:
-        assert var in env_example, f"{var} missing from .env.example"
 
 
 # Subagents
@@ -544,24 +528,55 @@ def test_rejects_non_positive_subagent_caps(monkeypatch, var, bad):
         Settings(_env_file=None)
 
 
-def test_env_example_lists_every_subagent_var():
-    """Drift guard: each subagent setting has a matching line in .env.example (AGENTS.md gate)."""
-    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
-    for var in _SUBAGENT_ENV_VARS:
-        assert var in env_example, f"{var} missing from .env.example"
-
-
 # Observability: Opik
 
 
 def test_opik_defaults(monkeypatch):
     for var in _OPIK_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("DECODE_ENV", raising=False)
     s = Settings(_env_file=None)
     assert s.opik_api_key.get_secret_value() == ""  # presence trigger — empty == tracing off
     assert s.opik_workspace == "default"
-    assert s.opik_project_name == "decode"
+    assert s.opik_project_name == "decode-local"  # DERIVED: decode-<DECODE_ENV> (ADR-0015 §8)
     assert s.opik_url_override is None  # None == Comet cloud OTLP base
+
+
+def test_opik_project_name_is_derived_from_decode_env_when_unset(monkeypatch):
+    """A trace must name the environment that produced it: the default is ``decode-<DECODE_ENV>``.
+
+    At ``local`` (the default gate) that is ``decode-local`` — the suffix is applied ALWAYS, there is
+    no bare ``decode`` project any more (ADR-0015 §8). The remote envs are covered in
+    ``test_env_bucket.py`` (they need a stubbed bucket).
+    """
+    for var in _OPIK_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("DECODE_ENV", raising=False)
+
+    s = Settings(_env_file=None)
+
+    assert s.decode_env == "local"
+    assert s.opik_project_name == "decode-local"
+    # The mechanism: nobody supplied the field, so it is absent from ``model_fields_set`` — that (not
+    # a sentinel value) is what marks it derivable, and deriving must not forge an "explicit" mark.
+    assert "opik_project_name" not in s.model_fields_set
+
+
+def test_an_explicit_opik_project_name_equal_to_the_derived_default_is_honoured(monkeypatch):
+    """Anti-sentinel: setting the field to the literal the default derives to is still an EXPLICIT set.
+
+    A sentinel/value comparison (``if opik_project_name == "decode-local"``) cannot tell this apart
+    from "nobody set it" — ``model_fields_set`` can, and the value must survive untouched.
+    """
+    for var in _OPIK_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("DECODE_ENV", raising=False)
+    monkeypatch.setenv("OPIK_PROJECT_NAME", "decode-local")
+
+    s = Settings(_env_file=None)
+
+    assert s.opik_project_name == "decode-local"
+    assert "opik_project_name" in s.model_fields_set  # source-supplied → explicit
 
 
 def test_reads_opik_vars_from_process_env(monkeypatch):
@@ -572,7 +587,9 @@ def test_reads_opik_vars_from_process_env(monkeypatch):
     s = Settings(_env_file=None)
     assert s.opik_api_key.get_secret_value() == "opik-secret-123"
     assert s.opik_workspace == "my-workspace"
+    # An explicit OPIK_PROJECT_NAME from the PROCESS ENV beats the derived decode-<env> default.
     assert s.opik_project_name == "my-project"
+    assert "opik_project_name" in s.model_fields_set
     assert s.opik_url_override == "http://localhost:5173/api/v1/private/otel"
 
 
@@ -589,20 +606,15 @@ def test_loads_opik_vars_from_a_dotenv_file(tmp_path, monkeypatch):
     s = Settings(_env_file=str(env))
     assert s.opik_api_key.get_secret_value() == "sk-opik-dotenv"
     assert s.opik_workspace == "ws-dotenv"
+    # An explicit OPIK_PROJECT_NAME from the DOTENV file beats the derived decode-<env> default.
     assert s.opik_project_name == "proj-dotenv"
+    assert "opik_project_name" in s.model_fields_set
     assert s.opik_url_override == "https://opik.example.com/api/v1/private/otel"
 
 
 def test_opik_api_key_not_in_repr():
     s = Settings(_env_file=None, opik_api_key="topsecretopik")
     assert "topsecretopik" not in repr(s)
-
-
-def test_env_example_lists_every_opik_var():
-    """Drift guard: each Opik setting has a matching line in .env.example (AGENTS.md gate)."""
-    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
-    for var in _OPIK_ENV_VARS:
-        assert var in env_example, f"{var} missing from .env.example"
 
 
 def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):
@@ -619,144 +631,10 @@ def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):
     assert s.opik_api_key.get_secret_value() == ""
 
 
-# Kitaru secret-store config source (ADR-0008 §5): a fake ``kitaru`` module is injected so no real
-# Kitaru/ZenML stack boots; the REPL-safety invariant (bare ``decode`` never imports kitaru) is
-# proven in a clean subprocess so it is order-independent of tests that imported kitaru.
-
-_CLEARED_FOR_SECRET_SOURCE = (
-    "GEMINI_API_KEY",
-    "GEMINI_MODEL",
-    *_PROVIDER_ENV_VARS,
-)
-
-
-@pytest.fixture
-def reset_hydration_flag():
-    """Always clear the module-level hydration flag after a test that activates the source."""
-    from decode.config.settings import set_secret_hydration_active
-
-    try:
-        yield
-    finally:
-        set_secret_hydration_active(False)
-
-
-def _install_fake_kitaru(monkeypatch, values: dict[str, str]) -> None:
-    """Inject a fake ``kitaru`` module whose ``get_secret(name).values`` is ``values`` (hermetic)."""
-    import sys
-    import types
-
-    fake = types.ModuleType("kitaru")
-
-    class _FakeSecret:
-        def __init__(self, vals: dict[str, str]) -> None:
-            self.values = vals
-
-    fake.get_secret = lambda name: _FakeSecret(values)  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "kitaru", fake)
-
-
-def test_secret_store_source_is_inert_when_inactive():
-    """Inactive source returns ``{}`` and never reaches kitaru (the REPL-safety invariant)."""
-    from decode.config.settings import (
-        KitaruSecretSettingsSource,
-        is_secret_hydration_active,
-    )
-
-    assert is_secret_hydration_active() is False
-    source = KitaruSecretSettingsSource(Settings)
-    assert source() == {}
-
-
-def test_secret_store_source_hydrates_known_fields_when_active(monkeypatch, reset_hydration_flag):
-    """Active source maps env-var-named secret keys to fields and ignores unknown keys."""
-    from decode.config.settings import set_secret_hydration_active
-
-    _install_fake_kitaru(
-        monkeypatch,
-        {
-            "GEMINI_MODEL": "gemini-from-secret",
-            "LLM_PROVIDER": "openrouter",
-            "GEMINI_API_KEY": "sk-from-secret",
-            "NOT_A_DECODE_FIELD": "ignored",
-        },
-    )
-    for var in _CLEARED_FOR_SECRET_SOURCE:
-        monkeypatch.delenv(var, raising=False)
-    set_secret_hydration_active(True)
-
-    s = Settings(_env_file=None)
-
-    assert s.gemini_model == "gemini-from-secret"
-    assert s.llm_provider == "openrouter"
-    assert s.gemini_api_key.get_secret_value() == "sk-from-secret"
-
-
-def test_real_env_overrides_kitaru_secret(monkeypatch, reset_hydration_flag):
-    """Precedence: a var set in the real process env wins over the Kitaru secret."""
-    from decode.config.settings import set_secret_hydration_active
-
-    _install_fake_kitaru(monkeypatch, {"GEMINI_MODEL": "gemini-from-secret"})
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-from-env")
-    set_secret_hydration_active(True)
-
-    s = Settings(_env_file=None)
-
-    assert s.gemini_model == "gemini-from-env"
-
-
-def test_kitaru_secret_overrides_dotenv(tmp_path, monkeypatch, reset_hydration_flag):
-    """Precedence: the Kitaru secret wins over a value present only in ``.env``."""
-    from decode.config.settings import set_secret_hydration_active
-
-    _install_fake_kitaru(monkeypatch, {"GEMINI_MODEL": "gemini-from-secret"})
-    for var in _CLEARED_FOR_SECRET_SOURCE:
-        monkeypatch.delenv(var, raising=False)
-    env = tmp_path / ".env"
-    env.write_text("GEMINI_MODEL=gemini-from-dotenv\n")
-    set_secret_hydration_active(True)
-
-    s = Settings(_env_file=str(env))
-
-    assert s.gemini_model == "gemini-from-secret"
-
-
-def test_reload_settings_rebuilds_the_singleton_in_place(monkeypatch):
-    """``reload_settings`` mutates the existing singleton object (shared refs see the update)."""
-    from decode.config.settings import reload_settings
-
-    snapshot = dict(singleton.__dict__)
-    snapshot_fields_set = set(singleton.__pydantic_fields_set__)
-    try:
-        monkeypatch.setenv("GEMINI_MODEL", "reloaded-model")
-        returned = reload_settings()
-
-        assert returned is singleton  # same object, mutated in place — not rebound
-        assert singleton.gemini_model == "reloaded-model"
-    finally:
-        singleton.__dict__.clear()
-        singleton.__dict__.update(snapshot)
-        singleton.__pydantic_fields_set__.clear()
-        singleton.__pydantic_fields_set__.update(snapshot_fields_set)
-
-
-def test_bare_decode_path_does_not_import_kitaru():
-    """The bare ``decode`` REPL import path never pulls in kitaru (ADR-0008 §5, run in a clean proc)."""
-    import subprocess
-    import sys
-
-    code = (
-        "import sys\n"
-        "import decode.cli\n"  # the REPL entrypoint module
-        "from decode.config.settings import Settings\n"
-        "Settings(_env_file=None)\n"  # build settings with the inert source (flag off)
-        "leaked = sorted(m for m in sys.modules if m == 'kitaru' or m.startswith('kitaru.'))\n"
-        "assert not leaked, leaked\n"
-        "print('NO_KITARU_OK')\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=False
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "NO_KITARU_OK" in result.stdout
+# .env.example drift is covered GLOBALLY (every field, both directions, no allowlist) by
+# tests/unit/decode/config/test_env_example_drift.py — it subsumes the per-section
+# ``test_env_example_lists_every_*_var`` guards that used to live here (ADR-0015 §9).
+#
+# The DECODE_ENV gate + the Environment Bucket settings source (ADR-0015) have their own file:
+# tests/unit/decode/config/test_env_bucket.py — including the restated "at DECODE_ENV=local, decode
+# never imports kitaru" invariant (a fresh-subprocess import check).

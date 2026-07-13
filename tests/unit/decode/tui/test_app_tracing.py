@@ -26,7 +26,9 @@ from decode.agent.deps import AgentDeps
 from decode.agent.loop import AgentTurnHandler
 from decode.tui import app as app_mod
 
-_TRACING_LINE = "Decode - Opik tracing on (project 'decode')."
+# The project is DERIVED — ``decode-<DECODE_ENV>`` unless explicitly set (ADR-0015 §8) — so the line
+# is built from the singleton rather than a literal, which would go stale per environment.
+_TRACING_LINE = f"Decode - Opik tracing on (project '{app_mod.settings.opik_project_name}')."
 
 
 @pytest.fixture(autouse=True)

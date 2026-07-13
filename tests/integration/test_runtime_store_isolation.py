@@ -22,8 +22,11 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # The Tester's original failing order: secret-creating runtime file → non-isolated cli file → runtime.
+# The secret-creating file is now ``test_store_isolation.py`` (it round-trips the ``decode-dev``
+# Environment Bucket); the file the order was first found with, ``test_secret_store_config.py``, went
+# away with the secret-store config source (ADR-0015 §4, task 097).
 _ADVERSE_ORDER = (
-    "tests/unit/decode/runtime/test_secret_store_config.py",
+    "tests/unit/decode/runtime/test_store_isolation.py",
     "tests/unit/decode/test_cli.py",
     "tests/unit/decode/runtime/test_run_command.py",
 )

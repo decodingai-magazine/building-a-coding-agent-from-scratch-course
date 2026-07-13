@@ -32,12 +32,18 @@ def test_active_store_is_the_per_test_tmp_sqlite_store(isolated_kitaru_store: Pa
 
 
 def test_secret_round_trips_only_within_the_isolated_store(
-    isolated_kitaru_store: Path, runtime_secret_name: str
+    isolated_kitaru_store: Path, env_bucket_name: str
 ) -> None:
-    create_secret(runtime_secret_name, {"GEMINI_API_KEY": "isolated-only"}, private=True)
+    """The Environment Bucket round-trips inside the per-test store — never a developer's real one.
 
-    assert get_secret(runtime_secret_name).values["GEMINI_API_KEY"] == "isolated-only"
-    # The op ran against the tmp store, so the unique-named secret never reaches a real store.
+    Bucket names are DERIVED (``decode-<env>``, ADR-0015 §3), so the old unique-per-test secret name is
+    gone and isolation rests on :func:`isolated_kitaru_store` alone: this ``decode-dev`` lives in the
+    test's ``tmp_path`` SQLite store and vanishes with it.
+    """
+    create_secret(env_bucket_name, {"GEMINI_API_KEY": "isolated-only"}, private=True)
+
+    assert get_secret(env_bucket_name).values["GEMINI_API_KEY"] == "isolated-only"
+    # The op ran against the tmp store, so the bucket never reaches a real store.
     from zenml.config.global_config import GlobalConfiguration
 
     assert str(isolated_kitaru_store) in str(GlobalConfiguration().store_configuration.url)

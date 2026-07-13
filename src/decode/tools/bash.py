@@ -80,18 +80,6 @@ def _get_executor() -> CommandExecutor:
     return _EXECUTOR
 
 
-def install_executor(executor: CommandExecutor) -> None:
-    """Install ``executor`` as the cached ``bash`` executor for a flow span (ADR-0011 §6).
-
-    The headless Credential Proxy hook: :func:`decode.runtime.flow._sandbox_proxy` installs a
-    proxy-wired executor so every sandboxed ``bash`` in that flow routes through the proxy. Sets
-    the seam **and** marks selection done; paired with :func:`close_executor` on flow exit.
-    """
-    global _EXECUTOR, _executor_selected
-    _EXECUTOR = executor
-    _executor_selected = True
-
-
 async def warm_executor(workspace: Path) -> None:
     """Eagerly start the selected sandbox backend at REPL launch (ADR-0011 §4; ADR-0012 §2).
 
@@ -100,7 +88,7 @@ async def warm_executor(workspace: Path) -> None:
     the same lazy selection the first ``bash`` call would (sharing the memo) and awaits a
     duck-typed ``start(workspace)`` if present (the :class:`CommandExecutor` Protocol stays
     run-only). Failures propagate with the memo **kept** — the next ``bash`` retries from
-    scratch. REPL-only: the headless flow installs its own executor (:func:`install_executor`).
+    scratch.
     """
     if settings.sandbox_mode == "none":
         return

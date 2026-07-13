@@ -46,8 +46,9 @@ def build_agent(
 ) -> Agent[AgentDeps, str | DeferredToolRequests]:
     """Construct the agent on the configured LLM Provider + register the flat tools (ADR-0002 §1-3,7).
 
-    ``flow_mode`` is the model-key secret-resolution seam (ADR-0008 §5): only a headless flow build
-    with ``settings.runtime_secret_store_model_key`` resolves the provider key from a Kitaru secret.
+    ``flow_mode`` marks a headless flow build: it selects the keep-alive-free HTTP client Kitaru's
+    per-call event loops need (ADR-0010 §3) — and nothing else. Key sourcing does NOT vary by mode:
+    the provider key always comes from ``Settings`` (ADR-0015 §4).
     ``model`` is the Model Override (ADR-0010 §2): overrides only the active provider's model id
     (never the provider); being a flow input is what lets Kitaru swap it on a what-if Replay.
     """
@@ -92,10 +93,11 @@ def _build_model(*, flow_mode: bool = False, model: str | None = None) -> Model:
     passes ``vertexai=`` (its deprecation warning would fail under ``filterwarnings=["error"]``);
     ``openrouter`` / ``modal`` both ride ``OpenAIChatModel``, modal over a bespoke ``AsyncOpenAI``
     client for its per-user ``base_url`` + dual-header proxy-token auth (both-or-neither enforced
-    upstream by the cli guard). ``gemini`` / ``openrouter`` source their key through
-    :func:`_provider_api_key` (the model-key secret-resolution seam, ADR-0008 §5); modal is
-    deliberately not on it (a header surface, not a single api_key). The trailing :class:`ValueError` is
-    defensive — the settings ``Literal`` blocks it upstream.
+    upstream by the cli guard). ``gemini`` / ``openrouter`` source their key from ``Settings`` through
+    :func:`_provider_api_key` (ADR-0015 §4); modal is deliberately not on it (a header surface, not a
+    single api_key). ``flow_mode`` selects only the keep-alive-free HTTP client (ADR-0010 §3) — never
+    the key path. The trailing :class:`ValueError` is defensive — the settings ``Literal`` blocks it
+    upstream.
     """
     provider = settings.llm_provider
     if provider == "gemini":
@@ -104,16 +106,14 @@ def _build_model(*, flow_mode: bool = False, model: str | None = None) -> Model:
         return GoogleModel(
             model or settings.gemini_model,
             provider=GoogleProvider(
-                api_key=_provider_api_key("gemini", flow_mode=flow_mode),
+                api_key=_provider_api_key("gemini"),
                 http_client=_flow_mode_http_client() if flow_mode else None,
             ),
         )
     if provider == "openrouter":
         return OpenAIChatModel(
             model or settings.openrouter_model,
-            provider=OpenRouterProvider(
-                api_key=_provider_api_key("openrouter", flow_mode=flow_mode)
-            ),
+            provider=OpenRouterProvider(api_key=_provider_api_key("openrouter")),
         )
     if provider == "modal":
         base_url = f"{settings.modal_endpoint_url}/v1"
@@ -136,55 +136,14 @@ def _build_model(*, flow_mode: bool = False, model: str | None = None) -> Model:
     raise ValueError(f"unsupported llm_provider: {provider!r}")
 
 
-# Kitaru secret key name per secret-store-eligible provider (env-var-style names; ADR-0008 §5).
-# ``modal`` is deliberately absent (dual-token header auth). Public: the cli pre-flight reads the name.
-SECRET_STORE_KEY: dict[str, str] = {
-    "gemini": "GEMINI_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-}
+def _provider_api_key(provider: Literal["gemini", "openrouter"]) -> str:
+    """Read the provider API key from ``Settings`` — the single source of truth (ADR-0015 §4).
 
-
-def _provider_api_key(provider: Literal["gemini", "openrouter"], *, flow_mode: bool) -> str:
-    """Resolve the provider API key — from settings, or from the Kitaru secret store (ADR-0008 §5).
-
-    Only a flow-mode run with ``settings.runtime_secret_store_model_key`` resolves it from a
-    Kitaru secret, so a deployed flow payload carries the secret *name*, not the raw key.
+    Whichever settings source is active (``.env`` locally, an Environment Bucket remotely) hydrates
+    the ``SecretStr``; the key never comes from anywhere else, in flow mode or interactively.
     """
-    if flow_mode and settings.runtime_secret_store_model_key:
-        return resolve_provider_key_from_secret_store(provider)
     secret = settings.gemini_api_key if provider == "gemini" else settings.openrouter_api_key
     return secret.get_secret_value()
-
-
-def resolve_provider_key_from_secret_store(provider: Literal["gemini", "openrouter"]) -> str:
-    """Read the provider API key from a Kitaru secret — model-key secret resolution (ADR-0008 §5).
-
-    A secret-store *lookup*, NOT the sandbox Credential Proxy (header injection, ADR-0011 §6) — the
-    ADR-0008 amendment renamed this away from the "Credentials Proxy" misnomer it shipped under.
-    ``kitaru`` is imported lazily so the interactive REPL path never imports it. A missing secret
-    surfaces Kitaru's own ``KitaruRuntimeError``; a secret lacking the provider key raises a
-    guidance error — never a silent fallback to the settings key. The raw key is returned but
-    never logged (only the secret + key *names* are).
-    """
-    from kitaru import get_secret
-
-    secret_name = settings.runtime_secret_name
-    key_name = SECRET_STORE_KEY[provider]
-    secret = get_secret(secret_name)  # raises KitaruRuntimeError if the secret is absent
-    api_key = secret.get(key_name)
-    if not api_key:
-        raise RuntimeError(
-            f"Kitaru secret {secret_name!r} has no {key_name!r} value — create it with "
-            f"`kitaru secrets set {secret_name} --{key_name}=…`, or unset "
-            "RUNTIME_SECRET_STORE_MODEL_KEY to read the key from settings."
-        )
-    logger.debug(
-        "resolved provider=%s key from the Kitaru secret store (secret=%r, key=%r)",
-        provider,
-        secret_name,
-        key_name,
-    )
-    return api_key
 
 
 def _register_instructions(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:

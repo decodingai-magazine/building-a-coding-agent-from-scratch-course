@@ -20,9 +20,9 @@ from pydantic import SecretStr
 # for every collected test, so its fixtures apply in any order. ``isolated_kitaru_store`` is autouse
 # but gated to the unit runtime package (a no-op importing nothing elsewhere); see the module.
 from support.runtime_fixtures import (  # noqa: F401 — re-exported so pytest registers them
+    env_bucket_name,
     inline_wait_resolver,
     isolated_kitaru_store,
-    runtime_secret_name,
 )
 
 
@@ -73,6 +73,28 @@ def _no_opik_tracing(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _default_decode_env(monkeypatch):
+    """Hermeticity guard — pin ``DECODE_ENV=local`` for the whole suite (ADR-0015 §1, task 097).
+
+    ``DECODE_ENV`` selects the *injection mechanism*: at any remote value the ``Settings`` chain drops
+    ``.env`` and hydrates from the Kitaru Environment Bucket instead — importing kitaru, touching the
+    local ZenML store, and (on a missing bucket) tripping the new cli startup guard. A developer who
+    exported ``DECODE_ENV=staging`` (or put it in ``.env``) would flip the whole suite remote and see
+    failures no one else gets — the same class of leak :func:`_default_sandbox_mode` /
+    :func:`_no_sandbox_git_token` exist for, and it has bitten this repo twice.
+
+    Deleting the env var also scrubs it for the subprocesses tests spawn (they inherit ``os.environ``),
+    so the "at ``local``, decode never imports kitaru" invariant check stays honest. The bucket tests
+    set their own value with ``monkeypatch.setenv`` (which runs after this fixture, so it wins).
+    """
+    monkeypatch.delenv("DECODE_ENV", raising=False)
+
+    from decode.config.settings import settings
+
+    monkeypatch.setattr(settings, "decode_env", "local", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _default_sandbox_mode(monkeypatch):
     """Hermeticity guard — pin ``SANDBOX_MODE=none`` on the singleton (ADR-0011, task 071).
 
@@ -91,13 +113,14 @@ def _default_sandbox_mode(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_sandbox_git_token(monkeypatch):
-    """Hermeticity guard — blank ``SANDBOX_GIT_TOKEN`` on the singleton (ADR-0012 §10).
+    """Hermeticity guard — blank ``SANDBOX_GIT_TOKEN`` on the singleton (ADR-0016 §2).
 
-    A non-empty token is a *behavioral switch*, not just a value: it auto-engages the Credential Proxy
-    (``flow._sandbox_proxy``) and adds the credential-helper layer to the modal image. A developer who
-    put a real PAT in ``.env`` — the natural thing to do when trying the sandbox — would flip those
-    paths on inside the suite and see failures no one else gets (this fixture exists because that
-    happened). Same class of leak as :func:`_no_real_provider_key` / :func:`_default_sandbox_mode`.
+    A non-empty token is a *behavioral switch*, not just a value: it changes the ``docker run`` argv
+    (a ``-e GITHUB_TOKEN`` pass-through) and the worker's git setup in BOTH backends (the injected
+    credential helper; on modal, an extra image layer + a ``modal.Secret``). A developer who put a
+    real PAT in ``.env`` — the natural thing to do when trying the sandbox — would flip those paths on
+    inside the suite and see failures no one else gets (this fixture exists because that happened).
+    Same class of leak as :func:`_no_real_provider_key` / :func:`_default_sandbox_mode`.
 
     Tests that exercise the token paths set their own value with ``monkeypatch.setattr`` (which runs
     after this fixture, so it wins).

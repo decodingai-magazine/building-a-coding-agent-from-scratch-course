@@ -15,7 +15,6 @@ import gc
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
@@ -111,13 +110,11 @@ def _assert_store_isolated_under(tmp_path: Path) -> None:
     )
 
 
-def _delete_runtime_secret_best_effort(name: str) -> None:
-    """Delete the per-test secret if it exists, best-effort (defense-in-depth teardown, task 065).
+def _delete_secret_best_effort(name: str) -> None:
+    """Delete the test's Environment Bucket if it exists, best-effort (defense-in-depth teardown).
 
     Runs while the test's (isolated) store is still active, before the autouse fixture resets the
-    singletons. In the normal case the secret lives in ``tmp_path`` and vanishes with it anyway; this
-    only matters if a fall-through ever recurs — and because the name is unique-per-test it can only
-    ever target test junk, never a developer's real ``decode-llm-creds``.
+    singletons. In the normal case the bucket lives in ``tmp_path`` and vanishes with it anyway.
     """
     try:
         from kitaru import delete_secret
@@ -128,33 +125,29 @@ def _delete_runtime_secret_best_effort(name: str) -> None:
 
 
 @pytest.fixture
-def runtime_secret_name(
+def env_bucket_name(
     isolated_kitaru_store: Path | None, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[str]:
-    """A unique-per-test Kitaru secret name — defense-in-depth for the store isolation (task 065).
+    """Pin ``DECODE_ENV=dev`` and yield the DERIVED Environment Bucket name (``decode-dev``, ADR-0015 §3).
 
-    The autouse :func:`isolated_kitaru_store` already pins every runtime test to its own ``tmp_path``
-    ZenML store; a unique name is belt-and-braces. Should a fall-through to a real store ever recur,
-    the test can only create/find a ``decode-test-creds-<uuid>`` — never the production-named
-    ``decode-llm-creds`` — so it can neither collide with nor leave that secret in a developer's
-    store, and the missing-secret tests stay order-independent. The name is wired through BOTH
-    ``settings.runtime_secret_name`` (the direct read the proxy / factory use) and the
-    ``RUNTIME_SECRET_NAME`` env var (so the in-flow ``reload_settings`` keeps it). The fixture asserts
-    the active store is the isolated one before yielding, and best-effort deletes the secret on
-    teardown (while the isolated store is still active). The production default ``runtime_secret_name``
-    is unchanged — only the *tests'* chosen name.
+    Bucket names are derived from the environment — there is no override knob — so the old
+    unique-per-test secret name is no longer representable, and **isolation now rests on
+    :func:`isolated_kitaru_store` alone**: every secret op in a runtime test hits that test's own
+    ``tmp_path`` SQLite store, never a developer's real ZenML store. The fixture asserts exactly that
+    before yielding (the task-065 tripwire), and best-effort deletes ``decode-dev`` on teardown, while
+    the isolated store is still active.
     """
     from decode.config.settings import settings
 
     assert isolated_kitaru_store is not None  # only runtime tests use this fixture
-    name = f"decode-test-creds-{uuid4().hex[:12]}"
     _assert_store_isolated_under(isolated_kitaru_store)
-    monkeypatch.setattr(settings, "runtime_secret_name", name)
-    monkeypatch.setenv("RUNTIME_SECRET_NAME", name)
+    monkeypatch.setattr(settings, "decode_env", "dev")
+    monkeypatch.setenv("DECODE_ENV", "dev")
+    name = "decode-dev"
     try:
         yield name
     finally:
-        _delete_runtime_secret_best_effort(name)
+        _delete_secret_best_effort(name)
 
 
 def _dispose_kitaru_engine() -> None:

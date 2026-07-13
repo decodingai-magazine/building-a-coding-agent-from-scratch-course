@@ -239,6 +239,19 @@ credentials-proxy surface is recorded as least-exampled (verify-first).
    > [`CREDENTIALS.md`](../../CREDENTIALS.md) (which walks an e2e test of both features, on and off)
    > carry the user-facing version.
 
+   > **Amendment (2026-07-13 — superseded by ADR-0015, the Environment Bucket).** Everything §5 and its
+   > two amendments above specify about *where a credential comes from* is **deleted**:
+   > `RUNTIME_SECRET_NAME`, `RUNTIME_SECRET_STORE_CONFIG`, `RUNTIME_SECRET_STORE_MODEL_KEY`, the
+   > headless-only module-global hydration toggle, and the per-flow snapshot/restore context are gone,
+   > with no shim (a stale `.env` entry is silently ignored). They are replaced by the `DECODE_ENV`-gated
+   > **Environment Bucket** — the derived Kitaru secret `decode-<env>`, active in the TUI and headless
+   > alike, with `.env` dropped from the chain at a remote env — see
+   > [ADR-0015](0015-environment-bucket-secrets.md) §§1–5. The invariants §5 established **carry over
+   > unchanged**: values land in `Settings` only (never `os.environ` / a worker env), the real process env
+   > still wins, and the REPL-safety rule is restated as *at `DECODE_ENV=local` (the default), decode
+   > never imports kitaru*. The rest of this ADR (durable flows, checkpoints, HITL waits, durable
+   > `sleep`) is untouched.
+
 6. **Scheduling/cron is external — decode ships the deployable entrypoint, not a scheduler.** Because
    Kitaru has no native cron, recurring runs are: `kitaru deploy` the flow + an outside trigger. Step 7
    delivers the deployable flow entrypoint and documents the trigger; the **real recurring schedule
