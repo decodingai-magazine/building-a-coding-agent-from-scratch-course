@@ -6,8 +6,8 @@ Proves that in a sandbox mode the agent's whole tool scope — file/search tools
 harness artifacts stay at Harness Home; results ship back via the host-side git hand-back;
 ``none`` mode stays byte-identical to M1. Offline vs real split: Part 1 always runs offline
 (REAL executor / gate / registry / file-tool seams / hand-back / credential map; FAKED: a
-scripted FunctionModel, recording / local-exec SandboxBackend doubles, patched
-``kitaru.get_secret``, a stubbed LSP call, a spied KitaruAgent build — no daemon, no
+scripted FunctionModel, recording / local-exec SandboxBackend doubles, a monkeypatched
+``Settings`` field for the proxy templates, a stubbed LSP call, a spied KitaruAgent build — no daemon, no
 network, no GEMINI_API_KEY); Part 2 is skipif-guarded real-infra smokes (docker probe /
 modal creds — SKIP, never fail) that reap all infra in ``finally``. The exhaustive matrices
 live in the per-backend files; this capstone is the integrated proof they hang together. A
@@ -836,23 +836,18 @@ def test_handback_git_runs_host_side_never_through_the_sandbox_seam(mocker, tmp_
 _CRED_SECRET = "ghp_capstone_secret_token_value"
 
 
-def _patch_get_secret(mocker, values_by_name: dict[str, dict[str, str]]):
-    """Patch ``kitaru.get_secret`` to return a fake ``Secret`` (``.values``) per name (no real store)."""
+def test_build_credential_map_resolves_templates_hermetically(monkeypatch) -> None:
+    """``build_credential_map`` resolves a ``{{ settings_field }}`` template host-side (ADR-0015 §6).
 
-    def _fake(name: str):
-        return SimpleNamespace(values=values_by_name[name])
-
-    return mocker.patch("kitaru.get_secret", side_effect=_fake)
-
-
-def test_build_credential_map_resolves_templates_hermetically(mocker) -> None:
-    """``build_credential_map`` resolves a ``{{ name.key }}`` header template host-side (ADR-0011 §6)."""
-    _patch_get_secret(mocker, {"github-token": {"value": _CRED_SECRET}})
+    Pure: the template names a ``Settings`` field, so the resolution needs no secret store at all — a
+    monkeypatched field is the whole fixture (kitaru's only ``get_secret`` seam is the settings source).
+    """
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_CRED_SECRET))
     rules = [
         SandboxProxyRule(
             name="github-auth",
             hosts=["api.github.com"],
-            headers={"Authorization": "Bearer {{ github-token.value }}"},
+            headers={"Authorization": "Bearer {{ sandbox_git_token }}"},
         )
     ]
 
@@ -861,23 +856,20 @@ def test_build_credential_map_resolves_templates_hermetically(mocker) -> None:
     }
 
 
-def test_default_proxy_rules_ship_empty_and_yield_a_passthrough_map(mocker) -> None:
+def test_default_proxy_rules_ship_empty_and_yield_a_passthrough_map() -> None:
     """The shipped rule set is empty (opt-in) → an empty credential map (a passthrough proxy)."""
-    spy = _patch_get_secret(mocker, {})
-
     assert DEFAULT_PROXY_RULES == []
     assert build_credential_map(DEFAULT_PROXY_RULES) == {}
-    spy.assert_not_called()  # an empty rule set fetches no secret
 
 
-def test_build_credential_map_logs_names_never_values(mocker, caplog) -> None:
+def test_build_credential_map_logs_names_never_values(monkeypatch, caplog) -> None:
     """The resolved secret value never reaches a log line — only rule / host / header NAMES (task-061)."""
-    _patch_get_secret(mocker, {"github-token": {"value": _CRED_SECRET}})
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_CRED_SECRET))
     rules = [
         SandboxProxyRule(
             name="github-auth",
             hosts=["api.github.com"],
-            headers={"Authorization": "Bearer {{ github-token.value }}"},
+            headers={"Authorization": "Bearer {{ sandbox_git_token }}"},
         )
     ]
 
@@ -1458,20 +1450,19 @@ async def test_real_docker_credential_proxy_boundary(monkeypatch, tmp_path: Path
     """The credential boundary, proven end to end against a real daemon — else SKIP (ADR-0011 §6, retained).
 
     A rule injects ``X-Decode-Proxy-Auth: <secret>`` on requests to the stub upstream, resolved host-side
-    from a **patched** Kitaru secret. A token-free proxy-wired ``SandboxExecutor(DockerBackend(...))``
-    worker makes a urllib request through the ``mitmproxy`` addon container; the upstream echoes the
-    headers it received — proving the header **ARRIVED** — while a scan of the worker container's own env
-    proves the secret is **absent** there (it lives only in the proxy container). Torn down in a ``finally``.
+    from a **monkeypatched Settings field** (ADR-0015 §6 — no secret store in the picture). A token-free
+    proxy-wired ``SandboxExecutor(DockerBackend(...))`` worker makes a urllib request through the
+    ``mitmproxy`` addon container; the upstream echoes the headers it received — proving the header
+    **ARRIVED** — while a scan of the worker container's own env proves the secret is **absent** there (it
+    lives only in the proxy container). Torn down in a ``finally``.
     """
-    monkeypatch.setattr(
-        "kitaru.get_secret", lambda name: SimpleNamespace(values={"token": _PROXY_SECRET})
-    )
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_PROXY_SECRET))
     credential_map = build_credential_map(
         [
             SandboxProxyRule(
                 name="upstream-auth",
                 hosts=[_PROXY_UPSTREAM_ALIAS],
-                headers={_PROXY_HEADER: "{{ test-secret.token }}"},
+                headers={_PROXY_HEADER: "{{ sandbox_git_token }}"},
             )
         ]
     )

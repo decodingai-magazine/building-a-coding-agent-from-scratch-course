@@ -3,9 +3,16 @@
 Headless + docker only: lets a sandboxed **Worker** make authenticated tool calls while holding
 **no** secret. Rule templates are resolved host-side at flow start into a ``{host: {header: value}}``
 map handed **only** to the proxy container's env — never the worker's; the mitmproxy addon injects
-the headers after a request leaves the token-free worker. Built only inside the headless flow
-(lazily imported), so the REPL never imports this module and bare ``decode`` never imports kitaru.
-:data:`DEFAULT_PROXY_RULES` ships **empty** = opt-in (an empty map is a passthrough proxy).
+the headers after a request leaves the token-free worker. :data:`DEFAULT_PROXY_RULES` ships **empty**
+= opt-in (an empty map is a passthrough proxy).
+
+A template names a **Settings field** (``{{ sandbox_git_token }}``) and :func:`build_credential_map`
+is a **pure function of the hydrated** ``settings`` singleton — no secret store, no network (ADR-0015
+§6, amending ADR-0011 §6). At a remote ``DECODE_ENV`` that field's value arrived via the Environment
+Bucket, but this module neither knows nor cares: ``Settings`` is the single source of truth, and the
+Environment-Bucket settings source is the codebase's ONLY secret-store seam — this package has none
+(the module is deliberately grep-clean of it).
+
 `ponytail:` egress is cooperative — the worker is *pointed* at the proxy, not forced through it;
 not an exfiltration barrier, but the worker-never-holds-a-token claim holds regardless.
 """
@@ -26,18 +33,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from pydantic import SecretStr
+
 logger = logging.getLogger(__name__)
 
-# ``{{ secret-name.key }}`` — resolved host-side via ``kitaru.get_secret(name).values[key]``.
-_TEMPLATE_RE = re.compile(r"\{\{\s*(?P<name>[A-Za-z0-9._\-]+)\.(?P<key>[A-Za-z0-9._\-]+)\s*\}\}")
+# ``{{ field_name }}`` — a ``Settings`` FIELD name, resolved host-side from the hydrated singleton.
+_TEMPLATE_RE = re.compile(r"\{\{\s*(?P<field>[A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
 
 @dataclass(frozen=True, slots=True)
 class SandboxProxyRule:
     """One credential-injection rule: inject ``headers`` on every request to any of ``hosts``.
 
-    Header values may embed ``{{ secret-name.key }}`` templates that :func:`build_credential_map`
-    resolves host-side from a Kitaru secret.
+    Header values may embed ``{{ field_name }}`` templates naming a ``Settings`` **field**, which
+    :func:`build_credential_map` resolves host-side from the hydrated config — at a remote
+    ``DECODE_ENV`` that value reached ``Settings`` through the Environment Bucket (ADR-0015 §6).
     """
 
     name: str
@@ -45,34 +55,33 @@ class SandboxProxyRule:
     headers: dict[str, str]
 
 
-# Ships EMPTY = opt-in; an empty map is a passthrough proxy. Example — let the sandboxed agent push a
-# branch AND open a PR to GitHub while holding NO token. TWO rules, because git-over-HTTPS and the
-# REST API want DIFFERENT auth — and ``api.github.com`` MUST come first (``proxy_addon._match_host``
-# returns the FIRST match and ``github.com`` parent-matches ``api.github.com``):
+# Ships EMPTY = opt-in; an empty map is a passthrough proxy. Example — let the sandboxed agent call an
+# internal API while holding NO token. A template names a ``Settings`` FIELD, so the credential rides
+# the ONE config surface (``.env`` at ``local``, the Environment Bucket at a remote ``DECODE_ENV``) —
+# there is no separate secret to create for a proxy rule (ADR-0015 §6):
 #
+#     # 1. add the field to ``config/settings.py`` (+ ``.env.example``):
+#     #        acme_api_token: SecretStr = SecretStr("")
+#     # 2. name it in a rule here:
 #     DEFAULT_PROXY_RULES = [
-#         # PR / REST API (gh, curl → api.github.com): a Bearer PAT.
 #         SandboxProxyRule(
-#             name="github-api",
-#             hosts=["api.github.com"],
-#             headers={"Authorization": "Bearer {{ github-token.value }}"},
-#         ),
-#         # git push over HTTPS (→ github.com): Basic base64("x-access-token:<PAT>"), not Bearer.
-#         SandboxProxyRule(
-#             name="github-git",
-#             hosts=["github.com"],
-#             headers={"Authorization": "Basic {{ github-basic.value }}"},
+#             name="acme-api",
+#             hosts=["api.acme.test"],
+#             headers={"Authorization": "Bearer {{ acme_api_token }}"},
 #         ),
 #     ]
+#     # 3. run headless docker (the worker never holds the token):
+#     #        ACME_API_TOKEN=<token> SANDBOX_CREDENTIAL_PROXY_ENABLED=true \
+#     #            SANDBOX_MODE=docker decode run "…call the acme API…"
 #
-# then create the two host-side secrets (the worker holds neither) and run headless docker:
-#     kitaru secrets set github-token --private --value=<PAT>
-#     kitaru secrets set github-basic --private --value="$(printf 'x-access-token:%s' <PAT> | base64 | tr -d '\n')"
-#     SANDBOX_CREDENTIAL_PROXY_ENABLED=true SANDBOX_MODE=docker decode run "…push a branch, open a PR…"
+# Rule ORDER is significant: ``proxy_addon._match_host`` returns the FIRST match and a parent host
+# matches its subdomains, so a specific host (``api.github.com``) must precede its parent (``github.com``).
 #
-# `ponytail:` for exactly this GitHub case, ``SANDBOX_GIT_TOKEN`` is the one-knob shortcut —
-# :func:`github_token_rules` builds these same two rules and ``_sandbox_proxy`` auto-engages the
-# proxy. ``DEFAULT_PROXY_RULES`` + Kitaru secrets remain for any OTHER host.
+# `ponytail:` for the GitHub push+PR case, ``SANDBOX_GIT_TOKEN`` is the one-knob shortcut —
+# :func:`github_token_rules` builds those two rules (Bearer + Basic) and ``_sandbox_proxy``
+# auto-engages the proxy. Its values are LITERAL, not templates, precisely because the git transport
+# wants a base64 Basic transform — a computation a template cannot express, which is why it is code.
+# ``DEFAULT_PROXY_RULES`` remains the general path for any OTHER host.
 DEFAULT_PROXY_RULES: list[SandboxProxyRule] = []
 
 
@@ -81,8 +90,9 @@ def github_token_rules(token: str) -> list[SandboxProxyRule]:
 
     Bearer for the REST API (``api.github.com``); Basic ``base64("x-access-token:<PAT>")`` for git
     push over HTTPS (GitHub's git transport rejects Bearer). ``api.github.com`` comes **first** so
-    the addon's first-match wins over the ``github.com`` parent match. Values are literal (no Kitaru
-    fetch) and the worker still holds no token — the proxy injects after egress (ADR-0012 §10).
+    the addon's first-match wins over the ``github.com`` parent match. Values are literal (the base64
+    transform is exactly why this is code, not a ``{{ field }}`` template) and the worker still holds
+    no token — the proxy injects after egress (ADR-0012 §10).
     """
     basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
     return [
@@ -99,35 +109,44 @@ def github_token_rules(token: str) -> list[SandboxProxyRule]:
     ]
 
 
-def _resolve_templates(value: str, *, cache: dict[str, dict[str, str]]) -> str:
-    """Replace every ``{{ name.key }}`` in ``value`` with ``kitaru.get_secret(name).values[key]``.
+def _settings_value(field: str) -> str:
+    """The hydrated ``settings.<field>`` as a header-ready string — loudly, or not at all (ADR-0015 §6).
 
-    ``cache`` memoizes per :func:`build_credential_map` call. A missing secret/key propagates —
-    never a silent skip. ``kitaru`` is imported lazily so this module stays kitaru-free until used.
+    ``SecretStr`` is unwrapped (a bare ``str()`` would inject ``'**********'``); any other field is
+    stringified. An unknown field or an empty/``None`` value **raises**: a silent skip would send an
+    unauthenticated request while the run looked fine — the mirror of the old missing-secret contract.
     """
-    from kitaru import get_secret
+    from decode.config.settings import Settings, settings
 
-    def _sub(match: re.Match[str]) -> str:
-        name = match.group("name")
-        key = match.group("key")
-        if name not in cache:
-            cache[name] = get_secret(name).values  # KitaruRuntimeError propagates if absent
-        return cache[name][key]  # KeyError propagates if the secret has no such key
-
-    return _TEMPLATE_RE.sub(_sub, value)
+    if field not in Settings.model_fields:
+        raise ValueError(
+            f"proxy rule template {{{{ {field} }}}} names {field!r}, which is not a Settings field — "
+            "add it to decode/config/settings.py (and .env.example) or fix the template"
+        )
+    value = getattr(settings, field)
+    resolved = value.get_secret_value() if isinstance(value, SecretStr) else str(value or "")
+    if not resolved:
+        raise ValueError(
+            f"proxy rule template {{{{ {field} }}}} resolved to an EMPTY value — set {field.upper()} "
+            "(in .env, the process env, or the Environment Bucket); the proxy must never inject an "
+            "empty credential header"
+        )
+    return resolved
 
 
 def build_credential_map(rules: list[SandboxProxyRule]) -> dict[str, dict[str, str]]:
     """Resolve ``rules`` into the ``{host: {header: value}}`` map the proxy container consumes.
 
-    Runs **host-side, at flow start** (ADR-0011 §6); rules on the same host merge; empty ``rules``
-    yields ``{}`` (a passthrough proxy). Logs rule/host/header **names** only — never the values.
+    A **pure function of the hydrated** ``settings`` — each ``{{ field_name }}`` template reads a
+    Settings field (ADR-0015 §6): no secret store, no network. Runs host-side at flow start (ADR-0011 §6);
+    rules on the same host merge; empty ``rules`` yields ``{}`` (a passthrough proxy). Logs
+    rule/host/header **names** only — never the values.
     """
-    cache: dict[str, dict[str, str]] = {}
     result: dict[str, dict[str, str]] = {}
     for rule in rules:
         resolved = {
-            header: _resolve_templates(value, cache=cache) for header, value in rule.headers.items()
+            header: _TEMPLATE_RE.sub(lambda m: _settings_value(m.group("field")), value)
+            for header, value in rule.headers.items()
         }
         for host in rule.hosts:
             result.setdefault(host, {}).update(resolved)

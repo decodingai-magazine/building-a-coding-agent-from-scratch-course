@@ -16,6 +16,7 @@ from pydantic import SecretStr
 
 import decode.runtime.flow as flow_mod
 import decode.tools.bash as bash_mod
+from decode.sandbox.proxy import SandboxProxyRule
 from decode.tools.bash import BASH_TOOL_NAME
 from decode.tools.exec import LocalExecutor
 
@@ -146,3 +147,64 @@ def test_sandbox_proxy_engages_on_a_git_token_even_when_the_flag_is_off(monkeypa
     rules = recorded["rules"]
     assert [r.name for r in rules] == ["github-api", "github-git"]  # prepended, api host first
     assert rules[0].headers["Authorization"] == "Bearer ghp_from_setting"  # literal setting token
+
+
+def test_sandbox_proxy_resolves_default_rules_from_the_hydrated_settings(monkeypatch):
+    # ADR-0015 §6 at the flow seam: a ``{{ field }}`` rule resolves from the SAME ``settings`` the flow
+    # already ran on — no kitaru, no second lookup. Hermetic: the real build_credential_map runs, then
+    # the DockerCredentialProxy constructor is stubbed to record the map and bail before any docker.
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(flow_mod.settings, "sandbox_credential_proxy_enabled", True)
+    monkeypatch.setattr(flow_mod.settings, "sandbox_git_token", SecretStr("ghp_resolved"))
+    monkeypatch.setattr(
+        "decode.sandbox.proxy.DEFAULT_PROXY_RULES",
+        [
+            SandboxProxyRule(
+                name="acme",
+                hosts=["api.acme.test"],
+                headers={"Authorization": "Bearer {{ sandbox_git_token }}"},
+            )
+        ],
+    )
+    recorded: dict[str, object] = {}
+
+    class _Bail(Exception):
+        pass
+
+    def _record_then_bail(credential_map):
+        recorded["map"] = credential_map
+        raise _Bail
+
+    monkeypatch.setattr("decode.sandbox.proxy.DockerCredentialProxy", _record_then_bail)
+
+    with pytest.raises(_Bail), flow_mod._sandbox_proxy():
+        pass
+
+    # The template resolved to the hydrated field's UNWRAPPED value, host-side, with no store lookup.
+    assert recorded["map"] == {  # type: ignore[comparison-overlap]
+        "api.github.com": {"Authorization": "Bearer ghp_resolved"},
+        "github.com": {"Authorization": "Basic eC1hY2Nlc3MtdG9rZW46Z2hwX3Jlc29sdmVk"},
+        "api.acme.test": {"Authorization": "Bearer ghp_resolved"},
+    }
+
+
+def test_sandbox_proxy_fails_loudly_on_a_rule_whose_field_is_empty(monkeypatch):
+    # AC (credential boundary): an empty resolved value must abort the flow BEFORE any container is
+    # started — never a silently unauthenticated request behind an empty ``Bearer`` header.
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(flow_mod.settings, "sandbox_credential_proxy_enabled", True)
+    monkeypatch.setattr(flow_mod.settings, "sandbox_git_token", None)  # the field the rule names
+    monkeypatch.setattr(
+        "decode.sandbox.proxy.DEFAULT_PROXY_RULES",
+        [
+            SandboxProxyRule(
+                name="acme",
+                hosts=["api.acme.test"],
+                headers={"Authorization": "Bearer {{ sandbox_git_token }}"},
+            )
+        ],
+    )
+
+    # It raises out of the context entry — no DockerCredentialProxy is ever constructed (no docker).
+    with pytest.raises(ValueError, match="sandbox_git_token"), flow_mod._sandbox_proxy():
+        pass

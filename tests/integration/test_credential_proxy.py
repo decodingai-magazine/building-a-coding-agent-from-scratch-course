@@ -10,8 +10,9 @@ network down on exit, **including when the flow body raises**, and restores the 
 
 **Skipped, never failed, without a daemon.** A module-level ``docker info`` probe guards the whole
 file with ``@pytest.mark.skipif`` (mirroring ``test_docker_executor.py``), so ``make ci`` stays green
-on a machine with no Docker — these SKIP. ``kitaru.get_secret`` is **patched** so no real secret store
-is needed; the topology itself is real. Every test tears its containers + network down in a
+on a machine with no Docker — these SKIP. The header templates name a ``Settings`` field (ADR-0015 §6),
+so a monkeypatched field is the whole credential fixture — no secret store anywhere; the topology itself
+is real. Every test tears its containers + network down in a
 ``finally`` (and asserts they are gone), so the suite leaves no docker litter even on failure.
 """
 
@@ -19,10 +20,10 @@ from __future__ import annotations
 
 import subprocess
 import time
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from pydantic import SecretStr
 
 import decode.runtime.flow as flow_mod
 import decode.tools.bash as bash_mod
@@ -153,20 +154,18 @@ async def test_worker_request_arrives_with_injected_header_but_worker_holds_no_s
     """The credential claim, proven end to end (ADR-0011 §6, AC lines 84-89).
 
     A rule injects ``X-Decode-Proxy-Auth: <secret>`` on requests to ``upstream.local``, resolved
-    host-side from a **patched** Kitaru secret. The token-free worker makes a urllib request through
+    host-side from a **monkeypatched Settings field**. The token-free worker makes a urllib request through
     the proxy; the stub upstream echoes the headers it received — proving the header ARRIVED — while a
     scan of the worker container's own env proves the secret is **absent** there (it lives only in the
     proxy container). The CA is mounted into the worker too.
     """
-    monkeypatch.setattr(
-        "kitaru.get_secret", lambda name: SimpleNamespace(values={"token": _SECRET_VALUE})
-    )
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_SECRET_VALUE))
     credential_map = build_credential_map(
         [
             SandboxProxyRule(
                 name="upstream-auth",
                 hosts=[_UPSTREAM_ALIAS],
-                headers={_INJECTED_HEADER: "{{ test-secret.token }}"},
+                headers={_INJECTED_HEADER: "{{ sandbox_git_token }}"},
             )
         ]
     )
@@ -237,15 +236,13 @@ async def test_worker_trusts_the_proxy_ca_on_its_very_first_command(monkeypatch,
     first command returned. FAILS on the pre-fix code (the first ``docker exec`` races the PID-1
     ``update-ca-certificates``); passes once ``_ensure_container`` folds the CA in synchronously.
     """
-    monkeypatch.setattr(
-        "kitaru.get_secret", lambda name: SimpleNamespace(values={"token": _SECRET_VALUE})
-    )
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_SECRET_VALUE))
     credential_map = build_credential_map(
         [
             SandboxProxyRule(
                 name="upstream-auth",
                 hosts=[_UPSTREAM_ALIAS],
-                headers={_INJECTED_HEADER: "{{ test-secret.token }}"},
+                headers={_INJECTED_HEADER: "{{ sandbox_git_token }}"},
             )
         ]
     )
@@ -290,15 +287,13 @@ async def test_proxy_wired_worker_has_git_and_still_holds_no_token(monkeypatch, 
     secret (the credential lives only in the proxy container). This is the regression guard for the bug
     where a set ``SANDBOX_GIT_TOKEN`` silently dropped git from the worker. Reaps in ``finally``.
     """
-    monkeypatch.setattr(
-        "kitaru.get_secret", lambda name: SimpleNamespace(values={"token": _SECRET_VALUE})
-    )
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_SECRET_VALUE))
     credential_map = build_credential_map(
         [
             SandboxProxyRule(
                 name="upstream-auth",
                 hosts=[_UPSTREAM_ALIAS],
-                headers={_INJECTED_HEADER: "{{ test-secret.token }}"},
+                headers={_INJECTED_HEADER: "{{ sandbox_git_token }}"},
             )
         ]
     )

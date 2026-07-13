@@ -192,6 +192,16 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
     >
     > modal needs no decoy: `gh` reads the real `GITHUB_TOKEN` the `modal.Secret` already injects.
 
+    > **Amendment (2026-07-13 — `DEFAULT_PROXY_RULES` name `Settings` fields, not Kitaru secrets).**
+    > Where §10 says the `SANDBOX_CREDENTIAL_PROXY_ENABLED` flag + `DEFAULT_PROXY_RULES` (Kitaru secrets)
+    > remain the general path for other hosts, the **Kitaru secrets** half is superseded
+    > ([ADR-0015 §6](0015-environment-bucket-secrets.md)): a rule's header template names a `Settings`
+    > **field** (`{{ acme_api_token }}`) and resolves from the hydrated config — at a remote `DECODE_ENV`
+    > the value arrived via the Environment Bucket. The flag, the rules list, and the general-path role
+    > are unchanged; only the resolution seam moved. `SANDBOX_GIT_TOKEN` / `github_token_rules()` (this
+    > section's subject) are **untouched** — they build literal header values, since the Basic base64
+    > transform is a computation no template can express.
+
 ## Diagram
 
 ```mermaid

@@ -3,7 +3,7 @@
 Loaded by ``mitmdump`` running **inside** the ``mitmproxy/mitmproxy`` proxy container
 (``mitmdump ... -s /opt/proxy_addon.py``), never by the decode host process. It is mounted
 **read-only** into the container, so it must stay tiny and self-contained: **stdlib + mitmproxy
-only — it imports no ``decode`` and no ``kitaru``** (neither is installed in that image).
+only — it imports no ``decode`` and no third-party harness package** (none is installed in that image).
 
 The credential map reaches this addon through the container's **own** environment as JSON
 (``DECODE_CREDENTIAL_MAP`` = ``{host: {header: value}}``), resolved host-side at flow start by

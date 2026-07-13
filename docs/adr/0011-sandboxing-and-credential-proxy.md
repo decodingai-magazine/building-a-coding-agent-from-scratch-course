@@ -134,6 +134,17 @@ reach the model or the sandbox payload** (AGENTS.md). This ADR is groomed into t
    `ponytail:` not an exfiltration barrier; internal-network lockdown is the upgrade path. The
    credential claim (worker never holds a token) holds regardless.
 
+   > **Amendment (2026-07-13 — proxy rules resolve from `Settings`, not `kitaru.get_secret`).** The
+   > `{{ name.key }}` template form and the `kitaru.get_secret(name).values` lookup described above are
+   > **deleted** ([ADR-0015 §6](0015-environment-bucket-secrets.md)). A template now names a `Settings`
+   > **field** (`{"Authorization": "Bearer {{ sandbox_git_token }}"}`) and `build_credential_map()` is a
+   > pure function of the hydrated `settings` object — no kitaru import, no network. At a remote
+   > `DECODE_ENV` that field's value reached `Settings` through the Environment Bucket, so kitaru's only
+   > `get_secret` seam in the codebase is that settings source. Everything else in §6 stands: the
+   > container topology, the map handed only to the proxy container, the worker-never-holds-a-token
+   > claim, the empty-by-default opt-in, and the cooperative-egress caveat. The REPL-safety invariant is
+   > restated by ADR-0015 §5: **at `DECODE_ENV=local` (the default), decode never imports kitaru.**
+
    - **Worker CA trust — stock image + CA-mount (task 075).** `SANDBOX_IMAGE` defaults to a stock
      `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` (ca-certificates present, runs as root), so the no-proxy case needs no custom
      image. For the proxy path the worker must trust the mitmproxy CA: decode **mounts the proxy's

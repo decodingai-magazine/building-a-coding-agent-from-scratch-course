@@ -1,23 +1,27 @@
 """Hermetic unit tests for the sandbox Credential Proxy host-side pieces (``decode.sandbox.proxy``).
 
-These need **no docker daemon**: the template resolver (:func:`build_credential_map`) is driven with a
-**patched** ``kitaru.get_secret`` so it never touches a real secret store, and the
-:class:`DockerCredentialProxy` assertions cover only its pure properties (naming, the worker proxy
-env, the pre-start guard). The real container topology — a live mitmproxy container, the CA mount, the
-header injection, the credential boundary — lives in the ``@skipif``-guarded
-``tests/integration/test_credential_proxy.py`` (it needs a real daemon and SKIPs cleanly without one).
+These need **no docker daemon and no secret store**: since ADR-0015 §6 the template resolver
+(:func:`build_credential_map`) is a **pure function of the hydrated** ``Settings`` — a
+``{{ field_name }}`` template names a Settings field, so a test just monkeypatches that field (no
+kitaru, no network, no store stubs). The :class:`DockerCredentialProxy` assertions cover only its pure
+properties (naming, the worker proxy env, the pre-start guard). The real container topology — a live
+mitmproxy container, the CA mount, the header injection, the credential boundary — lives in the
+``@skipif``-guarded ``tests/integration/test_credential_proxy.py`` (it needs a real daemon and SKIPs
+cleanly without one).
 """
 
 from __future__ import annotations
 
 import base64
 import logging
+import subprocess
+import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-from kitaru.errors import KitaruRuntimeError
+from pydantic import SecretStr
 
+from decode.config.settings import settings
 from decode.sandbox.proxy import (
     _GH_PLACEHOLDER_TOKEN,
     DEFAULT_PROXY_RULES,
@@ -31,20 +35,6 @@ from decode.sandbox.proxy import (
 _SECRET_VALUE = "ghp_super_secret_token_value"
 
 
-def _patch_get_secret(mocker, values_by_name: dict[str, dict[str, str]]):
-    """Patch ``kitaru.get_secret`` to return a fake ``Secret`` (``.values``) per name; return the spy.
-
-    ``build_credential_map`` does a lazy ``from kitaru import get_secret`` inside its resolver, so
-    patching the attribute on the ``kitaru`` module is what the call actually resolves — no real secret
-    store is touched.
-    """
-
-    def _fake(name: str):
-        return SimpleNamespace(values=values_by_name[name])
-
-    return mocker.patch("kitaru.get_secret", side_effect=_fake)
-
-
 # SandboxProxyRule shape
 
 
@@ -52,12 +42,12 @@ def test_sandbox_proxy_rule_holds_name_hosts_and_headers():
     rule = SandboxProxyRule(
         name="github-auth",
         hosts=["api.github.com"],
-        headers={"Authorization": "Bearer {{ github-token.value }}"},
+        headers={"Authorization": "Bearer {{ sandbox_git_token }}"},
     )
 
     assert rule.name == "github-auth"
     assert rule.hosts == ["api.github.com"]
-    assert rule.headers == {"Authorization": "Bearer {{ github-token.value }}"}
+    assert rule.headers == {"Authorization": "Bearer {{ sandbox_git_token }}"}
 
 
 def test_sandbox_proxy_rule_is_frozen():
@@ -73,16 +63,18 @@ def test_default_proxy_rules_ships_empty():
     assert DEFAULT_PROXY_RULES == []
 
 
-# build_credential_map: host-side template resolution
+# build_credential_map: host-side resolution from the hydrated Settings (ADR-0015 §6)
 
 
-def test_build_credential_map_resolves_a_template_into_host_header_value(mocker):
-    _patch_get_secret(mocker, {"github-token": {"value": _SECRET_VALUE}})
+def test_build_credential_map_resolves_a_secretstr_field_into_the_host_header_value(monkeypatch):
+    # AC: a ``{{ field_name }}`` template resolves from the hydrated Settings — the SecretStr is
+    # unwrapped (``.get_secret_value()``), not str()'d into "**********".
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_SECRET_VALUE))
     rules = [
         SandboxProxyRule(
             name="github-auth",
             hosts=["api.github.com"],
-            headers={"Authorization": "Bearer {{ github-token.value }}"},
+            headers={"Authorization": "Bearer {{ sandbox_git_token }}"},
         )
     ]
 
@@ -91,11 +83,21 @@ def test_build_credential_map_resolves_a_template_into_host_header_value(mocker)
     assert result == {"api.github.com": {"Authorization": f"Bearer {_SECRET_VALUE}"}}
 
 
-def test_build_credential_map_applies_one_rule_to_each_of_its_hosts(mocker):
-    _patch_get_secret(mocker, {"tok": {"k": "V"}})
+def test_build_credential_map_stringifies_a_plain_field(monkeypatch):
+    # Not every proxied header is a secret: a plain (non-SecretStr) field resolves by str().
+    monkeypatch.setattr(settings, "opik_workspace", "acme")
+    rules = [
+        SandboxProxyRule(name="ws", hosts=["h.test"], headers={"X-Ws": "{{ opik_workspace }}"})
+    ]
+
+    assert build_credential_map(rules) == {"h.test": {"X-Ws": "acme"}}
+
+
+def test_build_credential_map_applies_one_rule_to_each_of_its_hosts(monkeypatch):
+    monkeypatch.setattr(settings, "opik_workspace", "V")
     rules = [
         SandboxProxyRule(
-            name="multi", hosts=["a.test", "b.test"], headers={"X-Auth": "{{ tok.k }}"}
+            name="multi", hosts=["a.test", "b.test"], headers={"X-Auth": "{{ opik_workspace }}"}
         )
     ]
 
@@ -104,10 +106,10 @@ def test_build_credential_map_applies_one_rule_to_each_of_its_hosts(mocker):
     assert result == {"a.test": {"X-Auth": "V"}, "b.test": {"X-Auth": "V"}}
 
 
-def test_build_credential_map_merges_multiple_rules_on_the_same_host(mocker):
-    _patch_get_secret(mocker, {"s": {"k": "V"}})
+def test_build_credential_map_merges_multiple_rules_on_the_same_host(monkeypatch):
+    monkeypatch.setattr(settings, "opik_workspace", "V")
     rules = [
-        SandboxProxyRule(name="one", hosts=["h.test"], headers={"A": "{{ s.k }}"}),
+        SandboxProxyRule(name="one", hosts=["h.test"], headers={"A": "{{ opik_workspace }}"}),
         SandboxProxyRule(name="two", hosts=["h.test"], headers={"B": "static"}),
     ]
 
@@ -116,69 +118,83 @@ def test_build_credential_map_merges_multiple_rules_on_the_same_host(mocker):
     assert result == {"h.test": {"A": "V", "B": "static"}}
 
 
-def test_build_credential_map_leaves_a_template_free_value_untouched(mocker):
-    spy = _patch_get_secret(mocker, {})
+def test_build_credential_map_leaves_a_template_free_value_untouched():
     rules = [SandboxProxyRule(name="static", hosts=["h.test"], headers={"X-Fixed": "plain-value"})]
 
-    result = build_credential_map(rules)
-
-    assert result == {"h.test": {"X-Fixed": "plain-value"}}
-    spy.assert_not_called()  # no template → no secret fetch
+    assert build_credential_map(rules) == {"h.test": {"X-Fixed": "plain-value"}}
 
 
-def test_build_credential_map_caches_each_secret_across_headers(mocker):
-    spy = _patch_get_secret(mocker, {"tok": {"a": "AA", "b": "BB"}})
+def test_build_credential_map_resolves_several_templates_in_one_rule(monkeypatch):
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_SECRET_VALUE))
+    monkeypatch.setattr(settings, "opik_workspace", "acme")
     rules = [
         SandboxProxyRule(
             name="two-headers",
             hosts=["h.test"],
-            headers={"H1": "{{ tok.a }}", "H2": "{{ tok.b }}"},
+            headers={"H1": "Bearer {{ sandbox_git_token }}", "H2": "{{ opik_workspace }}"},
         )
     ]
 
-    build_credential_map(rules)
+    assert build_credential_map(rules) == {
+        "h.test": {"H1": f"Bearer {_SECRET_VALUE}", "H2": "acme"}
+    }
 
-    assert spy.call_count == 1  # the secret is fetched once and reused for both header templates
 
-
-def test_build_credential_map_empty_rules_yields_an_empty_map(mocker):
-    spy = _patch_get_secret(mocker, {})
-
+def test_build_credential_map_empty_rules_yields_an_empty_map():
+    # Opt-in: no rules → an empty map → a passthrough proxy (it injects nothing).
     assert build_credential_map([]) == {}
-    spy.assert_not_called()
 
 
-def test_build_credential_map_propagates_a_missing_secret_error(mocker):
-    # AC (credential boundary): a missing secret must surface Kitaru's OWN error, not be silently
-    # skipped — the run fails loudly rather than sending an unauthenticated request.
-    def _raise(name: str):
-        raise KitaruRuntimeError(f"secret {name!r} not found")
+def test_build_credential_map_rejects_an_unknown_settings_field():
+    # AC (credential boundary): an unknown field must fail LOUDLY, naming it — never a silent skip
+    # that would send an unauthenticated request while looking fine.
+    rules = [SandboxProxyRule(name="r", hosts=["h"], headers={"A": "{{ nonexistent_field }}"})]
 
-    mocker.patch("kitaru.get_secret", side_effect=_raise)
-    rules = [SandboxProxyRule(name="r", hosts=["h"], headers={"A": "{{ absent.key }}"})]
-
-    with pytest.raises(KitaruRuntimeError):
+    with pytest.raises(ValueError, match="nonexistent_field"):
         build_credential_map(rules)
 
 
-def test_build_credential_map_propagates_a_missing_key_error(mocker):
-    # A present secret that lacks the referenced key also fails loudly (KeyError), never a silent skip.
-    _patch_get_secret(mocker, {"tok": {"present": "V"}})
-    rules = [SandboxProxyRule(name="r", hosts=["h"], headers={"A": "{{ tok.absent }}"})]
+def test_build_credential_map_rejects_an_attribute_that_is_not_a_settings_field():
+    # Only real Settings FIELDS resolve: a stray attribute (``model_config``, a method) is a typo,
+    # not a credential — it must fail rather than inject a repr into a header.
+    rules = [SandboxProxyRule(name="r", hosts=["h"], headers={"A": "{{ model_config }}"})]
 
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError, match="model_config"):
         build_credential_map(rules)
 
 
-def test_build_credential_map_logs_names_never_values(mocker, caplog):
+def test_build_credential_map_rejects_an_unset_field(monkeypatch):
+    # AC: a None value raises rather than injecting a header with nothing in it (the mirror of the
+    # old missing-secret contract — an empty ``Bearer`` is worse than a loud failure).
+    monkeypatch.setattr(settings, "sandbox_git_token", None)
+    rules = [
+        SandboxProxyRule(name="r", hosts=["h"], headers={"A": "Bearer {{ sandbox_git_token }}"})
+    ]
+
+    with pytest.raises(ValueError, match="sandbox_git_token"):
+        build_credential_map(rules)
+
+
+def test_build_credential_map_rejects_an_empty_field_value(monkeypatch):
+    # An explicit ``SANDBOX_GIT_TOKEN=`` parses to ``SecretStr("")`` — empty, so it must raise too.
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(""))
+    rules = [
+        SandboxProxyRule(name="r", hosts=["h"], headers={"A": "Bearer {{ sandbox_git_token }}"})
+    ]
+
+    with pytest.raises(ValueError, match="sandbox_git_token"):
+        build_credential_map(rules)
+
+
+def test_build_credential_map_logs_names_never_values(monkeypatch, caplog):
     # SECURITY (task-061 discipline): the resolved VALUE must never reach a log line — only rule /
     # host / header NAMES, so an operator can correlate an injection without leaking the secret.
-    _patch_get_secret(mocker, {"github-token": {"value": _SECRET_VALUE}})
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_SECRET_VALUE))
     rules = [
         SandboxProxyRule(
             name="github-auth",
             hosts=["api.github.com"],
-            headers={"Authorization": "Bearer {{ github-token.value }}"},
+            headers={"Authorization": "Bearer {{ sandbox_git_token }}"},
         )
     ]
 
@@ -188,6 +204,37 @@ def test_build_credential_map_logs_names_never_values(mocker, caplog):
     assert _SECRET_VALUE not in caplog.text  # the resolved value never appears
     assert "github-auth" in caplog.text  # the rule name does (for correlation)
     assert "Authorization" in caplog.text  # the header name does
+
+
+def test_the_proxy_module_resolves_a_template_without_ever_importing_kitaru():
+    """The seam (ADR-0015 §6): proxy rules read ``Settings``, so kitaru's ONLY ``get_secret`` seam is
+    the Environment-Bucket settings source.
+
+    Run in a clean subprocess (like the ``local``-never-imports-kitaru invariant in
+    ``tests/unit/decode/config/test_env_bucket.py``) so the assertion is independent of what the rest
+    of the suite already imported: import the proxy module, resolve a templated rule for real, and
+    prove ``kitaru`` never landed in ``sys.modules``.
+    """
+    code = (
+        "import sys\n"
+        "from pydantic import SecretStr\n"
+        "from decode.config.settings import settings\n"
+        "from decode.sandbox.proxy import SandboxProxyRule, build_credential_map\n"
+        "settings.sandbox_git_token = SecretStr('tok')\n"
+        "rule = SandboxProxyRule(name='r', hosts=['h'], "
+        "headers={'Authorization': 'Bearer {{ sandbox_git_token }}'})\n"
+        "assert build_credential_map([rule]) == {'h': {'Authorization': 'Bearer tok'}}\n"
+        "leaked = sorted(m for m in sys.modules if m == 'kitaru' or m.startswith('kitaru.'))\n"
+        "assert not leaked, leaked\n"
+        "print('NO_KITARU_OK')\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120.0, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "NO_KITARU_OK" in result.stdout
 
 
 # github_token_rules: the SANDBOX_GIT_TOKEN one-knob shortcut
@@ -206,17 +253,14 @@ def test_github_token_rules_builds_bearer_api_then_basic_git():
     assert rules[1].headers == {"Authorization": f"Basic {expected_basic}"}
 
 
-def test_github_token_rules_resolve_with_no_kitaru_fetch_and_api_host_first(mocker):
-    # Fed through build_credential_map the literal values pass through untouched (no {{ }} → no secret
-    # fetch), and api.github.com is the FIRST map key so _match_host picks Bearer for the API host
-    # (github.com parent-matches api.github.com; _match_host returns the first match).
-    spy = _patch_get_secret(mocker, {})
-
+def test_github_token_rules_resolve_untouched_with_the_api_host_first():
+    # Fed through build_credential_map the literal values pass through untouched (no {{ }} → no field
+    # lookup at all), and api.github.com is the FIRST map key so _match_host picks Bearer for the API
+    # host (github.com parent-matches api.github.com; _match_host returns the first match).
     result = build_credential_map(github_token_rules("ghp_x"))
 
     assert list(result) == ["api.github.com", "github.com"]  # insertion order == match precedence
     assert result["api.github.com"] == {"Authorization": "Bearer ghp_x"}
-    spy.assert_not_called()  # literal headers → no Kitaru secret is touched
 
 
 # DockerCredentialProxy: pure properties (no docker)
