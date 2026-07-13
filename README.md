@@ -119,12 +119,11 @@ Upstream of `--from` serves from the original run's cache; the anchor and downst
 
 ### Keeping keys out of the flow payload
 
-Two opt-in, headless-only surfaces (both off by default; details in [`.env.example`](.env.example) and [ADR-0008 §5](docs/adr/0008-kitaru-durable-runtime.md)):
+One opt-in, headless-only surface (off by default; details in [`.env.example`](.env.example) and [ADR-0008 §5](docs/adr/0008-kitaru-durable-runtime.md)):
 
-- `RUNTIME_SECRET_STORE_MODEL_KEY=true` — flow-mode model construction resolves the provider key from a Kitaru secret (`kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=…`), so the execution's serialized arguments carry only the secret *name*, never the raw key.
-- `RUNTIME_SECRET_STORE_CONFIG=true` — hydrate the **whole** `decode run` config (provider, model, keys, tuning) from that same secret, keyed by `.env.example` names. Real process env still wins; values land in `Settings` only, never `os.environ`. The REPL never reads the secret and never imports Kitaru.
+- `RUNTIME_SECRET_STORE_CONFIG=true` — hydrate the **whole** `decode run` config (provider, model, keys, tuning) from a Kitaru secret (`kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=…`), keyed by `.env.example` names. Real process env still wins; values land in `Settings` only, never `os.environ`. The REPL never reads the secret and never imports Kitaru.
 
-Both are secret-store **lookups**, not the sandbox [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret) below — different secret, different hiding place. (They shipped under the name "Credentials Proxy", retired in ADR-0008 §5 for exactly that confusion.) [`CREDENTIALS.md`](CREDENTIALS.md) tells the two apart and walks an end-to-end test of each, on and off.
+It is a secret-store **lookup**, not the sandbox [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret) below — different secret, different hiding place. (It shipped under the name "Credentials Proxy", retired in ADR-0008 §5 for exactly that confusion.) [`CREDENTIALS.md`](CREDENTIALS.md) tells the two apart and walks an end-to-end test of each, on and off.
 
 ## Context compaction
 

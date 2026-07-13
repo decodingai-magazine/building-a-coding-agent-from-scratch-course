@@ -295,6 +295,46 @@ def test_gemini_flow_mode_wires_the_loop_safe_http_client(mocker):
     assert spy.call_count == 1  # interactive path does NOT (one event loop — keep-alive is fine)
 
 
+def test_flow_mode_reads_the_gemini_key_from_settings(mocker):
+    """ADR-0015 §4: flow mode no longer changes key sourcing — the key comes from ``Settings``, period.
+
+    The retired model-key secret resolution used to divert a flow-mode build to ``kitaru.get_secret``.
+    It is deleted: a flow-mode build reads the same settings ``SecretStr`` the REPL does, and no
+    secret-store lookup happens (``flow_mode`` now only selects the keep-alive-free HTTP client,
+    ADR-0010 §3).
+    """
+    mocker.patch("decode.agent.factory.settings.llm_provider", "gemini")
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key",
+        SecretStr("settings-gemini-key"),
+        create=False,
+    )
+    mocker.patch("decode.agent.factory.settings.gemini_model", "gemini-2.5-flash")
+    get_secret = mocker.patch("kitaru.get_secret")
+
+    agent = build_agent(flow_mode=True)
+
+    assert agent.model._provider.client._api_client.api_key == "settings-gemini-key"
+    get_secret.assert_not_called()  # no kitaru secret-store lookup on the key path any more
+
+
+def test_flow_mode_reads_the_openrouter_key_from_settings(mocker):
+    """The same settings-only key sourcing for the other single-api-key provider (ADR-0015 §4)."""
+    mocker.patch("decode.agent.factory.settings.llm_provider", "openrouter")
+    mocker.patch(
+        "decode.agent.factory.settings.openrouter_api_key",
+        SecretStr("settings-openrouter-key"),
+        create=False,
+    )
+    mocker.patch("decode.agent.factory.settings.openrouter_model", "openrouter/free")
+    get_secret = mocker.patch("kitaru.get_secret")
+
+    agent = build_agent(flow_mode=True)
+
+    assert agent.model._provider.client.api_key == "settings-openrouter-key"
+    get_secret.assert_not_called()
+
+
 async def test_memory_injection_is_evaluated_per_run(tmp_path, mocker):
     """Editing AGENTS.md takes effect on the next run without rebuilding the agent."""
     mocker.patch(

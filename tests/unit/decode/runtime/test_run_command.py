@@ -280,28 +280,19 @@ def test_run_command_provider_guard_fires_without_a_key(monkeypatch):
     assert "GEMINI_API_KEY" in result.stderr
 
 
-# Model-key secret: missing/incomplete Kitaru secret is a friendly line, not a traceback
-# (task 061 QA blocker — User Story #3 "opt-in and safe by default"). The proxy-aware pre-flight
-# resolves the Kitaru secret BEFORE building the durable flow, so a missing/incomplete secret exits
-# with one friendly stderr line naming ``kitaru secrets set`` — never the ~30-frame KitaruRuntimeError
-# traceback the unguarded ``run_agent_task.run(...).wait()`` used to dump.
+# Secret-store config source: the `decode run` guard is RUNTIME_SECRET_STORE_CONFIG-aware
+# (task 064 follow-up). When the secret-store source is on, the provider config (key/model/tuning) is
+# hydrated from a Kitaru secret — but the cli's provider-config guard runs BEFORE the flow hydrates, so
+# without a pre-flight a key living only in the secret tripped the misleading ``set GEMINI_API_KEY``
+# line and a missing/malformed secret dumped a deep traceback from inside the flow. The pre-flight
+# hydrates + validates up front: a secret-only key satisfies the guard, and a missing/malformed secret
+# is one friendly stderr line, never a traceback.
 
 # The Kitaru secret name comes from the ``runtime_secret_name`` fixture (a unique per-test
 # ``decode-test-creds-<uuid>`` wired into ``settings.runtime_secret_name`` + ``RUNTIME_SECRET_NAME``) —
 # never the hardcoded production default — so a hypothetical store-isolation fall-through can never
 # collide with or leave a real-store ``decode-llm-creds``, and the missing-secret guards assert a name
 # that is genuinely absent in any store (task 065).
-
-
-@pytest.fixture
-def _proxy_on(monkeypatch, runtime_secret_name):
-    """Enable model-key secret resolution for gemini with the runtime on (the secret is created per test).
-
-    ``runtime_secret_name`` (unique per test) is wired by the same-named fixture, not here.
-    """
-    monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
-    monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_model_key", True)
 
 
 def _no_flow_tripwires(monkeypatch):
@@ -314,105 +305,9 @@ def _no_flow_tripwires(monkeypatch):
     monkeypatch.setattr(flow_mod, "_build_hitl_runtime_agent", _tripwire)
 
 
-def test_run_command_proxy_missing_secret_is_a_friendly_line_not_a_traceback(
-    monkeypatch, _proxy_on, runtime_secret_name
-):
-    """Scenario B: proxy ON + a leftover settings key + NO secret → friendly line, no raw traceback.
-
-    The realistic regression: an operator who used the REPL still has ``GEMINI_API_KEY`` in ``.env``,
-    flips the proxy on, and forgets ``kitaru secrets set``. The old guard passed on the stale settings
-    key and the unguarded flow then dumped a ``KitaruRuntimeError`` traceback. Now the pre-flight names
-    the real fix and exits cleanly.
-    """
-    monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr("leftover-from-the-repl"))
-    _no_flow_tripwires(monkeypatch)
-
-    result = CliRunner().invoke(cli, ["run", "list the files"])
-
-    assert result.exit_code != 0
-    # The raw credential error did not escape as a traceback.
-    assert not isinstance(result.exception, RuntimeError)
-    # The friendly line names the Kitaru secret + the real fix, not the misleading settings message.
-    assert runtime_secret_name in result.stderr
-    assert "kitaru secrets set" in result.stderr
-    assert "set GEMINI_API_KEY in your environment" not in result.stderr
-
-
-def test_run_command_proxy_no_settings_key_names_the_secret_not_the_settings_var(
-    monkeypatch, _proxy_on
-):
-    """Scenario A: proxy ON + NO settings key + NO secret → the line names the secret, not settings.
-
-    With the proxy on the key comes from Kitaru, so the old ``set GEMINI_API_KEY`` message misdirected.
-    The proxy-aware guard points the operator at ``kitaru secrets set`` instead.
-    """
-    monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
-    _no_flow_tripwires(monkeypatch)
-
-    result = CliRunner().invoke(cli, ["run", "list the files"])
-
-    assert result.exit_code != 0
-    assert "kitaru secrets set" in result.stderr
-    assert "set GEMINI_API_KEY in your environment" not in result.stderr
-
-
-def test_run_command_proxy_secret_missing_provider_key_is_friendly(
-    monkeypatch, _proxy_on, runtime_secret_name
-):
-    from kitaru import create_secret
-
-    create_secret(runtime_secret_name, {"SOME_OTHER_KEY": "x"}, private=True)
-    monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr("leftover-from-the-repl"))
-    _no_flow_tripwires(monkeypatch)
-
-    result = CliRunner().invoke(cli, ["run", "list the files"])
-
-    assert result.exit_code != 0
-    assert not isinstance(result.exception, RuntimeError)
-    assert runtime_secret_name in result.stderr
-    assert "GEMINI_API_KEY" in result.stderr
-
-
-def test_run_hitl_proxy_missing_secret_is_a_friendly_line_not_a_traceback(
-    monkeypatch, _proxy_on, runtime_secret_name
-):
-    monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr("leftover-from-the-repl"))
-    _no_flow_tripwires(monkeypatch)
-
-    result = CliRunner().invoke(cli, ["run", "--hitl", "create config.toml"])
-
-    assert result.exit_code != 0
-    assert not isinstance(result.exception, RuntimeError)
-    assert runtime_secret_name in result.stderr
-    assert "kitaru secrets set" in result.stderr
-
-
-def test_run_command_proxy_with_a_valid_secret_runs_the_flow(
-    monkeypatch, _proxy_on, runtime_secret_name
-):
-    from kitaru import create_secret
-
-    create_secret(runtime_secret_name, {"GEMINI_API_KEY": "real-kitaru-key"}, private=True)
-    _patch_seam(monkeypatch, "the proxied answer")
-
-    result = CliRunner().invoke(cli, ["run", "summarize the repo"])
-
-    assert result.exit_code == 0
-    assert "the proxied answer" in result.output
-
-
-# Secret-store config source: the `decode run` guard is RUNTIME_SECRET_STORE_CONFIG-aware
-# (task 064 follow-up). When the secret-store source is on, the provider config (key/model/tuning) is
-# hydrated from a Kitaru secret — but the cli's provider-config guard runs BEFORE the flow hydrates, so
-# without a pre-flight a key living only in the secret tripped the misleading ``set GEMINI_API_KEY``
-# line and a missing/malformed secret dumped a deep traceback from inside the flow. The pre-flight
-# (mirroring the 061 ``_model_key_secret_error``) hydrates + validates up front: a secret-only key
-# satisfies the guard, and a missing/malformed secret is one friendly stderr line, never a traceback.
-
-
 @pytest.fixture
 def _secret_store_on(monkeypatch, runtime_secret_name):
-    """Enable the secret-store config source for gemini, runtime on, proxy off (secret created per test).
+    """Enable the secret-store config source for gemini, runtime on (the secret is created per test).
 
     Provider vars are cleared from the real env so a key/model living only in the Kitaru secret is the
     unambiguous source. The flag is set on the singleton directly; the source keys off the in-flow
@@ -422,7 +317,6 @@ def _secret_store_on(monkeypatch, runtime_secret_name):
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
     monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_config", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_model_key", False)
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
     for var in ("GEMINI_API_KEY", "GEMINI_MODEL", "LLM_PROVIDER"):
         monkeypatch.delenv(var, raising=False)
@@ -511,20 +405,7 @@ def test_run_secret_store_malformed_secret_is_a_friendly_line_not_a_traceback(
     assert runtime_secret_name in result.stderr
 
 
-# task 069 (AC5): `--model` never alters the proxy / secret-store guard chain, no flow built
-
-
-def test_run_model_does_not_bypass_the_proxy_secret_guard(
-    monkeypatch, _proxy_on, runtime_secret_name
-):
-    monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
-    _no_flow_tripwires(monkeypatch)
-
-    result = CliRunner().invoke(cli, ["run", "--model", "gemini-2.5-pro", "list the files"])
-
-    assert result.exit_code != 0
-    assert runtime_secret_name in result.stderr
-    assert "kitaru secrets set" in result.stderr
+# task 069 (AC5): `--model` never alters the secret-store guard chain, no flow built
 
 
 def test_run_model_does_not_bypass_the_secret_store_guard(

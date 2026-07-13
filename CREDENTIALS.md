@@ -3,32 +3,32 @@
 decode hides two *different* secrets from two *different* observers. Only one of them is a proxy.
 Both ship **off** — with neither on, every key comes from your `.env`.
 
-| | **Sandbox Credential Proxy** | **Model-key secret resolution** |
+| | **Sandbox Credential Proxy** | **Secret-store config source** |
 |---|---|---|
 | What it is | a mitmproxy sidecar container | a `kitaru.get_secret()` call — *not* a proxy at all |
-| Whose secret | a tool credential (e.g. a GitHub PAT) | your LLM provider API key (Gemini / OpenRouter) |
+| Whose secret | a tool credential (e.g. a GitHub PAT) | your whole config surface, LLM provider API key included |
 | Hidden from | the model / the worker container | the Kitaru flow payload + checkpoints |
-| Where the secret lives | the proxy container's env | the harness process' memory |
-| How it is applied | HTTP header, injected *after* egress | passed to the model client |
-| Knob | `SANDBOX_CREDENTIAL_PROXY_ENABLED` (or a non-empty `SANDBOX_GIT_TOKEN`) | `RUNTIME_SECRET_STORE_MODEL_KEY` |
-| Needs | a Docker daemon | a Kitaru secret |
+| Where the secret lives | the proxy container's env | the harness process' `Settings` (never `os.environ`) |
+| How it is applied | HTTP header, injected *after* egress | hydrated into `Settings`, which every reader already reads |
+| Knob | `SANDBOX_CREDENTIAL_PROXY_ENABLED` (or a non-empty `SANDBOX_GIT_TOKEN`) | `RUNTIME_SECRET_STORE_CONFIG` |
+| Needs | a Docker daemon | a Kitaru secret (named by `RUNTIME_SECRET_NAME`) |
 | Where | headless (`decode run` / `decode replay`) + `SANDBOX_MODE=docker` only | headless only |
-| Code | [`sandbox/proxy.py`](src/decode/sandbox/proxy.py), [`sandbox/proxy_addon.py`](src/decode/sandbox/proxy_addon.py) | [`agent/factory.py`](src/decode/agent/factory.py) `resolve_provider_key_from_secret_store` |
+| Code | [`sandbox/proxy.py`](src/decode/sandbox/proxy.py), [`sandbox/proxy_addon.py`](src/decode/sandbox/proxy_addon.py) | [`runtime/flow.py`](src/decode/runtime/flow.py) `_config_from_secret_store` |
 | ADR | [0011 §6](docs/adr/0011-sandboxing-and-credential-proxy.md), [0012 §10](docs/adr/0012-isolated-workspace.md) | [0008 §5](docs/adr/0008-kitaru-durable-runtime.md) |
 
 They compose: one headless run can have both on, hiding two different secrets in two different places.
 
-> **A note on the name.** Model-key secret resolution shipped as `RUNTIME_CREDENTIALS_PROXY_ENABLED`,
-> which read exactly like the sandbox Credential Proxy while being an unrelated mechanism.
-> [ADR-0008 §5](docs/adr/0008-kitaru-durable-runtime.md) retired that name; the knob is now
-> `RUNTIME_SECRET_STORE_MODEL_KEY`. **An old `RUNTIME_CREDENTIALS_PROXY_ENABLED=true` in a `.env` is
-> now silently ignored** — rename it. "Credential Proxy" means header injection, and nothing else.
+> **A note on the name.** A third mechanism once resolved the *model key alone* from a Kitaru secret at
+> model construction, and shipped under a name (`RUNTIME_CREDENTIALS_PROXY_ENABLED`) that read exactly
+> like the sandbox Credential Proxy while being unrelated. It is **deleted**
+> ([ADR-0015 §4](docs/adr/0015-environment-bucket-secrets.md)): the provider API key now comes from
+> `Settings` alone, hydrated by whichever settings source is active. A stale `RUNTIME_*` entry in a
+> `.env` is silently ignored. "Credential Proxy" means header injection, and nothing else.
 
-A third knob, `RUNTIME_SECRET_STORE_CONFIG`, is the *superset* of model-key resolution: it hydrates
-the whole `Settings` surface (provider, model, keys, tuning) from the **same** Kitaru secret named by
-`RUNTIME_SECRET_NAME`, into `Settings` only — never `os.environ`. Take the model key alone, or take
-everything. (`MODAL_PROXY_TOKEN_ID` / `_SECRET` are a fourth thing wearing the word "proxy": Modal's
-own endpoint auth headers, unrelated to all of the above.)
+The surviving secret-store lookup hydrates the whole `Settings` surface (provider, model, keys,
+tuning) from the Kitaru secret named by `RUNTIME_SECRET_NAME`, into `Settings` only — never
+`os.environ`, and the real process env still wins. (`MODAL_PROXY_TOKEN_ID` / `_SECRET` are a third
+thing wearing the word "proxy": Modal's own endpoint auth headers, unrelated to all of the above.)
 
 The rest of this file is a manual e2e tutorial. Every case is an **A/B**: the same command with the
 flag flipped, and a different observable. Run the automated backstop (Part 5) before reaching for a
@@ -54,57 +54,6 @@ uv run kitaru logout    # or: no server at all — clears the auth state, uses t
 means stored auth state from an earlier `kitaru login` is pointing at a server that is no longer
 running. Either bring it back up (`kitaru login`) or drop the state (`kitaru logout`).
 
-## Part 1 — Model-key secret resolution (the LLM key, from Kitaru)
-
-No Docker. Headless only. Not a proxy — a `get_secret()` lookup at model construction.
-
-### 1a. OFF — baseline
-
-```bash
-uv run decode run "say hi in three words"
-```
-
-Working: an answer on stdout, exit `0`. The key came from `settings.gemini_api_key` — i.e. your env.
-
-### 1b. ON — the key comes from Kitaru, not the env
-
-```bash
-uv run kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=<your-key>
-
-env -u GEMINI_API_KEY RUNTIME_SECRET_STORE_MODEL_KEY=true \
-  uv run decode run "say hi in three words"
-```
-
-Working: the same answer, exit `0` — **with `GEMINI_API_KEY` unset in the environment**. That is the
-whole claim: the key was resolved from the Kitaru secret at run time, so a deployed flow payload
-carries the secret *name*, never the raw key.
-
-Control — prove the `env -u` actually bit:
-
-```bash
-env -u GEMINI_API_KEY uv run decode run "hi"
-# → Decode: set GEMINI_API_KEY … , exit 1
-```
-
-### 1c. Negative — flag on, secret missing
-
-```bash
-env -u GEMINI_API_KEY RUNTIME_SECRET_STORE_MODEL_KEY=true \
-  RUNTIME_SECRET_NAME=does-not-exist uv run decode run "hi"
-```
-
-Working: one friendly stderr line naming the real fix (`kitaru secrets set does-not-exist
---GEMINI_API_KEY=…`), exit non-zero, no traceback — and **no silent fallback** to the settings key.
-
-### 1d. Negative — the TUI ignores the flag (flow-mode only)
-
-```bash
-env -u GEMINI_API_KEY RUNTIME_SECRET_STORE_MODEL_KEY=true uv run decode
-```
-
-Working: `Decode: set GEMINI_API_KEY …`, exit 1. The REPL guard deliberately ignores the flag: the
-lookup is `flow_mode`-gated, so the TUI never reaches Kitaru. A green REPL here would be the bug.
-
 ## Part 2 — Sandbox Credential Proxy (header injection)
 
 Docker + headless only. The worker never holds the real token.
@@ -115,7 +64,7 @@ Docker + headless only. The worker never holds the real token.
 > `{{ secret-name.key }}` header templates via `kitaru.get_secret()`. So **2b (below) is the only
 > Credential-Proxy scenario that touches Kitaru at all**; **2c (`SANDBOX_GIT_TOKEN`) bypasses it
 > entirely** — `github_token_rules()` builds literal header values with no secret-store fetch. If you
-> are here to see Kitaru work, Part 1 and 2b are the demos; 2c is a docker/mitmproxy demo.
+> are here to see Kitaru work, 2b and Part 3 are the demos; 2c is a docker/mitmproxy demo.
 
 > **The request must come from `bash`, or the proxy is not in the picture at all.** Only `bash` runs
 > inside the worker container. **`web_fetch` runs host-side** — a plain `httpx` call in the decode
@@ -252,7 +201,7 @@ uv run kitaru secrets set github-token --private --value=<PAT>
 # with the api.github.com rule from 2b in DEFAULT_PROXY_RULES
 
 env -u GEMINI_API_KEY -u SANDBOX_GIT_TOKEN \
-  RUNTIME_SECRET_STORE_MODEL_KEY=true \
+  RUNTIME_SECRET_STORE_CONFIG=true \
   SANDBOX_CREDENTIAL_PROXY_ENABLED=true \
   SANDBOX_MODE=docker \
   uv run decode run \
@@ -261,8 +210,9 @@ env -u GEMINI_API_KEY -u SANDBOX_GIT_TOKEN \
 ```
 
 Working: the login is printed, and the log shows `running tool: bash`. The LLM key was never in the
-env; the PAT was never in the worker. Pre-flight order is load-bearing — secret-store hydration runs
-before the model-key pre-flight, so the two never emit conflicting error lines.
+env — it was hydrated into `Settings` from the `decode-llm-creds` secret; the PAT was never in the
+worker. A missing or malformed secret is one friendly stderr line from the pre-flight, never a
+traceback from inside the flow.
 
 Two ways this run lies to you if you take the shortcuts:
 
@@ -294,9 +244,7 @@ Everything above is covered without a PAT and without network:
 ```bash
 # unit — rules, template resolution, map merge, secret-off-argv, log-names-only. No docker.
 uv run pytest tests/unit/decode/sandbox/test_proxy.py \
-              tests/unit/decode/runtime/test_sandbox_proxy.py \
-              tests/unit/decode/runtime/test_credentials_proxy.py \
-              tests/unit/decode/agent/test_factory_credentials_proxy.py -v
+              tests/unit/decode/runtime/test_sandbox_proxy.py -v
 
 # integration — a REAL mitmproxy container + a real worker + a stub upstream. Needs docker.
 uv run pytest tests/integration/test_credential_proxy.py -v

@@ -44,7 +44,6 @@ _RUNTIME_ENV_VARS = (
     "RUNTIME_ENABLED",
     "RUNTIME_CHECKPOINT_STRATEGY",
     "RUNTIME_WAIT_TIMEOUT_S",
-    "RUNTIME_SECRET_STORE_MODEL_KEY",
     "RUNTIME_SECRET_NAME",
     "RUNTIME_SECRET_STORE_CONFIG",
 )
@@ -353,23 +352,34 @@ def test_runtime_defaults(monkeypatch):
     # wired provider (ADR-0010 §3). "turn" is the cheaper coarse opt-out (asserted in the literal test).
     assert s.runtime_checkpoint_strategy == "calls"
     assert s.runtime_wait_timeout_s == 600.0
-    assert s.runtime_secret_store_model_key is False
     assert s.runtime_secret_name == "decode-llm-creds"
     assert s.runtime_secret_store_config is False
+
+
+def test_stale_model_key_secret_env_var_is_silently_ignored(monkeypatch):
+    """ADR-0015 §4 (clean break): ``RUNTIME_SECRET_STORE_MODEL_KEY`` is deleted, not shimmed.
+
+    An env / ``.env`` still carrying the retired knob must change nothing and print nothing —
+    ``extra="ignore"`` swallows it, and the field is gone, so no reader can branch on it. The
+    provider key now comes from ``Settings`` alone, in flow mode and interactively alike.
+    """
+    monkeypatch.setenv("RUNTIME_SECRET_STORE_MODEL_KEY", "true")
+
+    s = Settings(_env_file=None)
+
+    assert not hasattr(s, "runtime_secret_store_model_key")
 
 
 def test_reads_runtime_vars_from_process_env(monkeypatch):
     monkeypatch.setenv("RUNTIME_ENABLED", "false")
     monkeypatch.setenv("RUNTIME_CHECKPOINT_STRATEGY", "calls")
     monkeypatch.setenv("RUNTIME_WAIT_TIMEOUT_S", "120.0")
-    monkeypatch.setenv("RUNTIME_SECRET_STORE_MODEL_KEY", "true")
     monkeypatch.setenv("RUNTIME_SECRET_NAME", "my-creds")
     monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
     s = Settings(_env_file=None)
     assert s.runtime_enabled is False
     assert s.runtime_checkpoint_strategy == "calls"
     assert s.runtime_wait_timeout_s == 120.0
-    assert s.runtime_secret_store_model_key is True
     assert s.runtime_secret_name == "my-creds"
     assert s.runtime_secret_store_config is True
 
@@ -382,7 +392,6 @@ def test_loads_runtime_vars_from_a_dotenv_file(tmp_path, monkeypatch):
         "RUNTIME_ENABLED=false\n"
         "RUNTIME_CHECKPOINT_STRATEGY=calls\n"
         "RUNTIME_WAIT_TIMEOUT_S=300.0\n"
-        "RUNTIME_SECRET_STORE_MODEL_KEY=true\n"
         "RUNTIME_SECRET_NAME=dotenv-creds\n"
         "RUNTIME_SECRET_STORE_CONFIG=true\n"
     )
@@ -390,7 +399,6 @@ def test_loads_runtime_vars_from_a_dotenv_file(tmp_path, monkeypatch):
     assert s.runtime_enabled is False
     assert s.runtime_checkpoint_strategy == "calls"
     assert s.runtime_wait_timeout_s == 300.0
-    assert s.runtime_secret_store_model_key is True
     assert s.runtime_secret_name == "dotenv-creds"
     assert s.runtime_secret_store_config is True
 

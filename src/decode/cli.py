@@ -187,52 +187,14 @@ def _sandbox_repo_config_error(repo: str | None) -> str | None:
     return None
 
 
-def _uses_secret_store_model_key() -> bool:
-    """True when ``decode run`` sources the model key from the Kitaru secret store (ADR-0008 §5).
-
-    Only the single-api-key providers are eligible — exactly the keys of the factory's single-source
-    ``SECRET_STORE_KEY`` map; ``modal`` never is (its *proxy tokens* live in settings).
-    """
-    from decode.agent.factory import SECRET_STORE_KEY  # cheap + kitaru-free; lazy for symmetry
-
-    return settings.runtime_secret_store_model_key and settings.llm_provider in SECRET_STORE_KEY
-
-
-def _model_key_secret_error() -> str | None:
-    """Validate that the model key's Kitaru secret resolves; a friendly line if not (ADR-0008 §5).
-
-    Resolves the provider key once up front so a missing secret / missing key becomes one friendly
-    stderr line naming the real fix (create the Kitaru secret — with the flag on, the key comes
-    from Kitaru, not settings) instead of a traceback from inside the flow. The throwaway resolution
-    is deliberate: the flow resolves the key again in its body, so the raw key never rides in the
-    flow payload. ``kitaru`` is reached only through the lazily-importing factory seam.
-    """
-    from decode.agent.factory import SECRET_STORE_KEY, resolve_provider_key_from_secret_store
-
-    try:
-        resolve_provider_key_from_secret_store(settings.llm_provider)  # type: ignore[arg-type]
-    except RuntimeError as exc:
-        logger.debug("model-key secret unavailable for %s: %s", settings.llm_provider, exc)
-        secret_name = settings.runtime_secret_name
-        key_name = SECRET_STORE_KEY.get(settings.llm_provider, "GEMINI_API_KEY")
-        return (
-            f"Decode: RUNTIME_SECRET_STORE_MODEL_KEY is on but the Kitaru secret {secret_name!r} is "
-            f"missing or has no {key_name} value — create it with "
-            f"`kitaru secrets set {secret_name} --{key_name}=…` (see .env.example)."
-        )
-    return None
-
-
 def _secret_store_config_error() -> str | None:
     """Hydrate + validate the secret-store config before the flow; one friendly line if it fails (ADR-0008 §5).
 
     Hydrates the ``settings`` singleton from the Kitaru secret up front (via the flow's own
     ``_config_from_secret_store`` context, restored on exit) and runs the provider-config guard
     against THAT hydrated config — so a secret-only key satisfies the guard, and a missing/malformed
-    secret becomes one friendly stderr line instead of a traceback from inside the flow. With
-    model-key secret resolution also on, the settings-key guard is skipped here (that pre-flight names
-    the right fix) so the two never emit conflicting lines. ``kitaru`` is reached only through that
-    lazily-imported context.
+    secret becomes one friendly stderr line instead of a traceback from inside the flow. ``kitaru`` is
+    reached only through that lazily-imported context.
     """
     from decode.runtime.flow import _config_from_secret_store
 
@@ -240,10 +202,6 @@ def _secret_store_config_error() -> str | None:
     secret_name = settings.runtime_secret_name
     try:
         with _config_from_secret_store():
-            # Validate the hydrated provider config only when the model-key flag is off; with it on
-            # the key comes via that pre-flight, which names the right fix.
-            if _uses_secret_store_model_key():
-                return None
             return _provider_config_error()
     except (RuntimeError, ValidationError) as exc:
         logger.debug("secret-store config secret %r missing or invalid: %s", secret_name, exc)
@@ -260,21 +218,19 @@ def _runtime_config_preflight(repo: str | None = None) -> str | None:
     Both headless entrypoints run this identical ordered chain, returning the FIRST friendly error
     line. Order is load-bearing:
 
-    1. Per-provider config guard — skipped when a kitaru-backed source (model-key secret resolution /
-       secret-store config) supplies the config; those are validated in pre-flights *after* the
-       runtime gate, because they boot Kitaru and a disabled runtime must short-circuit first.
+    1. Per-provider config guard — skipped when the kitaru-backed secret-store config source supplies
+       the config; that one is validated in a pre-flight *after* the runtime gate, because it boots
+       Kitaru and a disabled runtime must short-circuit first.
     2. ``RUNTIME_ENABLED`` — a disabled runtime never builds/replays a flow.
     3. Sandbox backend guard, then the sandbox-repo guard (both kitaru-free). ``repo`` is the
        ``--repo`` flag (``None`` for ``decode replay``), resolved against ``SANDBOX_REPO`` inside.
-    4. Secret-store config pre-flight — before the model-key one so, with both on, the model key
-       resolves from the now-hydrated secret; never two conflicting lines.
-    5. Model-key secret pre-flight.
+    4. Secret-store config pre-flight.
 
-    ``kitaru`` is reached only through the two pre-flights' lazy seams, so the REPL never loads it.
+    ``kitaru`` is reached only through that pre-flight's lazy seam, so the REPL never loads it.
     """
     secret_store_on = settings.runtime_secret_store_config
 
-    if not _uses_secret_store_model_key() and not secret_store_on:
+    if not secret_store_on:
         config_error = _provider_config_error()
         if config_error is not None:
             logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
@@ -298,11 +254,6 @@ def _runtime_config_preflight(repo: str | None = None) -> str | None:
         secret_store_error = _secret_store_config_error()
         if secret_store_error is not None:
             return secret_store_error
-
-    if _uses_secret_store_model_key():
-        credential_error = _model_key_secret_error()
-        if credential_error is not None:
-            return credential_error
 
     return None
 
@@ -480,14 +431,11 @@ def run(task: str, hitl: bool, model: str | None, repo: str | None, local: bool)
 
     Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): the per-provider
     config guard (it builds a model) fires first, then ``RUNTIME_ENABLED`` — a disabled runtime never
-    builds a flow. Two kitaru-backed config sources (ADR-0008 §5) move that key guard to a pre-flight
-    after the runtime guard, because each boots Kitaru: when the **secret-store config source**
-    (``RUNTIME_SECRET_STORE_CONFIG``) is on the whole provider config is hydrated from a Kitaru secret
-    up front, so a key/model living only in the secret satisfies the guard and a missing/malformed
-    secret is one friendly line; when **model-key secret resolution** (``RUNTIME_SECRET_STORE_MODEL_KEY``)
-    is on the model key comes from a Kitaru secret, validated by its own pre-flight. With both on they
-    compose (secret-store hydration first, then the model key resolves from the now-hydrated secret),
-    never two conflicting lines.
+    builds a flow. The kitaru-backed **secret-store config source** (``RUNTIME_SECRET_STORE_CONFIG``,
+    ADR-0008 §5) moves that key guard to a pre-flight after the runtime guard, because it boots
+    Kitaru: with it on the whole provider config is hydrated from a Kitaru secret up front, so a
+    key/model living only in the secret satisfies the guard and a missing/malformed secret is one
+    friendly line.
     ``kitaru`` is imported lazily here so the REPL path never loads it.
     """
     # The shared headless guard chain, byte-identical to ``decode replay`` so the two cannot drift;

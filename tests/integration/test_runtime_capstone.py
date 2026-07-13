@@ -1,8 +1,8 @@
 """Kitaru runtime capstone (ADR-0008): the headless durable flow end to end, OFFLINE.
 
 Proves durability (058), replay-from-cache + the model-swap replay (058 / ADR-0010), HITL
-named waits (059), the durable capped sleep (060), and model-key secret resolution (061) through
-the REAL ``@flow`` + ``KitaruAgent`` adapter + real ``build_agent`` tool registry, on a LOCAL
+named waits (059) and the durable capped sleep (060) through
+the REAL ``@flow`` + ``KitaruAgent`` adapter + the real tool registry, on a LOCAL
 Kitaru/ZenML stack redirected under tmp_path. Swapped/faked: only the runtime seam
 (``_build_runtime_agent`` / ``_build_hitl_runtime_agent``) is patched to inject scripted
 FunctionModel agents — no Kitaru server, no network, no GEMINI_API_KEY.
@@ -25,7 +25,6 @@ from typing import Any
 
 import pytest
 from kitaru.adapters.pydantic_ai import KitaruAgent
-from pydantic import SecretStr
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.messages import (
     ModelRequest,
@@ -36,10 +35,8 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-import decode.agent.factory as factory_mod
 import decode.runtime.flow as flow_mod
 from decode.agent.deps import AgentDeps
-from decode.agent.factory import build_agent
 from decode.runtime import run_agent_task, run_hitl_agent_task
 from decode.runtime.flow import (
     HITL_RUNTIME_AGENT_NAME,
@@ -589,65 +586,6 @@ def test_durable_sleep_uses_the_capped_timer(monkeypatch, inline_wait_resolver):
     assert inline_wait_resolver.names == [sleep_module.SLEEP_TOOL_NAME]
     # The seam was reset on flow exit — a later in-process ``sleep`` uses ``asyncio.sleep`` again.
     assert sleep_module._SLEEPER is sleep_module._interactive_sleep
-
-
-# 6. Model-key secret resolution (061) — the model key comes from a Kitaru secret; the raw key is off the payload.
-
-_SECRET_NAME = "decode-capstone-creds"
-_KITARU_RAW_KEY = "KITARU-RAW-GEMINI-KEY-capstone-7f3a"
-_SETTINGS_RAW_KEY = "SETTINGS-RAW-GEMINI-KEY-must-not-be-used"
-
-
-def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypatch):
-    """The proxy builds the model from a Kitaru secret; the serialized flow payload never carries the raw key.
-
-    The model-key secret-resolution slice on the real local stack (offline, no server). A real Kitaru secret is
-    created with :func:`kitaru.create_secret`; with the proxy enabled the patched seam first calls the
-    **real** ``build_agent(flow_mode=True)`` (so the proxy genuinely resolves the key inside the flow
-    body — asserted to be the *Kitaru* key, not the settings sentinel), then runs the turn on a scripted
-    offline model. The persisted execution's input parameters carry only the task; the raw key (Kitaru's
-    or settings') appears nowhere in the serialized flow config — the "secrets never reach the … payload"
-    invariant (AGENTS.md), proven on the real store.
-    """
-    from kitaru import create_secret
-
-    create_secret(_SECRET_NAME, {"GEMINI_API_KEY": _KITARU_RAW_KEY}, private=True)
-    monkeypatch.setattr(factory_mod.settings, "llm_provider", "gemini")
-    monkeypatch.setattr(factory_mod.settings, "gemini_model", "gemini-2.5-flash")
-    monkeypatch.setattr(factory_mod.settings, "gemini_api_key", SecretStr(_SETTINGS_RAW_KEY))
-    monkeypatch.setattr(factory_mod.settings, "runtime_secret_store_model_key", True)
-    monkeypatch.setattr(factory_mod.settings, "runtime_secret_name", _SECRET_NAME)
-
-    resolved: dict[str, str] = {}
-    counter = {"legs": 0}
-
-    def seam(model: str | None = None) -> KitaruAgent:
-        # Build the REAL agent so the proxy resolves the key inside the flow body; capture the key the
-        # model carries to prove it came from Kitaru, then run the turn on a scripted offline model.
-        real_agent = build_agent(flow_mode=True)
-        resolved["api_key"] = real_agent.model._provider.client._api_client.api_key
-        scripted = _scripted_agent([ModelResponse(parts=[TextPart(content="done")])], counter)
-        return KitaruAgent(scripted, name=RUNTIME_AGENT_NAME, checkpoint_strategy="turn")
-
-    monkeypatch.setattr(flow_mod, "_build_runtime_agent", seam)
-
-    handle = run_agent_task.run(task="summarize the repository")
-    assert flow_mod._load_runtime_output(handle.exec_id) == "done"
-
-    # The model was built from the SECRET-sourced key, never the settings sentinel.
-    assert resolved["api_key"] == _KITARU_RAW_KEY
-    assert resolved["api_key"] != _SETTINGS_RAW_KEY
-
-    from zenml.client import Client
-
-    run = Client().get_pipeline_run(handle.exec_id)
-    # The persisted flow arguments are the task string + the Model Override input (``model=None``
-    # here) + the Workspace clone inputs (``repo``/``local``, ADR-0012 §3) — no credential rides in
-    # the payload/logs; a model id / repo path is not a secret (ADR-0010 §2).
-    assert set(run.config.parameters) == {"task", "model", "repo", "local"}
-    assert run.config.parameters["task"] == "summarize the repository"
-    assert _KITARU_RAW_KEY not in run.config.model_dump_json()
-    assert _SETTINGS_RAW_KEY not in run.config.model_dump_json()
 
 
 # Optional guarded real-local test — the real wire on a real local stack; SKIPS when unavailable.

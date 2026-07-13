@@ -194,21 +194,16 @@ class Settings(BaseSettings):
     runtime_checkpoint_strategy: Literal["turn", "calls"] = "calls"
     # The durable Wait (HITL) poll timeout (seconds); matches Kitaru's local 600s default.
     runtime_wait_timeout_s: float = Field(600.0, gt=0)
-    # Two headless-only consumers of the ONE Kitaru secret named by ``runtime_secret_name``: the
-    # model key alone, or the whole config surface. Both default off — the key comes from ``.env``.
-    # Neither is the sandbox Credential Proxy (header injection, ADR-0011 §6); these are secret-store
-    # *lookups*, and the "Credentials Proxy" name they shipped under was retired by ADR-0008 §5.
-    #
-    # When ``True``, flow-mode model construction resolves the provider key from that Kitaru secret
-    # instead of settings — a deployed flow payload carries handles, not raw keys (ADR-0008 §5).
-    runtime_secret_store_model_key: bool = False
-    # The Kitaru secret both consumers below read from.
+    # The Kitaru secret the secret-store config source below reads from. NOT the sandbox Credential
+    # Proxy (header injection, ADR-0011 §6); this is a secret-store *lookup*.
     runtime_secret_name: str = "decode-llm-creds"
     # When ``True``, a headless ``decode run`` hydrates the WHOLE ``Settings`` surface from the
-    # ``runtime_secret_name`` secret via :class:`KitaruSecretSettingsSource` — a superset of the
-    # model-key lookup above. Values land in this ``Settings`` object ONLY — never ``os.environ`` —
-    # and the real process env still overrides them. Headless-only, so bare ``decode`` never imports
-    # kitaru.
+    # ``runtime_secret_name`` secret via :class:`KitaruSecretSettingsSource`. Values land in this
+    # ``Settings`` object ONLY — never ``os.environ`` — and the real process env still overrides them.
+    # Headless-only, so bare ``decode`` never imports kitaru. Defaults off (the key comes from ``.env``).
+    #
+    # The provider API key itself is read from ``Settings`` alone; the retired model-key secret
+    # resolution knob is deleted, no shim — a stale entry is silently ignored (ADR-0015 §4).
     runtime_secret_store_config: bool = False
 
     # --- Sandboxing (ADR-0012; ADR-0011 §1,§5-7 retained) ---

@@ -249,10 +249,15 @@ def test_flow_payload_carries_only_the_task_not_the_secret_value(monkeypatch, ru
     assert sentinel not in run.config.model_dump_json()
 
 
-def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
-    monkeypatch, runtime_secret_name
-):
-    raw_key = "RAW-KITARU-GEMINI-KEY-both-flags-1a2b"
+def test_hydrated_key_reaches_the_model_with_no_raw_key_leak(monkeypatch, runtime_secret_name):
+    """The hydrated key is the one the model is built with — ``Settings`` is the only key source (ADR-0015 §4).
+
+    The successor to the old "both flags on" interplay test: with model-key secret resolution deleted,
+    the secret-store source is the ONLY way a Kitaru secret can supply the provider key, and it does so
+    the ordinary way — by hydrating ``Settings``, which :func:`build_agent` reads. The raw key still
+    never rides in the serialized flow payload.
+    """
+    raw_key = "RAW-KITARU-GEMINI-KEY-hydrated-1a2b"
     create_secret(
         runtime_secret_name,
         {
@@ -262,17 +267,12 @@ def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
         },
         private=True,
     )
-    # Both flags via the env so the in-flow reload preserves them; provider vars cleared.
-    monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
-    monkeypatch.setenv("RUNTIME_SECRET_STORE_MODEL_KEY", "true")
-    for var in _CLEARED_PROVIDER_ENV:
-        monkeypatch.delenv(var, raising=False)
-    reload_settings()
+    _enable_secret_store(monkeypatch)
     observed: dict[str, str] = {}
 
     def _seam(model: str | None = None) -> KitaruAgent:
-        # Real build_agent(flow_mode=True): secret-store hydrated the model id; model-key secret resolution
-        # resolves the key from the SAME secret. Then run the turn on a scripted offline model.
+        # Real build_agent(flow_mode=True): the secret-store source hydrated BOTH the model id and the
+        # key into Settings, and the factory reads the key from there. Then run the turn offline.
         agent = build_agent(flow_mode=True)
         observed["model"] = settings.gemini_model
         observed["resolved_key"] = agent.model._provider.client._api_client.api_key
@@ -280,11 +280,11 @@ def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
 
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", _seam)
 
-    handle = run_agent_task.run(task="both flags on")
+    handle = run_agent_task.run(task="hydrated key")
     assert flow_mod._load_runtime_output(handle.exec_id) == "ok"
 
     assert observed["model"] == "gemini-from-secret"  # secret-store hydrated the model
-    assert observed["resolved_key"] == raw_key  # the proxy resolved the key from the same secret
+    assert observed["resolved_key"] == raw_key  # ...and the key the model was built with
 
     from zenml.client import Client
 
