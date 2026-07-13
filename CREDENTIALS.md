@@ -117,22 +117,32 @@ Docker + headless only. The worker never holds the real token.
 > entirely** — `github_token_rules()` builds literal header values with no secret-store fetch. If you
 > are here to see Kitaru work, Part 1 and 2b are the demos; 2c is a docker/mitmproxy demo.
 
+> **The request must come from `bash`, or the proxy is not in the picture at all.** Only `bash` runs
+> inside the worker container. **`web_fetch` runs host-side** — a plain `httpx` call in the decode
+> process ([`tools/web.py`](src/decode/tools/web.py)) with no `http_proxy`, no CA, no injection. Ask
+> the model to "GET this URL" and it will reach for `web_fetch`, sail past the proxy, and hand you a
+> **401 that has nothing to do with your credential map**. Every prompt below therefore *names the
+> `bash` tool explicitly*. If your run log shows `running tool: web_fetch`, you are testing nothing —
+> re-run with a prompt that forces `bash`.
+
 ### 2a. OFF — baseline, and the call that fails
 
 ```bash
 SANDBOX_MODE=docker uv run decode run \
-  "use python urllib to GET https://api.github.com/user and print the response"
+  "use the bash tool to run exactly this, and show me the output:
+   python3 -c \"import urllib.request; print(urllib.request.urlopen('https://api.github.com/user').read().decode())\""
 ```
 
-Working: the model reports **401 / `Requires authentication`**. No proxy container exists — verify
-during the run, from a second terminal:
+Working: the model reports **401 / `Requires authentication`** — and the log shows `running tool:
+bash`, not `web_fetch`. No proxy container exists — verify during the run, from a second terminal:
 
 ```bash
 docker ps --filter name=decode-proxy                                        # empty
 docker ps --filter ancestor=ghcr.io/astral-sh/uv:python3.12-bookworm-slim   # the worker, alone
 ```
 
-This 401 is the control. In 2b the same request becomes a `200`.
+This 401 is the control: the request left the worker un-injected. In 2b the same request becomes a
+`200`. (A 401 from `web_fetch` would prove nothing — it never entered the worker.)
 
 ### 2b. ON — the general rule path (any host)
 
@@ -152,12 +162,19 @@ DEFAULT_PROXY_RULES: list[SandboxProxyRule] = [
 ```bash
 uv run kitaru secrets set github-token --private --value=<PAT>
 
-SANDBOX_CREDENTIAL_PROXY_ENABLED=true SANDBOX_MODE=docker uv run decode run \
-  "use python urllib to GET https://api.github.com/user and print the login field"
+# Unset SANDBOX_GIT_TOKEN for this one — a non-empty value (in your shell OR your .env) auto-engages
+# github_token_rules() and would inject the LITERAL token, so you'd be testing 2c, not the Kitaru path.
+env -u SANDBOX_GIT_TOKEN \
+  SANDBOX_CREDENTIAL_PROXY_ENABLED=true SANDBOX_MODE=docker uv run decode run \
+  "use the bash tool to run exactly this, and show me the output:
+   python3 -c \"import json,urllib.request; print(json.load(urllib.request.urlopen('https://api.github.com/user'))['login'])\""
 ```
 
 Working: your GitHub login is printed. Same request as 2a, now authenticated — and the worker never
-held the PAT.
+held the PAT. The startup line names the rules that loaded, which is how you tell the two paths apart:
+`hosts=['api.github.com']` is **this** (your Kitaru-resolved `DEFAULT_PROXY_RULES`);
+`hosts=['api.github.com', 'github.com']` is `github_token_rules()`, i.e. a stray `SANDBOX_GIT_TOKEN`
+took over and Kitaru was never consulted.
 
 Watch it live. The proxy container runs with `--rm`, so its logs vanish at teardown; start this in a
 second terminal **before** the run:
@@ -225,25 +242,36 @@ decoy `GH_TOKEN` from 2b) — and the real PAT is in neither.
 | flag on, `DEFAULT_PROXY_RULES = []` | the proxy container starts, logs `no credential map … passthrough, no injection`, and injects nothing |
 | Docker daemon stopped, `SANDBOX_MODE=docker` | one friendly stderr line, exit non-zero, no flow built |
 
-## Part 3 — both proxies on at once
+## Part 3 — both features on at once
 
-Different secrets, different hiding places.
+Different secrets, different hiding places. Both resolved from Kitaru.
 
 ```bash
 uv run kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=<key>
 uv run kitaru secrets set github-token --private --value=<PAT>
 # with the api.github.com rule from 2b in DEFAULT_PROXY_RULES
 
-env -u GEMINI_API_KEY \
+env -u GEMINI_API_KEY -u SANDBOX_GIT_TOKEN \
   RUNTIME_SECRET_STORE_MODEL_KEY=true \
   SANDBOX_CREDENTIAL_PROXY_ENABLED=true \
   SANDBOX_MODE=docker \
-  uv run decode run "GET https://api.github.com/user with urllib and print the login"
+  uv run decode run \
+  "use the bash tool to run exactly this, and show me the output:
+   python3 -c \"import json,urllib.request; print(json.load(urllib.request.urlopen('https://api.github.com/user'))['login'])\""
 ```
 
-Working: the login is printed. The LLM key was never in the env; the PAT was never in the worker.
-Pre-flight order is load-bearing — secret-store hydration runs before the proxy pre-flight, so the
-two never emit conflicting error lines.
+Working: the login is printed, and the log shows `running tool: bash`. The LLM key was never in the
+env; the PAT was never in the worker. Pre-flight order is load-bearing — secret-store hydration runs
+before the model-key pre-flight, so the two never emit conflicting error lines.
+
+Two ways this run lies to you if you take the shortcuts:
+
+- **`running tool: web_fetch` in the log** → the model went around the sandbox entirely (host-side
+  `httpx`, no proxy) and the 401 you get back says nothing about your credential map. Force `bash`.
+- **`hosts=['api.github.com', 'github.com']` in the `proxy start` line** → a `SANDBOX_GIT_TOKEN` in
+  your shell *or your `.env`* auto-engaged `github_token_rules()` and injected the literal token.
+  It "works", but Kitaru was never consulted. `env -u SANDBOX_GIT_TOKEN` (above) rules that out;
+  the Kitaru path shows `hosts=['api.github.com']`.
 
 ## Part 4 — cleanup, and the teardown proof
 
