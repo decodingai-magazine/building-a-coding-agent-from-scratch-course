@@ -4,7 +4,7 @@
 
 This repository is an **educational, open-source course** that builds `decode` from scratch, step by step. It is a single Python package (`decode`); each module under `src/decode/` maps to one part of the architecture, and every non-obvious design choice ships as an ADR in [`docs/adr/`](docs/adr/).
 
-**What's built today:** the agent loop + TUI + gated tools + memory + session log ([ADR-0002](docs/adr/0002-milestone-1-vanilla-agent-architecture.md)) · permission modes & agents catalog ([ADR-0003](docs/adr/0003-milestone-2-permission-system-and-agents-catalog.md)) · skills ([ADR-0004](docs/adr/0004-milestone-3-skills.md)) · selectable LLM providers ([ADR-0005](docs/adr/0005-multi-llm-provider-support.md)) · context compaction ([ADR-0006](docs/adr/0006-conversation-compaction.md)) · LSP code intelligence ([ADR-0007](docs/adr/0007-lsp-integration.md)) · the Kitaru durable runtime + replay ([ADR-0008](docs/adr/0008-kitaru-durable-runtime.md), [ADR-0010](docs/adr/0010-runtime-replay.md)) · sandboxed isolated workspaces ([ADR-0011](docs/adr/0011-sandboxing-and-credential-proxy.md), [ADR-0012](docs/adr/0012-isolated-workspace.md)) · Explore subagents ([ADR-0013](docs/adr/0013-explore-subagents.md)) · Opik observability ([ADR-0014](docs/adr/0014-opik-observability.md)). MCP tools and evaluations are later milestones.
+**What's built today:** the agent loop + TUI + gated tools + memory + session log ([ADR-0002](docs/adr/0002-milestone-1-vanilla-agent-architecture.md)) · permission modes & agents catalog ([ADR-0003](docs/adr/0003-milestone-2-permission-system-and-agents-catalog.md)) · skills ([ADR-0004](docs/adr/0004-milestone-3-skills.md)) · selectable LLM providers ([ADR-0005](docs/adr/0005-multi-llm-provider-support.md)) · context compaction ([ADR-0006](docs/adr/0006-conversation-compaction.md)) · LSP code intelligence ([ADR-0007](docs/adr/0007-lsp-integration.md)) · the Kitaru durable runtime + replay ([ADR-0008](docs/adr/0008-kitaru-durable-runtime.md), [ADR-0010](docs/adr/0010-runtime-replay.md)) · sandboxed isolated workspaces ([ADR-0011](docs/adr/0011-sandboxing-and-credential-proxy.md), [ADR-0012](docs/adr/0012-isolated-workspace.md)) · Explore subagents ([ADR-0013](docs/adr/0013-explore-subagents.md)) · Opik observability ([ADR-0014](docs/adr/0014-opik-observability.md)) · environment-scoped secrets ([ADR-0015](docs/adr/0015-environment-bucket-secrets.md)). MCP tools and evaluations are later milestones.
 
 ## Requirements
 
@@ -44,6 +44,8 @@ Config comes from environment variables, including a local `.env` (loaded via py
 ```bash
 cp .env.example .env    # then set GEMINI_API_KEY=your-key-here
 ```
+
+That `.env` is one of **two** ways values reach `Settings` — the other is the Environment Bucket, for a deployed environment; see [Environments & secrets](#environments--secrets).
 
 The agent loop runs on one selectable **LLM provider** — set `LLM_PROVIDER` plus that provider's secret(s); each provider has its own model variable (the others are ignored):
 
@@ -117,23 +119,25 @@ decode replay <ID> --from decode_runtime_model_request --model gemini-2.5-pro
 
 Upstream of `--from` serves from the original run's cache; the anchor and downstream re-execute for real. The new fork's `exec_id` prints on stderr — compare fork vs original with `kitaru executions get`. `--from` is required; a trustworthy what-if does a **baseline rerun** first (no `--model`) and diffs the fork against that. `decode replay` is bypass-only (HITL replays re-ask every wait — use `kitaru executions replay`).
 
-### Environments & secrets
+## Environments & secrets
 
-One config surface (`Settings`), two injection mechanisms, selected by **`DECODE_ENV`** ([ADR-0015](docs/adr/0015-environment-bucket-secrets.md)):
+`Settings` is the single source of truth for every credential decode holds — so the only question is how a value gets *into* it. **`DECODE_ENV`** answers it, and decides nothing else (not session dirs, not log paths) — [ADR-0015](docs/adr/0015-environment-bucket-secrets.md):
 
 | `DECODE_ENV` | Where `Settings` gets its values |
 |---|---|
 | `local` (default) | your `.env` file — Kitaru is never imported |
-| `dev` / `staging` / `prod` | the **Environment Bucket**: the derived Kitaru secret `decode-<env>`. `.env` is **dropped from the chain**, so a key missing from the bucket fails loudly at startup instead of being backfilled from your file |
+| `dev` / `staging` / `prod` | the **Environment Bucket**: the derived Kitaru secret `decode-<env>` (no override knob). `.env` is **dropped from the chain**, so a key missing from the bucket fails loudly at startup instead of being backfilled from your file |
 
 ```bash
 make sync-secrets ENV=staging     # mirror .env → the decode-staging bucket (one-way; the file is the truth)
-DECODE_ENV=staging decode         # …and both surfaces (TUI + `decode run`) hydrate from it
+DECODE_ENV=staging decode         # …and both surfaces (TUI + `decode run`) hydrate from it, identically
 ```
 
-The mirror pushes the keys of the config surface (the `Settings` fields) in **one** `kitaru secrets set` call — that command replaces the whole key set, so full-surface-or-nothing is the only safe write, and the bucket ends up an exact mirror of your file. It prints a key-name diff and asks before overwriting (`--yes` for CI); values are never echoed. `DECODE_ENV` itself is never pushed: the bucket is *named* by the environment.
+The mirror pushes the config surface (the `Settings` fields) in **one** `kitaru secrets set` call — that command replaces the whole key set, so full-surface-or-nothing is the only safe write, and the bucket ends up an exact mirror of your file. It prints a key-**name** diff and asks before overwriting (`--yes` for CI); values are never echoed. `DECODE_ENV` itself is never pushed: the bucket is *named* by the environment. A missing or unreachable bucket is one friendly line naming the fix (`make sync-secrets ENV=<env>`), exit non-zero, no traceback — in the REPL and the headless pre-flight alike. Opik traces follow along: `OPIK_PROJECT_NAME` defaults to `decode-<env>`.
 
-Process env always wins; bucket values land in `Settings` only, never `os.environ` — so a model-chosen `bash` never inherits one. This is a secret-store **lookup**, not the sandbox [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret) below (which injects headers *after* a request leaves the worker) — different secret, different hiding place. [`CREDENTIALS.md`](CREDENTIALS.md) tells the two apart and walks an end-to-end test of each.
+Process env always wins; bucket values land in `Settings` only, never `os.environ` — so a model-chosen `bash` never inherits one. This is a config **hydration** mechanism, not the sandbox [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret) below (which injects a header *after* a request leaves the Worker) — different secret, different hiding place, and they compose. [`CREDENTIALS.md`](CREDENTIALS.md) tells the two apart and walks an end-to-end test of each.
+
+> **Coming from an older `.env`?** `RUNTIME_SECRET_NAME` / `RUNTIME_SECRET_STORE_CONFIG` / `RUNTIME_SECRET_STORE_MODEL_KEY` are **deleted** and a stale line is now **silently ignored** ([ADR-0015 §4](docs/adr/0015-environment-bucket-secrets.md)). The replacement is `make sync-secrets ENV=<env>` + `DECODE_ENV`.
 
 ## Context compaction
 
