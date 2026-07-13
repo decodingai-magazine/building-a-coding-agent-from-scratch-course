@@ -22,17 +22,32 @@ from evals.harness.metrics import (
     ToolNotCalledMetric,
     VerifyOracleMetric,
 )
+from evals.harness.oracle_sanity import OracleResult, run_oracle
+from evals.harness.task_loader import (
+    BenchmarkTask,
+    BenchmarkTaskError,
+    JudgeSpec,
+    load_benchmark_task,
+    load_benchmark_tasks,
+)
 
 __all__ = [
+    "BenchmarkTask",
+    "BenchmarkTaskError",
     "DiffLinesMetric",
     "EvalRunRecord",
+    "JudgeSpec",
     "MaxStepsMetric",
+    "OracleResult",
     "ToolCallRecord",
     "ToolCalledMetric",
     "ToolNotCalledMetric",
     "VerifyOracleMetric",
     "judge_model",
+    "load_benchmark_task",
+    "load_benchmark_tasks",
     "make_judge",
     "run_agent_once",
     "run_agent_once_sync",
+    "run_oracle",
 ]

@@ -1,0 +1,13 @@
+id: 001-greeting
+prompt: |
+  Create a file named greeting.txt in the current directory whose contents are exactly
+  the single line: hello world
+max_steps: 5
+difficulty: easy
+tags:
+  - files
+  - fixture
+judges:
+  - name: tone
+    task_introduction: Judge whether the greeting file reads naturally.
+    evaluation_criteria: Score 1 if greeting.txt contains a plain friendly greeting, 0 otherwise.

@@ -26,3 +26,31 @@ def benchmark() -> None:
 def regression() -> None:
     """Run the behavior regression probes (lands in task 106)."""
     click.echo("evals regression: not implemented yet (task 106).")
+
+
+@cli.command()
+@click.option(
+    "--benchmark/--no-benchmark",
+    "benchmark",
+    default=True,
+    show_default=True,
+    help="Sync the benchmark tasks into the decode-benchmark-v1 Opik dataset.",
+)
+def sync(benchmark: bool) -> None:
+    """Upsert the eval tracks' Opik datasets (ADR-0017 §2).
+
+    ``--benchmark`` (on by default) loads ``evals/benchmark/tasks/`` and upserts one item per task
+    into ``decode-benchmark-v1``. Opik is imported lazily here (not at CLI build time) so
+    ``--help`` never needs keys or a network. Regression dataset sync lands with task 106.
+    """
+    if not benchmark:
+        click.echo("evals sync: nothing selected (pass --benchmark).")
+        return
+
+    # Lazy import: keeps the CLI module opik-free at import time (ADR-0017 §1).
+    from evals.harness.datasets import BENCHMARK_DATASET_NAME, sync_benchmark_dataset
+    from evals.harness.task_loader import load_benchmark_tasks
+
+    tasks = load_benchmark_tasks()
+    sync_benchmark_dataset(tasks)
+    click.echo(f"evals sync: upserted {len(tasks)} task(s) into {BENCHMARK_DATASET_NAME}.")
