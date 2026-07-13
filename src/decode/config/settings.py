@@ -301,6 +301,14 @@ class Settings(BaseSettings):
     # container has no lifetime cap (``sleep infinity``).
     sandbox_timeout_s: float = Field(600.0, gt=0)
 
+    # --- Evals (ADR-0017) — the eval suite is NOT shipped in the wheel, but its judges + Opik
+    # project are read from this SAME Settings surface so the harness needs no config of its own. ---
+    # The LiteLLM model string G-Eval judges run on; empty derives it from ``llm_provider`` (task 104).
+    eval_judge_model: str = ""
+    # The Opik project eval runs log under — kept distinct from the live-REPL project (ADR-0014) so
+    # eval traces never mix into ``decode-<env>``.
+    eval_project_name: str = "decode-evals"
+
     @model_validator(mode="after")
     def _derive_opik_project_name(self) -> Settings:
         """Default the Opik project to ``decode-<DECODE_ENV>``; an explicit value always wins (ADR-0015 §8).
