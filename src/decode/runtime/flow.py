@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from kitaru import checkpoint, current_execution_id, flow, save
+from kitaru import ImageSettings, checkpoint, current_execution_id, flow, save
 from kitaru.adapters.pydantic_ai import KitaruAgent, wait_for_input
 from kitaru.adapters.pydantic_ai._toolset import _ToolApprovalDenied
 from pydantic_ai import DeferredToolRequests
@@ -64,6 +64,35 @@ RUNTIME_OUTPUT_ARTIFACT = "decode_runtime_output"
 _HITL_DENIED_MESSAGE = (
     "The operator denied a required tool approval, so the task was stopped before that step ran."
 )
+
+# The Kitaru secret carrying MODAL_TOKEN_ID / MODAL_TOKEN_SECRET into the flow container. They are
+# the modal CLI's tokens, not ``Settings`` fields, so the Environment Bucket never carries them
+# (ADR-0015); ``secret_environment_from`` is their only route into the container's process env.
+MODAL_TOKEN_SECRET_NAME = "decode-modal"
+
+
+def _runtime_image() -> ImageSettings:
+    """The flow container for a remote stack (INFRA.md §4) — ignored by the local stack, which never builds.
+
+    ``DECODE_ENV`` and ``SANDBOX_MODE`` are propagated from the submitting process so a remote run
+    keeps the config surface the operator chose: ``DECODE_ENV=prod`` makes the container's
+    ``Settings`` read the ``decode-prod`` Environment Bucket off the same Kitaru server (ADR-0015),
+    and ``SANDBOX_MODE`` decides where its ``bash`` lands. Only ``modal`` needs the Modal tokens, so
+    only ``modal`` demands the secret exist.
+    """
+    return ImageSettings(
+        dockerfile="docker/flow.Dockerfile",
+        build_context_root=".",
+        platform="linux/amd64",  # Modal runs x86-64; the build host may not
+        environment={
+            "DECODE_ENV": settings.decode_env,
+            "SANDBOX_MODE": settings.sandbox_mode,
+        },
+        secret_environment_from=(
+            [MODAL_TOKEN_SECRET_NAME] if settings.sandbox_mode == "modal" else None
+        ),
+    )
+
 
 # Tools that pause on a flow-scope wait in the durable runtime and so must be opted out of their
 # per-call checkpoints — a Kitaru wait must live at flow scope, not inside a tool checkpoint
@@ -220,7 +249,7 @@ def _capture_runtime_output(output: str) -> str:
     return output
 
 
-@flow
+@flow(image=_runtime_image())
 def run_agent_task(
     task: str, model: str | None = None, repo: str | None = None, local: bool = False
 ) -> str:
@@ -337,7 +366,7 @@ def _build_hitl_deps(cwd: Path | None = None) -> AgentDeps:
     )
 
 
-@flow
+@flow(image=_runtime_image())
 def run_agent_task_hitl(
     task: str, model: str | None = None, repo: str | None = None, local: bool = False
 ) -> str:

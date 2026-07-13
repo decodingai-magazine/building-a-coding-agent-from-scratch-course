@@ -1,0 +1,14 @@
+# Build context for docker/flow.Dockerfile — keep it to what the image installs.
+.venv/
+.git/
+.claude/
+.decode/
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
+*.pyc
+dist/
+tests/
+docs/
+tasks/
+.env
