@@ -13,9 +13,14 @@ The hermetic tests pin: bounded genuine overlap, permission-free children, byte-
 truncation, parent-only usage gauge, recursion default-deny, output validation (a
 zero-tool-call child retried once with the nudge, then noted — ADR-0017 §7), ephemeral
 transcripts + resume,
-and the headless cache-disable contract (bash only, never agent — kitaru-skipif). Offline vs
-live: everything runs with no network/key except test_live_gemini_fanout_smoke, skipif-gated
-on GEMINI_API_KEY.
+and the headless cache-disable contract (bash only, never agent — kitaru-skipif). They then COMPOSE:
+the resilience matrix (one turn, four children — healthy / retried / twice-bad / healthy — with the
+budget split, the footer, the silence, the parent-only gauge and a resumable log all holding at once),
+and the two guard ROUND-TRIPS through the real loop (over-wide and under-specified calls nagged back to
+the model, which rewrites and completes the turn green). Offline vs live: everything runs with no
+network/key except test_live_gemini_fanout_smoke, skipif-gated on GEMINI_API_KEY — which is also the
+ONE place the footer's EFFECT (a real model actually synthesizing, with a text diagram) can be proven,
+as opposed to its delivery.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -57,7 +63,8 @@ from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Runner
 from decode.permissions.gate import PermissionGate
 from decode.tools import agent as agent_module
-from decode.tools.agent import AGENT_TOOL_NAME, SYNTHESIS_FOOTER
+from decode.tools.agent import AGENT_TOOL_NAME, MAX_FANOUT_PROMPTS, SYNTHESIS_FOOTER
+from decode.tools.truncate import truncate
 from decode.tui import render
 
 # Markers the scripted model streams, so the assertions read as a transcript.
@@ -195,6 +202,13 @@ def _fan_out(n_children: int) -> ModelResponse:
 
 _SECTION_RE = re.compile(r'^## Subagent \d+ — ".*"$', re.MULTILINE)
 
+# The LIVE smoke's heading probe. Deliberately looser than ``_SECTION_RE``: a real model may write a
+# MULTI-LINE prompt ("QUESTION: …\nSCOPE: …\nWHAT THE REPORT MUST CONTAIN: …"), and the fold embeds the
+# prompt verbatim in its heading — so the closing quote lands on a later line and the strict
+# single-line pattern misses a perfectly well-formed section. The hermetic tests, whose prompts are
+# single-line by construction, keep asserting the exact heading with ``_SECTION_RE``.
+_SECTION_HEADING_RE = re.compile(r"^## Subagent \d+ — ", re.MULTILINE)
+
 
 def _sections(aggregate: str) -> list[str]:
     """The ``## Subagent i — "…"`` section headings in one folded aggregate (ADR-0017 §5)."""
@@ -212,6 +226,76 @@ def _section_bodies(aggregate: str) -> list[str]:
     matches = list(_SECTION_RE.finditer(aggregate))
     bounds = [m.start() for m in matches] + [len(aggregate)]
     return [aggregate[m.end() : bounds[i + 1]].strip() for i, m in enumerate(matches)]
+
+
+def _budgeted(report: str, *, per_child: int) -> str:
+    """EXACTLY what a child's section body must be: ``report`` through the shared ``truncate()`` idiom
+    at its own share of the budget (ADR-0017 §6) — the mirror of the unit suite's helper.
+
+    Asserted as equality rather than ``len(body) <= per_child``, because an upper bound is satisfied by
+    any theft: a fold that spent some of a child's bytes on harness overhead would still be "under the
+    cap". ``.strip()``ed to match :func:`_section_bodies`, which strips at the section boundary.
+    """
+    return truncate(report, max_lines=settings.max_output_lines, max_bytes=per_child).text.strip()
+
+
+def _call_args(call: ToolCallPart) -> dict[str, object]:
+    """A tool call's arguments as a dict — ``args`` is a dict OR the raw JSON string the model streamed."""
+    args = call.args
+    return args if isinstance(args, dict) else json.loads(args or "{}")
+
+
+def _final_answer(handler: AgentTurnHandler) -> str:
+    """The parent model's FINAL answer — the text of the last :class:`ModelResponse` in its history.
+
+    This is the turn's actual product, i.e. the only place the Synthesis Footer's instruction can be
+    seen to have WORKED (as opposed to merely having been delivered). Used by the live smoke.
+    """
+    for message in reversed(handler.message_history):
+        if isinstance(message, ModelResponse):
+            text = "".join(part.content for part in message.parts if isinstance(part, TextPart))
+            if text.strip():
+                return text
+    return ""
+
+
+def _retry_prompts(messages: list[ModelMessage]) -> list[str]:
+    """Every ``ModelRetry`` nag the harness actually sent BACK to the parent model (ADR-0017 §2-3).
+
+    A guard that raises but whose message never reaches the model coaches nobody; the round-trip
+    scenarios assert on THIS — the ``RetryPromptPart`` in the parent's own message history.
+    """
+    return [
+        str(part.content)
+        for message in messages
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, RetryPromptPart) and part.tool_name == AGENT_TOOL_NAME
+    ]
+
+
+# Diagram detection for the LIVE smoke — presence-only, tolerant, but it must genuinely fail when the
+# model produced NO diagram at all (a prose-only answer means the footer was ignored, i.e. the feature
+# does not work — a finding about the FEATURE, not a flaky test).
+_BOX_DRAWING = "─━│┃┌┐└┘├┤┬┴┼╭╮╰╯═║╔╗╚╝╠╣╦╩╬"
+
+
+def _looks_like_a_text_diagram(answer: str) -> bool:
+    """Whether ``answer`` carries a TEXT DIAGRAM: a Mermaid fence, box-drawing art, or ASCII connectors.
+
+    Deliberately generous about FLAVOUR (models vary, and the footer permits both ASCII/box-drawing and
+    Mermaid-for-genuine-graphs) and strict about PRESENCE: pure prose satisfies none of the three.
+    """
+    if "```mermaid" in answer:
+        return True
+    if sum(answer.count(glyph) for glyph in _BOX_DRAWING) >= 4:
+        return True
+    connector_lines = [
+        line
+        for line in answer.splitlines()
+        if re.search(r"(\+--|--\+|-->|<--|^\s*\|)", line)  # ASCII box corners / arrows / rails
+    ]
+    return len(connector_lines) >= 3
 
 
 # Recording harness — a sink that renders every event through the REAL render_event, plus resolvers
@@ -523,9 +607,9 @@ async def test_child_report_is_truncated_to_the_byte_cap_through_the_fold(
     bodies = _section_bodies(folded[0])
     assert len(bodies) == n_children
     for body in bodies:
-        assert (
-            len(body.encode("utf-8")) <= per_child
-        )  # the SHARED budget, split across the children
+        # EXACT, not ``<= per_child``: an upper bound is also satisfied by a fold that short-changed
+        # the child (e.g. reserving footer room out of its share), so it cannot catch budget theft.
+        assert body == _budgeted(long_report, per_child=per_child)
         assert head in body  # the line-aligned head survived
         assert body != long_report  # content was dropped
     assert head in sink.rendered  # and the truncated panel rendered through the real renderer
@@ -858,7 +942,321 @@ def test_headless_flow_cache_disable_set_covers_only_bash_never_agent(monkeypatc
     assert AGENT_TOOL_NAME not in cache_disabled
 
 
-# 8. Live-Gemini fan-out smoke — one real fan-out; SKIPPED when GEMINI_API_KEY is unset.
+# 8. THE RESILIENCE MATRIX — every ADR-0017 failure mode, composed, in ONE turn.
+
+
+def _matrix_prompt(tag: str) -> str:
+    """One well-formed angle of the matrix — question + scope + the report to produce (survives §3)."""
+    return (
+        f"Angle {tag}: how does the {tag} subsystem of this repository work? Search the source tree "
+        f"for its module and report its entry points and call flow with file:line evidence."
+    )
+
+
+def _long_report(marker: str) -> str:
+    """A child report far over the (patched, small) per-child budget, headed by an identifying line."""
+    return marker + "\n" + "\n".join(f"{marker} detail line {i}" for i in range(50))
+
+
+async def test_the_resilience_matrix_folds_four_children_in_one_turn(
+    parent_agent, tmp_path, monkeypatch
+):
+    """ONE ``agent`` call, four angles, every ADR-0017 failure mode at once — one clean fold.
+
+    The composed proof, through the full real stack (build_agent + Runner + AgentTurnHandler + gate +
+    render_event + SessionLog), of what the six tasks of this feature bought *together*. Four children:
+
+    * **A** — healthy: really ``read``s a file, reports (§5).
+    * **B** — empty report first → EXACTLY ONE nudged re-spawn → a good, evidenced report (§7). Its
+      section is the RETRY's report; the empty first attempt leaves no trace.
+    * **C** — answers from model memory, zero tool calls, on BOTH attempts → gives up with the explicit
+      failure note (§7). It does not take its siblings down with it.
+    * **D** — healthy (§5).
+
+    And, in the same turn: ONE ``agent`` tool call on the sink (the fan-out is a HARNESS guarantee, not
+    N model calls — §1,4); the four sections in PROMPT order (§5); each body truncated to exactly its
+    share of the shared budget (§6, patched small so truncation bites); the Synthesis Footer after the
+    last section (§9); zero permission prompts (READ_ONLY, ADR-0013 §5); the children silent-until-done
+    (ADR-0013 §8); the parent's usage gauge parent-only (ADR-0013 §7); and a session log that replays
+    (``--resume``) carrying the single spawn + the aggregate, never a child's transcript (ADR-0013 §8).
+    """
+    (tmp_path / "one.py").write_text("x = 1\n", encoding="utf-8")
+    sessions_dir = tmp_path / "sessions"
+    fixed_now = datetime(2026, 7, 6, 9, 0, tzinfo=UTC)
+    monkeypatch.setattr(session_log, "_utc_now", lambda: fixed_now)
+
+    n_children = 4
+    monkeypatch.setattr(settings, "subagent_result_max_bytes", 400)
+    per_child = (
+        400 // n_children
+    )  # the SHARED budget, divided — the fold's cost is width-independent
+
+    prompts = [_matrix_prompt(tag) for tag in ("A", "B", "C", "D")]
+    report_a, report_b_retry, report_d = (
+        _long_report("REPORT-A"),
+        _long_report("REPORT-B-RETRY"),
+        _long_report("REPORT-D"),
+    )
+    hallucinated = "From memory, subsystem C surely uses a gate."  # C: non-empty, but NO tool call
+
+    spawns: list[str] = []
+    spawn_kwargs: list[dict[str, object]] = []
+    real_run = parent_agent.run
+
+    async def spy_run(prompt, **kwargs):
+        spawns.append(prompt)  # every child ATTEMPT — first try or retry — goes through here
+        spawn_kwargs.append(kwargs)
+        return await real_run(prompt, **kwargs)
+
+    parent_agent.run = spy_run
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        visible = {tool.name for tool in info.function_tools}
+        if AGENT_TOOL_NAME in visible:  # PARENT: ONE call carrying all four angles
+            if not _tool_returned(messages, AGENT_TOOL_NAME):
+                return ModelResponse(
+                    parts=[ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompts": list(prompts)})]
+                )
+            return ModelResponse(parts=[TextPart(content=_PARENT_FINAL)])
+
+        # CHILD: branch on which angle it was spawned for — and, for B, on whether this is the retry.
+        prompt = _first_user_prompt(messages)
+        retrying = agent_module._RETRY_NUDGE in prompt
+        if prompt.startswith(_matrix_prompt("C")):
+            return ModelResponse(parts=[TextPart(content=hallucinated)])  # BAD both times: no tools
+        if prompt.startswith(_matrix_prompt("B")) and not retrying:
+            return ModelResponse(parts=[TextPart(content="   ")])  # BAD: an empty first report
+        if not _tool_returned(messages, "read"):  # A, D, and B's RETRY: read the code first…
+            return ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": "one.py"})])
+        if prompt.startswith(_matrix_prompt("A")):
+            return ModelResponse(parts=[TextPart(content=report_a)])
+        if prompt.startswith(_matrix_prompt("B")):
+            return ModelResponse(parts=[TextPart(content=report_b_retry)])
+        return ModelResponse(parts=[TextPart(content=report_d)])
+
+    log = SessionLog.create(
+        sessions_dir,
+        cwd=tmp_path,
+        now=fixed_now,
+        session_id=UUID("00000000-0000-0000-0000-000000000108"),
+    )
+    sink = _RecordingSink()
+    resolvers = _RecordingResolvers()
+    handler = AgentTurnHandler(
+        parent_agent, deps=_parent_deps(sink, resolvers, tmp_path), session_log=log
+    )
+    runner = Runner(handler, on_event=sink)
+    with parent_agent.override(model=_function_model(model)):
+        await _run_turn(runner, "explore four areas of this repo in parallel")
+
+    # ONE tool call did the whole fan-out (§1,4) — the parallelism is the harness's, not the model's.
+    assert len(sink.tool_calls()) == 1
+    assert sink.tool_calls()[0].name == AGENT_TOOL_NAME
+    folded = _folded_reports(handler)
+    assert len(folded) == 1
+    aggregate = folded[0]
+
+    # Four sections, in PROMPT order (§5) — the fold's order is the model's, whatever the children did.
+    assert _sections(aggregate) == [
+        f'## Subagent {i} — "{prompt}"' for i, prompt in enumerate(prompts, start=1)
+    ]
+    bodies = _section_bodies(aggregate)
+
+    # A + D healthy; each body is EXACTLY its share of the shared budget (§6) — not merely under it.
+    assert bodies[0] == _budgeted(report_a, per_child=per_child)
+    assert bodies[3] == _budgeted(report_d, per_child=per_child)
+    assert bodies[0] != report_a  # the budget really bit (the equality has teeth)
+
+    # B: retried EXACTLY once (never twice), and its section is the RETRY's report — the empty first
+    # attempt left no trace in the parent's context.
+    b_attempts = [p for p in spawns if p.startswith(_matrix_prompt("B"))]
+    assert len(b_attempts) == 2
+    assert b_attempts[0] == _matrix_prompt("B")
+    assert b_attempts[1] == _matrix_prompt("B") + agent_module._RETRY_NUDGE
+    assert bodies[1] == _budgeted(report_b_retry, per_child=per_child)
+
+    # C: bad twice → the honest give-up note (§7); its memory-only answer never reaches the parent.
+    assert bodies[2] == agent_module._NO_USABLE_REPORT_NOTE
+    assert hallucinated not in aggregate
+    assert len([p for p in spawns if p.startswith(_matrix_prompt("C"))]) == 2  # 2 attempts, never 3
+    # The healthy siblings each ran exactly once — a retry is private to its own gather slot.
+    assert len([p for p in spawns if p.startswith(_matrix_prompt("A"))]) == 1
+    assert len([p for p in spawns if p.startswith(_matrix_prompt("D"))]) == 1
+    assert len(spawns) == 6  # the 4 children + B's one retry + C's one retry — and not one more
+
+    # The Synthesis Footer (§9), after the LAST section — including after the failure note's section.
+    assert aggregate.endswith(SYNTHESIS_FOOTER)
+    assert aggregate.index(bodies[3]) < aggregate.index(SYNTHESIS_FOOTER)
+
+    # Permission-free (ADR-0013 §5): no prompt event, no human resolver, not even for the retry.
+    assert sink.permission_events() == []
+    assert resolvers.permission_requests == []
+    # Silent-until-done (ADR-0013 §8): the children's ``read`` never surfaced on the parent's sink.
+    assert sink.tool_call_names() == {AGENT_TOOL_NAME}
+    assert sink.tool_result_names() == {AGENT_TOOL_NAME}
+    assert _PARENT_FINAL in sink.rendered
+    # The parent's context gauge is parent-only (ADR-0013 §7): no spawn threaded the parent's usage.
+    assert all("usage" not in kwargs for kwargs in spawn_kwargs)
+    assert all(
+        kwargs["usage_limits"].request_limit == settings.subagent_max_requests
+        for kwargs in spawn_kwargs
+    )
+    assert handler.last_input_tokens > 0
+
+    # Ephemeral transcripts + ``--resume``: the log carries the ONE spawn call + the aggregate, and
+    # NOTHING from inside the children (not even B's two attempts, nor anyone's ``read``).
+    assert len(_tool_calls_in_history(handler.message_history, AGENT_TOOL_NAME)) == 1
+    assert _tool_calls_in_history(handler.message_history, "read") == []
+    replayed = session_log.load(log.path)
+    assert replayed == handler.message_history
+    assert _tool_calls_in_history(replayed, "read") == []
+    assert len(_tool_calls_in_history(replayed, AGENT_TOOL_NAME)) == 1
+    assert session_log.load_latest(sessions_dir) == handler.message_history
+
+
+# 9. Width-cap round-trip — the nag reaches the model, the model consolidates, the turn completes.
+
+
+async def test_the_width_cap_nag_round_trips_through_the_loop_and_the_turn_completes(
+    parent_agent, tmp_path
+):
+    """7 prompts → nag → 7 again → nag → 3 consolidated → green (ADR-0017 §2, and §3's retry budget).
+
+    The guard is only worth having if its ``ModelRetry`` actually *coaches*: the nag must reach the
+    parent model as a ``RetryPromptPart`` and the model must be able to act on it and still finish the
+    turn. Asserted on the real loop, end to end.
+
+    It is scripted with the model being STUBBORN ONCE (two consecutive nags) on purpose — that is what
+    pins the raised per-tool retry budget (``AGENT_TOOL_RETRIES``). pydantic-ai carries a failing tool's
+    retry count across run steps and aborts the run with ``UnexpectedModelBehavior`` once it exceeds the
+    budget (``tool_manager.py:120-130,177-181``), whose DEFAULT is 1 — so a single nag proves nothing
+    about the raised budget (it would pass at the default too), while two consecutive nags abort the run
+    at the default and complete green only because ``agent`` registers with ``retries=3``.
+    """
+    (tmp_path / "one.py").write_text("x = 1\n", encoding="utf-8")
+    too_many = [_child_prompt(i) for i in range(MAX_FANOUT_PROMPTS + 1)]  # 7 — one over the cap
+    consolidated = [_child_prompt(i) for i in range(3)]  # …re-emitted as 3 well-formed angles
+
+    spawns: list[str] = []
+    real_run = parent_agent.run
+
+    async def spy_run(prompt, **kwargs):
+        spawns.append(prompt)
+        return await real_run(prompt, **kwargs)
+
+    parent_agent.run = spy_run
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        visible = {tool.name for tool in info.function_tools}
+        if AGENT_TOOL_NAME in visible:  # PARENT
+            if _tool_returned(messages, AGENT_TOOL_NAME):
+                return ModelResponse(parts=[TextPart(content=_PARENT_FINAL)])
+            nags = len(_retry_prompts(messages))
+            if nags < 2:  # over the cap twice — the model ignores the first nag, heeds the second
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompts": list(too_many)})
+                    ]
+                )
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompts": list(consolidated)})
+                ]
+            )
+        if not _tool_returned(messages, "read"):  # CHILD: read the code, then report
+            return ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": "one.py"})])
+        return ModelResponse(parts=[TextPart(content=_CHILD_REPORT)])
+
+    sink = _RecordingSink()
+    resolvers = _RecordingResolvers()
+    handler = AgentTurnHandler(parent_agent, deps=_parent_deps(sink, resolvers, tmp_path))
+    runner = Runner(handler, on_event=sink)
+    with parent_agent.override(model=_function_model(model)):
+        await _run_turn(runner, "explore seven areas")
+
+    # BOTH nags reached the model, each naming the width it asked for, the limit, and the fix.
+    nags = _retry_prompts(handler.message_history)
+    assert len(nags) == 2
+    for nag in nags:
+        assert f"You asked for {len(too_many)} subagents" in nag
+        assert f"the limit is {MAX_FANOUT_PROMPTS}" in nag
+        assert "Consolidate" in nag
+    # An over-wide call spawns NOTHING (the guard is pre-spawn): only the 3 consolidated angles ran.
+    assert spawns == consolidated
+    # …and the turn completed GREEN — three sections + the footer, folded back to a finished answer.
+    folded = _folded_reports(handler)
+    assert len(folded) == 1
+    assert len(_sections(folded[0])) == len(consolidated)
+    assert folded[0].endswith(SYNTHESIS_FOOTER)
+    assert _PARENT_FINAL in sink.rendered
+    assert agent_module.AGENT_TOOL_RETRIES >= 2  # …which a default budget of 1 could not have done
+
+
+# 10. Substance-guard round-trip — the nag names the offender, the model rewrites, the children run.
+
+
+async def test_the_substance_nag_round_trips_and_the_rewritten_prompts_spawn_children(
+    parent_agent, tmp_path
+):
+    """One lazy prompt → a nag that NAMES it → the model rewrites → the children finally run (§3).
+
+    The input contract's whole point is that a useless brief never becomes a useless child. Through the
+    real loop: the under-specified call spawns NOTHING (the guard runs pre-spawn), the nag reaches the
+    model quoting the offending prompt by 1-based index — the same numbering as the ``## Subagent i``
+    sections it already reads — and the rewritten prompts sail through and fan out.
+    """
+    (tmp_path / "one.py").write_text("x = 1\n", encoding="utf-8")
+    lazy = "explore the repo"  # 3 words — under MIN_PROMPT_WORDS
+    rewritten = [_child_prompt(0), _child_prompt(1)]
+
+    spawns: list[str] = []
+    real_run = parent_agent.run
+
+    async def spy_run(prompt, **kwargs):
+        spawns.append(prompt)
+        return await real_run(prompt, **kwargs)
+
+    parent_agent.run = spy_run
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        visible = {tool.name for tool in info.function_tools}
+        if AGENT_TOOL_NAME in visible:  # PARENT
+            if _tool_returned(messages, AGENT_TOOL_NAME):
+                return ModelResponse(parts=[TextPart(content=_PARENT_FINAL)])
+            if not _retry_prompts(messages):  # the lazy first attempt
+                return ModelResponse(
+                    parts=[ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompts": [lazy]})]
+                )
+            return ModelResponse(  # …rewritten, after reading the nag
+                parts=[ToolCallPart(tool_name=AGENT_TOOL_NAME, args={"prompts": list(rewritten)})]
+            )
+        if not _tool_returned(messages, "read"):  # CHILD: read the code, then report
+            return ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": "one.py"})])
+        return ModelResponse(parts=[TextPart(content=_CHILD_REPORT)])
+
+    sink = _RecordingSink()
+    resolvers = _RecordingResolvers()
+    handler = AgentTurnHandler(parent_agent, deps=_parent_deps(sink, resolvers, tmp_path))
+    runner = Runner(handler, on_event=sink)
+    with parent_agent.override(model=_function_model(model)):
+        await _run_turn(runner, "explore the repo")
+
+    # The nag reached the model, named the offender BY INDEX and verbatim, and said what was wrong.
+    nags = _retry_prompts(handler.message_history)
+    assert len(nags) == 1
+    assert f'Prompt 1 ("{lazy}")' in nags[0]
+    assert agent_module._TERSE in nags[0]
+    assert "No subagent was spawned" in nags[0]
+    # …and NO child ran on the lazy call — only the rewritten angles spawned (the guard is pre-spawn).
+    assert spawns == rewritten
+    folded = _folded_reports(handler)
+    assert len(folded) == 1
+    assert len(_sections(folded[0])) == len(rewritten)
+    assert folded[0].endswith(SYNTHESIS_FOOTER)
+    assert _PARENT_FINAL in sink.rendered
+
+
+# 11. Live-Gemini fan-out smoke — one real fan-out; SKIPPED when GEMINI_API_KEY is unset.
 
 
 @pytest.mark.filterwarnings("ignore::ResourceWarning")
@@ -867,18 +1265,27 @@ def test_headless_flow_cache_disable_set_covers_only_bash_never_agent(monkeypatc
     reason="GEMINI_API_KEY is unset — the live Gemini fan-out smoke is skipped",
 )
 async def test_live_gemini_fanout_smoke(monkeypatch):
-    """One REAL Gemini fan-out over this repo — presence-only (children ran, reports back, no prompt).
+    """One REAL Gemini fan-out over this repo — and a real check that the Synthesis Footer WORKS.
 
     Re-injects the real key snapshotted at import (the autouse fixture scrubbed it), builds the REAL
-    agent, and asks the ``build`` persona to spawn Explore subagents over two *named* source files of
-    this repo in parallel. Asserts only *presence* — at least one child actually ran and its report
-    folded back, and the read-only fan-out never prompted — not exact content (a live model is
-    non-deterministic). Naming concrete, definitely-present files steers each child to a reliable
-    ``read`` (a guessy ``glob`` can miss and abort the parallel leg — the children share the parent's
-    fault domain, ADR-0013 §1). The ``flow_mode=True`` build hands Gemini a keep-alive-free HTTP client
-    (``_flow_mode_http_client``) so no pooled socket lingers to trip ``filterwarnings=["error"]`` after
-    the test; the fan-out mechanism (seam, semaphore, tool narrowing) is identical to the interactive
-    build.
+    agent, and asks the ``build`` persona for a BROAD, multi-angle exploration of named source files —
+    the shape ADR-0017 exists for. Two halves:
+
+    * **Delivery (presence-only).** At least one ``agent`` call whose args carry a ``prompts`` LIST (the
+      §1 signature — the model really fanned out through the new shape); the aggregate that folds back
+      carries ``## Subagent`` heading(s) and ends with the footer; the read-only fan-out never prompted.
+    * **Effect.** The parent's FINAL ANSWER actually contains a synthesized answer WITH a text diagram
+      (:func:`_looks_like_a_text_diagram`). This is the only assertion in the suite that can tell
+      "the harness delivered the instruction" apart from "the model obeyed it" — every hermetic test can
+      be green while a real model ignores the footer, which would mean the feature does not work. Kept
+      TOLERANT about flavour (Mermaid fence / box-drawing / ASCII connectors — models vary) and STRICT
+      about presence: a prose-only answer fails, and that failure is a finding about the FEATURE.
+
+    Content is otherwise unasserted (a live model is non-deterministic). Naming concrete,
+    definitely-present files steers each child to a reliable ``read`` (a guessy ``glob`` can miss and
+    abort the parallel leg — the children share the parent's fault domain, ADR-0013 §1). The
+    ``flow_mode=True`` build hands Gemini a keep-alive-free HTTP client so no pooled socket lingers to
+    trip ``filterwarnings=["error"]``; the fan-out mechanism is identical to the interactive build.
     """
     monkeypatch.setattr(factory.settings, "gemini_api_key", SecretStr(_LIVE_GEMINI_KEY))
     monkeypatch.setattr(factory.settings, "llm_provider", "gemini")
@@ -902,22 +1309,44 @@ async def test_live_gemini_fanout_smoke(monkeypatch):
     runner = Runner(handler, on_event=sink)
 
     prompt = (
-        "Use the explore subagents (the `agent` tool) to investigate two files of this repository IN "
-        "PARALLEL: make ONE `agent` call whose `prompts` list holds two prompts — the first asking a "
-        "subagent to read and summarize `src/decode/tools/truncate.py`, the second asking a subagent "
-        "to read and summarize `src/decode/config/settings.py`. Give each prompt a focused question "
-        "that names its file, then combine the two summaries the tool returns. Explore only by reading "
-        "the named files with the subagents; do not write files or run shell commands."
+        "Explore how this repository's agent tool-calling stack fits together, from SEVERAL DISTINCT "
+        "ANGLES IN PARALLEL, using the explore subagents (the `agent` tool). Make ONE `agent` call "
+        "whose `prompts` list holds one prompt per angle, each naming the file it must read: "
+        "`src/decode/agent/factory.py` (how the agent is built and its tools registered), "
+        "`src/decode/tools/registry.py` (how tools are declared and registered), and "
+        "`src/decode/permissions/gate.py` (how a tool call is allowed, asked or denied). Then answer "
+        "with ONE combined explanation of how those three pieces work together. Explore only by "
+        "reading the named files with the subagents; do not write files or run shell commands."
     )
     await _run_turn(runner, prompt)
 
-    # Presence only: at least one explore child ran and its report folded back as an ``agent`` result.
+    # DELIVERY — presence only: the model fanned out through the §1 list signature…
     assert child_prompts, "the model must have spawned at least one explore subagent"
-    assert _folded_reports(handler), (
-        "at least one child report must fold back as an agent tool result"
+    assert AGENT_TOOL_NAME in sink.tool_call_names(), "the model must have called the agent tool"
+    # …asserted on the CALL the model actually emitted (the sink's ``args`` is a rendered string;
+    # the ``ToolCallPart`` in history is the real payload — a dict, or the JSON the model streamed).
+    fanouts = _tool_calls_in_history(handler.message_history, AGENT_TOOL_NAME)
+    assert fanouts, "the agent call must be recorded in the parent's history"
+    assert any(isinstance(_call_args(call).get("prompts"), list) for call in fanouts), (
+        f"an agent call's args must carry a `prompts` LIST (ADR-0017 §1): {[c.args for c in fanouts]}"
     )
-    # And the read-only fan-out never prompted for permission.
+    # …and the aggregate that folded back is the labelled document + the footer (§5, §9).
+    folded = _folded_reports(handler)
+    assert folded, "at least one child report must fold back as an agent tool result"
+    assert any(_SECTION_HEADING_RE.search(aggregate) for aggregate in folded), (
+        "the fold must carry ## Subagent heading(s)"
+    )
+    assert all(aggregate.endswith(SYNTHESIS_FOOTER) for aggregate in folded)
+    # …with no permission prompt anywhere (READ_ONLY fan-out, ADR-0013 §5).
     assert sink.permission_events() == []
     assert resolvers.permission_requests == []
+
+    # EFFECT — the footer did its job: the FINAL answer is a synthesis carrying a TEXT DIAGRAM (§9).
+    answer = _final_answer(handler)
+    assert answer.strip(), "the parent must have produced a final answer"
+    assert _looks_like_a_text_diagram(answer), (
+        "the parent model's final answer carries NO text diagram — the Synthesis Footer was ignored, "
+        f"which means the feature does not work. Answer was:\n{answer}"
+    )
 
     gc.collect()  # finalize any straggler within this test's scope (belt-and-braces with keep-alive-off)

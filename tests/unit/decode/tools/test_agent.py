@@ -51,6 +51,7 @@ from decode.tools import KNOWN_TOOL_NAMES, tool_kind
 from decode.tools import agent as agent_module
 from decode.tools.agent import AGENT_TOOL_NAME
 from decode.tools.registry import TOOL_SPECS
+from decode.tools.truncate import truncate
 
 # Well-formed exploration prompts (question + scope + expected report content) — the shape the
 # hardened tool description asks for, so these survive the substance guard task 104 adds later.
@@ -841,7 +842,12 @@ async def test_duplicate_prompts_are_not_deduped(tmp_path, mocker):
 async def test_each_child_report_is_truncated_to_the_shared_byte_budget(
     tmp_path, mocker, monkeypatch
 ):
-    """Each child's report is capped to ``subagent_result_max_bytes // len(prompts)`` — total stays flat."""
+    """Each child's report is capped to ``subagent_result_max_bytes // len(prompts)`` — total stays flat.
+
+    Asserted as EXACT equality against :func:`_budgeted`, not as ``<= per_child``: an upper bound also
+    holds when a child is quietly short-changed, so it cannot catch a fold that spends a few of the
+    child's bytes on harness overhead.
+    """
     monkeypatch.setattr(settings, "subagent_result_max_bytes", 300, raising=False)
     big = "\n".join(f"finding number {i}" for i in range(500))  # many short lines, way over the cap
     mocker.patch.object(agent_module, "_require_main_agent", return_value=_StubAgent(_report(big)))
@@ -854,9 +860,34 @@ async def test_each_child_report_is_truncated_to_the_shared_byte_budget(
     bodies = [body for _prompt, body in _sections(out)]
     assert len(bodies) == 3
     for body in bodies:
-        assert len(body.encode("utf-8")) <= per_child  # the shared budget, split evenly
-        assert body != big
-        assert big.startswith(body)  # the kept head is a line-aligned prefix of the report
+        assert body == _budgeted(big, per_child=per_child)  # the WHOLE share, to the byte
+        assert body != big  # …and the report really was over the cap (the assertion has teeth)
+
+
+async def test_each_child_is_truncated_at_exactly_its_share_of_the_budget(
+    tmp_path, mocker, monkeypatch
+):
+    """The budget ARGUMENT is exactly ``subagent_result_max_bytes // len(prompts)`` — not merely "under".
+
+    The sharpest form of the §6 + §9 contract, and the one that needs no reasoning about line
+    granularity: spy the shared ``truncate()`` the tool calls per child and assert the ``max_bytes`` it
+    is handed. A fold that shaved even ONE byte off a child's share — e.g. reserving room for the
+    Synthesis Footer instead of appending it on top — turns this red immediately, where an upper-bound
+    assertion on the resulting text would stay green.
+    """
+    monkeypatch.setattr(settings, "subagent_result_max_bytes", 300, raising=False)
+    # Lazily imported inside ``_spawn_child``, so patch it at its source module (resolved per call).
+    spy = mocker.patch("decode.tools.truncate.truncate", wraps=truncate)
+    mocker.patch.object(
+        agent_module, "_require_main_agent", return_value=_StubAgent(_report("REPORT"))
+    )
+    prompts = [_PROMPT_A, _PROMPT_B, _PROMPT_C]
+
+    await agent_module.agent(_tool_ctx(tmp_path), prompts)
+
+    assert spy.call_count == len(prompts)  # once per child, never once for the whole fold
+    assert [call.kwargs["max_bytes"] for call in spy.call_args_list] == [300 // 3] * 3
+    assert all(call.kwargs["max_lines"] == settings.max_output_lines for call in spy.call_args_list)
 
 
 async def test_a_single_child_still_gets_the_whole_byte_budget(tmp_path, mocker, monkeypatch):
@@ -869,8 +900,8 @@ async def test_a_single_child_still_gets_the_whole_byte_budget(tmp_path, mocker,
     out = await agent_module.agent(ctx, [_PROMPT_A])
 
     body = _sections(out)[0][1]
+    assert body == _budgeted(big, per_child=100)  # the undivided budget, to the byte
     assert 0 < len(body.encode("utf-8")) <= 100
-    assert big.startswith(body)
 
 
 # direct: per-child failure isolation (ADR-0017 §5) + the defensive deferred case
@@ -1056,9 +1087,8 @@ async def test_the_retry_report_respects_the_per_child_byte_budget(tmp_path, moc
     out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A, _PROMPT_B, _PROMPT_C])
 
     retried_body = _sections(out)[0][1]
-    assert len(retried_body.encode("utf-8")) <= 300 // 3  # the SAME shared budget as any child
-    assert retried_body != big
-    assert big.startswith(retried_body)  # a line-aligned head of the retry's report
+    assert retried_body == _budgeted(big, per_child=300 // 3)  # the SAME share as any first attempt
+    assert retried_body != big  # …and the retry's report really was over the cap
 
 
 async def test_a_retry_never_re_runs_the_substance_guard_over_the_nudged_prompt(tmp_path, mocker):
@@ -1261,23 +1291,32 @@ async def test_the_footer_never_eats_a_childs_byte_budget(tmp_path, mocker, monk
 
     The footer is harness overhead on TOP of the ~16 KB of reports — it must never be paid for out
     of a child's share, which would make the fold's evidence hostage to the instruction's length.
+
+    Pinned by EQUALITY, not by ``<= per_child``: the bug this guards against is precisely a *modest*
+    theft (a fold that reserves the footer's ~750 bytes out of the children's budget), and every such
+    fold is still under the cap. Two equalities, because truncation is LINE-aligned and a small theft
+    can land inside a line: the section bodies must each equal a full-budget truncation, AND the
+    ``max_bytes`` handed to ``truncate()`` must be the undivided share to the byte — so the footer
+    costing a child even ONE byte turns this red.
     """
     monkeypatch.setattr(settings, "subagent_result_max_bytes", 300, raising=False)
     big = "\n".join(f"finding number {i}" for i in range(500))
+    spy = mocker.patch("decode.tools.truncate.truncate", wraps=truncate)
     mocker.patch.object(agent_module, "_require_main_agent", return_value=_StubAgent(_report(big)))
     prompts = [_PROMPT_A, _PROMPT_B, _PROMPT_C]
 
     out = await agent_module.agent(_tool_ctx(tmp_path), prompts)
 
     per_child = 300 // len(prompts)
+    # Not one byte of any child's share was spent on the footer.
+    assert [call.kwargs["max_bytes"] for call in spy.call_args_list] == [per_child] * 3
+    expected = _budgeted(big, per_child=per_child)
     bodies = [body for _prompt, body in _sections(out)]
-    # The 103 byte assertions, unchanged — the footer took nothing off any section body…
-    for body in bodies:
-        assert len(body.encode("utf-8")) <= per_child
-        assert big.startswith(body)
-    # …and every body is a FULL budget's worth (the footer was not shaved off the last child either).
-    assert len({body for body in bodies}) == 1
-    # …while the footer itself is present, whole, and paid for on top of the budget.
+    # Every child got its FULL, undiminished share — the footer took nothing off any section body,
+    # not off the last one either (each is byte-identical to the same full-budget truncation).
+    assert bodies == [expected, expected, expected]
+    assert expected != big  # the report really was over the cap (the equality has teeth)
+    # …while the footer itself is present, whole, and paid for ON TOP of the budget.
     assert out.endswith(agent_module.SYNTHESIS_FOOTER)
     assert len(out.encode("utf-8")) > settings.subagent_result_max_bytes
 
@@ -1355,6 +1394,26 @@ class _EchoAgent:
     async def run(self, prompt, *, deps, usage_limits):
         await asyncio.sleep(0)  # yield, so a broken (sequential) gather still can't reorder results
         return _report(f"report for: {prompt}")
+
+
+def _budgeted(report: str, *, per_child: int) -> str:
+    """EXACTLY what a child's section body must be: ``report`` through the shared ``truncate()`` idiom
+    at its own share of the budget (ADR-0017 §6).
+
+    The byte tests assert section bodies against THIS, not against ``len(body) <= per_child``. An upper
+    bound is satisfied by any theft: a fold that quietly spent a few of a child's bytes on harness
+    overhead (say, reserving room for the Synthesis Footer) would still be "under the cap" and stay
+    green. Equality pins the budget the child is actually owed — ``subagent_result_max_bytes //
+    len(prompts)``, whole — so a single byte shaved off it turns this red. It re-derives the expected
+    text through the same ``truncate()`` the tool uses, so what is asserted is the BUDGET handed to it,
+    never a re-implementation of the truncation algorithm.
+
+    ``.strip()``ed to match :func:`_sections`, which strips each body at the section boundary (the fold
+    joins sections with a blank line). Truncation is LINE-aligned, so equality here catches any theft
+    big enough to drop a line; :func:`test_each_child_is_truncated_at_exactly_its_share_of_the_budget`
+    pins the budget ARGUMENT itself, which catches a theft of even one byte.
+    """
+    return truncate(report, max_lines=settings.max_output_lines, max_bytes=per_child).text.strip()
 
 
 _SECTION_RE = re.compile(r'^## Subagent (\d+) — "(.*)"$', re.MULTILINE)

@@ -2,6 +2,10 @@
 
 **Status:** Accepted
 **Date:** 2026-07-13
+**Amended:** 2026-07-14 — §3's substance guard is recorded as SHIPPED: a bare word floor
+(`MIN_PROMPT_WORDS = 8`), **not** a three-signal check over question/scope/report. The three-part
+shape is coaching in the tool description; making it a rejection predicate false-rejected most
+realistic briefs. Every other facet shipped as written.
 **Supersession:** Partially supersedes [ADR-0013](0013-explore-subagents.md) — specifically §7's
 fan-out *mechanism* ("N `agent(...)` calls in one response run concurrently … no custom
 `asyncio.gather`" and the `agent(prompt)` single-prompt signature it implies) and §8's *result
@@ -52,9 +56,27 @@ All of the following are one design; each numbered item is a facet, not a separa
 3. **Input contract, zero extra LLM calls.** Free-form string per angle (no rigid slots). Quality
    enforced by (i) the hardened tool description — each prompt carries the question, the scope to
    search, and what the report must contain — and (ii) a deterministic, cheap substance guard
-   raising `ModelRetry` that names the offending prompt index and what is missing. Exact heuristic
-   is the implementer's call. Because the default per-tool retry budget is 1, the `agent` tool
-   registers with `retries=` ≥ 2 so guard nags coach the model instead of aborting the run.
+   raising `ModelRetry` that names the offending prompt by 1-based index (matching the
+   `## Subagent i` labels the model already sees) and what is wrong with it. Because the default
+   per-tool retry budget is 1, the `agent` tool registers with `retries=` ≥ 2 so guard nags coach
+   the model instead of aborting the run (shipped: `AGENT_TOOL_RETRIES = 3`).
+
+   **The guard, as shipped (amended 2026-07-14 to match the implementation):** it has exactly ONE
+   rejection criterion — a **substance floor**, a word count below `MIN_PROMPT_WORDS` (8). That is
+   what catches the failure it exists to prevent ("explore", "look around"); nobody briefs a
+   colleague on a codebase in six words. It is deliberately **not** a grader of prompt quality, and
+   the three-part shape (question + scope + report) is **coaching in the tool description**, not a
+   rejection predicate. Implementation drove this: an earlier three-signal AND-gate over the three
+   parts false-rejected 6 of 8 realistic briefs (false-reject probability *compounds* across fuzzy
+   keyword tests, and every widened word list invites the next miss); a permissive OR over the same
+   signals still false-rejected a good 17-word brief. Both were dropped — the floor stands alone.
+   The bias is intentional, because the two errors are not symmetric: a false ACCEPT merely restores
+   the pre-guard status quo (one weak child report), while a false REJECT actively breaks a run — it
+   burns a model turn and eats the retry budget. **When in doubt, accept.** The floor therefore stops
+   SHORT gaming, not PADDED gaming (keyword salad past the floor gets through) — the accepted trade,
+   not an oversight. Consequently the nag says the prompt is *too terse*; it never enumerates
+   individually-missing parts, which produced a nag that lied (telling the model to add a scope it
+   had already given).
 4. **Concurrency: harness `asyncio.gather` inside the tool body**, order-preserving, each child
    attempt acquiring the existing per-loop semaphore. (ADR-0013 relied on pydantic-ai scheduling N
    separate tool calls; with one list-carrying call, the gather moves into the tool — the
@@ -90,7 +112,7 @@ All of the following are one design; each numbered item is a facet, not a separa
 ```mermaid
 flowchart TD
     model["parent model response:<br/>ONE agent(prompts=[p1..pN])"]:::call
-    guards{"deterministic guards<br/>empty? · width > 6? · under-specified?"}:::gate
+    guards{"deterministic guards<br/>empty? · width > 6? · any prompt under 8 words?"}:::gate
     nag["ModelRetry — names the fix<br/>(tool registered with retries ≥ 2)"]:::retry
     gather["asyncio.gather (prompt order)<br/>each attempt under the per-loop Semaphore<br/>subagent_max_parallel"]:::tool
 
