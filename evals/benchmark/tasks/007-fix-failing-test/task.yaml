@@ -1,0 +1,11 @@
+id: 007-fix-failing-test
+prompt: |
+  The current directory holds a small Python module, ranges.py, and its test file, test_ranges.py.
+  One test is failing because of a bug in ranges.py; the others pass. Fix the bug in ranges.py so the
+  whole test suite passes. Do not modify test_ranges.py — only change the source code in ranges.py.
+max_steps: 15
+difficulty: easy
+tags:
+  - python
+  - testing
+  - bugfix

@@ -1,0 +1,10 @@
+id: 001-find-and-replace
+prompt: |
+  The file config.ini in the current directory sets a connection timeout that is too low.
+  Change the timeout value from 30 to 60. Leave every other line of the file exactly as it is.
+max_steps: 10
+difficulty: easy
+tags:
+  - files
+  - config
+  - edit
