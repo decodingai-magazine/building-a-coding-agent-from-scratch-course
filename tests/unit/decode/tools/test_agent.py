@@ -1,7 +1,9 @@
 """Unit tests for the ``agent`` fan-out tool + the in-process Explore-subagent runner (ADR-0017).
 
-Covers the structural guards (empty list / width cap), the harness ``asyncio.gather`` fan-out, the
-labelled aggregation, the shared per-child byte budget, per-child failure isolation, plus the
+Covers the structural guards (empty list / width cap), the input contract (the hardened model-facing
+tool description + the deterministic per-prompt substance guard, ADR-0017 §3), the harness
+``asyncio.gather`` fan-out, the labelled aggregation, the shared per-child byte budget, per-child
+failure isolation, plus the
 ADR-0013 invariants re-pinned under the new shape: the set-once main-Agent seam, fresh narrowed
 read-only child deps, no usage threading, the ``UsageLimits`` cap, the concurrency semaphore,
 persona grants, and kitaru-free imports. Direct tests use a hand-built :class:`RunContext` / stub
@@ -473,6 +475,275 @@ async def test_the_width_cap_is_six_and_six_prompts_pass_the_guard(tmp_path, moc
     out = await agent_module.agent(ctx, _prompts(6))
 
     assert len(_sections(out)) == 6
+
+
+# the hardened tool description (ADR-0017 §3) — what the MODEL reads before it writes a prompt
+
+
+def test_the_registered_tool_description_states_the_input_contract(mocker):
+    """The model-facing description carries the per-prompt shape, the 3-angle push, and the cap.
+
+    pydantic-ai lifts the function docstring into the tool schema, so this is literally what the
+    parent model reads when deciding what to put in ``prompts`` — assert on the REGISTERED tool's
+    description, not on the source (that is the artefact that reaches the model).
+    """
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    built = build_agent()
+
+    description = built._function_toolset.tools[AGENT_TOOL_NAME].description
+    assert description
+    lowered = description.lower()
+    # (a) the per-prompt shape: question + scope + what the report must contain.
+    assert "question" in lowered
+    assert "scope" in lowered
+    assert "report" in lowered
+    # (b) the fan-out push, verbatim enough that a model cannot miss it (ADR-0017 §1,3).
+    assert "3 DISTINCT angles" in description
+    # (c) the one-element-list case and (d) the width cap of 6 — stated as a NUMBER, not as the
+    # Python constant's name (the model cannot resolve ``MAX_FANOUT_PROMPTS``).
+    assert "one-element list" in lowered
+    assert str(agent_module.MAX_FANOUT_PROMPTS) in description
+    assert "MAX_FANOUT_PROMPTS" not in description
+
+
+# direct: the substance guard (deterministic, cheap, pre-spawn — ADR-0017 §3)
+
+# Genuinely lazy prompts: too thin to brief anyone with. Every one MUST be rejected — this is the
+# failure the guard exists to prevent. All of them fall under the substance floor.
+_LAZY_PROMPTS = [
+    "explore",
+    "explore the repo",
+    "look around",
+    "the codebase",
+    "go look at the code",
+    "tell me about this project",
+    "dig in",
+]
+
+# THE ANTI-WHACK-A-MOLE BATTERY: realistic, well-formed exploration briefs a parent model
+# plausibly writes. EVERY ONE MUST PASS THE GUARD — a false reject is the dangerous failure mode
+# (it burns a model turn and eats AGENT_TOOL_RETRIES), so any change that re-narrows the guard
+# into a prompt GRADER instead of a substance FLOOR fails here, loudly.
+#
+# Two QA rounds died on exactly that: an AND-gate (and then an OR) over keyword sets for
+# question/scope/report kept rejecting good briefs whose phrasing the word lists did not happen to
+# contain. The battery pins the phrasings that were falsely rejected, plus more, so the next edit
+# cannot quietly re-narrow the guard to fit the last failing example handed to it.
+
+# QA round 1 — imperative phrasings, rejected 5/5 by the then-guard.
+_ROUND_1_PROMPTS = [
+    "Summarize the retry logic in src/decode/tools/agent.py including the ModelRetry budget and "
+    "report the file:line for each check.",
+    "List all Pydantic models defined under src/decode/entities/ and report their field names with "
+    "file:line citations.",
+    "Document the permission gate's allow/ask/deny branches in src/decode/permissions/ and report "
+    "each decision with file:line evidence.",
+    "Enumerate every tool registered in src/decode/tools/registry.py and report its name and kind "
+    "with file:line evidence.",
+    "Map the sandbox executor seam across src/decode/sandbox/ and report each backend's entry "
+    "points with file:line evidence.",
+]
+
+# QA round 2 — a fresh battery, rejected 6/8 by the widened word lists ("note", "describe" as a
+# report ask, and the phrasal verbs "break down" / "walk through" / "dig into" / "chart").
+_ROUND_2_PROMPTS = [
+    "Outline the tool registration flow in src/decode/tools/registry.py and note which module each "
+    "tool lives in with file:line references.",
+    "Where does the settings singleton get constructed? Search src/decode/config/settings.py and "
+    "describe the lazy-init pattern used.",
+    "Break down the retry budget for the bash tool across src/decode/tools/bash.py and produce a "
+    "short summary of each guard clause.",
+    "Walk through the sandbox handback flow under src/decode/sandbox/handback.py and cite the git "
+    "commands issued, in order.",
+    "Chart every Pydantic-AI tool registered by the harness, searching src/decode/tools/, and give "
+    "me a table of tool name to file.",
+    "Dig into the compaction trigger inside src/decode/context/ and tell me the token threshold, "
+    "citing the exact line.",
+    "Inspect how the TUI renders streaming tokens under src/decode/tui/ and report the render "
+    "loop's entry point with file:line evidence.",
+    "Confirm whether the memory loader in src/decode/memory/ reads AGENTS.md before MEMORY.md, and "
+    "back up your finding with file:line detail.",
+]
+
+# More phrasings, spanning the styles a keyword guard is worst at. The no-punctuation one is why
+# the "reject when NO signal at all" check was dropped: it names no path, asks no "?", and uses no
+# question/scope/report keyword, yet is a perfectly good brief.
+_VARIED_PROMPTS = [
+    # interrogative, no path token at all
+    "Which module owns conversation compaction and what is the token threshold that triggers it?",
+    # imperative, no punctuation, no path token, no interrogative, no report keyword
+    "Tell me every place the harness shells out to git during hand back and quote the exact commands",
+    # phrasal verb, no report keyword
+    "Poke around the observability wiring in src/decode/observability/ and pin down where the Opik "
+    "span is opened.",
+    # terse but substantive — just over the floor
+    "Trace the ASK path through src/decode/permissions/gate.py; cite line numbers.",
+    # a declarative statement of need: no imperative verb, no question mark
+    "I need the exact ordering of instructions injected into the system prompt, starting from "
+    "src/decode/agent/factory.py.",
+    # bare colloquial imperative
+    "Go read the Kitaru runtime wiring under src/decode/runtime/ and tell me how a checkpoint is "
+    "written.",
+]
+
+_WELL_FORMED_PROMPTS = [
+    _PROMPT_A,
+    _PROMPT_B,
+    _PROMPT_C,
+    *_prompts(3),
+    *_ROUND_1_PROMPTS,
+    *_ROUND_2_PROMPTS,
+    *_VARIED_PROMPTS,
+]
+
+
+@pytest.mark.parametrize("prompt", _LAZY_PROMPTS)
+def test_a_lazy_prompt_is_rejected(prompt):
+    """The guard's reason to exist: a prompt too thin to brief a colleague with never spawns a child."""
+    assert agent_module._faults(prompt) == [agent_module._TERSE]
+
+
+@pytest.mark.parametrize("prompt", _WELL_FORMED_PROMPTS)
+def test_a_well_formed_prompt_is_never_rejected(prompt):
+    """THE regression pin: every realistic brief passes, whatever its phrasing (QA rounds 1 + 2).
+
+    Interrogative, imperative, phrasal-verb, declarative, colloquial, punctuation-free, terse — the
+    guard must not care. It is a substance FLOOR, not a grader.
+    """
+    assert agent_module._faults(prompt) == []
+
+
+@pytest.mark.parametrize("prompt", _WELL_FORMED_PROMPTS)
+async def test_a_well_formed_prompt_reaches_the_fan_out_through_the_tool(prompt, tmp_path, mocker):
+    """The same battery THROUGH the real tool call: no ``ModelRetry``, the child actually spawns.
+
+    QA proved the false rejects were real at the tool level, not a predicate-only artefact — so the
+    pin lives at the tool level too.
+    """
+    tracker = _ConcurrencyTracker()
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=tracker)
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), [prompt])
+
+    assert tracker.spawns == 1  # no ModelRetry: the child ran
+    assert len(_sections(out)) == 1
+
+
+def test_the_substance_floor_is_the_only_rejection_criterion():
+    """Word count decides, and nothing else — no keyword set gets a vote (ADR-0017 §3).
+
+    A prompt one word under the floor is rejected; the same prompt one word over it passes, even
+    with no "?", no path token and no report word. This is what stops the guard from drifting back
+    into an AND-gate over fuzzy keyword lists, which false-rejected 6 of 8 realistic briefs.
+    """
+    under = " ".join(["word"] * (agent_module.MIN_PROMPT_WORDS - 1))
+    over = " ".join(["word"] * agent_module.MIN_PROMPT_WORDS)
+
+    assert agent_module._faults(under) == [agent_module._TERSE]
+    assert agent_module._faults(over) == []
+
+
+async def test_the_nag_names_the_floor_and_never_invents_a_missing_part(tmp_path, mocker):
+    """The nag must be TRUE: it names the floor, and claims nothing about question/scope/report.
+
+    Regression (QA round 1): a 7-word prompt carrying all three parts was told all three were
+    missing. A model fed a false "missing" claim cannot fix the real problem — the prompt is thin.
+    """
+    terse = "Trace gate.py's ASK path and report evidence."  # 7 words, all three parts present
+    spawn = mocker.patch.object(agent_module, "_require_main_agent")
+
+    with pytest.raises(ModelRetry) as excinfo:
+        await agent_module.agent(_tool_ctx(tmp_path), [terse])
+
+    message = str(excinfo.value)
+    assert agent_module._TERSE in message  # names the floor…
+    assert str(agent_module.MIN_PROMPT_WORDS) in message
+    # …and the per-prompt problem line accuses it of nothing else.
+    problem_line = message.split('- Prompt 1 ("')[1]
+    assert "missing" not in problem_line.lower()
+    spawn.assert_not_called()
+
+
+def test_the_guard_is_pure_and_deterministic_on_repeat():
+    """Same input, same outcome — no LLM, no I/O, no clock, no randomness (ADR-0017 §3)."""
+    assert agent_module._faults("explore") == agent_module._faults("explore")
+    assert agent_module._faults(_PROMPT_A) == agent_module._faults(_PROMPT_A) == []
+
+
+async def test_an_under_specified_prompt_raises_model_retry_naming_its_index_and_what_is_missing(
+    tmp_path, mocker
+):
+    """``prompts=["explore"]`` → ``ModelRetry`` naming prompt 1 and what it lacks; NO child spawns."""
+    spawn = mocker.patch.object(agent_module, "_require_main_agent")
+    ctx = _tool_ctx(tmp_path)
+
+    with pytest.raises(ModelRetry) as excinfo:
+        await agent_module.agent(ctx, ["explore"])
+
+    message = str(excinfo.value)
+    assert "prompt 1" in message.lower()  # WHICH prompt (1-based, as the sections are labelled)
+    assert "explore" in message  # quoted back, so the model knows what to fix
+    assert agent_module._TERSE in message  # WHAT is wrong — the one true fault
+    # and the coaching the model needs to rewrite it: the three-part shape it must supply.
+    lowered = message.lower()
+    assert "question" in lowered and "scope" in lowered and "report" in lowered
+    spawn.assert_not_called()  # the guard fires BEFORE the fan-out: no child, no semaphore slot
+
+
+async def test_a_well_specified_list_passes_the_substance_guard_and_spawns(tmp_path, mocker):
+    """Well-formed prompts are never nagged: the fan-out runs and folds one section per prompt."""
+    tracker = _ConcurrencyTracker()
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=tracker)
+    ctx = _tool_ctx(tmp_path)
+
+    out = await agent_module.agent(ctx, [_PROMPT_A, _PROMPT_B, _PROMPT_C])
+
+    assert tracker.spawns == 3
+    assert len(_sections(out)) == 3
+
+
+async def test_a_mixed_list_is_rejected_as_a_whole_with_only_the_bad_index_named(tmp_path, mocker):
+    """One bad angle poisons the call: nothing spawns, and the nag names the bad index only."""
+    spawn = mocker.patch.object(agent_module, "_require_main_agent")
+    ctx = _tool_ctx(tmp_path)
+
+    with pytest.raises(ModelRetry) as excinfo:
+        await agent_module.agent(ctx, [_PROMPT_A, "explore the repo", _PROMPT_C])
+
+    message = str(excinfo.value)
+    assert "prompt 2" in message.lower()
+    assert "prompt 1" not in message.lower() and "prompt 3" not in message.lower()
+    assert "explore the repo" in message  # quotes the offender back, so the model knows what to fix
+    spawn.assert_not_called()  # a whole-call rejection: not even the two good angles spawn
+
+
+async def test_the_substance_guard_is_deterministic_through_the_tool(tmp_path, mocker):
+    """Twice the same call → twice the same rejection message (no child either time)."""
+    spawn = mocker.patch.object(agent_module, "_require_main_agent")
+    ctx = _tool_ctx(tmp_path)
+
+    messages: list[str] = []
+    for _ in range(2):
+        with pytest.raises(ModelRetry) as excinfo:
+            await agent_module.agent(ctx, [_PROMPT_A, "explore"])
+        messages.append(str(excinfo.value))
+
+    assert messages[0] == messages[1]
+    spawn.assert_not_called()
+
+
+async def test_the_substance_guard_fires_before_agent_run_is_ever_called(agent, tmp_path, mocker):
+    """Spy the spawn seam itself: a lazy prompt means ``agent.run`` is never awaited (§3)."""
+    run = mocker.patch.object(agent, "run")
+    agent_module.set_main_agent(agent)
+    ctx = _tool_ctx(tmp_path)
+
+    with pytest.raises(ModelRetry):
+        await agent_module.agent(ctx, ["explore"])
+
+    run.assert_not_called()
 
 
 # direct: the labelled aggregation (ADR-0017 §5)
