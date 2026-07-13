@@ -10,7 +10,9 @@ ephemeral), and real child read/glob/grep against a tmp_path tree. Swapped/faked
 scripted FunctionModel drives parent AND children (``agent.override`` is contextvar-scoped,
 so it covers the child's nested run); GEMINI_API_KEY is faked so build_agent constructs.
 The hermetic tests pin: bounded genuine overlap, permission-free children, byte-cap
-truncation, parent-only usage gauge, recursion default-deny, ephemeral transcripts + resume,
+truncation, parent-only usage gauge, recursion default-deny, output validation (a
+zero-tool-call child retried once with the nudge, then noted — ADR-0017 §7), ephemeral
+transcripts + resume,
 and the headless cache-disable contract (bash only, never agent — kitaru-skipif). Offline vs
 live: everything runs with no network/key except test_live_gemini_fanout_smoke, skipif-gated
 on GEMINI_API_KEY.
@@ -323,6 +325,9 @@ async def test_parallel_fanout_overlaps_and_is_bounded_by_subagent_max_parallel(
     is permission-free and silent-until-done in one shot: no ``PermissionRequested`` fires, and only
     the ``agent`` tool surfaces on the parent sink (the children run silent).
     """
+    (tmp_path / "one.py").write_text(
+        "x = 1\n", encoding="utf-8"
+    )  # something for the children to read
     cap = 2
     n_children = 2 * cap  # a multiple of the cap so the barrier trips in clean waves (no deadlock)
     monkeypatch.setattr(settings, "subagent_max_parallel", cap)
@@ -347,8 +352,13 @@ async def test_parallel_fanout_overlaps_and_is_bounded_by_subagent_max_parallel(
             if not _tool_returned(messages, AGENT_TOOL_NAME):
                 return _fan_out(n_children)
             return ModelResponse(parts=[TextPart(content=_PARENT_FINAL)])
-        # CHILD context: rendezvous (proves genuine overlap), then hand back the report.
-        await rendezvous()
+        # CHILD context: rendezvous (proves genuine overlap), read some code — a report backed by
+        # ZERO tool calls is BAD and would be retried (ADR-0017 §7) — then hand back the report.
+        if not _tool_returned(messages, "glob"):
+            await rendezvous()
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="glob", args={"pattern": "**/*.py"})]
+            )
         return ModelResponse(parts=[TextPart(content=_CHILD_REPORT)])
 
     sink = _RecordingSink()
@@ -474,6 +484,9 @@ async def test_child_report_is_truncated_to_the_byte_cap_through_the_fold(
     (~``subagent_result_max_bytes`` at any width) — capped at a line boundary, head preserved — and it
     renders through the real renderer.
     """
+    (tmp_path / "one.py").write_text(
+        "x = 1\n", encoding="utf-8"
+    )  # something for the children to read
     monkeypatch.setattr(settings, "subagent_result_max_bytes", 128)
     n_children = 2
     per_child = 128 // n_children
@@ -486,6 +499,10 @@ async def test_child_report_is_truncated_to_the_byte_cap_through_the_fold(
             if not _tool_returned(messages, AGENT_TOOL_NAME):
                 return _fan_out(n_children)
             return ModelResponse(parts=[TextPart(content=_PARENT_FINAL)])
+        if not _tool_returned(messages, "glob"):  # read code first: a tool-less report is BAD (§7)
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="glob", args={"pattern": "**/*.py"})]
+            )
         return ModelResponse(parts=[TextPart(content=long_report)])
 
     sink = _RecordingSink()
@@ -571,6 +588,7 @@ async def test_child_toolset_excludes_agent_recursion_default_deny(parent_agent,
     Recursion is structurally impossible with no depth counter: the child runs as ``active_agent=explore``,
     whose ``tools`` omit ``agent``, so ADR-0003 §6-7's ``prepare=`` hides it from the child's toolset.
     """
+    (tmp_path / "one.py").write_text("x = 1\n", encoding="utf-8")
     seen: list[set[str]] = []
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -580,6 +598,10 @@ async def test_child_toolset_excludes_agent_recursion_default_deny(parent_agent,
                 return _fan_out(1)
             return ModelResponse(parts=[TextPart(content=_PARENT_FINAL)])
         seen.append(visible)  # CHILD: capture what the child can see
+        if not _tool_returned(messages, "glob"):  # read code first: a tool-less report is BAD (§7)
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="glob", args={"pattern": "**/*.py"})]
+            )
         return ModelResponse(parts=[TextPart(content=_CHILD_REPORT)])
 
     sink = _RecordingSink()
@@ -592,6 +614,83 @@ async def test_child_toolset_excludes_agent_recursion_default_deny(parent_agent,
     assert seen, "the child leg must have run"
     assert seen[0] == {"read", "glob", "grep", "lsp"}
     assert AGENT_TOOL_NAME not in seen[0]  # the agent tool is hidden from the child (no recursion)
+
+
+# 5b. Output validation — a hallucinating child is retried ONCE, then noted; its sibling is untouched.
+
+
+async def test_a_hallucinating_child_is_retried_once_then_noted_while_its_sibling_folds(
+    parent_agent, tmp_path
+):
+    """One child answers from MEMORY (no tool call) → one nudged retry → the failure note (ADR-0017 §7).
+
+    The full validate-retry-give-up arc through the real stack: the bad child's report is non-empty,
+    so ONLY the zero-tool-call scan of the real ``AgentRunResult.all_messages()`` can catch it. It is
+    spawned exactly twice — the second time with the harness's nudge appended — and then gives up with
+    :data:`~decode.tools.agent._NO_USABLE_REPORT_NOTE`, while its healthy sibling (which really globs)
+    folds its report intact, in prompt order. A broken child costs 2 spawns, never a runaway loop, and
+    never its siblings' results.
+    """
+    (tmp_path / "one.py").write_text("x = 1\n", encoding="utf-8")
+    hallucinated = "From memory, decode surely uses a gate."
+
+    spawns: list[str] = []
+    real_run = parent_agent.run
+
+    async def spy_run(prompt, **kwargs):
+        spawns.append(prompt)  # every child ATTEMPT (first try or retry) goes through here
+        return await real_run(prompt, **kwargs)
+
+    parent_agent.run = spy_run
+    bad_prompt, good_prompt = _child_prompt(0), _child_prompt(1)
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        visible = {tool.name for tool in info.function_tools}
+        if AGENT_TOOL_NAME in visible:  # PARENT: ONE call, two angles
+            if not _tool_returned(messages, AGENT_TOOL_NAME):
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name=AGENT_TOOL_NAME, args={"prompts": [bad_prompt, good_prompt]}
+                        )
+                    ]
+                )
+            return ModelResponse(parts=[TextPart(content=_PARENT_FINAL)])
+        # CHILD: the first angle NEVER reads code (bad, twice over); the second one globs first.
+        if _first_user_prompt(messages).startswith(bad_prompt):
+            return ModelResponse(parts=[TextPart(content=hallucinated)])
+        if not _tool_returned(messages, "glob"):
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="glob", args={"pattern": "**/*.py"})]
+            )
+        return ModelResponse(parts=[TextPart(content=_CHILD_REPORT)])
+
+    sink = _RecordingSink()
+    resolvers = _RecordingResolvers()
+    handler = AgentTurnHandler(parent_agent, deps=_parent_deps(sink, resolvers, tmp_path))
+    runner = Runner(handler, on_event=sink)
+    with parent_agent.override(model=_function_model(model)):
+        await _run_turn(runner, "explore two areas")
+
+    # The bad angle was spawned EXACTLY twice — the retry carrying the original prompt + the nudge.
+    bad_attempts = [p for p in spawns if p.startswith(bad_prompt)]
+    assert len(bad_attempts) == 2
+    assert bad_attempts[0] == bad_prompt
+    assert bad_attempts[1] == bad_prompt + agent_module._RETRY_NUDGE
+    # …while the healthy sibling ran exactly once (a retry is private to the bad child's slot).
+    assert len([p for p in spawns if p.startswith(good_prompt)]) == 1
+
+    folded = _folded_reports(handler)
+    assert len(folded) == 1
+    bodies = _section_bodies(folded[0])
+    assert len(bodies) == 2  # section order stays PROMPT order
+    assert (
+        bodies[0] == agent_module._NO_USABLE_REPORT_NOTE
+    )  # the give-up note, honest to the parent
+    assert (
+        hallucinated not in folded[0]
+    )  # the memory-only answer never reaches the parent's context
+    assert _CHILD_REPORT in bodies[1]  # the sibling's evidenced report folded intact
 
 
 # 6. Ephemeral child transcripts — the history + JSONL log carry only the spawn calls + summaries.

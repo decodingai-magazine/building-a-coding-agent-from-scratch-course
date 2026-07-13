@@ -9,6 +9,9 @@ list, width cap, and the per-prompt SUBSTANCE guard of §3 — a lazy prompt is 
 parent model via ``ModelRetry``, costing one retry leg and no child); the harness then
 ``asyncio.gather``s the children, each attempt taking the per-loop semaphore
 (``subagent_max_parallel`` — a CONCURRENCY ceiling, distinct from the width cap).
+Quality is enforced on the way OUT too (§7): a BAD report — empty, or backed by ZERO tool calls (the
+child answered from model memory) — buys the child EXACTLY ONE re-spawn with a nudge, and a second
+bad report folds an explicit note. Two attempts, never three, so a broken child cannot eat the run.
 A child that raises still gets its section, carrying a failure note: partial results beat an
 exception that discards the siblings. Every child's report is truncated to a SHARED budget
 (``subagent_result_max_bytes // len(prompts)``), so the fold's cost is width-independent. Three
@@ -25,6 +28,7 @@ import weakref
 from typing import TYPE_CHECKING
 
 from pydantic_ai import DeferredToolRequests, ModelRetry, RunContext, UsageLimits
+from pydantic_ai.messages import ModelResponse, ToolCallPart
 
 from decode.agent.deps import AgentDeps
 from decode.config.settings import settings
@@ -32,8 +36,9 @@ from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.types import PermissionMode
 
 if TYPE_CHECKING:
-    # Typing only — neither is needed at runtime.
+    # Typing only — none of these is needed at runtime.
     from pydantic_ai import Agent
+    from pydantic_ai.agent import AgentRunResult
 
     from decode.entities import events
 
@@ -122,6 +127,68 @@ def _check_substance(prompts: list[str]) -> None:
         + "\n".join(problems)
         + "\nRewrite the prompts above and call the agent tool again."
     )
+
+
+# --- The output contract: bad-report detection + exactly ONE retry (ADR-0017 §7) ----------------
+#
+# Quality on the way OUT, the mirror of the substance guard's quality on the way IN. A child report
+# is BAD iff (i) it is empty/whitespace-only, or (ii) the child made ZERO tool calls — it answered
+# from model memory instead of reading the code (the hallucination tell §8 pairs with). The
+# defensive ``DeferredToolRequests`` output is BAD too, so it enters this machinery rather than
+# short-circuiting to a note of its own. Deterministic: pure inspection of the child's own result,
+# no scoring model, no extra LLM call.
+#
+# A bad child gets EXACTLY ONE re-spawn (same prompt + the nudge below), then gives up with a note.
+# Two attempts, ever — never three: a broken child must not eat the run's budget in a retry loop.
+
+# Appended to a bad child's ONE retry prompt. A MODULE CONSTANT, not a Settings field: least
+# mechanism for a string nobody tunes per environment (same reasoning as MAX_FANOUT_PROMPTS). It
+# must say WHAT was wrong and WHAT to do instead — a bare "try again" gives the child nothing to
+# change, and would just buy the same empty report twice.
+_RETRY_NUDGE = (
+    "\n\nIMPORTANT: your previous report was unusable — it was empty, or it cited no code you "
+    "actually read. Use your tools (read / glob / grep / lsp) to read the code FIRST, then report "
+    "the finding with file:line evidence."
+)
+
+# The give-up note folded into a twice-bad child's section: honest UX — the parent model (and the
+# human reading the transcript) sees WHICH angle produced nothing, and its siblings still fold.
+_NO_USABLE_REPORT_NOTE = "The subagent returned no usable report."
+
+# The other failure note (ADR-0017 §5): a child that RAISED. Distinct from a bad report — an
+# exception is a transport/limit failure, and retrying it is an explicit non-goal of ADR-0017.
+_CHILD_FAILED_NOTE = "This subagent failed before producing a report."
+
+
+def _read_any_code(result: AgentRunResult[str | DeferredToolRequests]) -> bool:
+    """Whether the child called ANY tool — a ``ToolCallPart`` in any ``ModelResponse`` of its transcript.
+
+    ``AgentRunResult.all_messages()`` is the child's full transcript (pydantic-ai 1.95 ``run.py:461``).
+    No tool call means the child never opened a file: whatever it reported came from model memory.
+    """
+    return any(
+        isinstance(part, ToolCallPart)
+        for message in result.all_messages()
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+    )
+
+
+def _usable_report(result: AgentRunResult[str | DeferredToolRequests]) -> str | None:
+    """The child's usable report text, or ``None`` if the report is BAD (ADR-0017 §7).
+
+    Deterministic and total: the three BAD shapes are the deferred output (a read-only child can
+    never legitimately produce one), empty/whitespace-only text, and a report backed by no tool call.
+    """
+    output = result.output
+    if isinstance(output, DeferredToolRequests):
+        return None
+    text = str(output)
+    if not text.strip():
+        return None
+    if not _read_any_code(result):
+        return None
+    return text
 
 
 # Set-once module seam holding the running Agent (mirrors bash's ``_EXECUTOR``); installed by
@@ -234,7 +301,10 @@ async def agent(ctx: RunContext[AgentDeps], prompts: list[str]) -> str:
     logger.debug("fanning out %d explore subagents (%d bytes each)", len(prompts), child_max_bytes)
 
     sections = await asyncio.gather(
-        *(_spawn_child(ctx, prompt, max_bytes=child_max_bytes) for prompt in prompts)
+        *(
+            _spawn_child(ctx, prompt, index=index, max_bytes=child_max_bytes)
+            for index, prompt in enumerate(prompts, start=1)
+        )
     )
     # Labelled concatenation, NO synthesis LLM call — the parent model is the synthesizer (§5).
     return "\n\n".join(
@@ -243,8 +313,50 @@ async def agent(ctx: RunContext[AgentDeps], prompts: list[str]) -> str:
     )
 
 
-async def _spawn_child(ctx: RunContext[AgentDeps], prompt: str, *, max_bytes: int) -> str:
-    """Run ONE Explore child on ``prompt`` and return its section body (ADR-0013 §5,7,8).
+async def _spawn_child(
+    ctx: RunContext[AgentDeps], prompt: str, *, index: int, max_bytes: int
+) -> str:
+    """Run ONE Explore child on ``prompt``, VALIDATE its report, and return its section body (§5,7).
+
+    At most TWO attempts, ever. The first runs ``prompt`` as the model wrote it; if its report is BAD
+    (:func:`_usable_report` — empty, or backed by no tool call), exactly one re-spawn runs
+    ``prompt + _RETRY_NUDGE``. A second bad report gives up with :data:`_NO_USABLE_REPORT_NOTE`. The
+    nudged prompt is HARNESS-authored, so it never re-enters the input substance guard (that guard
+    coaches the MODEL about ITS prompts, pre-fan-out — nagging the model about a string the harness
+    wrote would be nonsense).
+
+    This whole cycle is PRIVATE to this child's gather slot: it holds no shared state, so a retry
+    here cannot delay, reorder or corrupt a sibling's section — the aggregate stays in prompt order.
+    Never raises: a child that blows up (e.g. ``UsageLimitExceeded``) folds :data:`_CHILD_FAILED_NOTE`
+    instead of discarding its siblings' reports (an exception is a transport failure, NOT a bad
+    report — ADR-0017 explicitly does not retry those). Whichever attempt's report wins is truncated
+    to ``max_bytes`` — a retry's report is budget-capped exactly like a first attempt's.
+    """
+    from decode.tools.truncate import truncate  # lazy: mirrors the child-deps imports below
+
+    try:
+        report = await _run_attempt(ctx, prompt)
+        if report is None:
+            # BAD report → the ONE retry, with the nudge telling the child what to do differently.
+            logger.warning(
+                "subagent %d returned an unusable report; retrying once (last try)", index
+            )
+            report = await _run_attempt(ctx, prompt + _RETRY_NUDGE)
+    except Exception:
+        # One broken child must not discard its siblings — fold an honest note into ITS section.
+        logger.warning("explore subagent %d failed (prompt=%r)", index, prompt, exc_info=True)
+        return _CHILD_FAILED_NOTE
+
+    if report is None:
+        # Bad twice: give up. Two attempts is the cap — a broken child never eats the run's budget.
+        logger.warning("subagent %d returned an unusable report twice; giving up", index)
+        return _NO_USABLE_REPORT_NOTE
+
+    return truncate(report, max_lines=settings.max_output_lines, max_bytes=max_bytes).text
+
+
+async def _run_attempt(ctx: RunContext[AgentDeps], prompt: str) -> str | None:
+    """ONE child attempt: its report text, or ``None`` if the report is BAD (ADR-0013 §5,7,8).
 
     Builds FRESH, narrowed deps — the parent's ``cwd`` + ``harness_home`` (the child's read scope), a
     no-op event sink (silent in the TUI), a fresh :class:`~decode.permissions.gate.PermissionGate`, a
@@ -252,19 +364,12 @@ async def _spawn_child(ctx: RunContext[AgentDeps], prompt: str, *, max_bytes: in
     the per-loop concurrency semaphore, re-enters the installed main Agent via a nested ``agent.run()``.
     The child is bounded by ``UsageLimits(request_limit=settings.subagent_max_requests)`` and does
     **not** thread ``usage=ctx.usage`` (so the parent's context gauge stays parent-only, ADR-0013 §7,10).
-
-    Returns the child's final text truncated to ``max_bytes``. Never raises: a child that blows up
-    (e.g. ``UsageLimitExceeded``) folds an explicit failure note into its own section instead of
-    discarding its siblings' reports (ADR-0017 §5). Defensive: a
-    :class:`pydantic_ai.DeferredToolRequests` output is theoretically impossible for a read-only child
-    (its tools never raise :class:`pydantic_ai.ApprovalRequired`), so that case returns a short note
-    rather than the raw object.
+    A retry is just another attempt: fresh deps, a fresh semaphore acquisition, the same limits.
     """
     # Lazy imports: ``load_agent`` would form a tools -> agents -> tools cycle at module load.
     from decode.agents.loader import load_agent
     from decode.permissions.gate import PermissionGate
     from decode.tools.askuser import deny_user_question_resolver
-    from decode.tools.truncate import truncate
 
     explore = load_agent(_SUBAGENT_PERSONA)
     # You may only spawn a *subagent*, never a primary (ADR-0013 §3).
@@ -284,26 +389,10 @@ async def _spawn_child(ctx: RunContext[AgentDeps], prompt: str, *, max_bytes: in
     )
 
     logger.debug("spawning explore subagent (prompt=%r)", prompt)
-    try:
-        async with _semaphore():  # per child ATTEMPT: the ceiling bounds a fan-out wider than it
-            result = await _require_main_agent().run(
-                prompt,
-                deps=child_deps,
-                usage_limits=UsageLimits(request_limit=settings.subagent_max_requests),
-            )
-    except Exception:
-        # One broken child must not discard its siblings — fold an honest note into ITS section.
-        logger.warning("explore subagent failed (prompt=%r)", prompt, exc_info=True)
-        return "This subagent failed before producing a report."
-
-    output = result.output
-    if isinstance(output, DeferredToolRequests):
-        # Impossible in practice (a read-only child never defers a tool), but never leak the object.
-        logger.warning("subagent run resolved to DeferredToolRequests; returning a fallback note")
-        return "The subagent could not complete its investigation."
-
-    return truncate(
-        str(output),
-        max_lines=settings.max_output_lines,
-        max_bytes=max_bytes,
-    ).text
+    async with _semaphore():  # per child ATTEMPT: the ceiling bounds a fan-out wider than it
+        result = await _require_main_agent().run(
+            prompt,
+            deps=child_deps,
+            usage_limits=UsageLimits(request_limit=settings.subagent_max_requests),
+        )
+    return _usable_report(result)

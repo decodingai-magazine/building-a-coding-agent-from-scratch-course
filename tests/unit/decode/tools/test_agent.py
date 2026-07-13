@@ -3,7 +3,8 @@
 Covers the structural guards (empty list / width cap), the input contract (the hardened model-facing
 tool description + the deterministic per-prompt substance guard, ADR-0017 §3), the harness
 ``asyncio.gather`` fan-out, the labelled aggregation, the shared per-child byte budget, per-child
-failure isolation, plus the
+failure isolation, the OUTPUT contract (the bad-report predicate + exactly one nudged retry,
+ADR-0017 §7), plus the
 ADR-0013 invariants re-pinned under the new shape: the set-once main-Agent seam, fresh narrowed
 read-only child deps, no usage threading, the ``UsageLimits`` cap, the concurrency semaphore,
 persona grants, and kitaru-free imports. Direct tests use a hand-built :class:`RunContext` / stub
@@ -33,6 +34,7 @@ from pydantic_ai.messages import (
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.usage import RunUsage
@@ -233,6 +235,20 @@ def _tool_returned(messages: list[ModelMessage], name: str) -> bool:
     )
 
 
+def _child_spawn_prompt(messages: list[ModelMessage]) -> str:
+    """The prompt a CHILD was spawned with, read off its own transcript (how it spots the nudge)."""
+    return next(
+        (
+            str(part.content)
+            for message in messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+        ),
+        "",
+    )
+
+
 def _to_deltas(response: ModelResponse) -> AsyncIterator[object]:
     """Yield the streaming deltas for a non-streamed :class:`ModelResponse` (text / tool-call deltas)."""
     for part in response.parts:
@@ -307,13 +323,42 @@ def _tool_return_strings(handler: AgentTurnHandler) -> list[str]:
 
 
 def _child_returns_text(text: str):
-    """A CHILD-context behavior (used inside :func:`_fanout_model`) that returns ``text`` as output."""
+    """A CHILD-context behavior returning ``text`` and calling NO tool — BAD by ADR-0017 §7-ii."""
     return lambda messages, info: ModelResponse(parts=[TextPart(content=text)])
 
 
+def _tool_called(messages: list[ModelMessage], name: str) -> bool:
+    """Whether the child already CALLED ``name`` (the exact scan the bad-report predicate makes)."""
+    return any(
+        isinstance(part, ToolCallPart) and part.tool_name == name
+        for message in messages
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+    )
+
+
+def _child_globs_then_reports(text: str):
+    """A CHILD-context behavior that READS CODE (a real ``glob``) and then reports ``text`` — GOOD.
+
+    The report contract's floor (ADR-0017 §7-ii): a child that never called a tool answered from
+    model memory, so every test wanting a *good* child must have it touch a read-only tool first.
+    Branches on the glob CALL, not its return, so an empty ``tmp_path`` (``glob`` then raises
+    ``ModelRetry``: "no files match") does not trap the child in a retry loop.
+    """
+
+    def child(messages, info):
+        if not _tool_called(messages, "glob"):
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="glob", args={"pattern": "**/*.py"})]
+            )
+        return ModelResponse(parts=[TextPart(content=text)])
+
+    return child
+
+
 def _child_model(text: str) -> FunctionModel:
-    """A standalone model for a direct (parent-less) child run: it always returns ``text`` as output."""
-    return _model(lambda messages, info: ModelResponse(parts=[TextPart(content=text)]))
+    """A standalone model for a direct (parent-less) child run: it globs, then reports ``text``."""
+    return _model(_child_globs_then_reports(text))
 
 
 async def test_spawn_through_the_loop_folds_the_child_report_and_never_prompts(agent, tmp_path):
@@ -323,7 +368,7 @@ async def test_spawn_through_the_loop_folds_the_child_report_and_never_prompts(a
     handler = AgentTurnHandler(agent, deps=deps)
 
     ctx = TurnContext(0, "explore the repo", emitted.append)
-    with agent.override(model=_fanout_model(_child_returns_text("CHILD-REPORT"))):
+    with agent.override(model=_fanout_model(_child_globs_then_reports("CHILD-REPORT"))):
         await _drive(handler, ctx)
 
     # The child's final text folded back as the ``agent`` tool result...
@@ -349,7 +394,7 @@ async def test_spawn_builds_fresh_narrowed_read_only_child_deps(agent, tmp_path)
     parent_deps = _loop_deps(emitted.append, gate=PermissionGate(), cwd=tmp_path)
     handler = AgentTurnHandler(agent, deps=parent_deps)
     ctx = TurnContext(0, "explore the repo", emitted.append)
-    with agent.override(model=_fanout_model(_child_returns_text("CHILD-REPORT"))):
+    with agent.override(model=_fanout_model(_child_globs_then_reports("CHILD-REPORT"))):
         await _drive(handler, ctx)
 
     kwargs = captured["kwargs"]
@@ -397,7 +442,7 @@ async def test_child_toolset_is_exactly_read_glob_grep_lsp(agent, tmp_path):
 
     def capture(messages, info):
         seen.append({t.name for t in info.function_tools})
-        return ModelResponse(parts=[TextPart(content="CHILD-REPORT")])
+        return _child_globs_then_reports("CHILD-REPORT")(messages, info)
 
     emitted: list[events.Event] = []
     deps = _loop_deps(emitted.append, gate=PermissionGate(), cwd=tmp_path)
@@ -860,26 +905,316 @@ async def test_a_child_that_raises_gets_a_failure_note_and_its_siblings_still_fo
     assert "UsageLimitExceeded" in caplog.text  # the exception was logged, not swallowed silently
 
 
-async def test_deferred_tool_requests_output_returns_a_fallback_note(tmp_path, mocker):
-    """Defensive: a ``DeferredToolRequests`` child output → a short note as that child's section (§8)."""
-    from pydantic_ai import DeferredToolRequests
+# direct: the OUTPUT contract — the bad-report predicate + exactly ONE nudged retry (ADR-0017 §7)
 
-    stub = SimpleNamespace(output=DeferredToolRequests())
-    mocker.patch.object(agent_module, "_require_main_agent", return_value=_StubAgent(stub))
-    ctx = _tool_ctx(tmp_path)
 
-    out = await agent_module.agent(ctx, [_PROMPT_A])
+async def test_an_empty_report_is_retried_once_with_the_nudge_and_the_good_retry_folds(
+    tmp_path, mocker
+):
+    """Empty first, good second: exactly 2 spawns for that prompt, and the RETRY's report folds."""
+    scripted = _ScriptedAgent({_PROMPT_A: [_report("   \n  "), _report("GOOD-RETRY-REPORT")]})
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
 
-    body = _sections(out)[0][1]
-    assert "could not complete" in body.lower()
+    out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A])
+
+    assert scripted.spawns(_PROMPT_A) == 2
+    assert _sections(out) == [(_PROMPT_A, "GOOD-RETRY-REPORT")]
+
+
+async def test_the_retry_prompt_is_the_original_prompt_plus_the_nudge(tmp_path, mocker):
+    """The re-spawn carries the ORIGINAL prompt AND the nudge — the child is told what went wrong."""
+    scripted = _ScriptedAgent({_PROMPT_A: [_report(""), _report("GOOD")]})
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
+
+    await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A])
+
+    first, second = scripted.prompts
+    assert first == _PROMPT_A  # attempt 1: the model's prompt, untouched
+    assert _PROMPT_A in second  # attempt 2: the SAME brief…
+    assert agent_module._RETRY_NUDGE in second  # …plus the harness's nudge
+    assert second == _PROMPT_A + agent_module._RETRY_NUDGE
+
+
+def test_the_retry_nudge_is_a_module_constant_that_says_what_was_wrong():
+    """The nudge is a module constant (no Settings knob) and names BOTH failure modes + the fix (§7)."""
+    assert not hasattr(settings, "subagent_retry_nudge")
+    lowered = agent_module._RETRY_NUDGE.lower()
+    assert "unusable" in lowered  # what was wrong…
+    assert "empty" in lowered and "read" in lowered  # …in both its forms (empty / cited no code)
+    assert "tools" in lowered  # …and the fix: USE YOUR TOOLS
+    assert "file:line" in lowered  # …with the evidence the report contract (105) demands
+
+
+async def test_a_twice_bad_child_folds_the_failure_note_and_never_spawns_a_third_time(
+    tmp_path, mocker, caplog
+):
+    """Bad twice → the explicit failure note, EXACTLY 2 spawns (never 3) — a broken child is bounded."""
+    scripted = _ScriptedAgent({_PROMPT_A: [_report(""), _report("  ")]})
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
+
+    with caplog.at_level("WARNING", logger="decode.tools.agent"):
+        out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A])
+
+    assert scripted.spawns(_PROMPT_A) == 2  # the cap: one attempt + one retry, then give up
+    assert _sections(out) == [(_PROMPT_A, agent_module._NO_USABLE_REPORT_NOTE)]
+    # Both the retry and the give-up are visible to an operator — at WARNING, by index.
+    assert "retry" in caplog.text.lower()
+    assert "subagent 1" in caplog.text.lower()
+
+
+async def test_a_child_that_called_a_tool_and_reported_is_never_retried(tmp_path, mocker):
+    """A good report is spawned ONCE: the predicate must not cost a healthy child a second run."""
+    scripted = _ScriptedAgent({_PROMPT_A: [_report("REPORT-A")]})  # a 2nd attempt would blow up
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A])
+
+    assert scripted.spawns(_PROMPT_A) == 1
+    assert _sections(out) == [(_PROMPT_A, "REPORT-A")]
+
+
+async def test_a_zero_tool_call_child_is_bad_even_though_it_returned_text(tmp_path, mocker):
+    """The hallucination tell (§7-ii): text is present, but the child read NO code — retried anyway."""
+    scripted = _ScriptedAgent(
+        {
+            _PROMPT_A: [
+                _report("I recall decode uses a gate.", tool_call=False),
+                _report("EVIDENCED"),
+            ]
+        }
+    )
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A])
+
+    assert scripted.spawns(_PROMPT_A) == 2
+    assert _sections(out) == [(_PROMPT_A, "EVIDENCED")]  # the memory-only answer never folds
+
+
+async def test_a_deferred_tool_requests_output_routes_through_the_same_retry_machinery(
+    tmp_path, mocker
+):
+    """Defensive: a ``DeferredToolRequests`` output is BAD — it retries, and folds the note if bad twice."""
+    scripted = _ScriptedAgent({_PROMPT_A: [_deferred(), _report("RECOVERED")]})
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A])
+
+    assert scripted.spawns(_PROMPT_A) == 2
+    assert _sections(out) == [(_PROMPT_A, "RECOVERED")]  # never the raw object
+
+    twice = _ScriptedAgent({_PROMPT_B: [_deferred(), _deferred()]})
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=twice)
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_B])
+
+    assert twice.spawns(_PROMPT_B) == 2
+    assert _sections(out) == [(_PROMPT_B, agent_module._NO_USABLE_REPORT_NOTE)]
+
+
+async def test_a_twice_bad_child_leaves_its_siblings_intact_and_in_order(tmp_path, mocker):
+    """Sibling isolation: one child's retry/give-up cycle is PRIVATE to its own gather slot (§5,7).
+
+    The bad child sits in the MIDDLE of a 3-wide fan-out, so a shared-state bug would show up as a
+    swapped section, a nudged sibling prompt, or a sibling report replaced by the note.
+    """
+    scripted = _ScriptedAgent(
+        {
+            _PROMPT_A: [_report("REPORT-A")],
+            _PROMPT_B: [_report(""), _report("", tool_call=False)],
+            _PROMPT_C: [_report("REPORT-C")],
+        }
+    )
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A, _PROMPT_B, _PROMPT_C])
+
+    assert _sections(out) == [
+        (_PROMPT_A, "REPORT-A"),
+        (_PROMPT_B, agent_module._NO_USABLE_REPORT_NOTE),
+        (_PROMPT_C, "REPORT-C"),
+    ]
+    # …and only the BAD child paid for a retry: the healthy siblings ran exactly once each.
+    assert scripted.spawns(_PROMPT_A) == 1
+    assert scripted.spawns(_PROMPT_B) == 2
+    assert scripted.spawns(_PROMPT_C) == 1
+
+
+async def test_the_retry_report_respects_the_per_child_byte_budget(tmp_path, mocker, monkeypatch):
+    """A retry's report is truncated exactly like a first attempt's — the budget is not a first-try perk."""
+    monkeypatch.setattr(settings, "subagent_result_max_bytes", 300, raising=False)
+    big = "\n".join(f"finding number {i}" for i in range(500))
+    scripted = _ScriptedAgent(
+        {
+            _PROMPT_A: [_report(""), _report(big)],  # the RETRY hands back the oversized report
+            _PROMPT_B: [_report("REPORT-B")],
+            _PROMPT_C: [_report("REPORT-C")],
+        }
+    )
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A, _PROMPT_B, _PROMPT_C])
+
+    retried_body = _sections(out)[0][1]
+    assert len(retried_body.encode("utf-8")) <= 300 // 3  # the SAME shared budget as any child
+    assert retried_body != big
+    assert big.startswith(retried_body)  # a line-aligned head of the retry's report
+
+
+async def test_a_retry_never_re_runs_the_substance_guard_over_the_nudged_prompt(tmp_path, mocker):
+    """The 104 interaction: the guard runs ONCE, over the MODEL's prompts — never over a retry (§3,7).
+
+    The nudged prompt is harness-authored, so nagging the model about it would be nonsense (the model
+    never wrote it). Pinned on the seam: ``_check_substance`` is called exactly once, with exactly the
+    model's prompt list, even though a child retried.
+    """
+    spy = mocker.spy(agent_module, "_check_substance")
+    scripted = _ScriptedAgent({_PROMPT_A: [_report(""), _report("GOOD")]})
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
+
+    await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A])
+
+    assert scripted.spawns(_PROMPT_A) == 2  # the retry did happen…
+    assert spy.call_count == 1  # …and the guard still ran exactly once
+    assert spy.call_args.args[0] == [_PROMPT_A]
+    # Belt-and-braces: even IF it were re-run, the nudged prompt passes the floor (it is longer).
+    assert agent_module._faults(_PROMPT_A + agent_module._RETRY_NUDGE) == []
+
+
+async def test_a_bad_report_body_never_reaches_a_warning_log_line(tmp_path, mocker, caplog):
+    """WARNING carries the index, never the child's (possibly huge, possibly garbage) report body."""
+    scripted = _ScriptedAgent(
+        {_PROMPT_A: [_report("SECRET-GARBAGE-BODY", tool_call=False), _report("ok")]}
+    )
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
+
+    with caplog.at_level("WARNING", logger="decode.tools.agent"):
+        await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A])
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "a retry must be visible to an operator"
+    assert all("SECRET-GARBAGE-BODY" not in r.getMessage() for r in warnings)
+
+
+# loop-driven: the predicate against a REAL child run (a real ``AgentRunResult.all_messages()``)
+
+
+async def test_a_real_child_that_reads_code_then_reports_is_never_retried(agent, tmp_path):
+    """Through the real Agent: a child that globs then reports is GOOD — exactly one spawn (§7)."""
+    spawns: list[str] = []
+    real_run = agent.run
+
+    async def spy_run(prompt, **kwargs):
+        spawns.append(prompt)
+        return await real_run(prompt, **kwargs)
+
+    agent.run = spy_run
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent, deps=_loop_deps(emitted.append, gate=PermissionGate(), cwd=tmp_path)
+    )
+    ctx = TurnContext(0, "explore the repo", emitted.append)
+
+    with agent.override(model=_fanout_model(_child_globs_then_reports("EVIDENCED-REPORT"))):
+        await _drive(handler, ctx)
+
+    assert len(spawns) == 1  # a healthy child is spawned once…
+    assert any(
+        "EVIDENCED-REPORT" in r for r in _tool_return_strings(handler)
+    )  # …and its report folds
+
+
+async def test_a_real_text_only_child_is_retried_then_gives_up_with_the_note(agent, tmp_path):
+    """Through the real Agent: a child that answers from memory (no tool call) is BAD — 2 spawns, note.
+
+    This is the predicate against a genuine ``AgentRunResult.all_messages()`` transcript, not a stub:
+    the text is non-empty, so ONLY the zero-tool-call scan can catch it.
+    """
+    spawns: list[str] = []
+    real_run = agent.run
+
+    async def spy_run(prompt, **kwargs):
+        spawns.append(prompt)
+        return await real_run(prompt, **kwargs)
+
+    agent.run = spy_run
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent, deps=_loop_deps(emitted.append, gate=PermissionGate(), cwd=tmp_path)
+    )
+    ctx = TurnContext(0, "explore the repo", emitted.append)
+
+    with agent.override(model=_fanout_model(_child_returns_text("decode surely uses a gate."))):
+        await _drive(handler, ctx)
+
+    assert len(spawns) == 2  # one attempt + ONE retry, never a third
+    assert spawns[1] == spawns[0] + agent_module._RETRY_NUDGE
+    folded = "\n".join(_tool_return_strings(handler))
+    assert agent_module._NO_USABLE_REPORT_NOTE in folded
+    assert (
+        "decode surely uses a gate." not in folded
+    )  # the memory-only answer never reaches the parent
+
+
+async def test_a_real_child_that_reads_code_only_on_the_nudged_retry_folds_its_retry_report(
+    agent, tmp_path
+):
+    """The full §7 arc through a real run: bad first attempt → nudge → the child reads → good fold."""
+    (tmp_path / "sample.py").write_text("x = 1\n", encoding="utf-8")
+    spawns: list[str] = []
+    real_run = agent.run
+
+    async def spy_run(prompt, **kwargs):
+        spawns.append(prompt)
+        return await real_run(prompt, **kwargs)
+
+    agent.run = spy_run
+
+    def child(messages, info):
+        # The child sees its OWN spawn prompt: it only bothers reading code once nudged.
+        nudged = agent_module._RETRY_NUDGE in _child_spawn_prompt(messages)
+        if not nudged:
+            return ModelResponse(parts=[TextPart(content="From memory: it uses a gate.")])  # BAD
+        return _child_globs_then_reports("REPORT-AFTER-NUDGE")(messages, info)
+
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent, deps=_loop_deps(emitted.append, gate=PermissionGate(), cwd=tmp_path)
+    )
+    ctx = TurnContext(0, "explore the repo", emitted.append)
+    with agent.override(model=_fanout_model(child)):
+        await _drive(handler, ctx)
+
+    assert len(spawns) == 2
+    assert any("REPORT-AFTER-NUDGE" in r for r in _tool_return_strings(handler))
 
 
 # stand-in main agents + the section parser
 
 
-def _report(text: str) -> SimpleNamespace:
-    """A stand-in ``AgentRunResult`` whose ``output`` is ``text`` (what the runner reads)."""
-    return SimpleNamespace(output=text)
+def _report(text: str, *, tool_call: bool = True) -> SimpleNamespace:
+    """A stand-in ``AgentRunResult``: ``output`` is ``text``, ``all_messages()`` its transcript.
+
+    The runner reads BOTH (ADR-0017 §7): the output text, and the transcript it scans for a
+    ``ToolCallPart``. ``tool_call=True`` (the default) is a GOOD child — it read some code before
+    reporting; ``tool_call=False`` is the hallucination tell: a report answered from model memory.
+    """
+    transcript: list[ModelMessage] = []
+    if tool_call:
+        transcript.append(
+            ModelResponse(
+                parts=[ToolCallPart(tool_name="read", args={"path": "src/decode/cli.py"})]
+            )
+        )
+    transcript.append(ModelResponse(parts=[TextPart(content=text)]))
+    return SimpleNamespace(output=text, all_messages=lambda: transcript)
+
+
+def _deferred() -> SimpleNamespace:
+    """A stand-in result whose ``output`` is the defensive :class:`DeferredToolRequests` (BAD, §7)."""
+    from pydantic_ai import DeferredToolRequests
+
+    return SimpleNamespace(output=DeferredToolRequests(), all_messages=list)
 
 
 class _StubAgent:
@@ -890,6 +1225,35 @@ class _StubAgent:
 
     async def run(self, prompt, *, deps, usage_limits):
         return self._result
+
+
+class _ScriptedAgent:
+    """A stand-in main agent handing each prompt a SCRIPTED result per attempt (ADR-0017 §7).
+
+    ``script`` maps an ORIGINAL spawn prompt to the results its successive attempts get, so a test
+    says "empty first, good second" literally. A retry arrives as ``original + nudge``, hence the
+    prefix match — and ``spawns()`` counts the attempts for that prompt, which is how "exactly 2,
+    never 3" is pinned.
+    """
+
+    def __init__(self, script: dict[str, list[SimpleNamespace]]) -> None:
+        self._script = {prompt: list(results) for prompt, results in script.items()}
+        self.prompts: list[str] = []
+
+    async def run(self, prompt, *, deps, usage_limits):
+        await asyncio.sleep(
+            0
+        )  # yield, so a broken (sequential) gather still cannot reorder results
+        self.prompts.append(prompt)
+        for original, results in self._script.items():
+            if prompt.startswith(original):
+                assert results, f"a third attempt was spawned for {original!r} — the cap is 2"
+                return results.pop(0)
+        raise AssertionError(f"unscripted spawn prompt: {prompt!r}")
+
+    def spawns(self, original: str) -> int:
+        """How many attempts ran for ``original`` (its first attempt + any retry)."""
+        return sum(1 for prompt in self.prompts if prompt.startswith(original))
 
 
 class _EchoAgent:
