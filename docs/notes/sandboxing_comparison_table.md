@@ -11,7 +11,7 @@ grounded_in:
   - research-coding-agent-from-scratch/wiki/repos/pi/SANDBOX.md
   - research-coding-agent-from-scratch/wiki/repos/opencode/PERMISSION_ISOLATION.md
   - research-coding-agent-from-scratch/raw/how-openai-codex-works.md
-decode_refs: [docs/adr/0011-sandboxing-and-credential-proxy.md, docs/adr/0012-isolated-workspace.md]
+decode_refs: [docs/adr/0011-sandboxing-and-credential-proxy.md, docs/adr/0012-isolated-workspace.md, docs/adr/0016-drop-credential-proxy.md]
 note: >
   claude-code / opencode / pi are deep-dived from source in the wiki; Codex is
   inferred from the ByteByteGo overview (architecture-level, not a code audit).
@@ -42,7 +42,7 @@ further splits into **③a relocate the agent**, **③b relocate the server**, *
 | **4. I/O placement** | **MASK** (jail bash; files stay host-side) | (no jail; direct) | **SWAP THE SET** (`ExecutionEnv` = FS & Shell) | all tools run *in* the container | **SWAP THE SET** (`SandboxBackend` seam, task 081) |
 | **5. Remote family** | ③a relocate the **agent** | ③b relocate the **server** | ③c swap the **backend** | ③a relocate (App Server in cloud) | ③c swap the backend (modal) |
 | **6. Untrusted-remote quadrant** | — (wiki's open gap) | — (open gap) | — (open gap) | **FILLS:** cloud sandbox + repo clone + PR | **FILLS:** docker/modal + `--repo` + host-side git hand-back |
-| **(egress / secrets)** | filtering proxy + allowlist + ask-on-miss | — | ext-only domain allowlist | (contained inside the cloud) | credential proxy (**injects** after egress) + host-side git (no cred in sandbox) |
+| **(egress / secrets)** | filtering proxy + allowlist + ask-on-miss | — | ext-only domain allowlist | (contained inside the cloud) | no egress mediation; host-side git hand-back (no cred in sandbox) + opt-in `SANDBOX_GIT_TOKEN` direct-injected, both backends (ADR-0016) |
 
 Reading it: **dimension ② is where the reference repos diverge hardest** (claude-code makes it default,
 pi opt-in, opencode declines it). **The untrusted-remote quadrant (row 6) is the gap the wiki says all
@@ -104,7 +104,7 @@ Seatbelt/bwrap nor undo-only snapshots fully isolate a host you don't trust — 
 - **claude-code / opencode / pi:** don't ship it.
 - **Codex FILLS IT:** "each task runs in its own isolated cloud sandbox, preloaded with your repository"; a worker provisions the container with the checked-out repo, runs the App Server, streams to the browser, state on the server → proposes a PR.
 - **decode FILLS IT:** container (docker/modal) + `--repo` clone into `/workspace` + host-side git hand-back (`decode/<id>` branch). Our **modal** mode is the direct analog of Codex's cloud sandbox.
-  - **Divergence:** Codex runs the agent *inside* the cloud and proposes the PR *from there*; decode swaps the backend to reach the container (pi-style) and does the git push **host-side — no credential ever enters the sandbox** (ADR-0012 §8). Plus the credential proxy (mitmproxy injects the token *after* egress) — a cousin of claude-code's filtering-proxy egress mediation, inverted from *filter* to *inject*.
+  - **Divergence:** Codex runs the agent *inside* the cloud and proposes the PR *from there*; decode swaps the backend to reach the container (pi-style) and does the git push **host-side — hand-back puts no credential in the sandbox** (ADR-0012 §8). We *did* ship a credential proxy (mitmproxy injecting the token *after* egress — a cousin of claude-code's filtering-proxy egress mediation, inverted from *filter* to *inject*), and **deleted it** in ADR-0016: it worked in only one of three sandbox modes, egress was cooperative anyway, and modal already direct-injected the same token. decode now has **no egress mediation at all** — the closest to Codex's "contained inside the cloud" cell. Letting the model push for itself is opt-in `SANDBOX_GIT_TOKEN`, direct-injected into the Worker env in both backends, and the model can read it (scoped, revocable PAT).
 
 ---
 

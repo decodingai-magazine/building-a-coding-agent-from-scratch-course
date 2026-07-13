@@ -7,6 +7,11 @@ direct-injects it into the sandbox env; docker feeds it to the Credential Proxy 
 when the token is set) so the worker stays cred-free. One knob lets the model push a branch / open a PR
 from inside either sandbox; the docker-vs-modal split is only *how* the token is injected, not *which*
 token or *where* it is configured.
+**Amended:** 2026-07-13 — **§10 is superseded by [ADR-0016](0016-drop-credential-proxy.md)**: there are no
+longer *two* injection mechanisms. The Credential Proxy is deleted and docker adopts modal's direct
+injection, so `SANDBOX_GIT_TOKEN` reaches the Worker env as `GITHUB_TOKEN` in **both** backends — and a
+sandboxed process can read it. §§1–9 (the whole Isolated-Workspace design, hand-back included) stand
+unchanged. The §10 text below is left unedited as the record of what was decided on 2026-07-04.
 
 Supersedes, in part, **[ADR-0011](0011-sandboxing-and-credential-proxy.md)**: §2 (the Docker
 persistent-shell shape), §3 (the Modal empty-scratch / no-local-tree shape), and the two per-mode

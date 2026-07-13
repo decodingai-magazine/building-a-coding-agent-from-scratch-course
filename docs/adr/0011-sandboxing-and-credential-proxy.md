@@ -4,6 +4,10 @@
 per-mode `bash` descriptions are superseded by [ADR-0012](0012-isolated-workspace.md); §1 (seam +
 guards), §5 (replay-safety), §6 (Credential Proxy), and §7 (isolation ladder) remain in force.
 **Date:** 2026-07-02
+**Amended:** 2026-07-13 — **§6 (the Credential Proxy) is superseded by [ADR-0016](0016-drop-credential-proxy.md)**
+and its code deleted; `SANDBOX_GIT_TOKEN` is now direct-injected into the Worker env in *both* backends.
+§1, §5, §7 and the isolation table stand. The body below is left unedited — it is the record of what was
+decided on 2026-07-02, and the design ADR-0016 retired.
 
 ## Context
 
