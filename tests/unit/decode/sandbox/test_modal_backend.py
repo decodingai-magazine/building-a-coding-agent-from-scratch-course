@@ -26,6 +26,7 @@ from decode.sandbox.executor import FileStat
 from decode.sandbox.modal_backend import (
     _BOOTSTRAP_TAR,
     _EXPORT_TAR,
+    _GH_INSTALL_CMD,
     _GIT_CREDENTIAL_HELPER,
     _SANDBOX_LOST_EXIT,
     _SANDBOX_LOST_NOTE,
@@ -393,10 +394,14 @@ async def test_create_spawns_the_sandbox_once_with_the_configured_image_and_life
         ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim",),
         {},
     )
-    # git is baked into the image: ``from_registry(...).apt_install("git")`` — the slim base ships none.
-    assert fake_modal["image"].apt_install_calls == [("git",)]
-    # ... and the default git identity is baked in too, so a model ``git commit`` works out of the box.
+    # git is baked into the image — the slim base ships none. curl + ca-certificates ride along
+    # because the gh install (a run_commands layer, below) needs them.
+    assert fake_modal["image"].apt_install_calls == [("git", "curl", "ca-certificates")]
+    # gh is baked in as the FIRST run_commands layer (it is not in Debian bookworm, so it comes from
+    # GitHub's apt repo), then the default git identity — so a model ``git commit`` AND a model
+    # ``gh pr create`` both work out of the box (ADR-0012 §10).
     assert fake_modal["image"].run_commands_calls == [
+        (_GH_INSTALL_CMD,),
         ("git config --global user.name decode",),
         ("git config --global user.email decode@localhost",),
     ]

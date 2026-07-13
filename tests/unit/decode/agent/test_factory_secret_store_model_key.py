@@ -1,6 +1,6 @@
-"""The Credentials Proxy seam in :func:`decode.agent.factory.build_agent` (ADR-0008 §5, task 061).
+"""The model-key secret-resolution seam in :func:`decode.agent.factory.build_agent` (ADR-0008 §5, task 061).
 
-In flow mode with ``runtime_credentials_proxy_enabled`` on, model construction resolves the
+In flow mode with ``runtime_secret_store_model_key`` on, model construction resolves the
 provider API key through Kitaru secrets instead of the settings ``SecretStr``; interactive runs
 and the default off-switch stay byte-unchanged. Asserted offline: building the agent issues no
 model request, ``kitaru.get_secret`` is patched, and the constructed key is read back off the
@@ -15,7 +15,7 @@ import pytest
 from kitaru import KitaruRuntimeError
 from pydantic import SecretStr
 
-from decode.agent.factory import _build_model, build_agent, resolve_provider_key_via_proxy
+from decode.agent.factory import _build_model, build_agent, resolve_provider_key_from_secret_store
 
 # Distinct sentinels so a test can tell *which* source the key came from: the settings ``SecretStr``
 # or the Kitaru secret. The proxy path must use the Kitaru one and never the settings one.
@@ -54,7 +54,7 @@ def _patch_gemini_settings(mocker, *, proxy_enabled: bool) -> None:
     )
     mocker.patch("decode.agent.factory.settings.gemini_model", "gemini-2.5-flash", create=False)
     mocker.patch(
-        "decode.agent.factory.settings.runtime_credentials_proxy_enabled",
+        "decode.agent.factory.settings.runtime_secret_store_model_key",
         proxy_enabled,
         create=False,
     )
@@ -72,7 +72,7 @@ def _patch_openrouter_settings(mocker, *, proxy_enabled: bool) -> None:
     )
     mocker.patch("decode.agent.factory.settings.openrouter_model", "openrouter/free", create=False)
     mocker.patch(
-        "decode.agent.factory.settings.runtime_credentials_proxy_enabled",
+        "decode.agent.factory.settings.runtime_secret_store_model_key",
         proxy_enabled,
         create=False,
     )
@@ -198,7 +198,7 @@ def test_resolve_key_via_proxy_returns_the_secret_value(mocker):
         return_value=_FakeSecret({"GEMINI_API_KEY": _KITARU_GEMINI_KEY}),
     )
 
-    assert resolve_provider_key_via_proxy("gemini") == _KITARU_GEMINI_KEY
+    assert resolve_provider_key_from_secret_store("gemini") == _KITARU_GEMINI_KEY
 
 
 def test_build_model_flow_mode_defaults_to_false(mocker):

@@ -152,6 +152,13 @@ _CA_FILENAME = "mitmproxy-ca-cert.pem"
 # The env var the addon reads the credential map (JSON) from — set on the PROXY container ONLY.
 _CREDENTIAL_MAP_ENV = "DECODE_CREDENTIAL_MAP"
 _LISTEN_PORT = 8080
+# A DECOY ``GH_TOKEN`` for the worker (ADR-0012 §10). ``gh`` refuses to make any request at all when
+# it finds no token in the env — it fails locally with "gh auth login", never reaching the proxy that
+# would have authenticated it. So the worker is handed a placeholder: ``gh`` proceeds, sends
+# ``Authorization: token <placeholder>``, and the addon **overwrites** that header with the real
+# credential after the request has left the worker (mitmproxy ``headers[name] = value`` replaces, it
+# does not append). The invariant holds — this string is not a credential and authenticates nothing.
+_GH_PLACEHOLDER_TOKEN = "decode-proxy-injects-the-real-token"
 # Readiness-wait bounds (CA written + listen port answering); a stall past this is a real failure.
 _READY_TIMEOUT_S = 20.0
 _READY_POLL_S = 0.2
@@ -187,6 +194,8 @@ class DockerCredentialProxy:
         """The ``http_proxy`` / ``https_proxy`` env pointing the worker at this proxy container.
 
         Both casings plus a loopback ``no_proxy``; these carry **no** secret — just the proxy URL.
+        Plus :data:`_GH_PLACEHOLDER_TOKEN` as ``GH_TOKEN``, which is a **deliberate decoy** — see that
+        constant. The worker still holds no real credential.
         """
         url = f"http://{self._container_name}:{_LISTEN_PORT}"
         return {
@@ -196,6 +205,7 @@ class DockerCredentialProxy:
             "HTTPS_PROXY": url,
             "no_proxy": "localhost,127.0.0.1",
             "NO_PROXY": "localhost,127.0.0.1",
+            "GH_TOKEN": _GH_PLACEHOLDER_TOKEN,
         }
 
     @property

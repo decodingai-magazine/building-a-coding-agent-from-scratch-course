@@ -264,14 +264,14 @@ def test_both_flags_on_produce_a_coherent_run_with_no_raw_key_leak(
     )
     # Both flags via the env so the in-flow reload preserves them; provider vars cleared.
     monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
-    monkeypatch.setenv("RUNTIME_CREDENTIALS_PROXY_ENABLED", "true")
+    monkeypatch.setenv("RUNTIME_SECRET_STORE_MODEL_KEY", "true")
     for var in _CLEARED_PROVIDER_ENV:
         monkeypatch.delenv(var, raising=False)
     reload_settings()
     observed: dict[str, str] = {}
 
     def _seam(model: str | None = None) -> KitaruAgent:
-        # Real build_agent(flow_mode=True): secret-store hydrated the model id; the Credentials Proxy
+        # Real build_agent(flow_mode=True): secret-store hydrated the model id; model-key secret resolution
         # resolves the key from the SAME secret. Then run the turn on a scripted offline model.
         agent = build_agent(flow_mode=True)
         observed["model"] = settings.gemini_model

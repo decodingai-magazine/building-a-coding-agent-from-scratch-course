@@ -18,6 +18,7 @@ import pytest
 from decode.config.settings import settings
 from decode.sandbox.docker_backend import (
     _DAEMON_LOST_EXIT,
+    _GH_INSTALL_CMD,
     _GIT_INSTALL_CMD,
     _TIMEOUT_EXIT,
     _WORKER_CA_PATH,
@@ -201,10 +202,24 @@ def test_git_setup_command_appends_the_default_identity():
 
 
 def test_git_setup_command_skips_config_when_the_identity_is_cleared(monkeypatch):
-    # Both SANDBOX_GIT_USER_* empty → no ``git config`` appended, just the install.
+    # Both SANDBOX_GIT_USER_* empty → no ``git config`` appended, just the two installs.
     monkeypatch.setattr(settings, "sandbox_git_user_name", "")
     monkeypatch.setattr(settings, "sandbox_git_user_email", "")
-    assert _git_setup_command() == _GIT_INSTALL_CMD
+    assert _git_setup_command() == f"{_GIT_INSTALL_CMD} && {_GH_INSTALL_CMD}"
+
+
+def test_git_setup_command_installs_gh_alongside_git(monkeypatch):
+    """gh ships in every worker (ADR-0012 §10): a model that pushes is asked to open the PR too.
+
+    Without it the turn dies on ``gh: command not found`` *after* the push has already landed — the
+    exact failure this guards. gh is not in Debian bookworm, so the command must add GitHub's apt repo.
+    """
+    cmd = _git_setup_command()
+
+    assert "install -y --no-install-recommends git" in cmd  # git still installed
+    assert cmd.index(_GIT_INSTALL_CMD) < cmd.index(_GH_INSTALL_CMD)  # git+curl BEFORE the gh repo
+    assert "https://cli.github.com/packages" in cmd  # GitHub's apt repo, not Debian's
+    assert cmd.rstrip().endswith("git config --global user.email decode@localhost")
 
 
 async def test_create_survives_a_git_install_failure(mocker, tmp_path):

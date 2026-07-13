@@ -1,4 +1,4 @@
-"""The Credentials Proxy through the real runtime seam + the payload invariant (ADR-0008 §5, task 061).
+"""Model-key secret resolution through the real runtime seam + the payload invariant (ADR-0008 §5, task 061).
 
 These run on the **real** local Kitaru stack (offline, no server) so the secrets round-trip is the
 genuine one, not a mock: a secret is created with :func:`kitaru.create_secret` and read back through
@@ -45,7 +45,7 @@ def _enable_proxy(monkeypatch) -> None:
     monkeypatch.setattr(factory_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(factory_mod.settings, "gemini_model", "gemini-2.5-flash")
     monkeypatch.setattr(factory_mod.settings, "gemini_api_key", SecretStr(_SETTINGS_RAW_KEY))
-    monkeypatch.setattr(factory_mod.settings, "runtime_credentials_proxy_enabled", True)
+    monkeypatch.setattr(factory_mod.settings, "runtime_secret_store_model_key", True)
 
 
 def test_real_kitaru_secret_round_trips_through_build_agent_in_flow_mode(

@@ -19,6 +19,7 @@ import pytest
 from kitaru.errors import KitaruRuntimeError
 
 from decode.sandbox.proxy import (
+    _GH_PLACEHOLDER_TOKEN,
     DEFAULT_PROXY_RULES,
     DockerCredentialProxy,
     SandboxProxyRule,
@@ -231,8 +232,31 @@ def test_worker_proxy_env_points_http_and_https_at_the_proxy_container():
     assert env["https_proxy"] == url
     assert env["HTTP_PROXY"] == url and env["HTTPS_PROXY"] == url
     assert env["no_proxy"] == "localhost,127.0.0.1"
-    # The proxy env carries only the proxy URL — never a resolved credential.
+    # The proxy env carries only the proxy URL + the gh decoy — never a resolved credential.
     assert not any(_SECRET_VALUE in v for v in env.values())
+
+
+def test_worker_proxy_env_carries_a_decoy_gh_token_that_is_not_a_credential():
+    """``gh`` gets a placeholder ``GH_TOKEN``, and it authenticates nothing (ADR-0012 §10).
+
+    ``gh`` refuses to issue ANY request when it finds no token in the env — it fails locally with
+    "gh auth login" and never reaches the proxy that would have authenticated it. So the worker is
+    handed a decoy: gh proceeds, sends ``Authorization: token <decoy>``, and the addon overwrites that
+    header with the real credential after the request has left the worker. The invariant is unchanged —
+    this string is not a secret, and a real credential must never appear here.
+    """
+    proxy = DockerCredentialProxy(
+        credential_map={"api.github.com": {"Authorization": f"Bearer {_SECRET_VALUE}"}}
+    )
+
+    env = proxy.worker_proxy_env
+
+    assert env["GH_TOKEN"] == _GH_PLACEHOLDER_TOKEN
+    # The decoy is inert: it is not the real credential, and it carries no PAT shape.
+    assert _SECRET_VALUE not in env["GH_TOKEN"]
+    assert not env["GH_TOKEN"].startswith(("ghp_", "github_pat_"))
+    # Even with a resolved map in hand, NOTHING in the worker's env is the credential.
+    assert not any(_SECRET_VALUE in value for value in env.values())
 
 
 def test_ca_cert_host_path_raises_before_start():

@@ -96,6 +96,15 @@ decode run "list the python files under src and summarize what the cli module do
 - **Offline local stack** — no Kitaru server or `kitaru init` needed. Inspect runs with `kitaru executions list` / `get <id>` / `logs <id>`; `kitaru login` starts the optional local web dashboard at `http://127.0.0.1:8383` (`kitaru logout` falls back to the server-less local database if the daemon hangs).
 - **Guards** — the same provider-key guard as the REPL; `RUNTIME_ENABLED=false` disables the subcommand with a friendly line.
 
+> **macOS: the local Kitaru server crashes mid-run.** A run starts fine, then floods with `RemoteDisconnected` followed by `Connection refused` on `127.0.0.1:8383`. The server *daemon* died — its log (`~/Library/Application Support/kitaru/zen_server/daemon/service.log`) ends with `objc[…]: +[NSCharacterSet initialize] may have been in progress in another thread when fork() was called … Crashing instead.` That is Apple's ObjC fork-safety abort: the daemon forks while the Apple runtime is initializing on another thread, and macOS kills the child rather than inherit a half-built runtime. Fix it either way:
+>
+> ```bash
+> uv run kitaru logout                                          # simplest: no daemon, no crash
+> OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES uv run kitaru login   # or keep the dashboard
+> ```
+>
+> Prefer `logout` unless you actually want the web dashboard — `decode run`, `kitaru executions`, and `kitaru secrets` all work against the server-less local database. Confirm with `kitaru info`: `Local server: registered but unavailable` means a stale registration is still pointing at the dead daemon.
+
 ### Replay & what-if
 
 Every `decode run` records a checkpoint per model call and per tool call, so you can re-run any recorded execution from any anchor with the **model swapped** and see what would have happened ([ADR-0010](docs/adr/0010-runtime-replay.md)):
@@ -112,8 +121,10 @@ Upstream of `--from` serves from the original run's cache; the anchor and downst
 
 Two opt-in, headless-only surfaces (both off by default; details in [`.env.example`](.env.example) and [ADR-0008 §5](docs/adr/0008-kitaru-durable-runtime.md)):
 
-- `RUNTIME_CREDENTIALS_PROXY_ENABLED=true` — flow-mode model construction resolves the provider key from a Kitaru secret (`kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=…`), so the execution's serialized arguments carry only the secret *name*, never the raw key.
+- `RUNTIME_SECRET_STORE_MODEL_KEY=true` — flow-mode model construction resolves the provider key from a Kitaru secret (`kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=…`), so the execution's serialized arguments carry only the secret *name*, never the raw key.
 - `RUNTIME_SECRET_STORE_CONFIG=true` — hydrate the **whole** `decode run` config (provider, model, keys, tuning) from that same secret, keyed by `.env.example` names. Real process env still wins; values land in `Settings` only, never `os.environ`. The REPL never reads the secret and never imports Kitaru.
+
+Both are secret-store **lookups**, not the sandbox [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret) below — different secret, different hiding place. (They shipped under the name "Credentials Proxy", retired in ADR-0008 §5 for exactly that confusion.) [`CREDENTIALS.md`](CREDENTIALS.md) tells the two apart and walks an end-to-end test of each, on and off.
 
 ## Context compaction
 
@@ -159,12 +170,12 @@ SANDBOX_MODE=docker decode --repo git@github.com:you/project.git
 /ship          # or just quit — decode pushes a `decode/<session-id>` branch back to the repo
 ```
 
-- **`--repo <url-or-path>`** (or `SANDBOX_REPO`; add `--local` for a fast local clone) clones at committed `HEAD` using your ambient git credentials. A bad repo degrades to an empty Workspace with one friendly line; `--repo` without a sandbox mode is a friendly config error. Works headless too: `SANDBOX_MODE=docker decode run --repo <url> "<task>"`.
+- **`--repo <url-or-path>`** (or `SANDBOX_REPO`; add `--local` for a fast local clone) clones at committed `HEAD` using your ambient git credentials. A bad repo degrades to an empty Workspace with one friendly line; `--repo` without a sandbox mode is a friendly config error. Works headless too: `SANDBOX_MODE=docker decode run --repo <url> "<task>"`. **It clones only into an *empty* Workspace** — a populated `.decode/sandbox` is reused, never re-cloned (that would discard in-progress work), so `--repo` against a leftover Workspace is ignored and there is no `origin` to push to. `rm -rf .decode/sandbox` to force a fresh clone.
 - **Hand-back on exit or `/ship`** — decode commits any uncommitted model work (model commits are preserved, never rewritten), points a `decode/<session-id>` branch at the result, and pushes it. Every git command runs **host-side** — no credential ever enters the sandbox. A failed push still leaves the local branch in `.decode/sandbox` and names it; an unchanged Workspace is skipped.
 - **Startup guards** — a selected backend that isn't available fails with one friendly line (Docker daemon down, or missing `modal token set` credentials), in the REPL and the headless pre-flight alike.
 - **Isolation honesty** — docker is a boundary for *accidental* misbehavior (shared kernel on Linux; Docker Desktop's VM adds one on macOS); **modal** is the rung for genuinely untrusted code (nothing executes on your machine). gVisor/Kata are zero-code daemon-config upgrades; see [ADR-0011's isolation table](docs/adr/0011-sandboxing-and-credential-proxy.md#isolation-backends-compared--why-docker--modal).
 
-Tunables (all optional, documented in [`.env.example`](.env.example)): `SANDBOX_IMAGE` (default `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` — python + uv preinstalled; each backend adds git), `SANDBOX_TIMEOUT_S` (modal lifetime), `SANDBOX_GIT_USER_NAME`/`_EMAIL` (the in-Workspace commit identity), `SANDBOX_GIT_TOKEN` (below).
+Tunables (all optional, documented in [`.env.example`](.env.example)): `SANDBOX_IMAGE` (default `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` — python + uv preinstalled; each backend adds **git + the `gh` CLI**, so a model can commit, push, *and* open the PR — docker installs them per session (~20s), modal bakes them into a cached image layer), `SANDBOX_TIMEOUT_S` (modal lifetime), `SANDBOX_GIT_USER_NAME`/`_EMAIL` (the in-Workspace commit identity), `SANDBOX_GIT_TOKEN` (below).
 
 ### Credential Proxy (a Worker that holds no secret)
 
@@ -173,7 +184,7 @@ A sandboxed Worker sometimes needs an authenticated tool call, but a prompt-inje
 - **GitHub shortcut** — for *push a branch / open a PR*, just set `SANDBOX_GIT_TOKEN` non-empty. The docker proxy auto-engages and builds the two GitHub header rules from that one token; **modal** can't run a co-located proxy, so it injects the same token directly into the sandbox instead (use a fine-grained, repo-scoped PAT) — the deliberate per-backend trade-off of [ADR-0012 §10](docs/adr/0012-isolated-workspace.md).
 - **Any other host** — add a `SandboxProxyRule` to `DEFAULT_PROXY_RULES` in [`src/decode/sandbox/proxy.py`](src/decode/sandbox/proxy.py) (a `{{ secret-name.key }}` header template resolved from a Kitaru secret), create the secret (`kitaru secrets set …`), and set `SANDBOX_CREDENTIAL_PROXY_ENABLED=true`.
 
-Confirm the Worker is token-free with `docker exec <worker-id> env | grep -i token` (prints nothing). Egress is cooperative — this is not an exfiltration barrier. The whole boundary is exercised by `uv run pytest tests/integration/test_sandbox_capstone.py -k credential_proxy` (Docker required, no PAT needed).
+Confirm the Worker never holds your credential with `docker exec <worker-id> env | grep -F "<your-PAT>"` (prints nothing). It *does* hold a **decoy** `GH_TOKEN`: the `gh` CLI refuses to issue any request when it finds no token in its env — it fails locally before the proxy ever sees it — so the Worker is handed an inert placeholder, and the proxy overwrites the resulting `Authorization` header with the real credential after the request has left. The decoy authenticates nothing ([ADR-0012 §10](docs/adr/0012-isolated-workspace.md)). Egress is cooperative — this is not an exfiltration barrier. The whole boundary is exercised by `uv run pytest tests/integration/test_credential_proxy.py` (Docker required, no PAT needed); [`CREDENTIALS.md`](CREDENTIALS.md) walks the manual end-to-end test, with the flag on and off.
 
 ## Monitoring / Observability (Opik)
 

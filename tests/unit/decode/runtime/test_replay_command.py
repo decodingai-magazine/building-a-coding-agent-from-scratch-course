@@ -257,7 +257,7 @@ def test_replay_provider_key_guard_does_not_replay(monkeypatch):
 def test_replay_proxy_missing_secret_guard_does_not_replay(monkeypatch, runtime_secret_name):
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_credentials_proxy_enabled", True)
+    monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_model_key", True)
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
     calls = _patch_replay(monkeypatch, result=_ok_result())
 
@@ -273,7 +273,7 @@ def test_replay_secret_store_missing_secret_guard_does_not_replay(monkeypatch, r
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
     monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_config", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_credentials_proxy_enabled", False)
+    monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_model_key", False)
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
     for var in ("GEMINI_API_KEY", "GEMINI_MODEL", "LLM_PROVIDER"):
         monkeypatch.delenv(var, raising=False)

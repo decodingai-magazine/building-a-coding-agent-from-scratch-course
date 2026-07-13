@@ -1,7 +1,7 @@
 """Kitaru runtime capstone (ADR-0008): the headless durable flow end to end, OFFLINE.
 
 Proves durability (058), replay-from-cache + the model-swap replay (058 / ADR-0010), HITL
-named waits (059), the durable capped sleep (060), and the Credentials Proxy (061) through
+named waits (059), the durable capped sleep (060), and model-key secret resolution (061) through
 the REAL ``@flow`` + ``KitaruAgent`` adapter + real ``build_agent`` tool registry, on a LOCAL
 Kitaru/ZenML stack redirected under tmp_path. Swapped/faked: only the runtime seam
 (``_build_runtime_agent`` / ``_build_hitl_runtime_agent``) is patched to inject scripted
@@ -591,7 +591,7 @@ def test_durable_sleep_uses_the_capped_timer(monkeypatch, inline_wait_resolver):
     assert sleep_module._SLEEPER is sleep_module._interactive_sleep
 
 
-# 6. Credentials proxy (061) — the model key comes from a Kitaru secret; the raw key is off the payload.
+# 6. Model-key secret resolution (061) — the model key comes from a Kitaru secret; the raw key is off the payload.
 
 _SECRET_NAME = "decode-capstone-creds"
 _KITARU_RAW_KEY = "KITARU-RAW-GEMINI-KEY-capstone-7f3a"
@@ -601,7 +601,7 @@ _SETTINGS_RAW_KEY = "SETTINGS-RAW-GEMINI-KEY-must-not-be-used"
 def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypatch):
     """The proxy builds the model from a Kitaru secret; the serialized flow payload never carries the raw key.
 
-    The Credentials-Proxy slice on the real local stack (offline, no server). A real Kitaru secret is
+    The model-key secret-resolution slice on the real local stack (offline, no server). A real Kitaru secret is
     created with :func:`kitaru.create_secret`; with the proxy enabled the patched seam first calls the
     **real** ``build_agent(flow_mode=True)`` (so the proxy genuinely resolves the key inside the flow
     body — asserted to be the *Kitaru* key, not the settings sentinel), then runs the turn on a scripted
@@ -615,7 +615,7 @@ def test_credentials_proxy_sources_the_key_and_keeps_it_off_the_payload(monkeypa
     monkeypatch.setattr(factory_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(factory_mod.settings, "gemini_model", "gemini-2.5-flash")
     monkeypatch.setattr(factory_mod.settings, "gemini_api_key", SecretStr(_SETTINGS_RAW_KEY))
-    monkeypatch.setattr(factory_mod.settings, "runtime_credentials_proxy_enabled", True)
+    monkeypatch.setattr(factory_mod.settings, "runtime_secret_store_model_key", True)
     monkeypatch.setattr(factory_mod.settings, "runtime_secret_name", _SECRET_NAME)
 
     resolved: dict[str, str] = {}

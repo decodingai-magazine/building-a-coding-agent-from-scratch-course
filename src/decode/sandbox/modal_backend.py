@@ -46,6 +46,20 @@ _GIT_CREDENTIAL_HELPER = (
     "'!f() { echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }; f'"
 )
 
+# ``gh`` is not in Debian bookworm — it comes from GitHub's own apt repo. Baked as a cached image
+# layer (unlike docker, which installs it per session). ``gh`` authenticates off the ``GITHUB_TOKEN``
+# the ``modal.Secret`` injects at runtime, so no decoy token is needed here (ADR-0012 §10).
+_GH_INSTALL_CMD = (
+    "mkdir -p -m 755 /etc/apt/keyrings && "
+    "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
+    "-o /etc/apt/keyrings/githubcli-archive-keyring.gpg && "
+    "chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && "
+    'echo "deb [arch=$(dpkg --print-architecture) '
+    "signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] "
+    'https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && '
+    "apt-get update && apt-get install -y --no-install-recommends gh"
+)
+
 # Remote ``/tmp`` staging tars for the bootstrap upload / export sweep — absolute (the SandboxFilesystem
 # API requires it) and OUTSIDE ``/workspace`` so neither is swept into itself.
 _BOOTSTRAP_TAR = "/tmp/decode-bootstrap.tar"
@@ -349,8 +363,16 @@ class ModalBackend:
         """
         modal = _load_modal()
         app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
-        # The slim base ships no git — bake it into the image (a cached layer, no per-session cost).
-        image = modal.Image.from_registry(settings.sandbox_image).apt_install("git")
+        # The slim base ships no git and no gh — bake both into the image (cached layers, no
+        # per-session cost). gh rides along because a model that pushes a branch is asked, in the same
+        # breath, to open the PR; without it the turn dies on ``gh: command not found`` (ADR-0012 §10).
+        # gh is not in Debian bookworm, so it comes from GitHub's own apt repo. Unlike docker, modal
+        # needs no decoy token: the real ``GITHUB_TOKEN`` is already in this sandbox's env (below) and
+        # gh reads it natively.
+        image = modal.Image.from_registry(settings.sandbox_image).apt_install(
+            "git", "curl", "ca-certificates"
+        )
+        image = image.run_commands(_GH_INSTALL_CMD)
         # Bake the ``SANDBOX_GIT_USER_*`` identity into a cached layer so a model ``git commit`` works.
         for key, value in git_config_pairs():
             image = image.run_commands(f"git config --global {key} {shlex.quote(value)}")

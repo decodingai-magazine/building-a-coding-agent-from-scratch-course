@@ -280,7 +280,7 @@ def test_run_command_provider_guard_fires_without_a_key(monkeypatch):
     assert "GEMINI_API_KEY" in result.stderr
 
 
-# Credentials proxy: missing/incomplete Kitaru secret is a friendly line, not a traceback
+# Model-key secret: missing/incomplete Kitaru secret is a friendly line, not a traceback
 # (task 061 QA blocker — User Story #3 "opt-in and safe by default"). The proxy-aware pre-flight
 # resolves the Kitaru secret BEFORE building the durable flow, so a missing/incomplete secret exits
 # with one friendly stderr line naming ``kitaru secrets set`` — never the ~30-frame KitaruRuntimeError
@@ -295,13 +295,13 @@ def test_run_command_provider_guard_fires_without_a_key(monkeypatch):
 
 @pytest.fixture
 def _proxy_on(monkeypatch, runtime_secret_name):
-    """Enable the credentials proxy for gemini with the runtime on (the secret is created per test).
+    """Enable model-key secret resolution for gemini with the runtime on (the secret is created per test).
 
     ``runtime_secret_name`` (unique per test) is wired by the same-named fixture, not here.
     """
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_credentials_proxy_enabled", True)
+    monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_model_key", True)
 
 
 def _no_flow_tripwires(monkeypatch):
@@ -406,7 +406,7 @@ def test_run_command_proxy_with_a_valid_secret_runs_the_flow(
 # hydrated from a Kitaru secret — but the cli's provider-config guard runs BEFORE the flow hydrates, so
 # without a pre-flight a key living only in the secret tripped the misleading ``set GEMINI_API_KEY``
 # line and a missing/malformed secret dumped a deep traceback from inside the flow. The pre-flight
-# (mirroring the 061 ``_proxy_credential_error``) hydrates + validates up front: a secret-only key
+# (mirroring the 061 ``_model_key_secret_error``) hydrates + validates up front: a secret-only key
 # satisfies the guard, and a missing/malformed secret is one friendly stderr line, never a traceback.
 
 
@@ -422,7 +422,7 @@ def _secret_store_on(monkeypatch, runtime_secret_name):
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
     monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
     monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_config", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_credentials_proxy_enabled", False)
+    monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_model_key", False)
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
     for var in ("GEMINI_API_KEY", "GEMINI_MODEL", "LLM_PROVIDER"):
         monkeypatch.delenv(var, raising=False)
