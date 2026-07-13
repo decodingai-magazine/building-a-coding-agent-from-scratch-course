@@ -229,7 +229,7 @@ async def test_worker_trusts_the_proxy_ca_on_its_very_first_command(monkeypatch,
     """The CA-trust race regression (ADR-0011 §6): the FIRST worker command already trusts the CA.
 
     A lazily-created worker's first ``bash`` must not race a still-booting ``update-ca-certificates`` —
-    otherwise the FIRST HTTPS tool call (e.g. the shipped ``github-token`` → ``api.github.com`` rule)
+    otherwise the FIRST HTTPS tool call (e.g. a ``SANDBOX_GIT_TOKEN`` → ``api.github.com`` rule)
     fails ``CERTIFICATE_VERIFY_FAILED``. Proven without an upstream round-trip: ``openssl verify`` (no
     ``-CAfile``) of the proxy's own CA against the worker's DEFAULT trust store verifies it as a trusted
     root **only once it has been folded in** — so a green here means the CA was trusted before the very
