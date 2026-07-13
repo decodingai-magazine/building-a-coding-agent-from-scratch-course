@@ -100,6 +100,34 @@ def test_code_reviewer_carries_the_git_allow_rule():
     assert Rule(tool_name="bash", pattern="git *") in reviewer.allow_rules
 
 
+# the explore body — the Subagent Report contract (ADR-0017 §8)
+
+
+def test_explore_body_states_the_three_part_report_contract():
+    # ADR-0017 §8: an Explore child hands back a tight structured summary — the finding, the
+    # file:line evidence, the trace it followed. Pinned on stable structural markers (the section
+    # labels + the ``file:line`` term), never on full sentences, so a wording tweak cannot shatter
+    # this. A report with no file:line evidence is the hallucination tell §7-ii pairs with.
+    body = loader.load_agent("explore").prompt.lower()
+
+    for marker in ("finding", "file:line", "trace"):
+        assert marker in body, f"the explore report contract must name {marker!r}"
+    # The compression contract: N sibling reports share ONE caller budget (§6), a report can be
+    # cut from the end, so the finding leads.
+    assert "sibling" in body
+    assert "truncat" in body
+
+
+def test_explore_body_carries_no_parent_synthesis_instruction():
+    # ADR-0017 §9: compiling the N reports into one answer (prose + text diagram) is the Synthesis
+    # Footer's job — appended just-in-time by the harness, never baked into a persona prompt. A
+    # child must not be told to do the parent's synthesis.
+    body = loader.load_agent("explore").prompt.lower()
+
+    for leaked in ("synthes", "diagram", "mermaid", "ascii", "box-drawing"):
+        assert leaked not in body, f"{leaked!r} belongs to the Synthesis Footer, not the persona"
+
+
 # packaged-data loading
 
 
