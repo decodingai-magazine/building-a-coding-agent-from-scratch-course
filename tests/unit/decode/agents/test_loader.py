@@ -13,6 +13,7 @@ from decode.agents import loader
 from decode.entities.agent_def import AgentDef
 from decode.permissions.rules import Rule
 from decode.permissions.types import PermissionMode
+from decode.tools import agent as agent_tool
 
 _BUILTIN_NAMES = {"build", "plan", "explore", "code-reviewer"}
 # ``lsp`` (task 052 / ADR-0007) is a read-only Code Intelligence tool, so every persona that has
@@ -118,14 +119,22 @@ def test_explore_body_states_the_three_part_report_contract():
     assert "truncat" in body
 
 
-def test_explore_body_carries_no_parent_synthesis_instruction():
+@pytest.mark.parametrize("name", sorted(_BUILTIN_NAMES))
+def test_no_builtin_persona_body_carries_the_synthesis_instruction(name):
     # ADR-0017 §9: compiling the N reports into one answer (prose + text diagram) is the Synthesis
-    # Footer's job — appended just-in-time by the harness, never baked into a persona prompt. A
-    # child must not be told to do the parent's synthesis.
-    body = loader.load_agent("explore").prompt.lower()
+    # FOOTER's job — appended just-in-time by the harness to every aggregated ``agent`` result. It
+    # lives in exactly ONE place so a future persona author CANNOT forget it, and so it costs nothing
+    # on the (many) turns that fan out no children. Both halves of that break if a persona also
+    # carries the wording: the PARENTS (build / plan / code-reviewer) would pay for it every turn and
+    # drift out of sync with the harness, and the CHILD (explore) would be told to do its parent's
+    # job. Pinned on stable markers, not sentences, so a footer re-wording cannot shatter this.
+    body = loader.load_agent(name).prompt.lower()
 
     for leaked in ("synthes", "diagram", "mermaid", "ascii", "box-drawing"):
-        assert leaked not in body, f"{leaked!r} belongs to the Synthesis Footer, not the persona"
+        assert leaked not in body, (
+            f"{leaked!r} belongs to the Synthesis Footer, not the {name} persona"
+        )
+    assert agent_tool.SYNTHESIS_FOOTER.lower() not in body  # nor the footer itself, verbatim
 
 
 # packaged-data loading

@@ -1189,6 +1189,99 @@ async def test_a_real_child_that_reads_code_only_on_the_nudged_retry_folds_its_r
     assert any("REPORT-AFTER-NUDGE" in r for r in _tool_return_strings(handler))
 
 
+# direct: the Synthesis Footer (ADR-0017 §9)
+
+
+def test_the_synthesis_footer_is_a_module_constant_stating_the_whole_contract():
+    """The footer is a module constant (no Settings knob, no .env entry) and says all four things."""
+    assert not hasattr(settings, "subagent_synthesis_footer")
+    lowered = agent_module.SYNTHESIS_FOOTER.lower()
+    # 1. compile the N reports into ONE answer — the parent is the synthesizer (§5).
+    assert "compile" in lowered and "one answer" in lowered
+    # 2. prose PLUS a text diagram of the structure found.
+    assert "prose" in lowered and "diagram" in lowered
+    # 3. ASCII / box-drawing is the DEFAULT flavour…
+    assert "ascii" in lowered and "box-drawing" in lowered
+    # 4. …Mermaid only for a genuine graph, because a terminal renders it as raw source.
+    assert "mermaid" in lowered and "only" in lowered
+    assert "terminal" in lowered and "raw source" in lowered
+
+
+async def test_a_one_wide_fold_still_carries_the_footer_after_its_only_section(tmp_path, mocker):
+    """ALWAYS appended (decision-locked, §9): a one-element list is not exempt."""
+    mocker.patch.object(
+        agent_module, "_require_main_agent", return_value=_StubAgent(_report("REPORT-A"))
+    )
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A])
+
+    assert out.endswith(agent_module.SYNTHESIS_FOOTER)  # after the LAST (here only) section
+    assert out.index("REPORT-A") < out.index(agent_module.SYNTHESIS_FOOTER)
+    assert out.count(agent_module.SYNTHESIS_FOOTER) == 1  # once per RESULT, not once per section
+
+
+async def test_an_n_wide_fold_carries_exactly_one_footer_after_the_last_section(tmp_path, mocker):
+    """N sections, ONE footer — and it trails the last one, so the model reads it last (§9)."""
+    prompts = [_PROMPT_A, _PROMPT_B, _PROMPT_C]
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=_EchoAgent())
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), prompts)
+
+    assert out.endswith(agent_module.SYNTHESIS_FOOTER)
+    assert out.count(agent_module.SYNTHESIS_FOOTER) == 1
+    # The footer sits AFTER every section heading, including the last.
+    assert out.rindex('## Subagent 3 — "') < out.index(agent_module.SYNTHESIS_FOOTER)
+    assert _sections(out) == [(p, f"report for: {p}") for p in prompts]  # sections still intact
+
+
+async def test_the_footer_is_appended_even_when_a_section_carries_a_failure_note(tmp_path, mocker):
+    """A degraded fold needs the synthesis instruction MOST — both §7 notes keep their footer."""
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    class _OneRaisesOneIsTwiceBad:
+        async def run(self, prompt, *, deps, usage_limits):
+            if prompt.startswith(_PROMPT_B):
+                raise UsageLimitExceeded("the request limit was exceeded")
+            if prompt.startswith(_PROMPT_C):
+                return _report("", tool_call=False)  # bad on BOTH attempts → the give-up note
+            return _report(f"report for: {prompt}")
+
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=_OneRaisesOneIsTwiceBad())
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), [_PROMPT_A, _PROMPT_B, _PROMPT_C])
+
+    bodies = [body for _prompt, body in _sections(out)]
+    assert bodies[1] == agent_module._CHILD_FAILED_NOTE
+    assert bodies[2] == agent_module._NO_USABLE_REPORT_NOTE
+    assert out.endswith(agent_module.SYNTHESIS_FOOTER)
+
+
+async def test_the_footer_never_eats_a_childs_byte_budget(tmp_path, mocker, monkeypatch):
+    """Appended AFTER truncation (§9): every child still gets ``max_bytes // len(prompts)``, whole.
+
+    The footer is harness overhead on TOP of the ~16 KB of reports — it must never be paid for out
+    of a child's share, which would make the fold's evidence hostage to the instruction's length.
+    """
+    monkeypatch.setattr(settings, "subagent_result_max_bytes", 300, raising=False)
+    big = "\n".join(f"finding number {i}" for i in range(500))
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=_StubAgent(_report(big)))
+    prompts = [_PROMPT_A, _PROMPT_B, _PROMPT_C]
+
+    out = await agent_module.agent(_tool_ctx(tmp_path), prompts)
+
+    per_child = 300 // len(prompts)
+    bodies = [body for _prompt, body in _sections(out)]
+    # The 103 byte assertions, unchanged — the footer took nothing off any section body…
+    for body in bodies:
+        assert len(body.encode("utf-8")) <= per_child
+        assert big.startswith(body)
+    # …and every body is a FULL budget's worth (the footer was not shaved off the last child either).
+    assert len({body for body in bodies}) == 1
+    # …while the footer itself is present, whole, and paid for on top of the budget.
+    assert out.endswith(agent_module.SYNTHESIS_FOOTER)
+    assert len(out.encode("utf-8")) > settings.subagent_result_max_bytes
+
+
 # stand-in main agents + the section parser
 
 
@@ -1270,8 +1363,13 @@ _SECTION_RE = re.compile(r'^## Subagent (\d+) — "(.*)"$', re.MULTILINE)
 def _sections(aggregate: str) -> list[tuple[str, str]]:
     """Parse the labelled aggregate into ``(prompt, body)`` pairs — the model-facing contract (§5).
 
-    Also asserts the headings are 1-based and contiguous, so a mis-numbered fold fails loudly here.
+    Asserts the headings are 1-based and contiguous, so a mis-numbered fold fails loudly here. The
+    Synthesis Footer (§9) is stripped FIRST: it trails the last section but belongs to no section, so
+    every body assertion below (notably the §6 byte budgets) stays about the CHILD's report alone.
+    Stripping asserts its presence, so every fold test is also a footer test.
     """
+    assert aggregate.endswith(agent_module.SYNTHESIS_FOOTER), aggregate
+    aggregate = aggregate[: -len(agent_module.SYNTHESIS_FOOTER)]
     matches = list(_SECTION_RE.finditer(aggregate))
     assert [m.group(1) for m in matches] == [str(i) for i in range(1, len(matches) + 1)], aggregate
     bounds = [m.start() for m in matches] + [len(aggregate)]

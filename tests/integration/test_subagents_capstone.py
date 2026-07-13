@@ -57,7 +57,7 @@ from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Runner
 from decode.permissions.gate import PermissionGate
 from decode.tools import agent as agent_module
-from decode.tools.agent import AGENT_TOOL_NAME
+from decode.tools.agent import AGENT_TOOL_NAME, SYNTHESIS_FOOTER
 from decode.tui import render
 
 # Markers the scripted model streams, so the assertions read as a transcript.
@@ -202,7 +202,13 @@ def _sections(aggregate: str) -> list[str]:
 
 
 def _section_bodies(aggregate: str) -> list[str]:
-    """Each section's body — what the per-child byte budget caps (ADR-0017 §6)."""
+    """Each section's body — what the per-child byte budget caps (ADR-0017 §6).
+
+    The Synthesis Footer (§9) trails the last section but belongs to no child, so it is stripped
+    first: it is harness overhead ON TOP of the shared budget, never a bite out of a child's share.
+    """
+    assert aggregate.endswith(SYNTHESIS_FOOTER), aggregate
+    aggregate = aggregate[: -len(SYNTHESIS_FOOTER)]
     matches = list(_SECTION_RE.finditer(aggregate))
     bounds = [m.start() for m in matches] + [len(aggregate)]
     return [aggregate[m.end() : bounds[i + 1]].strip() for i, m in enumerate(matches)]
@@ -691,6 +697,55 @@ async def test_a_hallucinating_child_is_retried_once_then_noted_while_its_siblin
         hallucinated not in folded[0]
     )  # the memory-only answer never reaches the parent's context
     assert _CHILD_REPORT in bodies[1]  # the sibling's evidenced report folded intact
+
+
+# 5c. The Synthesis Footer reaches the PARENT model's own context, on every aggregate.
+
+
+async def test_the_synthesis_footer_reaches_the_parent_model_after_the_last_section(
+    parent_agent, tmp_path
+):
+    """The footer is on the tool return the PARENT MODEL actually reads (ADR-0017 §9).
+
+    Not merely on the string the tool returns: the proof runs through the real Runner, so what is
+    asserted is the ``ToolReturnPart`` content in the message list handed BACK to the parent model on
+    its next turn — the only place the instruction can do its job. It trails the last section (read
+    last, applies to everything above it) and is appended to EVERY aggregate, one-child folds included.
+    """
+    (tmp_path / "one.py").write_text("x = 1\n", encoding="utf-8")
+    parent_saw: list[str] = []
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        visible = {tool.name for tool in info.function_tools}
+        if AGENT_TOOL_NAME in visible:  # PARENT
+            if not _tool_returned(messages, AGENT_TOOL_NAME):
+                return _fan_out(1)  # a ONE-child fan-out: the footer is not conditional on width
+            parent_saw.extend(
+                part.content
+                for message in messages
+                for part in getattr(message, "parts", [])
+                if isinstance(part, ToolReturnPart) and part.tool_name == AGENT_TOOL_NAME
+            )
+            return ModelResponse(parts=[TextPart(content=_PARENT_FINAL)])
+        if not _tool_returned(messages, "glob"):  # CHILD: read code, then report
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="glob", args={"pattern": "**/*.py"})]
+            )
+        return ModelResponse(parts=[TextPart(content=_CHILD_REPORT)])
+
+    sink = _RecordingSink()
+    resolvers = _RecordingResolvers()
+    handler = AgentTurnHandler(parent_agent, deps=_parent_deps(sink, resolvers, tmp_path))
+    runner = Runner(handler, on_event=sink)
+    with parent_agent.override(model=_function_model(model)):
+        await _run_turn(runner, "explore one area")
+
+    assert len(parent_saw) == 1
+    aggregate = parent_saw[0]
+    assert aggregate.endswith(SYNTHESIS_FOOTER)  # …after the last (here: only) section
+    assert aggregate.index(_CHILD_REPORT) < aggregate.index(SYNTHESIS_FOOTER)
+    assert aggregate.count(SYNTHESIS_FOOTER) == 1  # once per RESULT, never once per section
+    assert _folded_reports(handler) == parent_saw  # the tool's return IS what the model read
 
 
 # 6. Ephemeral child transcripts — the history + JSONL log carry only the spawn calls + summaries.

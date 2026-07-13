@@ -14,10 +14,12 @@ child answered from model memory) — buys the child EXACTLY ONE re-spawn with a
 bad report folds an explicit note. Two attempts, never three, so a broken child cannot eat the run.
 A child that raises still gets its section, carrying a failure note: partial results beat an
 exception that discards the siblings. Every child's report is truncated to a SHARED budget
-(``subagent_result_max_bytes // len(prompts)``), so the fold's cost is width-independent. Three
+(``subagent_result_max_bytes // len(prompts)``), so the fold's cost is width-independent — and the
+harness-owned :data:`SYNTHESIS_FOOTER` (§9) is appended AFTER that truncation, on every aggregate,
+telling the parent model to compile the N reports into ONE answer (prose + a text diagram). Three
 seams: the set-once main-agent seam (mirrors bash's ``_EXECUTOR``), the per-running-loop fan-out
 semaphore, and the read-only child deps. Child transcripts stay ephemeral and child usage is never
-threaded into the parent's. See ADR-0017 §1-2,4-6 and ADR-0013 §1,5-10.
+threaded into the parent's. See ADR-0017 §1-2,4-7,9 and ADR-0013 §1,5-10.
 """
 
 from __future__ import annotations
@@ -191,6 +193,39 @@ def _usable_report(result: AgentRunResult[str | DeferredToolRequests]) -> str | 
     return text
 
 
+# --- The Synthesis Footer (ADR-0017 §9) --------------------------------------------------------
+#
+# The aggregate is N raw reports; the ANSWER is one synthesis of them. This instruction is what
+# turns the former into the latter, and the harness — not a persona — owns it, for three reasons:
+#   * JUST-IN-TIME: it rides the tool result, so it costs zero tokens on the many turns that fan out
+#     no children. In a persona prompt it would be paid for on EVERY turn of EVERY run.
+#   * ONE PLACE: it lives beside the fold it describes, so it cannot drift out of sync with the
+#     section format above — and a future persona author cannot forget to copy it into a new parent.
+#   * LAST WORD: appended after the final section, it is the last thing the model reads before it
+#     writes, which is where an instruction about the whole document belongs.
+# A MODULE CONSTANT, like MAX_FANOUT_PROMPTS and _RETRY_NUDGE: least mechanism for a string nobody
+# tunes per environment (no Settings field, no ``.env.example`` entry). Public (no underscore): it
+# is part of the tool's model-facing contract, and the persona guard test asserts against it.
+#
+# ASCII/box-drawing is the DEFAULT diagram flavour, not a stylistic preference: decode's TUI is Rich
+# in a terminal, which renders a Mermaid block as raw source — the model would emit a picture nobody
+# can see. Mermaid is allowed ONLY where the structure is a genuine graph, i.e. where a monospaced
+# box drawing would misrepresent it and raw source is still the lesser evil.
+SYNTHESIS_FOOTER = (
+    "\n\n---\n\n"
+    "COMPILE the subagent reports above into ONE answer for the user — do not hand back the reports "
+    "one by one, and do not answer from a single report alone. Reconcile what the subagents found, "
+    "keep their file:line evidence, and say so explicitly if two of them disagree or if a section "
+    "reports a failure.\n\n"
+    "Your answer must contain BOTH:\n"
+    "1. PROSE — what the structure is and how it works.\n"
+    "2. A TEXT DIAGRAM of that structure, in ASCII / box-drawing characters. Your output is rendered "
+    "in a TERMINAL, so the diagram must read as a diagram in plain monospaced text. Use a Mermaid "
+    "block ONLY when what you found is a genuine graph (a real many-to-many dependency, a state "
+    "machine) — a terminal renders Mermaid as RAW SOURCE, not as a picture."
+)
+
+
 # Set-once module seam holding the running Agent (mirrors bash's ``_EXECUTOR``); installed by
 # ``build_agent`` via :func:`set_main_agent`, so children reuse the parent's model + HTTP client.
 _MAIN_AGENT: Agent[AgentDeps, str | DeferredToolRequests] | None = None
@@ -306,11 +341,16 @@ async def agent(ctx: RunContext[AgentDeps], prompts: list[str]) -> str:
             for index, prompt in enumerate(prompts, start=1)
         )
     )
-    # Labelled concatenation, NO synthesis LLM call — the parent model is the synthesizer (§5).
-    return "\n\n".join(
+    # Labelled concatenation, NO synthesis LLM call — the parent model is the synthesizer (§5), and
+    # the footer (§9) is how it is TOLD to be. Appended AFTER the sections, i.e. after every child's
+    # report has already been truncated to its own budget above: the footer is harness overhead on
+    # TOP of the ~16 KB of reports, never a bite out of a child's share — the fold's evidence must
+    # not shrink because the instruction got longer. Always appended, one-element folds included.
+    fold = "\n\n".join(
         f'## Subagent {index} — "{prompt}"\n\n{section}'
         for index, (prompt, section) in enumerate(zip(prompts, sections, strict=True), start=1)
     )
+    return fold + SYNTHESIS_FOOTER
 
 
 async def _spawn_child(
