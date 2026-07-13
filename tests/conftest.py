@@ -90,6 +90,26 @@ def _default_sandbox_mode(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_sandbox_git_token(monkeypatch):
+    """Hermeticity guard — blank ``SANDBOX_GIT_TOKEN`` on the singleton (ADR-0012 §10).
+
+    A non-empty token is a *behavioral switch*, not just a value: it auto-engages the Credential Proxy
+    (``flow._sandbox_proxy``) and adds the credential-helper layer to the modal image. A developer who
+    put a real PAT in ``.env`` — the natural thing to do when trying the sandbox — would flip those
+    paths on inside the suite and see failures no one else gets (this fixture exists because that
+    happened). Same class of leak as :func:`_no_real_provider_key` / :func:`_default_sandbox_mode`.
+
+    Tests that exercise the token paths set their own value with ``monkeypatch.setattr`` (which runs
+    after this fixture, so it wins).
+    """
+    monkeypatch.delenv("SANDBOX_GIT_TOKEN", raising=False)
+
+    from decode.config.settings import settings
+
+    monkeypatch.setattr(settings, "sandbox_git_token", None, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_sandbox_executor():
     """Hermeticity guard — reset the ``bash`` executor selection memo around every test (ADR-0011 §4).
 

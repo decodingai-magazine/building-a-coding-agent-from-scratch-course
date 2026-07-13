@@ -107,7 +107,15 @@ lookup is `flow_mode`-gated, so the TUI never reaches Kitaru. A green REPL here 
 
 ## Part 2 — Sandbox Credential Proxy (header injection)
 
-Docker + headless only. The worker holds no token.
+Docker + headless only. The worker never holds the real token.
+
+> **How much of this is Kitaru?** Less than the name suggests. The proxy itself — the mitmproxy
+> container, the per-run docker network, the CA trust, the header injection — is plain docker, with no
+> Kitaru anywhere. Kitaru enters at exactly **one** seam: `build_credential_map()` resolves
+> `{{ secret-name.key }}` header templates via `kitaru.get_secret()`. So **2b (below) is the only
+> Credential-Proxy scenario that touches Kitaru at all**; **2c (`SANDBOX_GIT_TOKEN`) bypasses it
+> entirely** — `github_token_rules()` builds literal header values with no secret-store fetch. If you
+> are here to see Kitaru work, Part 1 and 2b are the demos; 2c is a docker/mitmproxy demo.
 
 ### 2a. OFF — baseline, and the call that fails
 
@@ -165,27 +173,47 @@ Prove the worker is token-free, while the run is still in flight:
 
 ```bash
 WORKER=$(docker ps -q --filter ancestor=ghcr.io/astral-sh/uv:python3.12-bookworm-slim)
-docker exec $WORKER env | grep -iE 'token|authorization|ghp_'   # EMPTY — the whole point
-docker exec $WORKER env | grep -i proxy                          # http_proxy=http://decode-proxy-…:8080
+docker exec $WORKER env | grep -i token     # GH_TOKEN=decode-proxy-injects-the-real-token  ← a DECOY
+docker exec $WORKER env | grep -i proxy     # http_proxy=http://decode-proxy-…:8080
+docker exec $WORKER gh --version            # gh is installed, alongside git
 ```
 
-Routed through the proxy, holding no secret: the header is injected after the request leaves it.
+The worker holds a **decoy** `GH_TOKEN`, not the real one — and that decoy is load-bearing. `gh`
+refuses to issue *any* request when it finds no token in its env: it fails locally with `gh auth
+login` and never emits the request the proxy would have authenticated. So the worker is handed a
+placeholder, `gh` sends `Authorization: token <decoy>`, and the proxy **overwrites** that header with
+your real PAT after the request has left the worker. The claim to verify is therefore *"what the
+worker holds is not the secret"*, not *"the worker holds nothing"*:
+
+```bash
+docker exec $WORKER env | grep -F "<your-PAT>"   # EMPTY — the real credential is never here
+```
 
 ### 2c. ON — the one-knob GitHub path (no rule edit, no Kitaru secret)
 
-Revert `DEFAULT_PROXY_RULES` to `[]` first, then:
+Revert `DEFAULT_PROXY_RULES` to `[]` first. **Then clear the Workspace** — this step is not optional:
 
 ```bash
+rm -rf .decode/sandbox   # ← REQUIRED: 2a/2b left a populated Workspace behind
+
 SANDBOX_GIT_TOKEN=<PAT> SANDBOX_MODE=docker \
   uv run decode run --repo https://github.com/<you>/<repo> \
   "create NOTES.md with one line, commit it, push the branch, then open a PR against main"
 ```
 
+**Why the `rm` matters.** `--repo` clones **only into an empty Workspace** — a populated one is reused,
+never re-cloned (re-cloning would discard in-progress work). Parts 2a and 2b ran with no `--repo`, so
+they left an empty-scratch tree that the model `git init`'d and committed into. Run 2c against that
+leftover and `--repo` is **silently ignored**: there is no `origin`, the push fails, and the proxy gets
+blamed for a Workspace problem. Confirm with `git -C .decode/sandbox remote -v` — a clone has an
+`origin`, a leftover scratch tree has none.
+
 Working: the branch is pushed and the PR opens. A non-empty `SANDBOX_GIT_TOKEN` **auto-engages** the
 proxy without the flag, and `github_token_rules()` builds two rules from that one token — `Bearer` on
 `api.github.com` (the REST API) and `Basic base64("x-access-token:<PAT>")` on `github.com` (GitHub's
-git-over-HTTPS transport rejects `Bearer`). The worker-env check from 2b still comes back empty, and
-`git` *is* installed in the proxy-wired worker so the Basic rule has a client.
+git-over-HTTPS transport rejects `Bearer`). Both `git` **and `gh`** are installed in the proxy-wired
+worker — `git` gives the Basic rule a client, `gh` opens the PR off the Bearer rule (driven by the
+decoy `GH_TOKEN` from 2b) — and the real PAT is in neither.
 
 ### 2d. Negatives — every way it must stay off
 

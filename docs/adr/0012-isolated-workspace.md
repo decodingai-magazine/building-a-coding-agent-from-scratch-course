@@ -170,6 +170,28 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
     unless the flag opts it in, so the strict "no secret in the sandbox" invariant holds until an operator
     opts in; the host-side hand-back (§8) stays the credential-free way to ship results.
 
+    > **Amendment (2026-07-13 — `gh` ships in both sandboxes; docker needs a decoy token).** §10 named
+    > `gh pr create` as a motivating case but only ever installed **git**. A real run proved the gap: the
+    > model pushed its branch, then died on `gh: command not found` — the push had already landed, so the
+    > turn ended half-done, which is the worst possible failure shape. `gh` is now installed alongside git
+    > in **both** backends (it is not in Debian bookworm, so both pull GitHub's own apt repo): docker
+    > installs it per session in `_git_setup_command()`; modal bakes it as a cached image layer.
+    >
+    > The docker path needed one thing this ADR did not foresee — and §10 above already hints at it when
+    > it credits modal with needing "no dummy token". **`gh` refuses to issue any request at all when it
+    > finds no token in its env**: it fails *locally* with `gh auth login`, never emitting the HTTP request
+    > the proxy exists to authenticate. A token-free worker therefore cannot drive `gh`, no matter how
+    > correct the Proxy Rules are. So the proxy hands the worker a **decoy** `GH_TOKEN`
+    > (`proxy._GH_PLACEHOLDER_TOKEN`): `gh` proceeds, sends `Authorization: token <decoy>`, and the addon
+    > **overwrites** that header with the real credential after the request has left the worker
+    > (mitmproxy's `headers[name] = value` replaces rather than appends). The invariant is untouched — the
+    > decoy is an inert string that authenticates nothing, and the real credential still lives only in the
+    > proxy container. The observable cost: `docker exec <worker> env | grep -i token` now prints the
+    > decoy instead of nothing, so "the worker holds no token" is verified by checking that what it holds
+    > is *not the secret*, rather than that it holds nothing at all.
+    >
+    > modal needs no decoy: `gh` reads the real `GITHUB_TOKEN` the `modal.Secret` already injects.
+
 ## Diagram
 
 ```mermaid

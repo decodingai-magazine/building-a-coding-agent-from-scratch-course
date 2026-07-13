@@ -49,10 +49,26 @@ _TIMEOUT_EXIT = -signal.SIGKILL
 _DAEMON_LOST_EXIT = 125
 _DAEMON_LOST_NOTE = "The docker sandbox became unreachable — the session was lost."
 
-# The slim uv base ships no git; installed once per session container (see ``_install_git``).
-_GIT_INSTALL_CMD = "apt-get update && apt-get install -y --no-install-recommends git"
-# Bound (seconds) for that install — ~15s on a warm network; only caps a wedged / offline apt.
-_GIT_INSTALL_TIMEOUT_S = 120.0
+# The slim uv base ships no git and no gh; both are installed once per session container (see
+# ``_install_git``). ``curl`` + ``ca-certificates`` are pulled in because the gh install needs them.
+_GIT_INSTALL_CMD = (
+    "apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates"
+)
+# ``gh`` is not in Debian bookworm — it comes from GitHub's own apt repo (keyring + source list).
+# Egresses through the Credential Proxy when one is wired: ``cli.github.com`` matches no Proxy Rule,
+# so it passes through un-injected.
+_GH_INSTALL_CMD = (
+    "mkdir -p -m 755 /etc/apt/keyrings && "
+    "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
+    "-o /etc/apt/keyrings/githubcli-archive-keyring.gpg && "
+    "chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && "
+    'echo "deb [arch=$(dpkg --print-architecture) '
+    "signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] "
+    'https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && '
+    "apt-get update && apt-get install -y --no-install-recommends gh"
+)
+# Bound (seconds) for that install — ~20s for git+gh on a warm network; only caps a wedged/offline apt.
+_GIT_INSTALL_TIMEOUT_S = 180.0
 
 
 class DockerBackend:
@@ -333,15 +349,16 @@ class DockerBackend:
         logger.info("[sandbox] proxy CA trusted in worker %s", container_id[:12])
 
     async def _install_git(self, container_id: str) -> None:
-        """Best-effort ``apt-get install git`` + git-identity config in the fresh keeper container.
+        """Best-effort ``apt-get install`` of git + gh, then git-identity config, in the fresh worker.
 
-        One ``sh -c`` installs git and (``&&``-chained, only after a successful install) sets the
-        ``SANDBOX_GIT_USER_*`` identity (:func:`_git_setup_command`). Runs on **every** worker, the
-        proxy-wired one included — apt egresses through the proxy and the token never enters the
-        worker. ``ponytail:`` installed per session rather than baking a fatter image — keeps the slim
-        base and the worker's ``ancestor=<image>`` identity, at the cost of a one-off ~15 s apt (bake
-        git into a custom ``SANDBOX_IMAGE`` to skip it). A failure logs a warning and leaves the
-        session running with no git, never a crash. Bounded by :data:`_GIT_INSTALL_TIMEOUT_S`.
+        One ``sh -c`` installs git, adds GitHub's apt repo and installs gh, then (``&&``-chained, only
+        after a successful install) sets the ``SANDBOX_GIT_USER_*`` identity (:func:`_git_setup_command`).
+        Runs on **every** worker, the proxy-wired one included — apt egresses through the proxy and no
+        token ever enters the worker. ``ponytail:`` installed per session rather than baking a fatter
+        image — keeps the slim base and the worker's ``ancestor=<image>`` identity, at the cost of a
+        one-off ~20 s apt (bake git + gh into a custom ``SANDBOX_IMAGE`` to skip it). A failure logs a
+        warning and leaves the session running without them, never a crash. Bounded by
+        :data:`_GIT_INSTALL_TIMEOUT_S`.
         """
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -356,7 +373,7 @@ class DockerBackend:
             )
         except OSError as exc:
             logger.warning(
-                "[sandbox] git install could not spawn: %s (continuing without git)", exc
+                "[sandbox] git+gh install could not spawn: %s (continuing without them)", exc
             )
             return
         try:
@@ -366,18 +383,18 @@ class DockerBackend:
             with contextlib.suppress(Exception):
                 await proc.wait()  # reap the killed exec (no zombie / ResourceWarning)
             logger.warning(
-                "[sandbox] git install timed out after %gs (continuing without git)",
+                "[sandbox] git+gh install timed out after %gs (continuing without them)",
                 _GIT_INSTALL_TIMEOUT_S,
             )
             return
         if proc.returncode != 0:
             logger.warning(
-                "[sandbox] git install failed (exit %s; continuing without git): %s",
+                "[sandbox] git+gh install failed (exit %s; continuing without them): %s",
                 proc.returncode,
                 _decode(stdout).strip()[-500:],
             )
             return
-        logger.info("[sandbox] git installed in worker %s", container_id[:12])
+        logger.info("[sandbox] git + gh installed in worker %s", container_id[:12])
 
 
 def _signal_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
@@ -410,11 +427,13 @@ def _decode(raw: bytes) -> str:
 
 
 def _git_setup_command() -> str:
-    """The ``sh -c`` line that installs git and (only after a successful install) sets its identity.
+    """The ``sh -c`` line installing git + gh and (only on success) setting the git identity.
 
-    Each identity value is ``shlex.quote``d so a spaced / quoted name stays one safe shell token.
+    ``gh`` ships alongside git because a model that can `git push` is asked, in the same breath, to
+    open the PR — and without it the turn dies on ``gh: command not found`` after the push (ADR-0012
+    §10). Each identity value is ``shlex.quote``d so a spaced / quoted name stays one safe shell token.
     """
-    parts = [_GIT_INSTALL_CMD]
+    parts = [_GIT_INSTALL_CMD, _GH_INSTALL_CMD]
     parts += [
         f"git config --global {key} {shlex.quote(value)}" for key, value in git_config_pairs()
     ]
