@@ -335,13 +335,6 @@ def test_rejects_a_non_positive_lsp_request_timeout(monkeypatch, bad):
         Settings(_env_file=None)
 
 
-def test_env_example_lists_every_lsp_var():
-    """Drift guard: each LSP setting has a matching line in .env.example (AGENTS.md gate)."""
-    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
-    for var in _LSP_ENV_VARS:
-        assert var in env_example, f"{var} missing from .env.example"
-
-
 def test_runtime_defaults(monkeypatch):
     for var in _RUNTIME_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -419,13 +412,6 @@ def test_rejects_a_non_positive_runtime_wait_timeout(monkeypatch, bad):
         Settings(_env_file=None)
 
 
-def test_env_example_lists_every_runtime_var():
-    """Drift guard: each runtime setting has a matching line in .env.example (AGENTS.md gate)."""
-    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
-    for var in _RUNTIME_ENV_VARS:
-        assert var in env_example, f"{var} missing from .env.example"
-
-
 # Sandboxing — config surface only; the default ``sandbox_mode="none"`` means no sandbox var is
 # required to build ``Settings``.
 
@@ -500,13 +486,6 @@ def test_rejects_a_non_positive_sandbox_timeout(monkeypatch, bad):
         Settings(_env_file=None)
 
 
-def test_env_example_lists_every_sandbox_var():
-    """Drift guard: each sandbox setting has a matching line in .env.example (AGENTS.md gate)."""
-    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
-    for var in _SANDBOX_ENV_VARS:
-        assert var in env_example, f"{var} missing from .env.example"
-
-
 # Subagents
 
 
@@ -540,13 +519,6 @@ def test_rejects_non_positive_subagent_caps(monkeypatch, var, bad):
     monkeypatch.setenv(var, bad)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
-
-
-def test_env_example_lists_every_subagent_var():
-    """Drift guard: each subagent setting has a matching line in .env.example (AGENTS.md gate)."""
-    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
-    for var in _SUBAGENT_ENV_VARS:
-        assert var in env_example, f"{var} missing from .env.example"
 
 
 # Observability: Opik
@@ -638,13 +610,6 @@ def test_opik_api_key_not_in_repr():
     assert "topsecretopik" not in repr(s)
 
 
-def test_env_example_lists_every_opik_var():
-    """Drift guard: each Opik setting has a matching line in .env.example (AGENTS.md gate)."""
-    env_example = (Path(__file__).parents[4] / ".env.example").read_text()
-    for var in _OPIK_ENV_VARS:
-        assert var in env_example, f"{var} missing from .env.example"
-
-
 def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):
     """A copied .env.example must NOT set a truthy OPIK_API_KEY (presence-based silent-no-op default).
 
@@ -659,6 +624,10 @@ def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):
     assert s.opik_api_key.get_secret_value() == ""
 
 
+# .env.example drift is covered GLOBALLY (every field, both directions, no allowlist) by
+# tests/unit/decode/config/test_env_example_drift.py — it subsumes the per-section
+# ``test_env_example_lists_every_*_var`` guards that used to live here (ADR-0015 §9).
+#
 # The DECODE_ENV gate + the Environment Bucket settings source (ADR-0015) have their own file:
 # tests/unit/decode/config/test_env_bucket.py — including the restated "at DECODE_ENV=local, decode
 # never imports kitaru" invariant (a fresh-subprocess import check).
