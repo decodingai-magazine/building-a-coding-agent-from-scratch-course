@@ -17,10 +17,13 @@ import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import click  # noqa: E402
-from pydantic import ValidationError  # noqa: E402
 
 from decode.agents.loader import load_primary_agent  # noqa: E402
-from decode.config.settings import settings  # noqa: E402
+from decode.config.settings import (  # noqa: E402
+    bucket_load_error,
+    environment_bucket_name,
+    settings,
+)
 from decode.permissions.types import PermissionMode  # noqa: E402
 from decode.tui.app import run_app  # noqa: E402
 
@@ -187,29 +190,28 @@ def _sandbox_repo_config_error(repo: str | None) -> str | None:
     return None
 
 
-def _secret_store_config_error() -> str | None:
-    """Hydrate + validate the secret-store config before the flow; one friendly line if it fails (ADR-0008 §5).
+def _env_bucket_error() -> str | None:
+    """One friendly line if a remote ``DECODE_ENV``'s Environment Bucket could not be loaded (ADR-0015 §5).
 
-    Hydrates the ``settings`` singleton from the Kitaru secret up front (via the flow's own
-    ``_config_from_secret_store`` context, restored on exit) and runs the provider-config guard
-    against THAT hydrated config — so a secret-only key satisfies the guard, and a missing/malformed
-    secret becomes one friendly stderr line instead of a traceback from inside the flow. ``kitaru`` is
-    reached only through that lazily-imported context.
+    ``None`` at ``local`` (nothing to load) and whenever the bucket hydrated cleanly. The settings
+    singleton is built at import, so the bucket source captures its failure instead of raising; this
+    turns that captured failure into the house friendly-line-on-stderr + non-zero-exit contract, in
+    the REPL startup chain and the headless pre-flight alike. It runs FIRST in both: at a remote env
+    the provider key is EXPECTED to come from the bucket, so a bucket failure must name
+    ``make sync-secrets``, not ``GEMINI_API_KEY``.
     """
-    from decode.runtime.flow import _config_from_secret_store
-
-    # Read the secret name pre-hydration — that is the name the source fetches with.
-    secret_name = settings.runtime_secret_name
-    try:
-        with _config_from_secret_store():
-            return _provider_config_error()
-    except (RuntimeError, ValidationError) as exc:
-        logger.debug("secret-store config secret %r missing or invalid: %s", secret_name, exc)
-        return (
-            f"Decode: RUNTIME_SECRET_STORE_CONFIG is on but the Kitaru secret {secret_name!r} could "
-            f"not be loaded (it is missing, or a stored value is invalid) — create or repair it with "
-            f"`kitaru secrets set {secret_name} --LLM_PROVIDER=… --GEMINI_API_KEY=…` (see .env.example)."
-        )
+    if settings.decode_env == "local":
+        return None
+    error = bucket_load_error()
+    if error is None:
+        return None
+    logger.debug("environment bucket unavailable at DECODE_ENV=%s: %s", settings.decode_env, error)
+    bucket = environment_bucket_name(settings.decode_env)
+    return (
+        f"Decode: DECODE_ENV={settings.decode_env} but the environment bucket {bucket!r} could not "
+        f"be loaded (it is missing, or the Kitaru local server is down) — run "
+        f"`make sync-secrets ENV={settings.decode_env}` (see CREDENTIALS.md)."
+    )
 
 
 def _runtime_config_preflight(repo: str | None = None) -> str | None:
@@ -218,23 +220,22 @@ def _runtime_config_preflight(repo: str | None = None) -> str | None:
     Both headless entrypoints run this identical ordered chain, returning the FIRST friendly error
     line. Order is load-bearing:
 
-    1. Per-provider config guard — skipped when the kitaru-backed secret-store config source supplies
-       the config; that one is validated in a pre-flight *after* the runtime gate, because it boots
-       Kitaru and a disabled runtime must short-circuit first.
-    2. ``RUNTIME_ENABLED`` — a disabled runtime never builds/replays a flow.
-    3. Sandbox backend guard, then the sandbox-repo guard (both kitaru-free). ``repo`` is the
-       ``--repo`` flag (``None`` for ``decode replay``), resolved against ``SANDBOX_REPO`` inside.
-    4. Secret-store config pre-flight.
-
-    ``kitaru`` is reached only through that pre-flight's lazy seam, so the REPL never loads it.
+    1. Environment-Bucket guard — at a remote ``DECODE_ENV`` the provider key is expected to come from
+       the bucket, so a bucket failure must be named before any key guard can mis-blame ``.env``.
+    2. Per-provider config guard — unconditional: hydration is process-scoped (ADR-0015 §5), so this
+       already runs against the hydrated config, whichever mechanism supplied it.
+    3. ``RUNTIME_ENABLED`` — a disabled runtime never builds/replays a flow.
+    4. Sandbox backend guard, then the sandbox-repo guard. ``repo`` is the ``--repo`` flag (``None``
+       for ``decode replay``), resolved against ``SANDBOX_REPO`` inside.
     """
-    secret_store_on = settings.runtime_secret_store_config
+    bucket_error = _env_bucket_error()
+    if bucket_error is not None:
+        return bucket_error
 
-    if not secret_store_on:
-        config_error = _provider_config_error()
-        if config_error is not None:
-            logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
-            return config_error
+    config_error = _provider_config_error()
+    if config_error is not None:
+        logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
+        return config_error
 
     if not settings.runtime_enabled:
         logger.debug("runtime disabled; refusing to run")
@@ -249,11 +250,6 @@ def _runtime_config_preflight(repo: str | None = None) -> str | None:
     if repo_error is not None:
         logger.debug("sandbox repo requested in none mode; refusing to run")
         return repo_error
-
-    if secret_store_on:
-        secret_store_error = _secret_store_config_error()
-        if secret_store_error is not None:
-            return secret_store_error
 
     return None
 
@@ -320,6 +316,14 @@ def cli(
         return
 
     logger.debug("decode starting (resume=%s, agent=%s, mode=%s)", resume, agent, mode)
+    # Environment-Bucket startup guard (ADR-0015 §5), FIRST in the chain: at a remote DECODE_ENV the
+    # provider key is expected to come from the bucket, so a bucket failure must name
+    # `make sync-secrets`, not GEMINI_API_KEY. A no-op at the ``local`` default.
+    bucket_error = _env_bucket_error()
+    if bucket_error is not None:
+        click.echo(bucket_error, err=True)
+        raise click.exceptions.Exit(1)
+
     # Provider config startup guard (ADR-0005 §6): one friendly stderr line before any agent is
     # built, instead of the raw pydantic_ai.UserError build_agent() would raise.
     config_error = _provider_config_error()
@@ -429,14 +433,12 @@ def run(task: str, hitl: bool, model: str | None, repo: str | None, local: bool)
     paste-ready ``decode replay`` hint print on **stderr** — so stdout stays clean for piping and the
     checkpoint→replay loop is discoverable from the terminal (ADR-0010 §4).
 
-    Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): the per-provider
-    config guard (it builds a model) fires first, then ``RUNTIME_ENABLED`` — a disabled runtime never
-    builds a flow. The kitaru-backed **secret-store config source** (``RUNTIME_SECRET_STORE_CONFIG``,
-    ADR-0008 §5) moves that key guard to a pre-flight after the runtime guard, because it boots
-    Kitaru: with it on the whole provider config is hydrated from a Kitaru secret up front, so a
-    key/model living only in the secret satisfies the guard and a missing/malformed secret is one
-    friendly line.
-    ``kitaru`` is imported lazily here so the REPL path never loads it.
+    Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): at a remote
+    ``DECODE_ENV`` the Environment-Bucket guard fires first (a missing bucket names
+    ``make sync-secrets ENV=<env>``, ADR-0015 §5), then the per-provider config guard — it reads the
+    already-hydrated config, whichever mechanism supplied it — then ``RUNTIME_ENABLED``: a disabled
+    runtime never builds a flow. ``kitaru`` is imported lazily here so a ``DECODE_ENV=local`` REPL
+    path never loads it.
     """
     # The shared headless guard chain, byte-identical to ``decode replay`` so the two cannot drift;
     # any failure exits non-zero here, before any flow is built.
@@ -592,9 +594,9 @@ def replay(exec_id: str, from_: str | None, model: str | None) -> None:
       stack (Kitaru cannot pre-populate wait results — ADR-0010 §5,7), so it points at
       ``kitaru executions replay`` instead. HITL answer-reuse is deferred (``tasks/future/``).
 
-    Guards: the same headless chain as ``decode run`` (provider-config / ``RUNTIME_ENABLED`` / secret-store
-    / proxy) fires first — a replay re-executes downstream model calls, so it needs a valid provider
-    config. Kitaru's own replay failures each become one friendly stderr line, never a raw traceback: an
+    Guards: the same headless chain as ``decode run`` (environment bucket / provider-config /
+    ``RUNTIME_ENABLED`` / sandbox) fires first — a replay re-executes downstream model calls, so it needs
+    a valid provider config. Kitaru's own replay failures each become one friendly stderr line, never a raw traceback: an
     ambiguous/invalid ``--from`` (``KitaruStateError``), a swap that diverged the recorded call sequence
     (``KitaruDivergenceError``), and a missing/unloadable ``EXEC_ID`` (``KitaruBackendError``). ``kitaru``
     is imported lazily here so the REPL path never loads it.

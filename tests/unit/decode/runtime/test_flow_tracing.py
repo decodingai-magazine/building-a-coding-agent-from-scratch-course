@@ -2,20 +2,17 @@
 
 Drives the real Kitaru ``@flow`` offline with a scripted ``FunctionModel`` agent injected via the
 ``_build_runtime_agent`` / ``_build_hitl_runtime_agent`` seams. Each flow must call ``init_tracing()``
-before opening its root span (``thread_id`` = the run's exec_id), and init must run AFTER
-``_config_from_secret_store()`` — proven with an ``OPIK_API_KEY`` living only in a Kitaru secret and
-the logfire/OTLP boundary mocked (no network). Span *shape* is the integration capstone's concern.
+before opening its root span (``thread_id`` = the run's exec_id) — including on the exception unwind.
+Config hydration is process-scoped (ADR-0015 §5), so a bucket-sourced ``OPIK_API_KEY`` is simply
+already in ``settings`` here. Span *shape* is the integration capstone's concern.
 """
 
 from __future__ import annotations
 
 import contextlib
-import logging
-from types import SimpleNamespace
 
 import logfire
 import pytest
-from kitaru import create_secret
 from kitaru.adapters.pydantic_ai import KitaruAgent
 from logfire.testing import (
     CaptureLogfire,
@@ -29,7 +26,7 @@ from support.runtime_agents import make_scripted_agent
 
 import decode.runtime.flow as flow_mod
 from decode.agent.deps import AgentDeps
-from decode.config.settings import reload_settings, settings
+from decode.config.settings import settings
 from decode.observability import tracing
 from decode.observability.tracing import is_tracing_active, reset_tracing
 from decode.runtime import run_agent_task, run_hitl_agent_task
@@ -73,23 +70,6 @@ def active_tracing(monkeypatch, capfire) -> CaptureLogfire:  # noqa: F811
     monkeypatch.setattr(tracing, "_active", True)
     logfire.instrument_pydantic_ai()
     return capfire
-
-
-@pytest.fixture(autouse=True)
-def restore_settings_singleton():
-    """Snapshot + restore the ``settings`` singleton so a hydrating flow never leaks into the suite."""
-    from decode.config.settings import set_secret_hydration_active
-
-    snapshot = dict(settings.__dict__)
-    snapshot_fields_set = set(settings.__pydantic_fields_set__)
-    try:
-        yield
-    finally:
-        set_secret_hydration_active(False)
-        settings.__dict__.clear()
-        settings.__dict__.update(snapshot)
-        settings.__pydantic_fields_set__.clear()
-        settings.__pydantic_fields_set__.update(snapshot_fields_set)
 
 
 def _bypass_durable(text: str = "ok") -> KitaruAgent:
@@ -229,70 +209,12 @@ def test_bypass_flow_raise_with_tracing_active_closes_decode_run_span_once(activ
     assert "exception" in [e.get("name") for e in (root.get("events") or [])]
 
 
-# AC3 — init_tracing() runs AFTER _config_from_secret_store(): the OPIK_API_KEY lives ONLY in the
-# hydrated Kitaru secret, yet the flow's in-body init still builds the exporter with it (boundary
-# mocked → no network). This is the ordering proof (an init before hydration would see no key).
-
-
-@pytest.fixture
-def mock_logfire_boundary(mocker):
-    """Patch the logfire + OTLP boundary so the real ``init_tracing`` configures nothing real / no network."""
-    return SimpleNamespace(
-        exporter_cls=mocker.patch("decode.observability.tracing.OTLPSpanExporter"),
-        bsp_cls=mocker.patch("decode.observability.tracing.BatchSpanProcessor"),
-        configure=mocker.patch("decode.observability.tracing.logfire.configure"),
-        instrument=mocker.patch("decode.observability.tracing.logfire.instrument_pydantic_ai"),
-        span=mocker.patch("decode.observability.tracing.logfire.span"),
-    )
-
-
-def test_init_tracing_runs_after_secret_store_hydration(
-    monkeypatch, mocker, runtime_secret_name, mock_logfire_boundary
-):
-    """AC3: an ``OPIK_API_KEY`` present ONLY in the Kitaru secret still activates tracing inside the flow.
-
-    The key is absent from the ambient settings (the autouse conftest blanks it) — it lives only in a
-    real Kitaru secret. With ``RUNTIME_SECRET_STORE_CONFIG`` on, the flow hydrates the singleton from
-    that secret and THEN calls ``init_tracing()``; the mocked ``OTLPSpanExporter`` is built with the
-    secret-sourced key in its ``Authorization`` header. An init that ran before hydration would have
-    seen an empty key and no-op'd, so the exporter build proves the ordering (init after secret store).
-    """
-    secret_value = "opik-key-only-in-the-secret-9f3a"
-    assert settings.opik_api_key.get_secret_value() == ""  # blanked by the autouse conftest
-    create_secret(runtime_secret_name, {"OPIK_API_KEY": secret_value}, private=True)
-    monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
-    reload_settings()  # the flow's entry check reads runtime_secret_store_config as True
-    monkeypatch_seam(mocker, "_build_runtime_agent", _bypass_durable("secret-keyed run"))
-
-    handle = run_agent_task.run(task="trace me from the secret")
-
-    assert flow_mod._load_runtime_output(handle.exec_id) == "secret-keyed run"
-    # The exporter was built INSIDE the flow with the SECRET-sourced key — proving init_tracing ran
-    # after _config_from_secret_store hydrated OPIK_API_KEY (never present in the ambient settings).
-    mock_logfire_boundary.exporter_cls.assert_called_once()
-    headers = mock_logfire_boundary.exporter_cls.call_args.kwargs["headers"]
-    assert headers["Authorization"] == secret_value
-    # The singleton is restored on flow exit — the hydrated key does not leak past the run.
-    assert settings.opik_api_key.get_secret_value() == ""
-
-
-def test_init_tracing_secret_key_never_appears_in_the_flow_payload(
-    monkeypatch, mocker, runtime_secret_name, mock_logfire_boundary
-):
-    secret_value = "opik-key-not-in-payload-7c21"
-    create_secret(runtime_secret_name, {"OPIK_API_KEY": secret_value}, private=True)
-    monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
-    reload_settings()
-    monkeypatch_seam(mocker, "_build_runtime_agent", _bypass_durable("ok"))
-
-    handle = run_agent_task.run(task="no key in the payload")
-    assert flow_mod._load_runtime_output(handle.exec_id) == "ok"
-
-    from zenml.client import Client
-
-    run = Client().get_pipeline_run(handle.exec_id)
-    assert set(run.config.parameters) == {"task", "model", "repo", "local"}
-    assert secret_value not in run.config.model_dump_json()
+# Hydration is process-scoped now (ADR-0015 §5): a bucket-hydrated OPIK_API_KEY is already in
+# ``settings`` when the flow starts, so the old in-flow hydration context — and the "init_tracing runs
+# after it" ordering slices that hung off it — are gone. The remaining ordering that matters,
+# init_tracing before the root span opens, is asserted in the seam-mirror tests above. The bucket
+# source's own behaviour (hydration, precedence, never-os.environ, names-not-values logging) lives in
+# tests/unit/decode/config/test_env_bucket.py.
 
 
 # helper
@@ -301,27 +223,3 @@ def test_init_tracing_secret_key_never_appears_in_the_flow_payload(
 def monkeypatch_seam(mocker, seam_name: str, durable: KitaruAgent) -> None:
     """Patch a runtime seam (``_build_runtime_agent`` / ``_build_hitl_runtime_agent``) to a scripted agent."""
     mocker.patch.object(flow_mod, seam_name, lambda model=None: durable)
-
-
-def test_hydration_logs_do_not_carry_the_opik_secret_value(
-    monkeypatch, mocker, runtime_secret_name, mock_logfire_boundary, caplog
-):
-    secret_value = "opik-key-never-logged-1a2b"
-    create_secret(runtime_secret_name, {"OPIK_API_KEY": secret_value}, private=True)
-    monkeypatch.setenv("RUNTIME_SECRET_STORE_CONFIG", "true")
-    reload_settings()
-    monkeypatch_seam(mocker, "_build_runtime_agent", _bypass_durable("ok"))
-
-    with caplog.at_level(logging.INFO):
-        handle = run_agent_task.run(task="log check")
-
-    assert flow_mod._load_runtime_output(handle.exec_id) == "ok"
-    assert secret_value not in caplog.text  # the key is never logged
-    # The one activation INFO line fired (from init_tracing), naming the project, not the key.
-    tracing_infos = [
-        r
-        for r in caplog.records
-        if r.name == "decode.observability.tracing" and r.levelno == logging.INFO
-    ]
-    assert len(tracing_infos) == 1
-    assert settings.opik_project_name in tracing_infos[0].getMessage()

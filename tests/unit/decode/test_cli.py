@@ -174,6 +174,59 @@ def test_cli_passes_named_resume_through(mocker):
     assert run_app.await_args.kwargs.get("resume") == "2026-06-19_abc"
 
 
+# task 097: the Environment-Bucket startup guard — FIRST in the REPL chain (ADR-0015 §5)
+# Hydration is process-scoped and surface-agnostic now: at a remote DECODE_ENV the TUI hydrates from
+# the bucket exactly like headless does, so the REPL needs the same friendly failure. It precedes the
+# provider guard because at a remote env the key is EXPECTED to come from the bucket.
+
+
+def test_repl_unloadable_bucket_exits_nonzero_with_a_friendly_line(mocker):
+    mocker.patch.object(cli_mod.settings, "decode_env", "staging")
+    mocker.patch.object(cli_mod, "bucket_load_error", lambda: "decode-staging: secret not found")
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code != 0
+    assert "DECODE_ENV=staging" in result.output
+    assert "decode-staging" in result.output  # the derived bucket name
+    assert "make sync-secrets ENV=staging" in result.output  # ...and the fix
+    assert "Traceback" not in result.output
+    run_app.assert_not_awaited()  # the REPL never starts
+
+
+def test_repl_bucket_guard_precedes_the_provider_key_guard(mocker):
+    """The bucket was supposed to supply the key, so ``make sync-secrets`` is the fix, not the key."""
+    mocker.patch.object(cli_mod.settings, "decode_env", "prod")
+    mocker.patch.object(cli_mod.settings, "gemini_api_key", SecretStr(""))
+    mocker.patch.object(cli_mod, "bucket_load_error", lambda: "decode-prod: secret not found")
+    mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code != 0
+    assert "make sync-secrets ENV=prod" in result.output
+    assert "set GEMINI_API_KEY in your environment" not in result.output
+
+
+def test_repl_at_local_never_consults_the_bucket(mocker):
+    """``DECODE_ENV=local`` (the default): the guard is a pure no-op — the REPL starts as before."""
+    calls = {"n": 0}
+
+    def _error():
+        calls["n"] += 1
+        return "should never be read at local"
+
+    mocker.patch.object(cli_mod, "bucket_load_error", _error)
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code == 0
+    assert calls["n"] == 0  # never even asked
+    run_app.assert_awaited_once()
+
+
 # task 004 carryover: the no-key startup guard (friendly line, no traceback)
 
 

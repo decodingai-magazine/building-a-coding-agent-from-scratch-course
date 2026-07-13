@@ -20,9 +20,9 @@ from pydantic import SecretStr
 # for every collected test, so its fixtures apply in any order. ``isolated_kitaru_store`` is autouse
 # but gated to the unit runtime package (a no-op importing nothing elsewhere); see the module.
 from support.runtime_fixtures import (  # noqa: F401 — re-exported so pytest registers them
+    env_bucket_name,
     inline_wait_resolver,
     isolated_kitaru_store,
-    runtime_secret_name,
 )
 
 
@@ -70,6 +70,28 @@ def _no_opik_tracing(monkeypatch):
     from decode.config.settings import settings
 
     monkeypatch.setattr(settings, "opik_api_key", SecretStr(""), raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _default_decode_env(monkeypatch):
+    """Hermeticity guard — pin ``DECODE_ENV=local`` for the whole suite (ADR-0015 §1, task 097).
+
+    ``DECODE_ENV`` selects the *injection mechanism*: at any remote value the ``Settings`` chain drops
+    ``.env`` and hydrates from the Kitaru Environment Bucket instead — importing kitaru, touching the
+    local ZenML store, and (on a missing bucket) tripping the new cli startup guard. A developer who
+    exported ``DECODE_ENV=staging`` (or put it in ``.env``) would flip the whole suite remote and see
+    failures no one else gets — the same class of leak :func:`_default_sandbox_mode` /
+    :func:`_no_sandbox_git_token` exist for, and it has bitten this repo twice.
+
+    Deleting the env var also scrubs it for the subprocesses tests spawn (they inherit ``os.environ``),
+    so the "at ``local``, decode never imports kitaru" invariant check stays honest. The bucket tests
+    set their own value with ``monkeypatch.setenv`` (which runs after this fixture, so it wins).
+    """
+    monkeypatch.delenv("DECODE_ENV", raising=False)
+
+    from decode.config.settings import settings
+
+    monkeypatch.setattr(settings, "decode_env", "local", raising=False)
 
 
 @pytest.fixture(autouse=True)

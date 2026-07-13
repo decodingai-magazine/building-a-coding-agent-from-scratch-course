@@ -3,11 +3,13 @@
 Two flows, one ``build_agent()``: :func:`run_agent_task` (BYPASS — every gated tool inline, no
 human wait) and :func:`run_agent_task_hitl` (gating — ``write``/``edit``/``bash`` and ``ask_user``
 pause on durable Kitaru waits resolved out-of-band). Each turn is checkpointed, so a crash replays
-finished turns from cache. Kitaru imports stay inside this package so the REPL path never imports
-kitaru. Opik tracing is one Trace per run, initialized inside the flow after secret-store hydration;
-run-level nesting is best-effort under a real provider (worker-thread loops drop OTel context, so
-some model spans may export as siblings — tokens are still captured).
-See ADR-0008, ADR-0010 (replay), ADR-0012 (sandbox), ADR-0014 (tracing).
+finished turns from cache. Kitaru imports stay inside this package so a ``DECODE_ENV=local`` REPL
+never imports kitaru. Config (including any Environment-Bucket-hydrated key) is already in
+``settings`` when a flow starts — hydration is process-scoped, at singleton construction (ADR-0015
+§5). Opik tracing is one Trace per run, initialized inside the flow; run-level nesting is best-effort
+under a real provider (worker-thread loops drop OTel context, so some model spans may export as
+siblings — tokens are still captured).
+See ADR-0008, ADR-0010 (replay), ADR-0012 (sandbox), ADR-0014 (tracing), ADR-0015 (config).
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from pydantic_ai import DeferredToolRequests
 from decode import observability
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
-from decode.config.settings import reload_settings, set_secret_hydration_active, settings
+from decode.config.settings import settings
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
@@ -77,32 +79,6 @@ _HITL_WAIT_TOOL_NAMES: frozenset[str] = frozenset(
         SLEEP_TOOL_NAME,
     }
 )
-
-
-@contextmanager
-def _config_from_secret_store() -> Iterator[None]:
-    """Hydrate ``settings`` from a Kitaru secret for the span of a flow, restore on exit (ADR-0008 §5).
-
-    The restore is load-bearing: the settings singleton is a module-level global shared by every
-    reader, so without it a later in-process read (or the next flow) would inherit the hydrated
-    config. A pure no-op when ``runtime_secret_store_config`` is off.
-    """
-    if not settings.runtime_secret_store_config:
-        yield
-        return
-    # Snapshot the exact pre-flow field state so the restore is byte-identical even on error.
-    snapshot = dict(settings.__dict__)
-    snapshot_fields_set = set(settings.__pydantic_fields_set__)
-    set_secret_hydration_active(True)
-    try:
-        reload_settings()  # rebuilds the singleton in place, pulling the secret through the source
-        yield
-    finally:
-        set_secret_hydration_active(False)
-        settings.__dict__.clear()
-        settings.__dict__.update(snapshot)
-        settings.__pydantic_fields_set__.clear()
-        settings.__pydantic_fields_set__.update(snapshot_fields_set)
 
 
 @contextmanager
@@ -217,8 +193,7 @@ def _sandbox_proxy(repo: str | None = None, local: bool = False) -> Iterator[Non
     ``SandboxExecutor`` as ``bash``'s executor and warm it against the (cloned) Workspace, then tear
     down. Teardown order is load-bearing: reap the worker BEFORE stopping the proxy —
     ``docker network rm`` fails while the worker is still attached; ``proxy.stop()`` runs even if
-    ``proxy.start()`` raised partway. Nests inside :func:`_config_from_secret_store` so proxy rules
-    read secret-hydrated config.
+    ``proxy.start()`` raised partway. Proxy rules read the already-hydrated ``settings`` (ADR-0015 §5).
     """
     # `ponytail:` a NON-EMPTY SANDBOX_GIT_TOKEN auto-engages the proxy (the one-knob GitHub path).
     # Gate on the resolved VALUE: an explicit ``SANDBOX_GIT_TOKEN=`` parses to ``SecretStr("")``,
@@ -344,9 +319,10 @@ def run_agent_task(
     runs under a ``finally`` that reaps the sandbox executor on completion and on error.
     """
     try:
-        with _config_from_secret_store(), _sandbox_proxy(repo, local):
-            # Init tracing INSIDE the flow, AFTER _config_from_secret_store so a secret-store-hydrated
-            # OPIK_API_KEY is honored; idempotent + a silent no-op without a key (ADR-0014 §4-5).
+        with _sandbox_proxy(repo, local):
+            # Init tracing INSIDE the flow: idempotent + a silent no-op without a key (ADR-0014 §4-5).
+            # An Environment-Bucket-hydrated OPIK_API_KEY is simply already in ``settings`` — hydration
+            # is process-scoped now, at singleton construction (ADR-0015 §5).
             observability.init_tracing()
             tool_scope = _prepare_headless_tool_scope(repo, local)
             durable_agent = _build_runtime_agent(model)
@@ -461,9 +437,10 @@ def run_agent_task_hitl(
     ``finally``. Launch + read-back via :func:`run_hitl_agent_task`.
     """
     try:
-        with _config_from_secret_store(), _sandbox_proxy(repo, local):
-            # Init tracing INSIDE the flow, AFTER _config_from_secret_store so a secret-store-hydrated
-            # OPIK_API_KEY is honored; idempotent + a silent no-op without a key (ADR-0014 §4-5).
+        with _sandbox_proxy(repo, local):
+            # Init tracing INSIDE the flow: idempotent + a silent no-op without a key (ADR-0014 §4-5).
+            # An Environment-Bucket-hydrated OPIK_API_KEY is simply already in ``settings`` — hydration
+            # is process-scoped now, at singleton construction (ADR-0015 §5).
             observability.init_tracing()
             tool_scope = _prepare_headless_tool_scope(repo, local)
             durable_agent = _build_hitl_runtime_agent(model)

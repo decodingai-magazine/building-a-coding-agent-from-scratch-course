@@ -117,13 +117,21 @@ decode replay <ID> --from decode_runtime_model_request --model gemini-2.5-pro
 
 Upstream of `--from` serves from the original run's cache; the anchor and downstream re-execute for real. The new fork's `exec_id` prints on stderr — compare fork vs original with `kitaru executions get`. `--from` is required; a trustworthy what-if does a **baseline rerun** first (no `--model`) and diffs the fork against that. `decode replay` is bypass-only (HITL replays re-ask every wait — use `kitaru executions replay`).
 
-### Keeping keys out of the flow payload
+### Environments & secrets
 
-One opt-in, headless-only surface (off by default; details in [`.env.example`](.env.example) and [ADR-0008 §5](docs/adr/0008-kitaru-durable-runtime.md)):
+One config surface (`Settings`), two injection mechanisms, selected by **`DECODE_ENV`** ([ADR-0015](docs/adr/0015-environment-bucket-secrets.md)):
 
-- `RUNTIME_SECRET_STORE_CONFIG=true` — hydrate the **whole** `decode run` config (provider, model, keys, tuning) from a Kitaru secret (`kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=…`), keyed by `.env.example` names. Real process env still wins; values land in `Settings` only, never `os.environ`. The REPL never reads the secret and never imports Kitaru.
+| `DECODE_ENV` | Where `Settings` gets its values |
+|---|---|
+| `local` (default) | your `.env` file — Kitaru is never imported |
+| `dev` / `staging` / `prod` | the **Environment Bucket**: the derived Kitaru secret `decode-<env>`. `.env` is **dropped from the chain**, so a key missing from the bucket fails loudly at startup instead of being backfilled from your file |
 
-It is a secret-store **lookup**, not the sandbox [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret) below — different secret, different hiding place. (It shipped under the name "Credentials Proxy", retired in ADR-0008 §5 for exactly that confusion.) [`CREDENTIALS.md`](CREDENTIALS.md) tells the two apart and walks an end-to-end test of each, on and off.
+```bash
+make sync-secrets ENV=staging     # mirror .env → the decode-staging bucket (one-way; the file is the truth)
+DECODE_ENV=staging decode         # …and both surfaces (TUI + `decode run`) hydrate from it
+```
+
+Process env always wins; bucket values land in `Settings` only, never `os.environ` — so a model-chosen `bash` never inherits one. This is a secret-store **lookup**, not the sandbox [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret) below (which injects headers *after* a request leaves the worker) — different secret, different hiding place. [`CREDENTIALS.md`](CREDENTIALS.md) tells the two apart and walks an end-to-end test of each.
 
 ## Context compaction
 

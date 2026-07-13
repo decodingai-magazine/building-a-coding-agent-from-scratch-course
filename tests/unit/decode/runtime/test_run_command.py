@@ -1,10 +1,10 @@
 """``decode run "<task>"`` — the headless subcommand end to end (ADR-0008).
 
 Drives the real Click ``run`` subcommand through ``CliRunner``, with the model boundary swapped via
-the ``_build_runtime_agent`` seam and the Kitaru store isolated (the autouse fixture in this
-package's ``conftest``). Covers the happy path (prints the agent's text) and both guards
-(``RUNTIME_ENABLED=false`` and the provider-config guard) — each a friendly stderr line + non-zero
-exit that never builds a flow.
+the ``_build_runtime_agent`` seam and the Kitaru store isolated (the autouse rootdir fixture). Covers
+the happy path (prints the agent's text) and the pre-flight guard chain — Environment Bucket (ADR-0015
+§5), provider config, ``RUNTIME_ENABLED``, sandbox — each a friendly stderr line + non-zero exit that
+never builds a flow.
 """
 
 from __future__ import annotations
@@ -280,145 +280,90 @@ def test_run_command_provider_guard_fires_without_a_key(monkeypatch):
     assert "GEMINI_API_KEY" in result.stderr
 
 
-# Secret-store config source: the `decode run` guard is RUNTIME_SECRET_STORE_CONFIG-aware
-# (task 064 follow-up). When the secret-store source is on, the provider config (key/model/tuning) is
-# hydrated from a Kitaru secret — but the cli's provider-config guard runs BEFORE the flow hydrates, so
-# without a pre-flight a key living only in the secret tripped the misleading ``set GEMINI_API_KEY``
-# line and a missing/malformed secret dumped a deep traceback from inside the flow. The pre-flight
-# hydrates + validates up front: a secret-only key satisfies the guard, and a missing/malformed secret
-# is one friendly stderr line, never a traceback.
-
-# The Kitaru secret name comes from the ``runtime_secret_name`` fixture (a unique per-test
-# ``decode-test-creds-<uuid>`` wired into ``settings.runtime_secret_name`` + ``RUNTIME_SECRET_NAME``) —
-# never the hardcoded production default — so a hypothetical store-isolation fall-through can never
-# collide with or leave a real-store ``decode-llm-creds``, and the missing-secret guards assert a name
-# that is genuinely absent in any store (task 065).
+# Environment Bucket: the `decode run` pre-flight guards a remote DECODE_ENV whose bucket could not be
+# loaded (ADR-0015 §5, task 097). Hydration is process-scoped (it happened at settings import), so the
+# bucket source records a failure instead of raising; the pre-flight turns it into ONE friendly line —
+# FIRST in the chain, because at a remote env the provider key is EXPECTED to come from the bucket, so
+# a bucket failure must name `make sync-secrets ENV=<env>`, never GEMINI_API_KEY.
 
 
 def _no_flow_tripwires(monkeypatch):
     """Make both runtime seams blow up if reached — the guard must exit before any flow is built."""
 
     def _tripwire(*_args, **_kwargs):
-        raise AssertionError("no flow may be built when the Kitaru secret is missing/incomplete")
+        raise AssertionError("no flow may be built when a startup guard trips")
 
     monkeypatch.setattr(flow_mod, "_build_runtime_agent", _tripwire)
     monkeypatch.setattr(flow_mod, "_build_hitl_runtime_agent", _tripwire)
 
 
 @pytest.fixture
-def _secret_store_on(monkeypatch, runtime_secret_name):
-    """Enable the secret-store config source for gemini, runtime on (the secret is created per test).
+def _bucket_unloadable(monkeypatch):
+    """Pin ``DECODE_ENV=staging`` with a captured bucket-load failure, and no provider key.
 
-    Provider vars are cleared from the real env so a key/model living only in the Kitaru secret is the
-    unambiguous source. The flag is set on the singleton directly; the source keys off the in-flow
-    hydration flag the context manager flips, so this is enough for the cli pre-flight to engage it.
-    ``runtime_secret_name`` (unique per test) is wired by the same-named fixture, not here.
+    The realistic remote shape: the key would have come from the bucket, so ``gemini_api_key`` is
+    empty. The bucket guard must win over the provider guard (else the user is told to set
+    GEMINI_API_KEY, which is not the fix).
     """
+    monkeypatch.setattr(cli_mod.settings, "decode_env", "staging")
     monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
-    monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
-    monkeypatch.setattr(cli_mod.settings, "runtime_secret_store_config", True)
     monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
-    for var in ("GEMINI_API_KEY", "GEMINI_MODEL", "LLM_PROVIDER"):
-        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
+    monkeypatch.setattr(cli_mod, "bucket_load_error", lambda: "decode-staging: secret not found")
 
 
-def test_run_secret_store_only_key_satisfies_the_provider_guard(
-    monkeypatch, _secret_store_on, runtime_secret_name
-):
-    """A key living ONLY in the Kitaru secret (proxy off) satisfies the guard — the run proceeds.
-
-    Symptom 1 of the Tester-flagged gap: with RUNTIME_SECRET_STORE_CONFIG on and the key only in the
-    secret, the old guard tripped ``set GEMINI_API_KEY`` and exited 1 even though the key WAS present.
-    The secret-store pre-flight now hydrates Settings up front, so the guard sees the key and the flow
-    runs. Asserted via the scripted seam — no real model call.
-    """
-    from kitaru import create_secret
-
-    create_secret(
-        runtime_secret_name,
-        {"LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "sk-only-in-the-secret"},
-        private=True,
-    )
-    _patch_seam(monkeypatch, "the secret-store answer")
-
-    result = CliRunner().invoke(cli, ["run", "summarize the repo"])
-
-    assert result.exit_code == 0
-    assert "the secret-store answer" in result.output
-    # The misleading provider-key line must NOT appear — the secret satisfied the guard.
-    assert "set GEMINI_API_KEY in your environment" not in result.stderr
-
-
-def test_run_secret_store_missing_secret_is_a_friendly_line_not_a_traceback(
-    monkeypatch, _secret_store_on, runtime_secret_name
-):
-    """RUNTIME_SECRET_STORE_CONFIG on + NO secret → one friendly line naming the secret, no flow, no traceback.
-
-    Symptom 2: the missing secret used to surface as a deep KitaruRuntimeError traceback from inside
-    the flow body. The pre-flight converts it into one friendly stderr line naming the real fix.
-    """
+def test_run_unloadable_bucket_is_a_friendly_line_not_a_traceback(monkeypatch, _bucket_unloadable):
     _no_flow_tripwires(monkeypatch)
 
     result = CliRunner().invoke(cli, ["run", "list the files"])
 
     assert result.exit_code != 0
-    # The raw secret error did not escape as a traceback.
     assert not isinstance(result.exception, (RuntimeError, ValidationError))
-    assert "RUNTIME_SECRET_STORE_CONFIG" in result.stderr
-    assert runtime_secret_name in result.stderr
-    assert "kitaru secrets set" in result.stderr
+    assert "DECODE_ENV=staging" in result.stderr
+    assert "decode-staging" in result.stderr  # the derived bucket name
+    assert "make sync-secrets ENV=staging" in result.stderr  # ...and the fix
+    assert "Traceback" not in result.stderr
 
 
-def test_run_hitl_secret_store_missing_secret_is_a_friendly_line_not_a_traceback(
-    monkeypatch, _secret_store_on, runtime_secret_name
-):
+def test_run_bucket_guard_precedes_the_provider_key_guard(monkeypatch, _bucket_unloadable):
+    """The provider key is missing too — but the bucket line is the one that fires (ADR-0015 §5)."""
+    _no_flow_tripwires(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run", "list the files"])
+
+    assert result.exit_code != 0
+    assert "make sync-secrets" in result.stderr
+    assert "set GEMINI_API_KEY in your environment" not in result.stderr
+
+
+def test_run_hitl_unloadable_bucket_is_a_friendly_line(monkeypatch, _bucket_unloadable):
     _no_flow_tripwires(monkeypatch)
 
     result = CliRunner().invoke(cli, ["run", "--hitl", "create config.toml"])
 
     assert result.exit_code != 0
-    assert not isinstance(result.exception, (RuntimeError, ValidationError))
-    assert "RUNTIME_SECRET_STORE_CONFIG" in result.stderr
-    assert runtime_secret_name in result.stderr
-    assert "kitaru secrets set" in result.stderr
+    assert "make sync-secrets ENV=staging" in result.stderr
 
 
-def test_run_secret_store_malformed_secret_is_a_friendly_line_not_a_traceback(
-    monkeypatch, _secret_store_on, runtime_secret_name
-):
-    """A stored value that fails a pydantic field (bogus LLM_PROVIDER) → friendly line, exit 1, no traceback.
-
-    The malformed-secret half of symptom 2: a typo'd value used to raise a pydantic ValidationError
-    from inside the flow. The pre-flight catches it (LLM_PROVIDER was cleared from the env, so the
-    secret's bogus value is authoritative) and emits the same friendly line.
-    """
-    from kitaru import create_secret
-
-    create_secret(runtime_secret_name, {"LLM_PROVIDER": "totally-bogus"}, private=True)
-    _no_flow_tripwires(monkeypatch)
-
-    result = CliRunner().invoke(cli, ["run", "list the files"])
-
-    assert result.exit_code != 0
-    assert not isinstance(result.exception, (RuntimeError, ValidationError))
-    assert "RUNTIME_SECRET_STORE_CONFIG" in result.stderr
-    assert runtime_secret_name in result.stderr
-
-
-# task 069 (AC5): `--model` never alters the secret-store guard chain, no flow built
-
-
-def test_run_model_does_not_bypass_the_secret_store_guard(
-    monkeypatch, _secret_store_on, runtime_secret_name
-):
+def test_run_model_does_not_bypass_the_bucket_guard(monkeypatch, _bucket_unloadable):
     _no_flow_tripwires(monkeypatch)
 
     result = CliRunner().invoke(cli, ["run", "--model", "gemini-2.5-pro", "list the files"])
 
     assert result.exit_code != 0
-    assert not isinstance(result.exception, (RuntimeError, ValidationError))
-    assert "RUNTIME_SECRET_STORE_CONFIG" in result.stderr
-    assert runtime_secret_name in result.stderr
+    assert "make sync-secrets ENV=staging" in result.stderr
+
+
+def test_run_remote_env_with_a_healthy_bucket_runs_the_flow(monkeypatch, _provider_ok):
+    """A remote env whose bucket loaded cleanly is invisible to the guard chain — the run proceeds."""
+    monkeypatch.setattr(cli_mod.settings, "decode_env", "prod")
+    monkeypatch.setattr(cli_mod, "bucket_load_error", lambda: None)
+    _patch_seam(monkeypatch, "the hydrated answer")
+
+    result = CliRunner().invoke(cli, ["run", "summarize the repo"])
+
+    assert result.exit_code == 0
+    assert "the hydrated answer" in result.output
 
 
 # task 071: the sandbox backend guard shares the `decode run` pre-flight (ADR-0011 §1)
