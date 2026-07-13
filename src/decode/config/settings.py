@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import dotenv_values
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
@@ -180,7 +180,10 @@ class Settings(BaseSettings):
     # OpenTelemetry SDK is untouched (ADR-0014 §2).
     opik_api_key: SecretStr = SecretStr("")
     opik_workspace: str = "default"  # the ``Comet-Workspace`` OTLP header
-    opik_project_name: str = "decode"  # the ``projectName`` OTLP header (Opik groups traces by it)
+    # The ``projectName`` OTLP header (Opik groups traces by it). DERIVED: ``decode-<DECODE_ENV>``
+    # unless explicitly set, so a trace always names the environment that produced it (ADR-0015 §8) —
+    # the declared default below is cosmetic; :meth:`_derive_opik_project_name` supplies the real one.
+    opik_project_name: str = "decode-local"
     # The OTLP **base** URL: ``None`` → Comet cloud base; set to a self-hosted Opik base. The
     # exporter appends ``/v1/traces``.
     opik_url_override: str | None = None
@@ -302,6 +305,25 @@ class Settings(BaseSettings):
     sandbox_credential_proxy_enabled: bool = False
     # The mitmproxy addon container image the Credential Proxy runs.
     sandbox_proxy_image: str = "mitmproxy/mitmproxy"
+
+    @model_validator(mode="after")
+    def _derive_opik_project_name(self) -> Settings:
+        """Default the Opik project to ``decode-<DECODE_ENV>``; an explicit value always wins (ADR-0015 §8).
+
+        "Explicit" is decided by pydantic's ``model_fields_set``, **never** by comparing against the
+        declared default: a value supplied by ANY settings source (process env, ``.env``, the
+        Environment Bucket, ``init``) lands in ``model_fields_set``, while a default-applied one does
+        not. A sentinel/value comparison would misfire on the operator who deliberately sets
+        ``OPIK_PROJECT_NAME`` to the same literal the default derives to.
+
+        ``object.__setattr__`` writes the derived value straight into ``__dict__``: it neither
+        re-enters validation nor forges an "explicit" mark in ``model_fields_set``, so the field keeps
+        reading as derived. ``decode_env`` is resolved on this same model (the source feeds the gate
+        back onto the field), so it is safe to read here.
+        """
+        if "opik_project_name" not in self.model_fields_set:
+            object.__setattr__(self, "opik_project_name", f"decode-{self.decode_env}")
+        return self
 
     @classmethod
     def settings_customise_sources(

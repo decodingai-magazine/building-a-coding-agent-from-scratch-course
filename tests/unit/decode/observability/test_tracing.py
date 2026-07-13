@@ -18,7 +18,7 @@ from logfire.testing import (
 )
 from pydantic import SecretStr
 
-from decode.config.settings import settings
+from decode.config.settings import Settings, settings
 from decode.observability import tracing
 from decode.observability.tracing import (
     init_tracing,
@@ -118,6 +118,27 @@ def test_init_tracing_builds_cloud_exporter_with_settings_headers(monkeypatch, m
     )
     # The exporter is wrapped in a BatchSpanProcessor handed to logfire.configure.
     mock_logfire.bsp_cls.assert_called_once_with(mock_logfire.exporter_cls.return_value)
+
+
+def test_init_tracing_header_carries_the_derived_per_env_project_name(monkeypatch, mock_logfire):
+    """Spot-check the whole path: the derived ``decode-<DECODE_ENV>`` reaches the OTLP header (ADR-0015 §8).
+
+    ``tracing.py`` itself is unchanged — it already reads ``settings.opik_project_name``; this proves
+    the derived value (nobody set ``OPIK_PROJECT_NAME``) is what an Opik trace is filed under.
+    """
+    monkeypatch.delenv("DECODE_ENV", raising=False)
+    monkeypatch.delenv("OPIK_PROJECT_NAME", raising=False)
+    derived = Settings(_env_file=None).opik_project_name
+    monkeypatch.setattr(settings, "opik_api_key", SecretStr("k-123"), raising=False)
+    monkeypatch.setattr(settings, "opik_workspace", "default", raising=False)
+    monkeypatch.setattr(settings, "opik_project_name", derived, raising=False)
+    monkeypatch.setattr(settings, "opik_url_override", None, raising=False)
+
+    init_tracing()
+
+    assert derived == "decode-local"
+    kwargs = mock_logfire.exporter_cls.call_args.kwargs
+    assert kwargs["headers"]["projectName"] == "decode-local"
 
 
 def test_init_tracing_uses_url_override_base_when_set(monkeypatch, mock_logfire):

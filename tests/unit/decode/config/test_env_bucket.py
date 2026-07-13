@@ -37,6 +37,7 @@ _CLEARED_ENV_VARS = (
     "GEMINI_MODEL",
     "OPENROUTER_API_KEY",
     "OPENROUTER_MODEL",
+    "OPIK_PROJECT_NAME",
 )
 
 
@@ -242,6 +243,58 @@ def test_a_bucket_supplied_decode_env_cannot_override_the_resolved_gate(monkeypa
     s = Settings(_env_file=None)
 
     assert s.decode_env == "dev"  # the gate that was actually applied
+
+
+# --- Opik projects follow the environment: opik_project_name defaults to decode-<env> (§8) ---
+
+
+@pytest.mark.parametrize("env", ["dev", "staging", "prod"])
+def test_opik_project_name_is_derived_from_a_remote_decode_env(monkeypatch, env):
+    """A trace names the environment that produced it: ``DECODE_ENV=prod`` → project ``decode-prod``."""
+    _install_fake_kitaru(monkeypatch, {})
+    monkeypatch.setenv("DECODE_ENV", env)
+
+    s = Settings(_env_file=None)
+
+    assert s.opik_project_name == f"decode-{env}"
+
+
+def test_a_bucket_supplied_opik_project_name_wins_over_the_derived_default(monkeypatch):
+    """Explicit wins from the BUCKET too — it is a settings source like any other (ADR-0015 §8)."""
+    _install_fake_kitaru(monkeypatch, {"OPIK_PROJECT_NAME": "proj-from-the-bucket"})
+    monkeypatch.setenv("DECODE_ENV", "staging")
+
+    s = Settings(_env_file=None)
+
+    assert s.opik_project_name == "proj-from-the-bucket"
+    assert (
+        "opik_project_name" in s.model_fields_set
+    )  # source-supplied → explicit, never derived over
+
+
+def test_a_process_env_opik_project_name_wins_at_a_remote_env(monkeypatch):
+    _install_fake_kitaru(monkeypatch, {"OPIK_PROJECT_NAME": "proj-from-the-bucket"})
+    monkeypatch.setenv("DECODE_ENV", "prod")
+    monkeypatch.setenv("OPIK_PROJECT_NAME", "proj-from-the-process-env")
+
+    s = Settings(_env_file=None)
+
+    assert s.opik_project_name == "proj-from-the-process-env"
+
+
+def test_an_explicit_project_name_matching_the_declared_default_survives_a_remote_env(monkeypatch):
+    """Anti-sentinel, the discriminating case: explicit ``decode-local`` at ``DECODE_ENV=dev``.
+
+    A sentinel/value comparison against the declared default would see ``decode-local``, call it
+    "unset", and overwrite it with ``decode-dev`` — silently ignoring an operator's explicit choice.
+    ``model_fields_set`` cannot make that mistake: the bucket supplied the field, so it stands.
+    """
+    _install_fake_kitaru(monkeypatch, {"OPIK_PROJECT_NAME": "decode-local"})
+    monkeypatch.setenv("DECODE_ENV", "dev")
+
+    s = Settings(_env_file=None)
+
+    assert s.opik_project_name == "decode-local"  # NOT decode-dev
 
 
 # --- Failure capture: the singleton is built at import, so the source must never raise (§5) ---

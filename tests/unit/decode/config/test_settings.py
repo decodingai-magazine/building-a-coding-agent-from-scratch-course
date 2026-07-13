@@ -555,11 +555,49 @@ def test_env_example_lists_every_subagent_var():
 def test_opik_defaults(monkeypatch):
     for var in _OPIK_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("DECODE_ENV", raising=False)
     s = Settings(_env_file=None)
     assert s.opik_api_key.get_secret_value() == ""  # presence trigger — empty == tracing off
     assert s.opik_workspace == "default"
-    assert s.opik_project_name == "decode"
+    assert s.opik_project_name == "decode-local"  # DERIVED: decode-<DECODE_ENV> (ADR-0015 §8)
     assert s.opik_url_override is None  # None == Comet cloud OTLP base
+
+
+def test_opik_project_name_is_derived_from_decode_env_when_unset(monkeypatch):
+    """A trace must name the environment that produced it: the default is ``decode-<DECODE_ENV>``.
+
+    At ``local`` (the default gate) that is ``decode-local`` — the suffix is applied ALWAYS, there is
+    no bare ``decode`` project any more (ADR-0015 §8). The remote envs are covered in
+    ``test_env_bucket.py`` (they need a stubbed bucket).
+    """
+    for var in _OPIK_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("DECODE_ENV", raising=False)
+
+    s = Settings(_env_file=None)
+
+    assert s.decode_env == "local"
+    assert s.opik_project_name == "decode-local"
+    # The mechanism: nobody supplied the field, so it is absent from ``model_fields_set`` — that (not
+    # a sentinel value) is what marks it derivable, and deriving must not forge an "explicit" mark.
+    assert "opik_project_name" not in s.model_fields_set
+
+
+def test_an_explicit_opik_project_name_equal_to_the_derived_default_is_honoured(monkeypatch):
+    """Anti-sentinel: setting the field to the literal the default derives to is still an EXPLICIT set.
+
+    A sentinel/value comparison (``if opik_project_name == "decode-local"``) cannot tell this apart
+    from "nobody set it" — ``model_fields_set`` can, and the value must survive untouched.
+    """
+    for var in _OPIK_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("DECODE_ENV", raising=False)
+    monkeypatch.setenv("OPIK_PROJECT_NAME", "decode-local")
+
+    s = Settings(_env_file=None)
+
+    assert s.opik_project_name == "decode-local"
+    assert "opik_project_name" in s.model_fields_set  # source-supplied → explicit
 
 
 def test_reads_opik_vars_from_process_env(monkeypatch):
@@ -570,7 +608,9 @@ def test_reads_opik_vars_from_process_env(monkeypatch):
     s = Settings(_env_file=None)
     assert s.opik_api_key.get_secret_value() == "opik-secret-123"
     assert s.opik_workspace == "my-workspace"
+    # An explicit OPIK_PROJECT_NAME from the PROCESS ENV beats the derived decode-<env> default.
     assert s.opik_project_name == "my-project"
+    assert "opik_project_name" in s.model_fields_set
     assert s.opik_url_override == "http://localhost:5173/api/v1/private/otel"
 
 
@@ -587,7 +627,9 @@ def test_loads_opik_vars_from_a_dotenv_file(tmp_path, monkeypatch):
     s = Settings(_env_file=str(env))
     assert s.opik_api_key.get_secret_value() == "sk-opik-dotenv"
     assert s.opik_workspace == "ws-dotenv"
+    # An explicit OPIK_PROJECT_NAME from the DOTENV file beats the derived decode-<env> default.
     assert s.opik_project_name == "proj-dotenv"
+    assert "opik_project_name" in s.model_fields_set
     assert s.opik_url_override == "https://opik.example.com/api/v1/private/otel"
 
 
