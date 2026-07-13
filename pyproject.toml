@@ -92,6 +92,7 @@ addopts = "-ra --strict-markers --import-mode=importlib"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 # ``tests/support`` carries shared test-only helpers (e.g. the gated ``noop`` tool the
-# permission/loop/e2e tests drive) that the shipped ``decode`` package must not contain.
-pythonpath = ["src", "tests"]
+# permission/loop/e2e tests drive) that the shipped ``decode`` package must not contain. ``.`` puts the
+# repo root on the path so the unit tests can import the operator scripts in ``scripts/`` (unpackaged).
+pythonpath = ["src", "tests", "."]
 filterwarnings = ["error"]

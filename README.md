@@ -131,6 +131,8 @@ make sync-secrets ENV=staging     # mirror .env → the decode-staging bucket (o
 DECODE_ENV=staging decode         # …and both surfaces (TUI + `decode run`) hydrate from it
 ```
 
+The mirror pushes the keys of the config surface (the `Settings` fields) in **one** `kitaru secrets set` call — that command replaces the whole key set, so full-surface-or-nothing is the only safe write, and the bucket ends up an exact mirror of your file. It prints a key-name diff and asks before overwriting (`--yes` for CI); values are never echoed. `DECODE_ENV` itself is never pushed: the bucket is *named* by the environment.
+
 Process env always wins; bucket values land in `Settings` only, never `os.environ` — so a model-chosen `bash` never inherits one. This is a secret-store **lookup**, not the sandbox [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret) below (which injects headers *after* a request leaves the worker) — different secret, different hiding place. [`CREDENTIALS.md`](CREDENTIALS.md) tells the two apart and walks an end-to-end test of each.
 
 ## Context compaction
