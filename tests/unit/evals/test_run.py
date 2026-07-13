@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from evals.run import cli
@@ -47,6 +48,45 @@ def test_benchmark_subcommand_invokes_run_benchmark(mocker):
     assert kwargs["task_id"] == "001-greeting"
     assert kwargs["sandbox"] == "docker"
     assert "decode-evals" in result.output
+
+
+def test_benchmark_subcommand_forwards_trials_and_prints_the_summary(mocker):
+    """``benchmark --trials 3`` forwards ``trials`` and prints the Rich aggregate table (ADR-0017 §8)."""
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+
+    result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--trials", "3"])
+
+    assert result.exit_code == 0, result.output
+    _, kwargs = run_benchmark.call_args
+    assert kwargs["trials"] == 3
+    # The summary table renders even on the mock result (graceful-empty), naming the trial count.
+    assert "trial(s)" in result.output
+
+
+@pytest.mark.parametrize("trials", ["0", "-1"])
+def test_benchmark_subcommand_rejects_a_non_positive_trials(mocker, trials):
+    """``--trials 0`` / ``--trials -1`` fail loudly (click range) and never reach ``run_benchmark``.
+
+    The QA-round-1 bug: without a range guard the run exited 0 with a misleading "experiment logged"
+    and a nonsense ``0 task(s) x 0 trial(s)`` / ``pass@-1`` table.
+    """
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+
+    result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--trials", trials])
+
+    assert result.exit_code != 0
+    assert "trials" in result.output.lower()
+    run_benchmark.assert_not_called()
+
+
+def test_benchmark_subcommand_rejects_a_non_positive_nb_samples(mocker):
+    """``--nb-samples 0`` is a friendly range error too — never a silent zero-item cap."""
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+
+    result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--nb-samples", "0"])
+
+    assert result.exit_code != 0
+    run_benchmark.assert_not_called()
 
 
 def test_benchmark_subcommand_reports_an_empty_selection(mocker):

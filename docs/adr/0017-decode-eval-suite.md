@@ -61,9 +61,11 @@ credential-proxy involvement, best@k/majority-vote, user simulation.
    overrides. Judges are reserved for what code can't score (quality, groundedness, minimal-diff on
    tasks 15/19/20 and judge probes); everything mechanical stays a `BaseMetric` → `ScoreResult`.
 8. **Trials + aggregation on Opik's own axis.** `--trials k` → `evaluate(trial_count=k)`;
-   pass@1 / pass@k / pass^k / flakiness-rate and cost-normalized success-per-dollar ride
-   `experiment_scoring_functions` so they land on the experiment row; `experiment_config` records
-   agent model, provider, git sha. Costs come from recorded usage (+ Opik trace `total_cost` where
+   pass@1 / pass@k / pass^k / flakiness-rate and cost-normalized success-per-dollar are computed as
+   post-hoc pure functions over the `evaluate()` result's `test_results` (installed `opik==1.9.8` has
+   no `experiment_scoring_functions` param) and attached to the experiment as per-item trace
+   feedback-scores, whose per-experiment averaging surfaces them on the experiment row;
+   `experiment_config` records agent model, provider, git sha. Costs come from recorded usage (+ Opik trace `total_cost` where
    available).
 9. **Cadence: manual, never in `make ci`.** `make eval-benchmark` / `make eval-regression` need
    `GEMINI_API_KEY` + `OPIK_API_KEY`; the regression ritual is pre-merge per feature branch and the

@@ -167,21 +167,31 @@ def run_benchmark(
     difficulty: Difficulty | None = None,
     sandbox: str = "docker",
     nb_samples: int | None = None,
+    trials: int = 1,
     client: opik.Opik | None = None,
 ) -> EvaluationResult:
-    """Run the filtered benchmark as one Opik experiment and return its result (ADR-0017 §3,4,5).
+    """Run the filtered benchmark as one Opik experiment and return its result (ADR-0017 §3,4,5,8).
 
     Loads every task, applies the ``--task`` / ``--difficulty`` filters, upserts the selection into
     ``decode-benchmark-v1``, and calls ``evaluate`` scoped (via ``dataset_item_ids``) to just those
-    items with the code metrics + single-task judges. ``experiment_config`` records the agent model,
-    provider, git sha and sandbox; ``project_name`` is ``settings.eval_project_name`` so live tracing
-    stays clean. Runs single-threaded — the ``bash`` executor seam is process-global. Raises
+    items with the code metrics + single-task judges. ``trials`` rides Opik's own ``trial_count`` axis
+    (``k`` runs per item); after the run, the trial aggregates (pass@1/pass@k/pass^k/flakiness + cost,
+    :mod:`evals.harness.aggregates`) are attached to the experiment as trace feedback scores — the
+    1.9.8 stand-in for the removed ``experiment_scoring_functions`` (ADR-0017 §8; task-107 log). A
+    failed attach never sinks a completed run. ``experiment_config`` records the agent model, provider,
+    git sha and sandbox; ``project_name`` is ``settings.eval_project_name`` so live tracing stays
+    clean. Runs single-threaded — the ``bash`` executor seam is process-global. Raises
     :class:`BenchmarkSelectionError` when nothing matches.
     """
     import opik
     from opik.evaluation import evaluate
 
     from evals.harness.datasets import sync_benchmark_dataset
+
+    if trials < 1:
+        # Guard BEFORE evaluate: opik's evaluate(trial_count<1) range()-loops zero times and returns
+        # cleanly, which would report a nonsense pass@<0> over zero real trials (ADR-0017 §8).
+        raise ValueError(f"trials must be >= 1, got {trials}.")
 
     all_tasks = load_benchmark_tasks()
     selected = _select_tasks(all_tasks, task_id=task_id, difficulty=difficulty)
@@ -197,7 +207,7 @@ def run_benchmark(
 
     tasks_by_id = {task.id: task for task in all_tasks}
     task_fn = make_benchmark_task_fn(tasks_by_id, sandbox=sandbox)
-    return evaluate(
+    result = evaluate(
         dataset=dataset,
         task=task_fn,
         scoring_metrics=_scoring_metrics(selected),
@@ -206,7 +216,29 @@ def run_benchmark(
         nb_samples=nb_samples,
         dataset_item_ids=item_ids or None,
         task_threads=1,
+        trial_count=trials,
     )
+    _attach_aggregates(client, result, trials)
+    return result
+
+
+def _attach_aggregates(client: opik.Opik, result: EvaluationResult, trials: int) -> None:
+    """Log the post-hoc trial aggregates onto the experiment's traces — best-effort (ADR-0017 §8).
+
+    Opik 1.9.8 has no ``experiment_scoring_functions``, so pass@k / pass^k / flakiness / cost ride the
+    experiment as per-item trace feedback scores that Opik averages onto the experiment row. A logging
+    failure (Opik unreachable, an unexpected result shape) is swallowed with a warning: the benchmark
+    already ran and its result must still return.
+    """
+    from evals.harness.aggregates import attach_experiment_aggregates, summarize
+
+    try:
+        summary = summarize(result, trials=trials)
+        attach_experiment_aggregates(
+            client, result, summary, project_name=settings.eval_project_name
+        )
+    except Exception:  # a completed run must not fail on its post-hoc bookkeeping
+        logger.exception("[eval] failed to attach trial aggregates to the experiment")
 
 
 def _select_tasks(

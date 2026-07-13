@@ -136,6 +136,107 @@ def test_run_benchmark_wires_evaluate(mocker, greeting_task_dir: Path):
     assert config["sandbox"] == "docker"
 
 
+def test_run_benchmark_forwards_the_trial_count(mocker, greeting_task_dir: Path):
+    """``--trials k`` rides through to Opik's own ``evaluate(trial_count=k)`` axis (ADR-0017 §8)."""
+    task = load_benchmark_task(greeting_task_dir)
+    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
+    evaluate = mocker.patch("opik.evaluation.evaluate")
+    opik_cls = mocker.patch("opik.Opik")
+    dataset = opik_cls.return_value.get_or_create_dataset.return_value
+    dataset.get_items.return_value = [{"id": "item-1", "task_id": task.id}]
+
+    run_benchmark(task_id=task.id, sandbox="docker", trials=3)
+
+    _, kwargs = evaluate.call_args
+    assert kwargs["trial_count"] == 3
+
+
+def test_run_benchmark_default_trial_count_is_one(mocker, greeting_task_dir: Path):
+    """No ``--trials`` means a single trial per item — the historical default (ADR-0017 §8)."""
+    task = load_benchmark_task(greeting_task_dir)
+    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
+    evaluate = mocker.patch("opik.evaluation.evaluate")
+    opik_cls = mocker.patch("opik.Opik")
+    dataset = opik_cls.return_value.get_or_create_dataset.return_value
+    dataset.get_items.return_value = [{"id": "item-1", "task_id": task.id}]
+
+    run_benchmark(task_id=task.id, sandbox="docker")
+
+    _, kwargs = evaluate.call_args
+    assert kwargs["trial_count"] == 1
+
+
+@pytest.mark.parametrize("trials", [0, -5])
+def test_run_benchmark_rejects_a_non_positive_trial_count(mocker, greeting_task_dir: Path, trials):
+    """``trials < 1`` is a loud programmatic error — never a clean return over zero real trials.
+
+    Opik's ``evaluate(trial_count=-5)`` would ``range()``-loop zero times and return cleanly, so the
+    guard must trip BEFORE evaluate is ever reached (else the run reports a nonsense ``pass@-5``).
+    """
+    task = load_benchmark_task(greeting_task_dir)
+    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
+    evaluate = mocker.patch("opik.evaluation.evaluate")
+
+    with pytest.raises(ValueError, match="trials"):
+        run_benchmark(task_id=task.id, sandbox="docker", trials=trials)
+
+    evaluate.assert_not_called()
+
+
+def test_run_benchmark_attaches_aggregates_to_the_experiment(mocker, greeting_task_dir: Path):
+    """After ``evaluate`` returns, the derived pass@k/cost scores land on the experiment traces (§8).
+
+    The 1.9.8 stand-in for ``experiment_scoring_functions``: ``run_benchmark`` summarizes the result
+    post-hoc and logs the aggregates as trace feedback scores via the same Opik client.
+    """
+    from opik.evaluation.metrics.score_result import ScoreResult
+    from opik.evaluation.test_case import TestCase
+    from opik.evaluation.test_result import TestResult
+
+    task = load_benchmark_task(greeting_task_dir)
+    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
+    evaluate = mocker.patch("opik.evaluation.evaluate")
+    evaluate.return_value.test_results = [
+        TestResult(
+            test_case=TestCase(
+                trace_id="trace-1",
+                dataset_item_id="item-1",
+                scoring_inputs={},
+                task_output={},
+                dataset_item_content={"task_id": task.id},
+            ),
+            score_results=[ScoreResult(name="verify_oracle", value=1.0)],
+            trial_id=0,
+        )
+    ]
+    opik_cls = mocker.patch("opik.Opik")
+    client = opik_cls.return_value
+    client.get_or_create_dataset.return_value.get_items.return_value = [
+        {"id": "item-1", "task_id": task.id}
+    ]
+
+    run_benchmark(task_id=task.id, sandbox="docker", trials=1)
+
+    client.log_traces_feedback_scores.assert_called_once()
+
+
+def test_run_benchmark_survives_an_aggregate_attach_failure(mocker, greeting_task_dir: Path):
+    """A failed feedback-score log must NOT sink a completed benchmark run — it returns the result."""
+    task = load_benchmark_task(greeting_task_dir)
+    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
+    evaluate = mocker.patch("opik.evaluation.evaluate")
+    opik_cls = mocker.patch("opik.Opik")
+    client = opik_cls.return_value
+    client.get_or_create_dataset.return_value.get_items.return_value = [
+        {"id": "item-1", "task_id": task.id}
+    ]
+    client.log_traces_feedback_scores.side_effect = RuntimeError("opik unreachable")
+
+    result = run_benchmark(task_id=task.id, sandbox="docker")
+
+    assert result is evaluate.return_value  # the run still returns cleanly
+
+
 def test_run_benchmark_multi_task_omits_per_task_judges(mocker, greeting_task_dir: Path):
     """A run spanning >1 task uses code metrics only — a per-task judge can't grade another's output."""
     task = load_benchmark_task(greeting_task_dir)

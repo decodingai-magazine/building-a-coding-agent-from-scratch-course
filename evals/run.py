@@ -33,31 +33,50 @@ def cli() -> None:
 )
 @click.option(
     "--nb-samples",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
     help="Cap the number of dataset items sampled (Opik nb_samples).",
 )
+@click.option(
+    "--trials",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Runs per item (Opik trial_count) — drives pass@k / pass^k / flakiness aggregates.",
+)
 def benchmark(
-    task_id: str | None, difficulty: str | None, sandbox: str, nb_samples: int | None
+    task_id: str | None,
+    difficulty: str | None,
+    sandbox: str,
+    nb_samples: int | None,
+    trials: int,
 ) -> None:
-    """Run the outcome benchmark as an Opik experiment (ADR-0017 §3,4,5).
+    """Run the outcome benchmark as an Opik experiment (ADR-0017 §3,4,5,8).
 
-    Each selected task runs the real agent in a fresh isolated Workspace, grades it with the hidden
-    ``verify.sh`` oracle, and scores the run with the code metrics (+ a single task's G-Eval judges)
-    under ``settings.eval_project_name``. Opik + the harness are imported lazily so ``--help`` never
-    needs keys or a network (ADR-0017 §1).
+    Each selected task runs the real agent in a fresh isolated Workspace ``--trials`` times, grades
+    each run with the hidden ``verify.sh`` oracle, and scores it with the code metrics (+ a single
+    task's G-Eval judges) under ``settings.eval_project_name``. The trial aggregates
+    (pass@1 / pass@k / pass^k / flakiness + cost) are attached to the experiment and printed as a Rich
+    summary table. Opik + the harness are imported lazily so ``--help`` never needs keys or a
+    network (ADR-0017 §1).
     """
+    from rich.console import Console
+
+    from evals.harness.aggregates import render_summary_table, summarize
     from evals.harness.benchmark import BenchmarkSelectionError, run_benchmark
 
     try:
-        run_benchmark(
+        result = run_benchmark(
             task_id=task_id,
             difficulty=difficulty,
             sandbox=sandbox,
             nb_samples=nb_samples,
+            trials=trials,
         )
     except BenchmarkSelectionError as exc:
         raise click.ClickException(str(exc)) from exc
+
+    Console().print(render_summary_table(summarize(result, trials=trials)))
     click.echo(f"evals benchmark: experiment logged under {settings_project_name()}.")
 
 
