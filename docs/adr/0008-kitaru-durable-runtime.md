@@ -170,7 +170,7 @@ credentials-proxy surface is recorded as least-exampled (verify-first).
    *sandbox HTTP* headers), and because the PydanticAI adapter needs a concrete model at construction,
    the docs-backed path is env injection (`ImageSettings(secret_environment_from=[...])`). So task 061
    **verifies the secrets API against the installed SDK first** and ships env-injection as the
-   documented fallback; the path is opt-in (`runtime_credentials_proxy_enabled`, default off).
+   documented fallback; the path is opt-in (`runtime_secret_store_model_key`, default off).
 
    > **Amendment (2026-06-29, task 064 — credential architecture corrected against the official Kitaru
    > credential-proxy doc (`agent-harness-platform/04-credential-proxy`) + the `agent_harness_platform`
@@ -189,6 +189,7 @@ credentials-proxy surface is recorded as least-exampled (verify-first).
    >    **model-key secret resolution** to free the term for the real proxy. (This is a *conceptual /
    >    docs* rename — the code identifiers `runtime_credentials_proxy_enabled` / `runtime_secret_name`
    >    keep their names until a dedicated rename, a documented conceptual-vs-identifier divergence.)
+   >    **The dedicated rename has since landed — see the 2026-07-13 amendment below.**
    > 2. **Env-injection is rejected as the secret mechanism.** §5 named env injection
    >    (`ImageSettings(secret_environment_from=[...])`) as the fallback. The official doc argues
    >    against it directly: *"if a token lives in the agent's environment, the agent can leak it."*
@@ -212,6 +213,31 @@ credentials-proxy surface is recorded as least-exampled (verify-first).
    >    worker to sit in front of (today `bash` runs in-process via `LocalExecutor`). Its integration
    >    design is fixed now in **"Future work — the Credential Proxy at the sandbox step"** below; it
    >    will get its own implementation ADR when built.
+
+   > **Amendment (2026-07-13 — the dedicated identifier rename).** The 2026-06-29 amendment renamed
+   > the *concept* but deliberately left the *identifiers* diverged, as an IOU. With the real
+   > Credential Proxy now shipped (ADR-0011 §6, ADR-0012 §10), that divergence made the two features
+   > genuinely indistinguishable by name in code, `.env.example`, and the README — readers repeatedly
+   > mistook the secret-store lookup for header injection. The IOU is paid; the identifiers now match
+   > the concept:
+   >
+   > | Was | Is |
+   > |---|---|
+   > | `RUNTIME_CREDENTIALS_PROXY_ENABLED` / `runtime_credentials_proxy_enabled` | `RUNTIME_SECRET_STORE_MODEL_KEY` / `runtime_secret_store_model_key` |
+   > | `resolve_provider_key_via_proxy()` | `resolve_provider_key_from_secret_store()` |
+   > | `PROXY_SECRET_KEY` | `SECRET_STORE_KEY` |
+   > | `_uses_credentials_proxy()` / `_proxy_credential_error()` (cli) | `_uses_secret_store_model_key()` / `_model_key_secret_error()` |
+   >
+   > The two knobs now read as one family over the one secret named by `runtime_secret_name`:
+   > `RUNTIME_SECRET_STORE_MODEL_KEY` takes **only the model key** from it,
+   > `RUNTIME_SECRET_STORE_CONFIG` takes the **whole config** surface. Both stay opt-in and headless-only,
+   > and both remain available — with both off the key comes from `.env`, which is the point of keeping
+   > the narrower knob rather than folding it into the config source. **Breaking change:** an existing
+   > `RUNTIME_CREDENTIALS_PROXY_ENABLED=true` in a `.env` is now silently ignored (pydantic-settings does
+   > not error on unknown vars); rename it. No compatibility alias ships — a teaching codebase is better
+   > served by one name than by two that both work. `docs/glossary.md` and
+   > [`CREDENTIALS.md`](../../CREDENTIALS.md) (which walks an e2e test of both features, on and off)
+   > carry the user-facing version.
 
 6. **Scheduling/cron is external — decode ships the deployable entrypoint, not a scheduler.** Because
    Kitaru has no native cron, recurring runs are: `kitaru deploy` the flow + an outside trigger. Step 7
@@ -315,7 +341,7 @@ flowchart TB
   Durable Flow, Checkpoint, Replay, Wait (HITL); plus — per the 2026-06-29 §5 amendment —
   **Secret-Store Config** and a reserved **Credential Proxy**, which replace the original single
   "Credentials Proxy" term), and the runtime settings (`runtime_enabled`,
-  `runtime_checkpoint_strategy`, `runtime_wait_timeout_s`, `runtime_credentials_proxy_enabled`,
+  `runtime_checkpoint_strategy`, `runtime_wait_timeout_s`, `runtime_secret_store_model_key`,
   `runtime_secret_name`, and `runtime_secret_store_config` added in task 064) in `config/settings.py`
   + `.env.example`
   — the glossary applied at the plan gate, the settings landed in task 057 ahead of their readers (the

@@ -194,17 +194,21 @@ class Settings(BaseSettings):
     runtime_checkpoint_strategy: Literal["turn", "calls"] = "calls"
     # The durable Wait (HITL) poll timeout (seconds); matches Kitaru's local 600s default.
     runtime_wait_timeout_s: float = Field(600.0, gt=0)
-    # When ``True``, flow-mode model construction resolves the provider key through the Kitaru
-    # Credentials Proxy (secrets) instead of settings — a deployed flow payload carries handles, not
-    # raw keys. Default ``False`` (opt-in; ADR-0008 §5).
-    runtime_credentials_proxy_enabled: bool = False
-    # The Kitaru secret name the Credentials Proxy reads the provider key from when enabled.
+    # Two headless-only consumers of the ONE Kitaru secret named by ``runtime_secret_name``: the
+    # model key alone, or the whole config surface. Both default off — the key comes from ``.env``.
+    # Neither is the sandbox Credential Proxy (header injection, ADR-0011 §6); these are secret-store
+    # *lookups*, and the "Credentials Proxy" name they shipped under was retired by ADR-0008 §5.
+    #
+    # When ``True``, flow-mode model construction resolves the provider key from that Kitaru secret
+    # instead of settings — a deployed flow payload carries handles, not raw keys (ADR-0008 §5).
+    runtime_secret_store_model_key: bool = False
+    # The Kitaru secret both consumers below read from.
     runtime_secret_name: str = "decode-llm-creds"
     # When ``True``, a headless ``decode run`` hydrates the WHOLE ``Settings`` surface from the
-    # ``runtime_secret_name`` secret via :class:`KitaruSecretSettingsSource`. Values land in this
-    # ``Settings`` object ONLY — never ``os.environ`` — and the real process env still overrides
-    # them. Headless-only, so bare ``decode`` never imports kitaru. This is the secret-store config
-    # source, NOT the sandbox Credential Proxy (header injection).
+    # ``runtime_secret_name`` secret via :class:`KitaruSecretSettingsSource` — a superset of the
+    # model-key lookup above. Values land in this ``Settings`` object ONLY — never ``os.environ`` —
+    # and the real process env still overrides them. Headless-only, so bare ``decode`` never imports
+    # kitaru.
     runtime_secret_store_config: bool = False
 
     # --- Sandboxing (ADR-0012; ADR-0011 §1,§5-7 retained) ---

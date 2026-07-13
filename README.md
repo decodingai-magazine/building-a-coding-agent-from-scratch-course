@@ -96,6 +96,15 @@ decode run "list the python files under src and summarize what the cli module do
 - **Offline local stack** — no Kitaru server or `kitaru init` needed. Inspect runs with `kitaru executions list` / `get <id>` / `logs <id>`; `kitaru login` starts the optional local web dashboard at `http://127.0.0.1:8383` (`kitaru logout` falls back to the server-less local database if the daemon hangs).
 - **Guards** — the same provider-key guard as the REPL; `RUNTIME_ENABLED=false` disables the subcommand with a friendly line.
 
+> **macOS: the local Kitaru server crashes mid-run.** A run starts fine, then floods with `RemoteDisconnected` followed by `Connection refused` on `127.0.0.1:8383`. The server *daemon* died — its log (`~/Library/Application Support/kitaru/zen_server/daemon/service.log`) ends with `objc[…]: +[NSCharacterSet initialize] may have been in progress in another thread when fork() was called … Crashing instead.` That is Apple's ObjC fork-safety abort: the daemon forks while the Apple runtime is initializing on another thread, and macOS kills the child rather than inherit a half-built runtime. Fix it either way:
+>
+> ```bash
+> uv run kitaru logout                                          # simplest: no daemon, no crash
+> OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES uv run kitaru login   # or keep the dashboard
+> ```
+>
+> Prefer `logout` unless you actually want the web dashboard — `decode run`, `kitaru executions`, and `kitaru secrets` all work against the server-less local database. Confirm with `kitaru info`: `Local server: registered but unavailable` means a stale registration is still pointing at the dead daemon.
+
 ### Replay & what-if
 
 Every `decode run` records a checkpoint per model call and per tool call, so you can re-run any recorded execution from any anchor with the **model swapped** and see what would have happened ([ADR-0010](docs/adr/0010-runtime-replay.md)):
@@ -112,8 +121,10 @@ Upstream of `--from` serves from the original run's cache; the anchor and downst
 
 Two opt-in, headless-only surfaces (both off by default; details in [`.env.example`](.env.example) and [ADR-0008 §5](docs/adr/0008-kitaru-durable-runtime.md)):
 
-- `RUNTIME_CREDENTIALS_PROXY_ENABLED=true` — flow-mode model construction resolves the provider key from a Kitaru secret (`kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=…`), so the execution's serialized arguments carry only the secret *name*, never the raw key.
+- `RUNTIME_SECRET_STORE_MODEL_KEY=true` — flow-mode model construction resolves the provider key from a Kitaru secret (`kitaru secrets set decode-llm-creds --private --GEMINI_API_KEY=…`), so the execution's serialized arguments carry only the secret *name*, never the raw key.
 - `RUNTIME_SECRET_STORE_CONFIG=true` — hydrate the **whole** `decode run` config (provider, model, keys, tuning) from that same secret, keyed by `.env.example` names. Real process env still wins; values land in `Settings` only, never `os.environ`. The REPL never reads the secret and never imports Kitaru.
+
+Both are secret-store **lookups**, not the sandbox [Credential Proxy](#credential-proxy-a-worker-that-holds-no-secret) below — different secret, different hiding place. (They shipped under the name "Credentials Proxy", retired in ADR-0008 §5 for exactly that confusion.) [`CREDENTIALS.md`](CREDENTIALS.md) tells the two apart and walks an end-to-end test of each, on and off.
 
 ## Context compaction
 
@@ -173,7 +184,7 @@ A sandboxed Worker sometimes needs an authenticated tool call, but a prompt-inje
 - **GitHub shortcut** — for *push a branch / open a PR*, just set `SANDBOX_GIT_TOKEN` non-empty. The docker proxy auto-engages and builds the two GitHub header rules from that one token; **modal** can't run a co-located proxy, so it injects the same token directly into the sandbox instead (use a fine-grained, repo-scoped PAT) — the deliberate per-backend trade-off of [ADR-0012 §10](docs/adr/0012-isolated-workspace.md).
 - **Any other host** — add a `SandboxProxyRule` to `DEFAULT_PROXY_RULES` in [`src/decode/sandbox/proxy.py`](src/decode/sandbox/proxy.py) (a `{{ secret-name.key }}` header template resolved from a Kitaru secret), create the secret (`kitaru secrets set …`), and set `SANDBOX_CREDENTIAL_PROXY_ENABLED=true`.
 
-Confirm the Worker is token-free with `docker exec <worker-id> env | grep -i token` (prints nothing). Egress is cooperative — this is not an exfiltration barrier. The whole boundary is exercised by `uv run pytest tests/integration/test_sandbox_capstone.py -k credential_proxy` (Docker required, no PAT needed).
+Confirm the Worker is token-free with `docker exec <worker-id> env | grep -i token` (prints nothing). Egress is cooperative — this is not an exfiltration barrier. The whole boundary is exercised by `uv run pytest tests/integration/test_sandbox_capstone.py -k credential_proxy` (Docker required, no PAT needed); [`CREDENTIALS.md`](CREDENTIALS.md) walks the manual end-to-end test, with the flag on and off.
 
 ## Monitoring / Observability (Opik)
 
