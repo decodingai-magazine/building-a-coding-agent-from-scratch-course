@@ -284,11 +284,11 @@ class Settings(BaseSettings):
     # override to author as yourself or a bot, set both empty to skip.
     sandbox_git_user_name: str = "decode"
     sandbox_git_user_email: str = "decode@localhost"
-    # The one git token for BOTH sandboxes' git push / PRs (ADR-0012 §10) — the deliberate docker =
-    # Credential Proxy (worker token-free, header injected after egress; auto-engages when non-empty)
-    # vs modal = direct injection (``GITHUB_TOKEN`` via ``modal.Secret``, readable in-sandbox)
-    # trade-off. Empty injects nothing — rely on the host-side hand-back. Because modal keeps it
-    # in-sandbox, use a fine-grained PAT scoped to the target repo, never a broad classic token.
+    # The one git token for BOTH sandboxes' git push / PRs, direct-injected into the Worker env as
+    # ``GITHUB_TOKEN`` + git's credential helper — one mechanism, both backends (ADR-0016 §2). Empty
+    # injects nothing: no env var, no helper — rely on the host-side hand-back, which never puts a
+    # credential in the sandbox. A sandboxed process CAN read this token, so use a fine-grained,
+    # revocable PAT scoped to the target repo, never a broad classic one.
     sandbox_git_token: SecretStr | None = None
     # The HOST directory bind-mounted at the docker Worker's ``/workspace`` — it IS the isolated
     # Workspace. File tools operate on it THROUGH the backend seam, never on the host repo tree;
@@ -300,11 +300,6 @@ class Settings(BaseSettings):
     # Max lifetime (seconds) of a REMOTE (modal) sandbox before Modal reaps it; docker's session
     # container has no lifetime cap (``sleep infinity``).
     sandbox_timeout_s: float = Field(600.0, gt=0)
-    # Enable the headless + docker-only Credential Proxy (ADR-0011 §6): a mitmproxy container injects
-    # tool credentials AFTER a request leaves the worker, so the worker never holds a secret. Opt-in.
-    sandbox_credential_proxy_enabled: bool = False
-    # The mitmproxy addon container image the Credential Proxy runs.
-    sandbox_proxy_image: str = "mitmproxy/mitmproxy"
 
     @model_validator(mode="after")
     def _derive_opik_project_name(self) -> Settings:

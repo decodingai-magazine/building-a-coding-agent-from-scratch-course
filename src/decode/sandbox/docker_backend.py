@@ -4,10 +4,12 @@ One keeper container per session (``docker run -d --rm -v <workspace>:/workspace
 **Fresh-exec**: each command is a new ``docker exec`` (``cd`` / ``export`` do not persist; the
 filesystem does); on timeout only the exec client dies — the container and its filesystem survive.
 File ops are plain :mod:`pathlib` on the **live bind mount** (always truthful, zero remote plumbing),
-so ``export`` is a no-op. Optional Credential-Proxy wiring (ADR-0011 §6) keeps the worker token-free.
-Docker is driven via the CLI (no SDK) with fresh subprocesses per call, so teardown is
-loop-independent. No docker type leaks past this module: callers see only
-:class:`~decode.tools.exec.ExecResult` and :class:`~decode.sandbox.executor.FileStat`.
+so ``export`` is a no-op. A set ``SANDBOX_GIT_TOKEN`` is **direct-injected** into the worker env as
+``GITHUB_TOKEN`` (+ git's credential helper) — the same mechanism modal uses (ADR-0016 §2); unset,
+the ``docker run`` is byte-identical to the no-token case. Docker is driven via the CLI (no SDK)
+with fresh subprocesses per call, so teardown is loop-independent. No docker type leaks past this
+module: callers see only :class:`~decode.tools.exec.ExecResult` and
+:class:`~decode.sandbox.executor.FileStat`.
 """
 
 from __future__ import annotations
@@ -23,20 +25,18 @@ from pathlib import Path, PurePosixPath
 
 from decode.config.settings import settings
 from decode.sandbox.executor import FileStat, WorkspaceEscape
-from decode.sandbox.workspace import git_config_pairs
+from decode.sandbox.workspace import (
+    GIT_CREDENTIAL_HELPER,
+    GIT_TOKEN_ENV,
+    git_config_pairs,
+    sandbox_git_token,
+)
 from decode.tools.exec import ExecResult
 
 logger = logging.getLogger(__name__)
 
 # The container-side Workspace: the bind-mount target and every command's working directory.
 _WORKSPACE = "/workspace"
-
-# Proxy CA bind-mount target in the worker: a ``.crt`` under this dir is exactly what
-# ``update-ca-certificates`` folds into the system trust store. Proxy path only (ADR-0011 §6).
-_WORKER_CA_PATH = "/usr/local/share/ca-certificates/mitmproxy-ca-cert.crt"
-
-# Bound (seconds) for the synchronous CA-trust exec — sub-second in practice; caps a wedged exec.
-_CA_TRUST_TIMEOUT_S = 60.0
 
 # Grace between SIGTERM and the SIGKILL escalation for a timed-out ``docker exec`` client.
 _KILL_GRACE_S = 2.0
@@ -55,8 +55,7 @@ _GIT_INSTALL_CMD = (
     "apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates"
 )
 # ``gh`` is not in Debian bookworm — it comes from GitHub's own apt repo (keyring + source list).
-# Egresses through the Credential Proxy when one is wired: ``cli.github.com`` matches no Proxy Rule,
-# so it passes through un-injected.
+# It authenticates off the ``GITHUB_TOKEN`` in the worker env when one is injected (ADR-0016 §2).
 _GH_INSTALL_CMD = (
     "mkdir -p -m 755 /etc/apt/keyrings && "
     "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
@@ -76,25 +75,9 @@ class DockerBackend:
 
     Construction is **inert** — the keeper container starts on :meth:`create` (lazily on the first
     ``run`` or eagerly via ``start``). Not safe for concurrent :meth:`exec` calls on one instance.
-
-    Optional Credential-Proxy wiring (ADR-0011 §6): a docker ``network``, ``proxy_env``, and
-    ``ca_cert_host_path`` (the proxy's mitmproxy CA, bind-mounted then trusted **synchronously** on
-    :meth:`create`, so the very first command already validates). With all three at their ``None``
-    defaults the ``docker run`` is byte-identical and no CA step runs. No proxy type leaks in — they
-    are ``str`` / ``dict`` / ``Path``.
     """
 
-    def __init__(
-        self,
-        *,
-        network: str | None = None,
-        proxy_env: dict[str, str] | None = None,
-        ca_cert_host_path: Path | None = None,
-    ) -> None:
-        # Optional Credential-Proxy wiring (all ``None`` off the proxy path → byte-identical run).
-        self._network = network
-        self._proxy_env = proxy_env
-        self._ca_cert_host_path = ca_cert_host_path
+    def __init__(self) -> None:
         self._container_id: str | None = None
         # The resolved host Workspace bind-mounted at ``/workspace``; the base of every file op.
         self._workspace: Path | None = None
@@ -105,8 +88,8 @@ class DockerBackend:
         """Start the keeper container, bind-mounting ``workspace`` at ``/workspace``.
 
         Idempotent. A failed ``docker run`` raises :class:`RuntimeError` (the executor renders it; the
-        warm-up call site degrades to lazy). On the proxy path the CA is trusted synchronously after
-        create; if that fails the just-created container is reaped and the error re-raised.
+        warm-up call site degrades to lazy). A set ``SANDBOX_GIT_TOKEN`` is handed to the container
+        through the docker **client's own env** (:func:`_run_env`), never through the argv.
         """
         if self._container_id is not None:
             return
@@ -119,6 +102,7 @@ class DockerBackend:
             *self._run_args(workspace),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_run_env(),
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
@@ -128,21 +112,11 @@ class DockerBackend:
             )
         self._container_id = _decode(stdout).strip()
         logger.info(
-            "[sandbox] docker start %s image=%s%s",
-            self._container_id,
-            settings.sandbox_image,
-            " (proxy-wired)" if self._ca_cert_host_path is not None else "",
+            "[sandbox] docker start %s image=%s", self._container_id, settings.sandbox_image
         )
-        if self._ca_cert_host_path is not None:
-            try:
-                await self._trust_proxy_ca(self._container_id)
-            except Exception:
-                # The CA step reaped the container; drop the id so a later run re-creates from scratch.
-                self._container_id = None
-                raise
-        # Install git in EVERY worker (the slim base ships none), the proxy-wired one included: apt
-        # egresses THROUGH the proxy with its CA already trusted, and the worker stays token-free
-        # (ADR-0012 §10). Best-effort — a failed install leaves the session up with no git.
+        # Install git + gh in EVERY worker (the slim base ships none), and — when a token was
+        # injected — git's credential helper alongside. Best-effort: a failed install leaves the
+        # session up with no git.
         await self._install_git(self._container_id)
 
     async def export(self) -> None:
@@ -296,69 +270,33 @@ class DockerBackend:
             )
         return resolved
 
-    # --- docker run argv + proxy CA trust -------------------------------------------------------
+    # --- docker run argv ------------------------------------------------------------------------
 
     def _run_args(self, workspace: Path) -> list[str]:
-        """Build the ``docker run`` argv for the keeper container (proxy wiring is additive).
+        """Build the ``docker run`` argv for the keeper container — ONE shape (ADR-0016 §1,2).
 
-        Base: mount ``workspace`` at ``/workspace``, run ``sleep infinity``. The proxy path adds
-        ``--network``, the ``proxy_env`` vars, and a read-only CA mount (trusted afterwards by the
-        synchronous :meth:`_trust_proxy_ca`). No skills mount — skills are seeded host-side into the
-        Workspace (ADR-0012 §5).
+        Mount ``workspace`` at ``/workspace`` and run ``sleep infinity``. The only variation: a set
+        ``SANDBOX_GIT_TOKEN`` adds a **value-less** ``-e GITHUB_TOKEN``, which docker fills from the
+        client's env (:func:`_run_env`) — so the secret never enters an argv a host ``ps`` (or a
+        rendered error) could read. Unset → byte-identical to the no-token run. No skills mount —
+        skills are seeded host-side into the Workspace (ADR-0012 §5).
         """
         args = ["run", "-d", "--rm", "-v", f"{workspace}:{_WORKSPACE}", "-w", _WORKSPACE]
-        if self._network is not None:
-            args += ["--network", self._network]
-        for key, value in (self._proxy_env or {}).items():
-            args += ["-e", f"{key}={value}"]
-        if self._ca_cert_host_path is not None:
-            args += ["-v", f"{self._ca_cert_host_path}:{_WORKER_CA_PATH}:ro"]
+        if sandbox_git_token():
+            args += ["-e", GIT_TOKEN_ENV]
         args += [settings.sandbox_image, "sleep", "infinity"]
         return args
 
-    async def _trust_proxy_ca(self, container_id: str) -> None:
-        """Fold the mounted mitmproxy CA into the worker's trust store, synchronously (ADR-0011 §6).
-
-        **Waits** so the CA is trusted before :meth:`create` returns (closing the first-command
-        CA-trust race), bounded by :data:`_CA_TRUST_TIMEOUT_S`. On failure the just-created container
-        is reaped and a :class:`RuntimeError` raised. Proxy path only.
-        """
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "exec",
-            container_id,
-            "update-ca-certificates",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,  # one stream: update-ca-certificates chats on stderr
-        )
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CA_TRUST_TIMEOUT_S)
-        except TimeoutError:
-            proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()  # reap the killed exec (no zombie / ResourceWarning)
-            await _run_docker_quiet("rm", "-f", container_id)  # don't leak the worker
-            raise RuntimeError(
-                f"update-ca-certificates timed out after {_CA_TRUST_TIMEOUT_S:g}s"
-            ) from None
-        if proc.returncode != 0:
-            await _run_docker_quiet("rm", "-f", container_id)  # don't leak the worker
-            raise RuntimeError(
-                f"update-ca-certificates failed (exit {proc.returncode}): {_decode(stdout).strip()}"
-            )
-        logger.info("[sandbox] proxy CA trusted in worker %s", container_id[:12])
-
     async def _install_git(self, container_id: str) -> None:
-        """Best-effort ``apt-get install`` of git + gh, then git-identity config, in the fresh worker.
+        """Best-effort ``apt-get install`` of git + gh, then git config, in the fresh worker.
 
         One ``sh -c`` installs git, adds GitHub's apt repo and installs gh, then (``&&``-chained, only
-        after a successful install) sets the ``SANDBOX_GIT_USER_*`` identity (:func:`_git_setup_command`).
-        Runs on **every** worker, the proxy-wired one included — apt egresses through the proxy and no
-        token ever enters the worker. ``ponytail:`` installed per session rather than baking a fatter
-        image — keeps the slim base and the worker's ``ancestor=<image>`` identity, at the cost of a
-        one-off ~20 s apt (bake git + gh into a custom ``SANDBOX_IMAGE`` to skip it). A failure logs a
-        warning and leaves the session running without them, never a crash. Bounded by
-        :data:`_GIT_INSTALL_TIMEOUT_S`.
+        after a successful install) sets the ``SANDBOX_GIT_USER_*`` identity and — when a token was
+        injected — git's credential helper (:func:`_git_setup_command`). ``ponytail:`` installed per
+        session rather than baking a fatter image — keeps the slim base and the worker's
+        ``ancestor=<image>`` identity, at the cost of a one-off ~20 s apt (bake git + gh into a custom
+        ``SANDBOX_IMAGE`` to skip it). A failure logs a warning and leaves the session running without
+        them, never a crash. Bounded by :data:`_GIT_INSTALL_TIMEOUT_S`.
         """
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -426,15 +364,33 @@ def _decode(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _run_env() -> dict[str, str] | None:
+    """The env for the ``docker run`` **client** process — the token's only carrier (ADR-0016 §2).
+
+    ``None`` (inherit) when no ``SANDBOX_GIT_TOKEN`` is set: the default path is untouched. When one
+    is set, the value rides here and the argv only names the var (``-e GITHUB_TOKEN``), so the token
+    is never visible in a process listing nor in any argv a failure could render.
+    """
+    token = sandbox_git_token()
+    if not token:
+        return None
+    return {**os.environ, GIT_TOKEN_ENV: token}
+
+
 def _git_setup_command() -> str:
-    """The ``sh -c`` line installing git + gh and (only on success) setting the git identity.
+    """The ``sh -c`` line installing git + gh and (only on success) configuring git in the worker.
 
     ``gh`` ships alongside git because a model that can `git push` is asked, in the same breath, to
     open the PR — and without it the turn dies on ``gh: command not found`` after the push (ADR-0012
-    §10). Each identity value is ``shlex.quote``d so a spaced / quoted name stays one safe shell token.
+    §10); it authenticates off the injected ``GITHUB_TOKEN`` natively. Each identity value is
+    ``shlex.quote``d so a spaced / quoted name stays one safe shell token. With a token set, git's
+    credential helper is chained on last (the modal image bakes the identical line into a layer) —
+    it reads ``$GITHUB_TOKEN`` from the worker env at push time, so no secret is in this string.
     """
     parts = [_GIT_INSTALL_CMD, _GH_INSTALL_CMD]
     parts += [
         f"git config --global {key} {shlex.quote(value)}" for key, value in git_config_pairs()
     ]
+    if sandbox_git_token():
+        parts.append(GIT_CREDENTIAL_HELPER)
     return " && ".join(parts)

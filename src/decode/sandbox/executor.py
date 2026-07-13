@@ -114,8 +114,8 @@ class SandboxExecutor:
 
     Construction is **inert** — no container, no remote sandbox, no backend-SDK import: the backend is
     created lazily on the first :meth:`run` (or eagerly by :meth:`start`). Not safe for concurrent
-    :meth:`run` calls on one instance. Call :meth:`aclose` to reap the session. The optional
-    Credential-Proxy wiring lives entirely on the *backend*, so the executor stays backend-agnostic.
+    :meth:`run` calls on one instance. Call :meth:`aclose` to reap the session. Every backend-specific
+    concern (credential injection included) lives on the *backend*, so the executor stays agnostic.
     """
 
     def __init__(self, backend: SandboxBackend) -> None:

@@ -88,6 +88,32 @@ def git_config_pairs() -> list[tuple[str, str]]:
     return pairs
 
 
+# The env var name the Worker's ``GITHUB_TOKEN`` is injected under, in BOTH backends (ADR-0016 §2).
+# ``gh`` reads it natively; the credential helper below feeds it to git's HTTPS transport.
+GIT_TOKEN_ENV = "GITHUB_TOKEN"
+
+# Configured in a Worker whose ``SANDBOX_GIT_TOKEN`` is set — one mechanism, both backends
+# (ADR-0016 §2): echoes the RUNTIME ``$GITHUB_TOKEN`` as the HTTPS password so ``git push`` works.
+# Single-quoted so the token is read at push time, never expanded into this command line (nor, on
+# modal, frozen into a cached image layer).
+GIT_CREDENTIAL_HELPER = (
+    "git config --global credential.helper "
+    "'!f() { echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }; f'"
+)
+
+
+def sandbox_git_token() -> str:
+    """The resolved ``SANDBOX_GIT_TOKEN``, or ``""`` when unset/empty — the gate both backends read.
+
+    Gating on the resolved VALUE (not ``is not None``) is load-bearing: an explicit
+    ``SANDBOX_GIT_TOKEN=`` parses to ``SecretStr("")``, which must inject nothing at all — no env
+    var, no credential helper (ADR-0016 §2).
+    """
+    if settings.sandbox_git_token is None:
+        return ""
+    return settings.sandbox_git_token.get_secret_value()
+
+
 def _git_clone(repo: str, workspace: Path, *, local: bool) -> None:
     """``git clone`` ``repo`` into the empty ``workspace`` via the host ``git`` CLI.
 

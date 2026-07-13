@@ -24,7 +24,14 @@ from typing import Any, TypeVar
 
 from decode.config.settings import settings
 from decode.sandbox.executor import FileStat
-from decode.sandbox.workspace import extract_tar, git_config_pairs, tar_dir
+from decode.sandbox.workspace import (
+    GIT_CREDENTIAL_HELPER,
+    GIT_TOKEN_ENV,
+    extract_tar,
+    git_config_pairs,
+    sandbox_git_token,
+    tar_dir,
+)
 from decode.tools.exec import ExecResult
 
 logger = logging.getLogger(__name__)
@@ -38,17 +45,9 @@ _WORKSPACE = "/workspace"
 # The modal App the sandbox is looked up / created under (``create_if_missing=True`` on first use).
 _APP_NAME = "decode-sandbox"
 
-# Baked into the image when ``SANDBOX_GIT_TOKEN`` is set (modal only, ADR-0012 §10): echoes the runtime
-# ``$GITHUB_TOKEN`` (from the ``modal.Secret``) as the HTTPS password. Single-quoted so the token is
-# read only at push time — never expanded into the cached image layer.
-_GIT_CREDENTIAL_HELPER = (
-    "git config --global credential.helper "
-    "'!f() { echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }; f'"
-)
-
 # ``gh`` is not in Debian bookworm — it comes from GitHub's own apt repo. Baked as a cached image
 # layer (unlike docker, which installs it per session). ``gh`` authenticates off the ``GITHUB_TOKEN``
-# the ``modal.Secret`` injects at runtime, so no decoy token is needed here (ADR-0012 §10).
+# the ``modal.Secret`` injects at runtime (ADR-0016 §2).
 _GH_INSTALL_CMD = (
     "mkdir -p -m 755 /etc/apt/keyrings && "
     "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg "
@@ -366,9 +365,8 @@ class ModalBackend:
         # The slim base ships no git and no gh — bake both into the image (cached layers, no
         # per-session cost). gh rides along because a model that pushes a branch is asked, in the same
         # breath, to open the PR; without it the turn dies on ``gh: command not found`` (ADR-0012 §10).
-        # gh is not in Debian bookworm, so it comes from GitHub's own apt repo. Unlike docker, modal
-        # needs no decoy token: the real ``GITHUB_TOKEN`` is already in this sandbox's env (below) and
-        # gh reads it natively.
+        # gh is not in Debian bookworm, so it comes from GitHub's own apt repo, and it reads the
+        # ``GITHUB_TOKEN`` in this sandbox's env (below) natively.
         image = modal.Image.from_registry(settings.sandbox_image).apt_install(
             "git", "curl", "ca-certificates"
         )
@@ -376,18 +374,14 @@ class ModalBackend:
         # Bake the ``SANDBOX_GIT_USER_*`` identity into a cached layer so a model ``git commit`` works.
         for key, value in git_config_pairs():
             image = image.run_commands(f"git config --global {key} {shlex.quote(value)}")
-        # Direct credential injection — MODAL ONLY (docker keeps the Credential Proxy; ADR-0012 §10):
+        # Direct credential injection — the ONE mechanism, shared with docker (ADR-0016 §2):
         # ``SANDBOX_GIT_TOKEN`` rides a ``modal.Secret`` as ``GITHUB_TOKEN`` + a credential-helper layer
         # that reads it at push time, so the token never lands in a cached image layer.
         secrets: list[Any] = []
-        token = (
-            settings.sandbox_git_token.get_secret_value()
-            if settings.sandbox_git_token is not None
-            else ""
-        )
+        token = sandbox_git_token()
         if token:
-            image = image.run_commands(_GIT_CREDENTIAL_HELPER)
-            secrets = [modal.Secret.from_dict({"GITHUB_TOKEN": token})]
+            image = image.run_commands(GIT_CREDENTIAL_HELPER)
+            secrets = [modal.Secret.from_dict({GIT_TOKEN_ENV: token})]
         # Explicit long-lived entrypoint: without it modal runs the image's own CMD (the astral uv
         # default prints help and quits, taking the sandbox with it).
         sandbox = await modal.Sandbox.create.aio(

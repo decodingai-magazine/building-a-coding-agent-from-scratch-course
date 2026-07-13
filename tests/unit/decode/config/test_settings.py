@@ -47,13 +47,12 @@ _RUNTIME_ENV_VARS = (
     "RUNTIME_WAIT_TIMEOUT_S",
 )
 
-# Sandboxing vars (ADR-0011).
+# Sandboxing vars (ADR-0011). The Credential-Proxy knobs are gone with the proxy (ADR-0016 §1) —
+# a clean break: a retired key left in a ``.env`` is simply ignored (``extra="ignore"``).
 _SANDBOX_ENV_VARS = (
     "SANDBOX_MODE",
     "SANDBOX_IMAGE",
     "SANDBOX_TIMEOUT_S",
-    "SANDBOX_CREDENTIAL_PROXY_ENABLED",
-    "SANDBOX_PROXY_IMAGE",
 )
 
 # Subagent tuning vars (ADR-0013).
@@ -423,41 +422,49 @@ def test_sandbox_defaults(monkeypatch):
     assert s.sandbox_mode == "none"
     assert s.sandbox_image == "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
     assert s.sandbox_timeout_s == 600.0
-    assert s.sandbox_credential_proxy_enabled is False
-    assert s.sandbox_proxy_image == "mitmproxy/mitmproxy"
 
 
 def test_reads_sandbox_vars_from_process_env(monkeypatch):
     monkeypatch.setenv("SANDBOX_MODE", "docker")
     monkeypatch.setenv("SANDBOX_IMAGE", "python:3.13-slim")
     monkeypatch.setenv("SANDBOX_TIMEOUT_S", "120.0")
-    monkeypatch.setenv("SANDBOX_CREDENTIAL_PROXY_ENABLED", "true")
-    monkeypatch.setenv("SANDBOX_PROXY_IMAGE", "mitmproxy/mitmproxy:latest")
     s = Settings(_env_file=None)
     assert s.sandbox_mode == "docker"
     assert s.sandbox_image == "python:3.13-slim"
     assert s.sandbox_timeout_s == 120.0
-    assert s.sandbox_credential_proxy_enabled is True
-    assert s.sandbox_proxy_image == "mitmproxy/mitmproxy:latest"
 
 
 def test_loads_sandbox_vars_from_a_dotenv_file(tmp_path, monkeypatch):
     for var in _SANDBOX_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     env = tmp_path / ".env"
-    env.write_text(
-        "SANDBOX_MODE=modal\n"
-        "SANDBOX_IMAGE=python:3.11-slim\n"
-        "SANDBOX_TIMEOUT_S=300.0\n"
-        "SANDBOX_CREDENTIAL_PROXY_ENABLED=true\n"
-        "SANDBOX_PROXY_IMAGE=custom/mitmproxy\n"
-    )
+    env.write_text("SANDBOX_MODE=modal\nSANDBOX_IMAGE=python:3.11-slim\nSANDBOX_TIMEOUT_S=300.0\n")
     s = Settings(_env_file=str(env))
     assert s.sandbox_mode == "modal"
     assert s.sandbox_image == "python:3.11-slim"
     assert s.sandbox_timeout_s == 300.0
-    assert s.sandbox_credential_proxy_enabled is True
-    assert s.sandbox_proxy_image == "custom/mitmproxy"
+
+
+def test_a_retired_credential_proxy_key_in_a_dotenv_is_ignored(tmp_path, monkeypatch):
+    """ADR-0016 §1 (clean break): a stale ``SANDBOX_CREDENTIAL_PROXY_ENABLED`` must not blow up.
+
+    The knobs are deleted with no shim, so an old ``.env`` carrying them still loads — ``extra="ignore"``
+    swallows the retired key exactly as ADR-0015 §9 handled its own — and the field is simply gone.
+    """
+    for var in _SANDBOX_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    env = tmp_path / ".env"
+    env.write_text(
+        "SANDBOX_MODE=docker\n"
+        "SANDBOX_CREDENTIAL_PROXY_ENABLED=true\n"
+        "SANDBOX_PROXY_IMAGE=mitmproxy/mitmproxy\n"
+    )
+
+    s = Settings(_env_file=str(env))
+
+    assert s.sandbox_mode == "docker"
+    assert not hasattr(s, "sandbox_credential_proxy_enabled")
+    assert not hasattr(s, "sandbox_proxy_image")
 
 
 @pytest.mark.parametrize("mode", ["none", "docker", "modal"])

@@ -27,13 +27,13 @@ from decode.sandbox.modal_backend import (
     _BOOTSTRAP_TAR,
     _EXPORT_TAR,
     _GH_INSTALL_CMD,
-    _GIT_CREDENTIAL_HELPER,
     _SANDBOX_LOST_EXIT,
     _SANDBOX_LOST_NOTE,
     _WORKSPACE,
     ModalBackend,
     _load_modal,
 )
+from decode.sandbox.workspace import GIT_CREDENTIAL_HELPER
 
 # fake modal filesystem exceptions (the real ones do NOT subclass FileNotFoundError)
 # ``modal.exception.SandboxFilesystemNotFoundError`` subclasses ``modal.exception.Error`` (verified on
@@ -414,7 +414,7 @@ async def test_create_spawns_the_sandbox_once_with_the_configured_image_and_life
     assert create_kwargs["image"] is fake_modal["image"]
     assert create_kwargs["timeout"] == 600  # int(settings.sandbox_timeout_s) default
     # No SANDBOX_GIT_TOKEN by default → no injected secret and no credential-helper layer (the run_commands
-    # above are the identity only). Docker's Credential Proxy, not this, is the token-free path there.
+    # above are the identity only) — the same no-token shape docker's ``docker run`` keeps (ADR-0016 §2).
     assert create_kwargs["secrets"] == []
     assert fake_modal["secret_from_dict"].calls == []
     assert backend._sandbox is sandbox
@@ -424,8 +424,9 @@ async def test_create_injects_the_git_token_secret_and_credential_helper_when_se
     fake_modal, sandbox, workspace, monkeypatch
 ):
     # SANDBOX_GIT_TOKEN set → the token rides a modal.Secret into the sandbox env AND a credential-helper
-    # layer is baked, so the agent can ``git push`` / open a PR from inside modal (ADR-0012 §10). Docker
-    # does NOT do this — it keeps the Credential Proxy so its worker holds no token.
+    # layer is baked, so the agent can ``git push`` / open a PR from inside modal. Docker now does the
+    # same thing by its own route (client env + ``-e GITHUB_TOKEN``) — one mechanism, both backends
+    # (ADR-0016 §2).
     monkeypatch.setattr(settings, "sandbox_git_token", SecretStr("ghp_deadbeef"))
     backend = ModalBackend()
 
@@ -437,15 +438,16 @@ async def test_create_injects_the_git_token_secret_and_credential_helper_when_se
     _, create_kwargs = fake_modal["create"].calls[0]
     assert create_kwargs["secrets"] == ["secret-obj"]  # the from_dict result reaches Sandbox.create
     # The credential-helper layer is baked AFTER the identity config layers.
-    assert fake_modal["image"].run_commands_calls[-1] == (_GIT_CREDENTIAL_HELPER,)
+    assert fake_modal["image"].run_commands_calls[-1] == (GIT_CREDENTIAL_HELPER,)
 
 
 def test_git_credential_helper_reads_the_runtime_token_not_a_baked_one():
     # The helper feeds git Basic auth from $GITHUB_TOKEN at push time — single-quoted so the token is
-    # NOT expanded (and thus not frozen) into the image layer at build time.
-    assert "$GITHUB_TOKEN" in _GIT_CREDENTIAL_HELPER
-    assert "username=x-access-token" in _GIT_CREDENTIAL_HELPER
-    assert _GIT_CREDENTIAL_HELPER.startswith("git config --global credential.helper '")
+    # NOT expanded (and thus not frozen) into the image layer at build time. Shared verbatim with the
+    # docker backend (ADR-0016 §2), which chains the same line into its per-session git setup.
+    assert "$GITHUB_TOKEN" in GIT_CREDENTIAL_HELPER
+    assert "username=x-access-token" in GIT_CREDENTIAL_HELPER
+    assert GIT_CREDENTIAL_HELPER.startswith("git config --global credential.helper '")
 
 
 async def test_create_bootstraps_the_workspace_dir_before_any_command(

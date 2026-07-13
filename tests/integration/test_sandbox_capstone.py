@@ -5,15 +5,17 @@ Proves that in a sandbox mode the agent's whole tool scope — file/search tools
 ``.decode/sandbox``), driven by ONE fresh-exec SandboxExecutor over the SandboxBackend seam;
 harness artifacts stay at Harness Home; results ship back via the host-side git hand-back;
 ``none`` mode stays byte-identical to M1. Offline vs real split: Part 1 always runs offline
-(REAL executor / gate / registry / file-tool seams / hand-back / credential map; FAKED: a
+(REAL executor / gate / registry / file-tool seams / hand-back / git-token injection; FAKED: a
 scripted FunctionModel, recording / local-exec SandboxBackend doubles, a monkeypatched
-``Settings`` field for the proxy templates, a stubbed LSP call, a spied KitaruAgent build — no daemon, no
+``Settings`` field for the token, a stubbed LSP call, a spied KitaruAgent build — no daemon, no
 network, no GEMINI_API_KEY); Part 2 is skipif-guarded real-infra smokes (docker probe /
 modal creds — SKIP, never fail) that reap all infra in ``finally``. The exhaustive matrices
 live in the per-backend files; this capstone is the integrated proof they hang together. A
 bug it surfaced: the modal export sweep could not overwrite a clone's read-only ``.git``
 objects — ``extract_tar`` now makes the tree writable first
-(:func:`test_modal_export_over_a_clone_round_trips_git` pins the fix).
+(:func:`test_modal_export_over_a_clone_round_trips_git` pins the fix). The Credential-Proxy
+boundary this file used to prove against a live mitmproxy container is gone with the proxy
+(ADR-0016 §1): ``SANDBOX_GIT_TOKEN`` is now direct-injected in BOTH backends, asserted instead.
 """
 
 from __future__ import annotations
@@ -21,7 +23,6 @@ from __future__ import annotations
 import contextlib
 import functools
 import json
-import logging
 import os
 import subprocess
 import sys
@@ -30,7 +31,6 @@ from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from uuid import uuid4
 
 import anyio
 import pytest
@@ -47,17 +47,12 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import TurnContext
 from decode.permissions.gate import PermissionGate
+from decode.sandbox import docker_backend, modal_backend
 from decode.sandbox.docker_backend import DockerBackend
 from decode.sandbox.executor import FileStat, SandboxExecutor, WorkspaceEscape
 from decode.sandbox.handback import ShipResult, ship_workspace
 from decode.sandbox.modal_backend import ModalBackend
-from decode.sandbox.proxy import (
-    DEFAULT_PROXY_RULES,
-    DockerCredentialProxy,
-    SandboxProxyRule,
-    build_credential_map,
-)
-from decode.sandbox.workspace import prepare_workspace
+from decode.sandbox.workspace import GIT_TOKEN_ENV, prepare_workspace, sandbox_git_token
 from decode.tools import bash as bash_mod
 from decode.tools import files as files_mod
 from decode.tools.askuser import deny_user_question_resolver
@@ -830,55 +825,49 @@ def test_handback_git_runs_host_side_never_through_the_sandbox_seam(mocker, tmp_
         assert not hasattr(handback_module, seam)
 
 
-# 5. Credential map (retained) · replay-safety config · REPL-free (none imports no sandbox module;
-#    importing ``decode.cli`` imports no kitaru).
+# 5. Git-token injection (ONE mechanism, both backends) · replay-safety config · REPL-free (none
+#    imports no sandbox module; importing ``decode.cli`` imports no kitaru).
 
 _CRED_SECRET = "ghp_capstone_secret_token_value"
 
 
-def test_build_credential_map_resolves_templates_hermetically(monkeypatch) -> None:
-    """``build_credential_map`` resolves a ``{{ settings_field }}`` template host-side (ADR-0015 §6).
+def test_the_git_token_is_direct_injected_in_both_backends(monkeypatch, tmp_path: Path) -> None:
+    """One knob, one mechanism, two backends: ``SANDBOX_GIT_TOKEN`` → ``$GITHUB_TOKEN`` (ADR-0016 §2).
 
-    Pure: the template names a ``Settings`` field, so the resolution needs no secret store at all — a
-    monkeypatched field is the whole fixture (kitaru's only ``get_secret`` seam is the settings source).
+    The symmetry the ADR bought, asserted offline: **both** backends read the same resolved token and
+    configure the **same** git credential helper (one constant, imported by both). Docker hands the value
+    to the container through the docker **client's env** — the argv only names the var, so no ``ps`` and
+    no rendered error can read it; modal hands it over as a ``modal.Secret`` (the SDK-level assertion is
+    ``test_modal_backend``'s, with its faked modal). Neither carries the token in a command line.
     """
     monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_CRED_SECRET))
-    rules = [
-        SandboxProxyRule(
-            name="github-auth",
-            hosts=["api.github.com"],
-            headers={"Authorization": "Bearer {{ sandbox_git_token }}"},
-        )
-    ]
 
-    assert build_credential_map(rules) == {
-        "api.github.com": {"Authorization": f"Bearer {_CRED_SECRET}"}
-    }
+    # The two backends share ONE helper line and ONE token gate — that IS the "one mechanism" claim.
+    assert docker_backend.GIT_CREDENTIAL_HELPER is modal_backend.GIT_CREDENTIAL_HELPER
+    assert sandbox_git_token() == _CRED_SECRET
 
-
-def test_default_proxy_rules_ship_empty_and_yield_a_passthrough_map() -> None:
-    """The shipped rule set is empty (opt-in) → an empty credential map (a passthrough proxy)."""
-    assert DEFAULT_PROXY_RULES == []
-    assert build_credential_map(DEFAULT_PROXY_RULES) == {}
+    # docker: ``-e GITHUB_TOKEN`` is value-less in the argv; the value rides the client env only.
+    run_args = DockerBackend()._run_args(tmp_path)
+    assert run_args.count("-e") == 1 and GIT_TOKEN_ENV in run_args
+    assert not any(_CRED_SECRET in arg for arg in run_args)  # SECURITY: never in an argv
+    run_env = docker_backend._run_env()
+    assert run_env is not None and run_env[GIT_TOKEN_ENV] == _CRED_SECRET
+    setup = docker_backend._git_setup_command()
+    assert setup.endswith(docker_backend.GIT_CREDENTIAL_HELPER)
+    assert _CRED_SECRET not in setup  # the helper reads $GITHUB_TOKEN at push time, never the value
 
 
-def test_build_credential_map_logs_names_never_values(monkeypatch, caplog) -> None:
-    """The resolved secret value never reaches a log line — only rule / host / header NAMES (task-061)."""
-    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_CRED_SECRET))
-    rules = [
-        SandboxProxyRule(
-            name="github-auth",
-            hosts=["api.github.com"],
-            headers={"Authorization": "Bearer {{ sandbox_git_token }}"},
-        )
-    ]
+def test_no_token_means_no_credential_machinery_anywhere() -> None:
+    """Unset (the default) → no env var, no helper, and a ``docker run`` argv byte-identical to before.
 
-    with caplog.at_level(logging.DEBUG, logger="decode.sandbox.proxy"):
-        build_credential_map(rules)
+    The property that keeps the default path clean: opting out of ``SANDBOX_GIT_TOKEN`` leaves the
+    sandbox with **no credentials at all** — hand-back still ships the work, host-side (ADR-0016 §4).
+    """
+    args = DockerBackend()._run_args(Path("/ws"))
 
-    assert _CRED_SECRET not in caplog.text  # the resolved value never appears
-    assert "github-auth" in caplog.text  # the rule name does (for correlation)
-    assert "Authorization" in caplog.text  # the header name does
+    assert "-e" not in args
+    assert docker_backend._run_env() is None
+    assert "credential.helper" not in docker_backend._git_setup_command()
 
 
 def _spy_runtime_agent_kwargs(monkeypatch, *, mode: str) -> dict[str, Any]:
@@ -1083,18 +1072,6 @@ def _container_exists(name_or_id: str) -> bool:
     return False
 
 
-def _network_exists(name: str) -> bool:
-    """True while the daemon still lists a network named ``name`` (proves proxy-network teardown)."""
-    result = subprocess.run(
-        ["docker", "network", "ls", "-q", "--filter", f"name={name}"],
-        capture_output=True,
-        text=True,
-        timeout=10.0,
-        check=False,
-    )
-    return bool(result.stdout.strip())
-
-
 def _wait_until_gone(name_or_id: str, timeout_s: float = 5.0) -> bool:
     """Poll (bounded) until the container is no longer listed; return whether it is gone."""
     deadline = time.monotonic() + timeout_s
@@ -1278,10 +1255,10 @@ async def test_real_modal_injects_the_git_token_into_the_sandbox(
 ) -> None:
     """SANDBOX_GIT_TOKEN rides a modal.Secret into the sandbox env + a credential helper — else SKIP.
 
-    The direct-injection path (ADR-0012 §10), proven end to end WITHOUT a real GitHub call: a DUMMY token
+    The direct-injection path (ADR-0016 §2), proven end to end WITHOUT a real GitHub call: a DUMMY token
     shows up as ``$GITHUB_TOKEN`` inside the remote sandbox and git's ``credential.helper`` is wired to
-    read it (so a real ``git push`` would authenticate). Docker never does this — it uses the Credential
-    Proxy so its worker holds no token. Reaps in ``finally``.
+    read it (so a real ``git push`` would authenticate). Docker now does exactly the same, by its own
+    route — :func:`test_real_docker_injects_the_git_token_into_the_worker`. Reaps in ``finally``.
     """
     monkeypatch.setattr(settings, "sandbox_git_token", SecretStr("dummy-token-not-real"))
     workspace = _host_workspace_with_marker(tmp_path)
@@ -1370,144 +1347,41 @@ async def test_real_modal_revival_re_bootstraps_from_host_state(
         await executor.aclose()
 
 
-# --- The real docker Credential-Proxy boundary (the retained ADR-0011 §6 topology) --------------
+# --- The real docker git-token injection (ADR-0016 §2) ------------------------------------------
 
-_PROXY_SECRET = "capstone-proxy-secret-4b2a91"
-_PROXY_HEADER = "X-Decode-Proxy-Auth"
-_PROXY_UPSTREAM_ALIAS = "upstream.local"
-
-# A stub upstream that echoes every request header back in the body, so the worker can prove which
-# headers actually ARRIVED. Stdlib only (runs in the uv slim image); binds port 80.
-_UPSTREAM_SERVER = (
-    "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
-    "class H(BaseHTTPRequestHandler):\n"
-    "    def do_GET(self):\n"
-    "        body=''.join(f'{k}: {v}\\n' for k,v in self.headers.items()).encode()\n"
-    "        self.send_response(200); self.send_header('Content-Length', str(len(body)))\n"
-    "        self.end_headers(); self.wfile.write(body)\n"
-    "    def log_message(self,*a): pass\n"
-    "HTTPServer(('0.0.0.0',80),H).serve_forever()\n"
-)
-# The worker's outbound probe — python/urllib (slim has no curl); reads its ``http_proxy`` env.
-_REQUEST_SCRIPT = (
-    "import urllib.request\n"
-    f"print(urllib.request.urlopen('http://{_PROXY_UPSTREAM_ALIAS}/', timeout=10).read().decode())\n"
-)
-
-
-def _wait_tcp_ready(container: str, port: int, timeout_s: float = 15.0) -> None:
-    """Poll (bounded) until a server inside ``container`` accepts a TCP connection on ``port``."""
-    probe = f"import socket; socket.create_connection(('127.0.0.1', {port}), timeout=1).close()"
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        result = subprocess.run(
-            ["docker", "exec", container, "python3", "-c", probe],
-            capture_output=True,
-            timeout=10.0,
-            check=False,
-        )
-        if result.returncode == 0:
-            return
-        time.sleep(0.2)
-    raise AssertionError(f"{container} port {port} never became ready")
-
-
-def _start_upstream(network: str) -> str:
-    """Start the header-echoing stub upstream on ``network`` (alias ``upstream.local``); return its name."""
-    name = f"decode-cap-upstream-{uuid4().hex[:8]}"
-    subprocess.run(
-        [
-            "docker",
-            "run",
-            "-d",
-            "--rm",
-            "--name",
-            name,
-            "--network",
-            network,
-            "--network-alias",
-            _PROXY_UPSTREAM_ALIAS,
-            "ghcr.io/astral-sh/uv:python3.12-bookworm-slim",
-            "python3",
-            "-c",
-            _UPSTREAM_SERVER,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=60.0,
-    )
-    _wait_tcp_ready(name, 80)
-    return name
-
-
-def _stop_container(name: str) -> None:
-    subprocess.run(["docker", "stop", "--time", "2", name], capture_output=True, timeout=30.0)
+_DOCKER_TOKEN = "dummy-token-not-real"
 
 
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="the docker daemon is not reachable")
-async def test_real_docker_credential_proxy_boundary(monkeypatch, tmp_path: Path) -> None:
-    """The credential boundary, proven end to end against a real daemon — else SKIP (ADR-0011 §6, retained).
+async def test_real_docker_injects_the_git_token_into_the_worker(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """SANDBOX_GIT_TOKEN reaches a REAL docker worker as $GITHUB_TOKEN + git's helper — else SKIP.
 
-    A rule injects ``X-Decode-Proxy-Auth: <secret>`` on requests to the stub upstream, resolved host-side
-    from a **monkeypatched Settings field** (ADR-0015 §6 — no secret store in the picture). A token-free
-    proxy-wired ``SandboxExecutor(DockerBackend(...))`` worker makes a urllib request through the
-    ``mitmproxy`` addon container; the upstream echoes the headers it received — proving the header
-    **ARRIVED** — while a scan of the worker container's own env proves the secret is **absent** there (it
-    lives only in the proxy container). Torn down in a ``finally``.
+    The docker half of the one-mechanism claim (ADR-0016 §2), proven against a live daemon WITHOUT any
+    GitHub call: a DUMMY token set on ``Settings`` shows up as ``$GITHUB_TOKEN`` inside the container
+    (docker filled the value-less ``-e GITHUB_TOKEN`` from the client's env) and ``git config
+    credential.helper`` is wired to read it, so a real ``git push`` would authenticate. The modal twin is
+    :func:`test_real_modal_injects_the_git_token_into_the_sandbox`. Reaps the container in ``finally``.
     """
-    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_PROXY_SECRET))
-    credential_map = build_credential_map(
-        [
-            SandboxProxyRule(
-                name="upstream-auth",
-                hosts=[_PROXY_UPSTREAM_ALIAS],
-                headers={_PROXY_HEADER: "{{ sandbox_git_token }}"},
-            )
-        ]
-    )
-    proxy = DockerCredentialProxy(credential_map)
-    executor: SandboxExecutor | None = None
-    upstream: str | None = None
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(_DOCKER_TOKEN))
+    monkeypatch.setattr(settings, "sandbox_workspace_dir", tmp_path / ".decode" / "sandbox")
+    workspace = tmp_path / ".decode" / "sandbox"
+    workspace.mkdir(parents=True)
+    executor = SandboxExecutor(DockerBackend())
     worker_id: str | None = None
     try:
-        proxy.start()
-        upstream = _start_upstream(proxy.network)
-        # The worker's /workspace is the project's .decode/sandbox Workspace (ADR-0012 §3) — drop the
-        # probe script where the container will actually see it.
-        scratch = tmp_path / ".decode" / "sandbox"
-        scratch.mkdir(parents=True, exist_ok=True)
-        (scratch / "req.py").write_text(_REQUEST_SCRIPT, encoding="utf-8")
-        executor = SandboxExecutor(
-            DockerBackend(
-                network=proxy.network,
-                proxy_env=proxy.worker_proxy_env,
-                ca_cert_host_path=proxy.ca_cert_host_path,
-            )
-        )
-
-        result = await executor.run("python3 /workspace/req.py", cwd=tmp_path, timeout_s=30.0)
+        await executor.start(workspace)  # docker run + the per-session git/gh install
         worker_id = executor._backend._container_id
 
-        # The upstream echoed the injected header — it ARRIVED, though the worker never held it.
-        assert result.exit_code == 0, result.stdout
-        assert f"{_PROXY_HEADER}: {_PROXY_SECRET}" in result.stdout
+        env = await executor.run("printenv GITHUB_TOKEN", cwd=workspace, timeout_s=60.0)
+        assert env.stdout.strip() == _DOCKER_TOKEN  # the client env reached the container env
 
-        # SECURITY: the worker container's own env carries the proxy URL but NOT the secret value.
-        env = subprocess.run(
-            ["docker", "exec", worker_id, "env"], capture_output=True, text=True, timeout=15.0
-        ).stdout
-        assert _PROXY_SECRET not in env  # the worker holds no token ...
-        assert "http_proxy=" in env  # ... it is merely routed through the proxy
+        helper = await executor.run(
+            "git config --global credential.helper", cwd=workspace, timeout_s=60.0
+        )
+        assert "GITHUB_TOKEN" in helper.stdout  # the helper reads the runtime token at push time
     finally:
-        if executor is not None:
-            await executor.aclose()
-        if upstream is not None:
-            _stop_container(upstream)
-        proxy.stop()
+        await executor.aclose()
 
-    # Everything is torn down — no docker litter left behind.
-    assert not _container_exists(proxy._container_name)
-    assert worker_id is None or not _container_exists(worker_id)
-    assert upstream is None or not _container_exists(upstream)
-    assert not _network_exists(proxy.network)
+    assert worker_id is None or _wait_until_gone(worker_id)  # no docker litter left behind

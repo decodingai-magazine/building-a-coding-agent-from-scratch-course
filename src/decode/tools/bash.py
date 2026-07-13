@@ -81,11 +81,10 @@ def _get_executor() -> CommandExecutor:
 
 
 def install_executor(executor: CommandExecutor) -> None:
-    """Install ``executor`` as the cached ``bash`` executor for a flow span (ADR-0011 §6).
+    """Install ``executor`` as the cached ``bash`` executor, bypassing ``SANDBOX_MODE`` selection.
 
-    The headless Credential Proxy hook: :func:`decode.runtime.flow._sandbox_proxy` installs a
-    proxy-wired executor so every sandboxed ``bash`` in that flow routes through the proxy. Sets
-    the seam **and** marks selection done; paired with :func:`close_executor` on flow exit.
+    Sets the seam **and** marks selection done, so a caller that has already built its own executor
+    (a flow span, a test) pins it for every subsequent ``bash``; paired with :func:`close_executor`.
     """
     global _EXECUTOR, _executor_selected
     _EXECUTOR = executor

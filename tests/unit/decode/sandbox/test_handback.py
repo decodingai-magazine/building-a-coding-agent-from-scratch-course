@@ -307,7 +307,7 @@ def test_reship_fast_forwards_the_same_branch(tmp_path):
 def test_git_runs_host_side_never_through_the_sandbox_seam(mocker, tmp_path):
     """Every git op is a host ``git`` subprocess against the local Workspace — no cred in a sandbox env.
 
-    The 075-style boundary assertion (ADR-0012 §8, the Credential-Proxy invariant): record every
+    The 075-style boundary assertion (ADR-0012 §8, retained verbatim by ADR-0016 §4): record every
     subprocess call the hand-back makes and assert each is a host ``git`` against ``.decode/sandbox``
     (never ``executor.run`` / ``backend.exec``), that no credential/token is injected into any env, and
     — structurally — that the hand-back module pulls in **no** sandbox executor/backend seam at all.

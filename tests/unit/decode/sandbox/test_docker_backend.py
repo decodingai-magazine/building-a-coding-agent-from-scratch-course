@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 from decode.config.settings import settings
 from decode.sandbox.docker_backend import (
@@ -21,12 +22,13 @@ from decode.sandbox.docker_backend import (
     _GH_INSTALL_CMD,
     _GIT_INSTALL_CMD,
     _TIMEOUT_EXIT,
-    _WORKER_CA_PATH,
     _WORKSPACE,
     DockerBackend,
     _git_setup_command,
+    _run_env,
 )
 from decode.sandbox.executor import FileStat, WorkspaceEscape
+from decode.sandbox.workspace import GIT_CREDENTIAL_HELPER, GIT_TOKEN_ENV
 
 
 def _fake_proc(mocker, *, stdout=b"", stderr=b"", returncode=0):
@@ -39,12 +41,36 @@ def _fake_proc(mocker, *, stdout=b"", stderr=b"", returncode=0):
     return proc
 
 
-# docker run argv (byte-identical off the proxy path)
+# docker run argv — ONE shape; the only variation is the GITHUB_TOKEN pass-through (ADR-0016 §2)
+
+_NO_TOKEN_ARGS = [
+    "run",
+    "-d",
+    "--rm",
+    "-v",
+    f"/ws:{_WORKSPACE}",
+    "-w",
+    _WORKSPACE,
+    settings.sandbox_image,
+    "sleep",
+    "infinity",
+]
 
 
-def test_run_args_mount_the_workspace_without_proxy_wiring():
-    # The non-proxy backend mounts the resolved Workspace at /workspace with no --network, no -e, no CA
-    # mount, and a bare ``sleep infinity`` entry. No skills mount (seeded host-side now, ADR-0012 §5).
+def test_run_args_mount_the_workspace_and_nothing_else():
+    # No SANDBOX_GIT_TOKEN (the conftest default): mount the resolved Workspace at /workspace, run a
+    # bare ``sleep infinity``. No -e, no --network, no CA mount. No skills mount either (they are
+    # seeded host-side, ADR-0012 §5).
+    args = DockerBackend()._run_args(Path("/ws"))
+
+    assert args == _NO_TOKEN_ARGS
+
+
+def test_run_args_add_a_valueless_token_passthrough_when_the_token_is_set(monkeypatch):
+    # A set token adds ``-e GITHUB_TOKEN`` — with NO value: docker fills it from the client env
+    # (``_run_env``), so the secret never enters an argv a host ``ps`` or a rendered error could read.
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr("ghp_secret_value"))
+
     args = DockerBackend()._run_args(Path("/ws"))
 
     assert args == [
@@ -55,37 +81,38 @@ def test_run_args_mount_the_workspace_without_proxy_wiring():
         f"/ws:{_WORKSPACE}",
         "-w",
         _WORKSPACE,
+        "-e",
+        GIT_TOKEN_ENV,
         settings.sandbox_image,
         "sleep",
         "infinity",
     ]
+    assert not any("ghp_secret_value" in arg for arg in args)  # SECURITY: no token in the argv
 
 
-def test_run_args_add_network_env_and_ca_mount_when_wired():
-    backend = DockerBackend(
-        network="decode-sandbox-net-abc",
-        proxy_env={"http_proxy": "http://decode-proxy-abc:8080", "no_proxy": "localhost"},
-        ca_cert_host_path=Path("/host/certs/mitmproxy-ca-cert.pem"),
-    )
+def test_run_args_are_byte_identical_for_an_empty_token(monkeypatch):
+    # An explicit ``SANDBOX_GIT_TOKEN=`` parses to SecretStr("") — it must inject NOTHING, leaving the
+    # default path byte-identical (the property that keeps the no-token run clean).
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr(""))
 
-    args = backend._run_args(Path("/ws"))
-
-    # The base (mount) prefix is unchanged; proxy flags are additive and in a stable order.
-    assert args[:7] == ["run", "-d", "--rm", "-v", f"/ws:{_WORKSPACE}", "-w", _WORKSPACE]
-    assert "--network" in args and args[args.index("--network") + 1] == "decode-sandbox-net-abc"
-    assert "http_proxy=http://decode-proxy-abc:8080" in args
-    assert "no_proxy=localhost" in args
-    assert f"/host/certs/mitmproxy-ca-cert.pem:{_WORKER_CA_PATH}:ro" in args
-    # The entry stays a bare ``sleep infinity`` — the CA is trusted by a synchronous docker exec.
-    assert args[-3:] == [settings.sandbox_image, "sleep", "infinity"]
+    assert DockerBackend()._run_args(Path("/ws")) == _NO_TOKEN_ARGS
 
 
-def test_proxy_wiring_defaults_to_none_so_construction_is_inert():
+def test_run_env_is_none_without_a_token_and_carries_the_token_when_set(monkeypatch):
+    # No token → ``None`` (the docker client just inherits os.environ; the default path is untouched).
+    assert _run_env() is None
+
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr("ghp_secret_value"))
+    env = _run_env()
+
+    assert env is not None
+    assert env[GIT_TOKEN_ENV] == "ghp_secret_value"  # the token's ONLY carrier: the client's env
+    assert env["PATH"] == os.environ["PATH"]  # the rest of the host env still rides along
+
+
+def test_construction_is_inert():
     backend = DockerBackend()
 
-    assert backend._network is None
-    assert backend._proxy_env is None
-    assert backend._ca_cert_host_path is None
     assert backend._container_id is None
     assert backend._workspace is None
 
@@ -124,56 +151,39 @@ async def test_create_raises_on_a_docker_run_failure(mocker, tmp_path):
     assert backend._container_id is None  # nothing cached → a later create re-attempts
 
 
-async def test_create_trusts_the_ca_synchronously_on_the_proxy_path(mocker, tmp_path):
-    # On the proxy path create runs ``docker exec <id> update-ca-certificates`` and WAITS before
-    # returning, so the first command already trusts the CA (no daemon — run + exec are faked). git then
-    # installs too (the wired worker is no longer skipped): docker run → CA trust → git install.
-    run_proc = _fake_proc(mocker, stdout=b"container123\n")
-    exec_proc = _fake_proc(mocker, stdout=b"updated\n")
-    git_proc = _fake_proc(mocker, stdout=b"done\n")
-    spawn = mocker.patch(
-        "asyncio.create_subprocess_exec",
-        new=mocker.AsyncMock(side_effect=[run_proc, exec_proc, git_proc]),
-    )
-    backend = DockerBackend(ca_cert_host_path=Path("/host/mitmproxy-ca-cert.pem"))
-
-    await backend.create(tmp_path)
-
-    assert backend._container_id == "container123"
-    assert spawn.await_count == 3  # docker run, CA trust, THEN git install
-    exec_argv = spawn.await_args_list[1].args
-    assert exec_argv[:4] == ("docker", "exec", "container123", "update-ca-certificates")
-
-
-async def test_create_runs_no_ca_step_off_the_proxy_path(mocker, tmp_path):
+async def test_create_inherits_the_host_env_when_no_token_is_set(mocker, tmp_path):
+    # The default path is untouched: ``env=None`` → the docker client just inherits os.environ, so a
+    # no-token session is byte-identical to the pre-injection behaviour.
     run_proc = _fake_proc(mocker, stdout=b"cid\n")
-    git_proc = _fake_proc(mocker, stdout=b"ok\n")  # the default worker installs git (not a CA step)
+    git_proc = _fake_proc(mocker, stdout=b"ok\n")
     spawn = mocker.patch(
         "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc, git_proc])
     )
 
     await DockerBackend().create(tmp_path)
 
-    # No CA step on the non-proxy path: neither spawn runs update-ca-certificates.
-    assert all("update-ca-certificates" not in call.args for call in spawn.await_args_list)
+    assert spawn.await_args_list[0].kwargs["env"] is None
+    assert GIT_TOKEN_ENV not in spawn.await_args_list[0].args  # no -e at all in the argv
 
 
-async def test_create_reaps_the_worker_and_drops_the_id_when_ca_trust_fails(mocker, tmp_path):
-    # A non-zero update-ca-certificates reaps the just-created worker and raises; create drops the id
-    # so a later run re-creates from scratch (never a leaked, untrusted worker).
+async def test_create_hands_the_token_to_the_container_through_the_client_env(
+    mocker, monkeypatch, tmp_path
+):
+    # ADR-0016 §2: a set SANDBOX_GIT_TOKEN reaches the worker as $GITHUB_TOKEN. The VALUE rides the
+    # docker client's env; the argv only NAMES the var — so no failure path can render the secret.
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr("ghp_injected"))
     run_proc = _fake_proc(mocker, stdout=b"container123\n")
-    exec_proc = _fake_proc(mocker, stdout=b"boom\n", returncode=1)
-    mocker.patch(
-        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc, exec_proc])
+    git_proc = _fake_proc(mocker, stdout=b"ok\n")
+    spawn = mocker.patch(
+        "asyncio.create_subprocess_exec", new=mocker.AsyncMock(side_effect=[run_proc, git_proc])
     )
-    reap = mocker.patch("decode.sandbox.docker_backend._run_docker_quiet", new=mocker.AsyncMock())
-    backend = DockerBackend(ca_cert_host_path=Path("/host/ca.pem"))
 
-    with pytest.raises(RuntimeError, match="update-ca-certificates failed"):
-        await backend.create(tmp_path)
+    await DockerBackend().create(tmp_path)
 
-    reap.assert_awaited_once_with("rm", "-f", "container123")  # the worker was reaped, not leaked
-    assert backend._container_id is None  # the id is dropped after the reap
+    run_call = spawn.await_args_list[0]
+    assert run_call.kwargs["env"][GIT_TOKEN_ENV] == "ghp_injected"  # docker fills -e from here
+    assert list(run_call.args[1:]).count("-e") == 1  # the value-less pass-through, once
+    assert not any("ghp_injected" in arg for arg in run_call.args)  # SECURITY: never in the argv
 
 
 # create: git install (the slim base ships none)
@@ -238,32 +248,21 @@ async def test_create_survives_a_git_install_failure(mocker, tmp_path):
     )  # the session is up despite the failed git install
 
 
-async def test_create_installs_git_on_a_proxy_wired_worker(mocker, tmp_path):
-    # The (A) fix (ADR-0012 §10): the proxy-wired worker DOES get git — its ``git push`` to github.com is
-    # exactly what the proxy's ``github-git`` Basic rule authenticates, so the client MUST be present.
-    # apt reaches the Debian mirrors THROUGH the proxy (``http_proxy`` set) after the CA is trusted, so
-    # three spawns fire: docker run → update-ca-certificates → the git-install ``sh -c``.
-    run_proc = _fake_proc(mocker, stdout=b"container123\n")
-    ca_proc = _fake_proc(mocker, stdout=b"updated\n")
-    git_proc = _fake_proc(mocker, stdout=b"done\n")
-    spawn = mocker.patch(
-        "asyncio.create_subprocess_exec",
-        new=mocker.AsyncMock(side_effect=[run_proc, ca_proc, git_proc]),
-    )
-    backend = DockerBackend(
-        network="decode-sandbox-net-abc",
-        proxy_env={"http_proxy": "http://decode-proxy:8080"},
-        ca_cert_host_path=Path("/host/mitmproxy-ca-cert.pem"),
-    )
+def test_git_setup_command_adds_the_credential_helper_when_a_token_is_set(monkeypatch):
+    # ADR-0016 §2: with a token injected, the worker's git learns to read $GITHUB_TOKEN at push time
+    # (the same helper modal bakes into its image) — so a model ``git push`` over HTTPS authenticates.
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr("ghp_secret_value"))
 
-    await backend.create(tmp_path)
+    cmd = _git_setup_command()
 
-    assert spawn.await_count == 3  # docker run, CA trust, THEN git install (no longer skipped)
-    ca_argv = spawn.await_args_list[1].args
-    assert ca_argv[:4] == ("docker", "exec", "container123", "update-ca-certificates")
-    git_argv = spawn.await_args_list[2].args
-    # The proxy-wired worker installs git the same way the default worker does (identity configured too).
-    assert list(git_argv) == ["docker", "exec", "container123", "sh", "-c", _git_setup_command()]
+    assert cmd.endswith(GIT_CREDENTIAL_HELPER)  # chained on last, after the identity config
+    assert "$GITHUB_TOKEN" in cmd  # read at push time from the env ...
+    assert "ghp_secret_value" not in cmd  # ... never baked into the command (SECURITY)
+
+
+def test_git_setup_command_omits_the_credential_helper_without_a_token():
+    # No token → no helper: a token-free worker gets no credential machinery at all.
+    assert "credential.helper" not in _git_setup_command()
 
 
 # exec: a fresh ``docker exec`` per call
