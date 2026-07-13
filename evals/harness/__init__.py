@@ -14,10 +14,25 @@ from evals.harness.driver import (
     run_agent_once,
     run_agent_once_sync,
 )
+from evals.harness.judges import judge_model, make_judge
+from evals.harness.metrics import (
+    DiffLinesMetric,
+    MaxStepsMetric,
+    ToolCalledMetric,
+    ToolNotCalledMetric,
+    VerifyOracleMetric,
+)
 
 __all__ = [
+    "DiffLinesMetric",
     "EvalRunRecord",
+    "MaxStepsMetric",
     "ToolCallRecord",
+    "ToolCalledMetric",
+    "ToolNotCalledMetric",
+    "VerifyOracleMetric",
+    "judge_model",
+    "make_judge",
     "run_agent_once",
     "run_agent_once_sync",
 ]
