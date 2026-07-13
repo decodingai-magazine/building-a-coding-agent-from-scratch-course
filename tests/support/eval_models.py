@@ -57,6 +57,24 @@ def write_then_finish(path: str, content: str, final_text: str) -> FunctionModel
     return FunctionModel(stream_function=stream_function)
 
 
+def bash_then_finish(command: str, final_text: str) -> FunctionModel:
+    """A model that calls ``bash(command)`` once, then finishes with ``final_text``.
+
+    ``bash`` awaits the executor seam directly (no file-tool thread hop), so it routes straight to the
+    injected sandbox executor — the clean way to drive the benchmark sandbox from a scripted model.
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        if _last_request_has_tool_return(messages):
+            yield final_text
+            return
+        yield {0: DeltaToolCall(name="bash", json_args=json.dumps({"command": command}))}
+
+    return FunctionModel(stream_function=stream_function)
+
+
 def runaway_reader(path: str) -> FunctionModel:
     """A model that calls ``read(path)`` on every leg forever — only the request cap can stop it."""
 
@@ -75,5 +93,22 @@ def echo_line(text: str) -> FunctionModel:
         messages: list[ModelMessage], info: AgentInfo
     ) -> AsyncIterator[object]:
         yield text
+
+    return FunctionModel(stream_function=stream_function)
+
+
+def crashing_model(message: str = "scripted model boom") -> FunctionModel:
+    """A model that raises on its first request — the Runner swallows it into an ``AgentError``.
+
+    Proves the driver surfaces a crashed turn: the :class:`~decode.harness.runner.Runner` catches the
+    exception, emits ``events.AgentError``, and the run ends with an empty-but-valid history — the very
+    ambiguity the eval driver's ``agent_error`` capture resolves (ADR-0017 §4; task 106).
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        raise RuntimeError(message)
+        yield ""  # unreachable; makes this a valid async generator
 
     return FunctionModel(stream_function=stream_function)

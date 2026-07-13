@@ -37,6 +37,7 @@ from pydantic_ai.models.wrapper import WrapperModel
 
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
+from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Runner
 from decode.permissions.gate import PermissionGate
@@ -84,6 +85,11 @@ class EvalRunRecord:
     * ``input_tokens`` / ``output_tokens`` — summed from each ``ModelResponse.usage`` (the
       message-history equivalent of ``result.usage()``).
     * ``denied_tools`` — the tools the gate denied (``ToolReturnPart.outcome == "denied"``).
+    * ``agent_error`` — the message of an :class:`~decode.entities.events.AgentError` the Runner
+      surfaced when a turn crashed, else ``None``. The Runner swallows a turn exception into that
+      event and returns an empty-but-valid history, so without this a crashed run is
+      indistinguishable from a no-output run (the task-103 QA gap); a benchmark grades a crash as
+      fail-with-reason instead of silently empty (ADR-0017 §4; task 106).
     """
 
     output: str
@@ -93,6 +99,7 @@ class EvalRunRecord:
     input_tokens: int
     output_tokens: int
     denied_tools: list[str] = field(default_factory=list)
+    agent_error: str | None = None
 
 
 async def _deny_permission_resolver(request: PermissionRequest) -> PermissionDecision:
@@ -175,15 +182,23 @@ async def run_agent_once(
 
     agent = build_agent()
     gate = PermissionGate(mode=gate_mode, user_rules=permission_rules)
+    # Capture a crashed turn: the Runner swallows a turn exception into an ``AgentError`` event and
+    # returns a valid-but-empty history, so the record would otherwise hide the failure (ADR-0017 §4).
+    errors: list[str] = []
+
+    def _capture_emit(event: object) -> None:
+        if isinstance(event, events.AgentError):
+            errors.append(event.message)
+
     deps = AgentDeps(
         cwd=cwd,
-        emit=_silent_emit,
+        emit=_capture_emit,
         gate=gate,
         resolve_permission=resolve_permission or _deny_permission_resolver,
         resolve_user_question=resolve_user_question or deny_user_question_resolver,
     )
     handler: AgentTurnHandler = AgentTurnHandler(agent, deps=deps, message_history=message_history)
-    runner = Runner(handler, on_event=_silent_emit)
+    runner = Runner(handler, on_event=_capture_emit)
 
     cap = (
         agent.override(model=_RequestCappedModel(agent.model, max_requests))
@@ -194,7 +209,7 @@ async def run_agent_once(
         await runner.submit(prompt, InputIntent.STEER)
         await runner.wait_idle()
 
-    return _build_record(handler.message_history)
+    return _build_record(handler.message_history, agent_error=errors[0] if errors else None)
 
 
 def run_agent_once_sync(prompt: str, **kwargs: Any) -> EvalRunRecord:
@@ -202,11 +217,7 @@ def run_agent_once_sync(prompt: str, **kwargs: Any) -> EvalRunRecord:
     return asyncio.run(run_agent_once(prompt, **kwargs))
 
 
-def _silent_emit(event: object) -> None:
-    """The eval event sink: everything the record needs is read back from the message history."""
-
-
-def _build_record(messages: list[ModelMessage]) -> EvalRunRecord:
+def _build_record(messages: list[ModelMessage], *, agent_error: str | None = None) -> EvalRunRecord:
     """Assemble the :class:`EvalRunRecord` from the pydantic-ai message history (ADR-0017 §4)."""
     tool_calls: list[ToolCallRecord] = []
     steps = 0
@@ -236,6 +247,7 @@ def _build_record(messages: list[ModelMessage]) -> EvalRunRecord:
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         denied_tools=denied_tools,
+        agent_error=agent_error,
     )
 
 

@@ -36,12 +36,32 @@ def test_help_lists_the_eval_tracks():
     assert "regression" in result.output
 
 
-def test_benchmark_subcommand_is_stubbed():
-    """The benchmark track is a stub until task 105 — it runs and says so, never errors."""
-    result = CliRunner().invoke(cli, ["benchmark"])
+def test_benchmark_subcommand_invokes_run_benchmark(mocker):
+    """``evals benchmark`` forwards its filters to ``run_benchmark`` and reports the project (task 106)."""
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
 
-    assert result.exit_code == 0
-    assert "not implemented yet" in result.output
+    result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--sandbox", "docker"])
+
+    assert result.exit_code == 0, result.output
+    _, kwargs = run_benchmark.call_args
+    assert kwargs["task_id"] == "001-greeting"
+    assert kwargs["sandbox"] == "docker"
+    assert "decode-evals" in result.output
+
+
+def test_benchmark_subcommand_reports_an_empty_selection(mocker):
+    """A ``BenchmarkSelectionError`` becomes a friendly non-zero CLI error, not a traceback."""
+    from evals.harness.benchmark import BenchmarkSelectionError
+
+    mocker.patch(
+        "evals.harness.benchmark.run_benchmark",
+        side_effect=BenchmarkSelectionError("no benchmark task matched"),
+    )
+
+    result = CliRunner().invoke(cli, ["benchmark", "--task", "nope"])
+
+    assert result.exit_code != 0
+    assert "no benchmark task matched" in result.output
 
 
 def test_regression_subcommand_is_stubbed():

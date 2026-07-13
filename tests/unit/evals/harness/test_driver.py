@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from support.eval_models import (
+    crashing_model,
     echo_line,
     read_then_finish,
     runaway_reader,
@@ -163,6 +164,30 @@ async def test_message_history_is_pre_filled(workspace, install_model):
     ]
     assert "earlier question" in prompts
     assert "follow up" in prompts
+
+
+async def test_a_healthy_run_records_no_agent_error(workspace, install_model):
+    """A run that completes normally leaves ``agent_error`` unset — the no-crash baseline."""
+    install_model(read_then_finish(_NOTES, _FINAL))
+
+    record = await run_agent_once("read the notes file", cwd=workspace)
+
+    assert record.agent_error is None
+
+
+async def test_a_crashed_turn_is_surfaced_as_agent_error(workspace, install_model):
+    """A model that raises is swallowed by the Runner into an ``AgentError`` the driver captures.
+
+    Without this the record is an empty-but-valid history indistinguishable from a no-output run
+    (the task-103 QA gap); ``agent_error`` makes a crash gradeable as fail-with-reason (ADR-0017 §4).
+    """
+    install_model(crashing_model("scripted boom"))
+
+    record = await run_agent_once("do something", cwd=workspace)
+
+    assert record.agent_error is not None
+    assert "scripted boom" in record.agent_error
+    assert record.output == ""  # the crashed turn produced no assistant text
 
 
 def test_run_agent_once_sync_wraps_the_async_driver(workspace, install_model):
