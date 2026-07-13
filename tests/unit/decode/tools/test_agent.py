@@ -824,6 +824,52 @@ async def test_n_prompts_fold_n_sections_in_prompt_order_each_headed_by_its_own_
     assert '## Subagent 1 — "' in out and '## Subagent 3 — "' in out
 
 
+async def test_a_multi_line_prompt_still_folds_a_single_line_heading(tmp_path, mocker):
+    """A REAL model writes a three-part, multi-line brief — its heading must still be ONE line (§5).
+
+    The regression test task 108's live smoke was missing: every hermetic prompt was single-line, so
+    nothing caught the fold embedding a ``"QUESTION: …\\nSCOPE: …\\nREPORT: …"`` prompt verbatim into
+    ``## Subagent i — "…"`` — a Markdown heading ends at the FIRST newline, so the closing quote landed
+    two lines down and a human reading the raw transcript saw a broken heading + an orphan quote.
+    ``_sections`` parses with the STRICT single-line ``^## Subagent (\\d+) — "(.*)"$``: it can only
+    match if the whole label, closing quote included, sits on one line.
+    """
+    multi_line = (
+        "QUESTION: How does the permission gate decide allow/ask/deny?\n"
+        "SCOPE: src/decode/permissions/\n"
+        "WHAT THE REPORT MUST CONTAIN: the decision path, with file:line evidence."
+    )
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=_EchoAgent())
+    ctx = _tool_ctx(tmp_path)
+
+    out = await agent_module.agent(ctx, [multi_line])
+
+    heading, body = _sections(out)[0]  # strict single-line parse — no match, no section
+    assert heading == " ".join(multi_line.split())  # collapsed: one line, every word kept
+    assert "\n" not in heading
+    assert body == f"report for: {multi_line}"  # …and the CHILD's report is the untouched brief
+
+
+async def test_the_child_is_briefed_with_the_models_original_uncollapsed_prompt(tmp_path, mocker):
+    """Only the HEADING is collapsed: the child gets the model's brief byte-for-byte, newlines and all.
+
+    Collapsing the prompt handed to ``agent.run()`` would flatten the three-part brief the tool
+    description asks the model for — the child would read one run-on line instead of QUESTION / SCOPE /
+    REPORT on their own lines. The fix is a rendering concern and must stop at the label.
+    """
+    multi_line = (
+        "QUESTION: How is tool output truncated?\nSCOPE: src/decode/tools/\n"
+        "WHAT THE REPORT MUST CONTAIN: the caps and where they are applied, with file:line evidence."
+    )
+    scripted = _ScriptedAgent({multi_line: [_report("REPORT")]})
+    mocker.patch.object(agent_module, "_require_main_agent", return_value=scripted)
+    ctx = _tool_ctx(tmp_path)
+
+    await agent_module.agent(ctx, [multi_line])
+
+    assert scripted.prompts == [multi_line]  # exactly what the model wrote — not " ".join(split())
+
+
 async def test_duplicate_prompts_are_not_deduped(tmp_path, mocker):
     """Two identical prompts → two children → two sections (dedupe is a prompt-quality issue, §2)."""
     tracker = _ConcurrencyTracker()

@@ -347,10 +347,28 @@ async def agent(ctx: RunContext[AgentDeps], prompts: list[str]) -> str:
     # TOP of the ~16 KB of reports, never a bite out of a child's share — the fold's evidence must
     # not shrink because the instruction got longer. Always appended, one-element folds included.
     fold = "\n\n".join(
-        f'## Subagent {index} — "{prompt}"\n\n{section}'
+        f'## Subagent {index} — "{_label(prompt)}"\n\n{section}'
         for index, (prompt, section) in enumerate(zip(prompts, sections, strict=True), start=1)
     )
     return fold + SYNTHESIS_FOOTER
+
+
+def _label(prompt: str) -> str:
+    """``prompt`` as ONE line — the section heading's label (ADR-0017 §5).
+
+    A real parent model writes a MULTI-LINE brief, because the tool description asks it for three
+    parts ("QUESTION: …\\nSCOPE: …\\nWHAT THE REPORT MUST CONTAIN: …"). A Markdown heading ends at the
+    first newline by spec, so embedding that verbatim spilled the label across lines and left its
+    closing quote stranded in the paragraph below — a broken heading for whoever reads the raw
+    transcript (session-log JSONL, a pasted ``decode run`` result). Collapsing the whitespace keeps
+    every word and costs the reader nothing.
+
+    NOT truncated: a heading is single-line but unbounded in length (renderers wrap it), the full brief
+    is what lets a reader attribute a section to its angle, and the fan-out is capped at
+    :data:`MAX_FANOUT_PROMPTS` labels anyway. RENDERING only — the CHILD is briefed with the model's
+    original text, newlines and all (:func:`_spawn_child`).
+    """
+    return " ".join(prompt.split())
 
 
 async def _spawn_child(

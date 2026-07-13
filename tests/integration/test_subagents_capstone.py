@@ -200,14 +200,13 @@ def _fan_out(n_children: int) -> ModelResponse:
     )
 
 
+# Single-line by construction, closing quote included — and asserted against the LIVE fold too. A real
+# model writes a MULTI-LINE brief ("QUESTION: …\nSCOPE: …\nWHAT THE REPORT MUST CONTAIN: …"); task 109
+# collapses the prompt's whitespace when rendering its label, so a strict single-line heading pattern
+# matches a REAL fan-out's fold, not just a hermetic one. (Before 109, the live smoke needed a looser
+# probe because the closing quote landed two lines below the ``##`` — the defect this pattern now
+# guards against end-to-end.)
 _SECTION_RE = re.compile(r'^## Subagent \d+ — ".*"$', re.MULTILINE)
-
-# The LIVE smoke's heading probe. Deliberately looser than ``_SECTION_RE``: a real model may write a
-# MULTI-LINE prompt ("QUESTION: …\nSCOPE: …\nWHAT THE REPORT MUST CONTAIN: …"), and the fold embeds the
-# prompt verbatim in its heading — so the closing quote lands on a later line and the strict
-# single-line pattern misses a perfectly well-formed section. The hermetic tests, whose prompts are
-# single-line by construction, keep asserting the exact heading with ``_SECTION_RE``.
-_SECTION_HEADING_RE = re.compile(r"^## Subagent \d+ — ", re.MULTILINE)
 
 
 def _sections(aggregate: str) -> list[str]:
@@ -1333,8 +1332,8 @@ async def test_live_gemini_fanout_smoke(monkeypatch):
     # …and the aggregate that folded back is the labelled document + the footer (§5, §9).
     folded = _folded_reports(handler)
     assert folded, "at least one child report must fold back as an agent tool result"
-    assert any(_SECTION_HEADING_RE.search(aggregate) for aggregate in folded), (
-        "the fold must carry ## Subagent heading(s)"
+    assert any(_SECTION_RE.search(aggregate) for aggregate in folded), (
+        "the fold must carry ## Subagent heading(s), each ONE line with its closing quote (109)"
     )
     assert all(aggregate.endswith(SYNTHESIS_FOOTER) for aggregate in folded)
     # …with no permission prompt anywhere (READ_ONLY fan-out, ADR-0013 §5).
