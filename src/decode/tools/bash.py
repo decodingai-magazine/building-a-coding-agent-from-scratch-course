@@ -80,17 +80,6 @@ def _get_executor() -> CommandExecutor:
     return _EXECUTOR
 
 
-def install_executor(executor: CommandExecutor) -> None:
-    """Install ``executor`` as the cached ``bash`` executor, bypassing ``SANDBOX_MODE`` selection.
-
-    Sets the seam **and** marks selection done, so a caller that has already built its own executor
-    (a flow span, a test) pins it for every subsequent ``bash``; paired with :func:`close_executor`.
-    """
-    global _EXECUTOR, _executor_selected
-    _EXECUTOR = executor
-    _executor_selected = True
-
-
 async def warm_executor(workspace: Path) -> None:
     """Eagerly start the selected sandbox backend at REPL launch (ADR-0011 §4; ADR-0012 §2).
 
@@ -99,7 +88,7 @@ async def warm_executor(workspace: Path) -> None:
     the same lazy selection the first ``bash`` call would (sharing the memo) and awaits a
     duck-typed ``start(workspace)`` if present (the :class:`CommandExecutor` Protocol stays
     run-only). Failures propagate with the memo **kept** — the next ``bash`` retries from
-    scratch. REPL-only: the headless flow installs its own executor (:func:`install_executor`).
+    scratch.
     """
     if settings.sandbox_mode == "none":
         return

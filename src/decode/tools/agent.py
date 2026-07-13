@@ -52,9 +52,9 @@ def set_main_agent(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:
     """Install the running Agent as the subagent-spawn seam (ADR-0013 §6).
 
     Called once by :func:`decode.agent.factory.build_agent` after ``register_tools`` +
-    ``_register_instructions``, so the ``agent`` tool re-enters *this* Agent for every child. Like
-    bash's ``install_executor`` it simply overwrites the module reference — a later ``build_agent``
-    (a fresh REPL / a headless flow) replaces it with its own Agent.
+    ``_register_instructions``, so the ``agent`` tool re-enters *this* Agent for every child. It
+    simply overwrites the module reference — a later ``build_agent`` (a fresh REPL / a headless
+    flow) replaces it with its own Agent.
     """
     global _MAIN_AGENT
     _MAIN_AGENT = agent
