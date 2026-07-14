@@ -62,14 +62,21 @@ server_ip() {
 
 # Let's Encrypt will not issue for a bare IP, and the server must be reachable from Modal — so it
 # needs a name. nip.io resolves <ip>.nip.io to <ip> with no DNS to own, which is enough for ACME.
+#
+# No server yet (or just torn down) → prints nothing and still SUCCEEDS. A trailing
+# ``[ -n "$ip" ] && printf …`` would return 1 there, and under ``set -e`` the caller's
+# ``url="$(kitaru_url)"`` would kill the script — silently, in exactly the empty state ``status`` is
+# for.
 server_domain() {
   local ip; ip="$(server_ip)"
-  [ -n "${ip}" ] && printf '%s.nip.io' "${ip}"
+  [ -n "${ip}" ] || return 0
+  printf '%s.nip.io' "${ip}"
 }
 
 kitaru_url() {
   local domain; domain="$(server_domain)"
-  [ -n "${domain}" ] && printf 'https://%s' "${domain}"
+  [ -n "${domain}" ] || return 0
+  printf 'https://%s' "${domain}"
 }
 
 # ---------------------------------------------------------------------------- preflight
@@ -403,9 +410,17 @@ cmd_update() {
 
 cmd_down() {
   preflight
-  warn "This deletes the VM, its IP, the firewall rule, the bucket (and every artifact in it),"
-  warn "the image registry, and the runtime service account + its key."
-  read -r -p "Type the project name to confirm [${PROJECT}]: " reply
+  warn "This deletes the VM (and with it every execution record + the ${DECODE_ENV} secrets), its IP,"
+  warn "the firewall rules, the bucket (and every artifact in it), the image registry, and the"
+  warn "runtime service account + its key."
+  # The confirmation is the project name, typed by a human — interactively when there is a terminal,
+  # otherwise as the argument (``deploy.sh down <project>``), because a piped/EOF ``read`` would
+  # silently answer the prompt itself and turn the gate into decoration.
+  local reply="${1:-}"
+  if [ -z "${reply}" ]; then
+    [ -t 0 ] || die "no terminal to confirm on — re-run as: scripts/deploy.sh down ${PROJECT}"
+    read -r -p "Type the project name to confirm [${PROJECT}]: " reply
+  fi
   [ "${reply}" = "${PROJECT}" ] || die "aborted"
 
   gcloud compute instances delete "${VM}" --zone="${ZONE}" --project="${PROJECT}" --quiet || true
@@ -422,7 +437,10 @@ cmd_down() {
 }
 
 cmd_status() {
-  local url; url="$(kitaru_url)"
+  local url vm
+  url="$(kitaru_url)"
+  vm="$(gcloud compute instances describe "${VM}" --zone="${ZONE}" --project="${PROJECT}" \
+    --format='value(status)' 2>/dev/null || echo '<none>')"
   printf '\n'
   printf 'project    %s\n' "${PROJECT}"
   printf 'server     %s' "${url:-<none>}"
@@ -433,10 +451,16 @@ cmd_status() {
   fi
   printf 'bucket     %s\n' "$(have storage buckets describe "${BUCKET}" && echo "${BUCKET}" || echo '<none>')"
   printf 'registry   %s\n' "$(have artifacts repositories describe "${AR_REPO}" --location="${REGION}" --project="${PROJECT}" && echo "${REGISTRY}" || echo '<none>')"
-  printf 'vm         %s\n' "$(gcloud compute instances describe "${VM}" --zone="${ZONE}" --project="${PROJECT}" --format='value(status)' 2>/dev/null || echo '<none>')"
+  printf 'vm         %s\n' "${vm}"
   printf 'firewall   %s\n' "$(have compute firewall-rules describe "${FIREWALL}" --project="${PROJECT}" && echo "${FIREWALL} (tcp:80,443 → 0.0.0.0/0)" || echo '<none>')"
   printf 'legacy     %s\n' "$(have compute firewall-rules describe "${LEGACY_FIREWALL}" --project="${PROJECT}" && echo "${LEGACY_FIREWALL} (tcp:8080 → 0.0.0.0/0) — PLAINTEXT, delete it" || echo 'none (:8080 not exposed)')"
-  printf 'plaintext  %s\n' "$(have compute firewall-rules describe "${DENY_FIREWALL}" --project="${PROJECT}" && echo 'denied (tcp:8080 DENY @ priority 100)' || echo 'NOT DENIED — any VM in the VPC can read :8080 in the clear')"
+  # The missing DENY rule only matters while a server is listening on :8080 — without one, warning
+  # about it reads as an open hole on a machine that does not exist.
+  if [ "${vm}" = '<none>' ]; then
+    printf 'plaintext  %s\n' 'n/a (no server)'
+  else
+    printf 'plaintext  %s\n' "$(have compute firewall-rules describe "${DENY_FIREWALL}" --project="${PROJECT}" && echo 'denied (tcp:8080 DENY @ priority 100)' || echo 'NOT DENIED — any VM in the VPC can read :8080 in the clear')"
+  fi
   printf 'tls        %s\n' "$(curl -sf -m 8 "${url}/health" >/dev/null 2>&1 && echo "Let's Encrypt, valid" || echo '<no cert>')"
   printf 'stack      %s\n' "$(cd "${REPO_ROOT}" && uv run kitaru stack current 2>/dev/null \
     | awk -F': ' '/Active stack:/ {print $2; exit}' || echo '<none>')"
@@ -446,7 +470,7 @@ cmd_status() {
 case "${1:-}" in
   up)     cmd_up ;;
   update) cmd_update ;;
-  down)   cmd_down ;;
+  down)   cmd_down "${2:-}" ;;
   status) cmd_status ;;
-  *)      die "usage: scripts/deploy.sh {up|update|down|status}" ;;
+  *)      die "usage: scripts/deploy.sh {up|update|down [<project>]|status}" ;;
 esac

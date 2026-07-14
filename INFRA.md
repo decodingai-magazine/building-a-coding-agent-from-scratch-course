@@ -177,9 +177,24 @@ stack      prod-modal
 
 ### `down` — teardown
 
-Deletes the VM, IP, both firewall rules, the bucket **and every artifact in it**, the registry, and the
-service account with its key; removes the three local files above. Asks you to type the project name
-first. If you took the §1.6 org-policy exception, undo it with `enable-enforce`.
+Deletes the VM — **with it every execution record and both Kitaru secrets** (`decode-<env>`,
+`decode-modal`), which live in the SQLite on its boot disk — plus the IP, the firewall rules, the bucket
+**and every artifact in it**, the registry, and the service account with its key; removes the three
+local files above. A rebuilt server gets its secrets back from your `.env` (`make sync-secrets`), but the
+run history is gone.
+
+It asks you to type the project name to confirm. Without a terminal (a `!` command in an agent session,
+CI) there is nothing to type on, so pass it as the argument instead — same confirmation, typed by you:
+
+```bash
+scripts/deploy.sh down coding-agent-course
+```
+
+It touches **only GCP**. The Modal apps (`decode-<env>`, `decode-sandbox-<env>`) survive — they cost
+nothing idle and the next `up` reuses them; `modal app stop <name>` if you want them gone. If you took
+the §1.6 org-policy exception, undo it with `enable-enforce`.
+
+`status` works on an empty stack too — that is the point of running it after a teardown.
 
 ---
 
