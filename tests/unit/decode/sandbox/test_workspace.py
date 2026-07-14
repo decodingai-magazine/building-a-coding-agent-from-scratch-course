@@ -20,6 +20,7 @@ from decode.config.settings import settings
 from decode.sandbox.workspace import (
     extract_tar,
     git_config_pairs,
+    normalize_repo,
     prepare_workspace,
     prepare_workspace_or_empty,
     seed_skills,
@@ -502,3 +503,70 @@ def test_git_config_pairs_skips_a_cleared_field(monkeypatch):
     monkeypatch.setattr(settings, "sandbox_git_user_email", "")
 
     assert git_config_pairs() == [("user.name", "bot")]
+
+
+# a browser URL is not a repo — normalize what humans actually paste (ADR-0012 §3)
+
+
+@pytest.mark.parametrize(
+    ("pasted", "expected"),
+    [
+        # The copy-paste that cost three paid agent runs: a page ABOUT the repo, not the repo.
+        (
+            "https://github.com/owner/repo/tree/main",
+            "https://github.com/owner/repo",
+        ),
+        (
+            "https://github.com/owner/repo/blob/main/README.md",
+            "https://github.com/owner/repo",
+        ),
+        ("https://github.com/owner/repo/pull/38", "https://github.com/owner/repo"),
+        ("https://github.com/owner/repo/commit/abc123", "https://github.com/owner/repo"),
+        ("https://gitlab.com/group/sub/repo/-/tree/main", "https://gitlab.com/group/sub/repo"),
+        # Browser cruft.
+        ("https://github.com/owner/repo?tab=readme-ov-file", "https://github.com/owner/repo"),
+        ("https://github.com/owner/repo#readme", "https://github.com/owner/repo"),
+        ("https://github.com/owner/repo/", "https://github.com/owner/repo"),
+        # Already-correct forms survive untouched.
+        ("https://github.com/owner/repo.git", "https://github.com/owner/repo.git"),
+        ("https://github.com/owner/repo", "https://github.com/owner/repo"),
+        ("git@github.com:owner/repo.git", "git@github.com:owner/repo.git"),
+        # Local paths are NOT urls: a directory is allowed to be called `blob`, and stripping it
+        # would clone the wrong thing (or nothing).
+        ("/src/blob/my-repo", "/src/blob/my-repo"),
+        ("../tree/checkout", "../tree/checkout"),
+        (".", "."),
+    ],
+)
+def test_normalize_repo(pasted, expected):
+    assert normalize_repo(pasted) == expected
+
+
+def test_prepare_workspace_clones_a_browser_url(tmp_path):
+    """A `…/tree/main` URL clones the repo it obviously means — at the harness's one clone site."""
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    (source / "README.md").write_text("hi\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "init",
+        ],
+        check=True,
+    )
+    home = tmp_path / "home"
+
+    # file:// so the browser-URL markers are exercised on a real (clonable) url, not a local path.
+    workspace = prepare_workspace(home, repo=f"file://{source}/tree/main")
+
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "hi\n"
