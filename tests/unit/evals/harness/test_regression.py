@@ -314,6 +314,21 @@ def test_run_regression_wires_evaluate(mocker):
     assert config["harness"] == "regression"
 
 
+def test_run_regression_forwards_a_stable_experiment_name(mocker):
+    """A stable ``experiment_name`` reaches ``evaluate`` so the threshold ritual can find prior runs."""
+    probe = _read_probe(id="named-probe")
+    mocker.patch("evals.harness.regression.load_probes", return_value=[probe])
+    evaluate = mocker.patch("opik.evaluation.evaluate")
+    opik_cls = mocker.patch("opik.Opik")
+    dataset = opik_cls.return_value.get_or_create_dataset.return_value
+    dataset.get_items.return_value = [{"id": "item-1", "probe_id": probe.id}]
+
+    run_regression(probe_id=probe.id, experiment_name="decode-regression-gate")
+
+    _, kwargs = evaluate.call_args
+    assert kwargs["experiment_name"] == "decode-regression-gate"
+
+
 def test_run_regression_raises_when_no_probe_matches(mocker):
     """An empty selection is a loud, friendly stop — never a silent zero-item experiment."""
     mocker.patch("evals.harness.regression.load_probes", return_value=[_read_probe(id="only")])

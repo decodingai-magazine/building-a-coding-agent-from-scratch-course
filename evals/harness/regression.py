@@ -272,6 +272,7 @@ def run_regression(
     *,
     probe_id: str | None = None,
     nb_samples: int | None = None,
+    experiment_name: str | None = None,
     client: opik.Opik | None = None,
 ) -> EvaluationResult:
     """Run the selected probes as one Opik experiment and return its result (ADR-0017 §3,4,6).
@@ -282,6 +283,10 @@ def run_regression(
     sha; ``project_name`` is ``settings.eval_project_name`` so live tracing stays clean. Runs
     single-threaded — the ``bash`` executor seam is process-global. Raises
     :class:`RegressionSelectionError` when nothing matches.
+
+    ``experiment_name`` (``None`` = opik auto-names) gives every regression run a STABLE experiment name
+    so the task-115 threshold ritual can find prior runs by name (``get_experiments_by_name``) and warn
+    on per-metric regressions vs the last one.
     """
     import opik
     from opik.evaluation import evaluate
@@ -306,6 +311,7 @@ def run_regression(
         task=task_fn,
         scoring_metrics=_scoring_metrics(selected),
         experiment_config=experiment_config(),
+        experiment_name=experiment_name,
         project_name=settings.eval_project_name,
         nb_samples=nb_samples,
         dataset_item_ids=item_ids or None,
