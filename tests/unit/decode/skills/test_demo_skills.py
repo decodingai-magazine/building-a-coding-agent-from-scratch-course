@@ -5,6 +5,11 @@ not the harness — so the only thing to pin automatically is that they stay *lo
 fixtures their bodies reference stay honest: demo-2's seeded repo must genuinely fail exactly two
 tests as committed, and demo-4's CSV must carry every mess type its body promises. Everything runs
 through decode's REAL skills loader (``decode.skills.loader``), mirroring ``test_loader.py``.
+
+Task 119 adds three prompt-only demos — demo-5 (review-swarm), demo-6 (sandbox-feature-pr), and
+demo-7 (todoist-app). They ship no fixtures, so they only owe the loader-parse coverage plus one
+extra guard for demo-6: its documented invocation must match the REAL CLI (``--repo`` exists;
+sandbox mode is the ``SANDBOX_MODE`` env var, never an invented ``--sandbox`` flag).
 """
 
 from __future__ import annotations
@@ -16,19 +21,26 @@ import subprocess
 import sys
 from pathlib import Path
 
+import click
 import pytest
 
+from decode.cli import cli
 from decode.skills import loader
 
 # ``tests/unit/decode/skills/test_demo_skills.py`` -> repo root -> the committed demo skills tree.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEMO_SKILLS_DIR = REPO_ROOT / ".decode" / "skills"
 
-# The three skills this task authors (demo-1 ships separately and is untouched).
+# The demo skills this task family authors (demo-1 ships separately and is untouched).
 DEMO_2 = "demo-2-bug-hunt"
 DEMO_3 = "demo-3-terminal-arcade"
 DEMO_4 = "demo-4-data-detective"
-AUTHORED_DEMOS = [DEMO_2, DEMO_3, DEMO_4]
+DEMO_5 = "demo-5-review-swarm"
+DEMO_6 = "demo-6-sandbox-feature-pr"
+DEMO_7 = "demo-7-todoist-app"
+# demo-3 and the three task-119 demos are prompt-only (SKILL.md, no sibling resources).
+PROMPT_ONLY_DEMOS = [DEMO_3, DEMO_5, DEMO_6, DEMO_7]
+AUTHORED_DEMOS = [DEMO_2, DEMO_3, DEMO_4, DEMO_5, DEMO_6, DEMO_7]
 
 
 def _skill_text(dir_name: str) -> str:
@@ -69,13 +81,87 @@ def test_authored_demos_load_alongside_the_builtins():
 
 
 def test_resource_shipping_demos_carry_a_resource_dir():
-    # demo-2 and demo-4 ship ``references/`` siblings -> ``resource_dir`` set; demo-3 is SKILL.md-only
-    # -> ``None``. This is what lets the loader render their fixtures cwd-relative.
+    # demo-2 and demo-4 ship ``references/`` siblings -> ``resource_dir`` set; the prompt-only demos
+    # are SKILL.md-only -> ``None``. This is what lets the loader render their fixtures cwd-relative.
     found = loader.discover_project_skills(REPO_ROOT)
 
     assert found[DEMO_2].resource_dir == DEMO_SKILLS_DIR / DEMO_2
     assert found[DEMO_4].resource_dir == DEMO_SKILLS_DIR / DEMO_4
-    assert found[DEMO_3].resource_dir is None
+    for prompt_only in PROMPT_ONLY_DEMOS:
+        assert found[prompt_only].resource_dir is None
+
+
+# demo-5: the review-swarm body fans out three parallel read-only Explore subagents
+
+
+def test_demo_5_fans_out_three_subagents_over_the_named_modules():
+    body = _skill_text(DEMO_5)
+
+    # The three decode modules the swarm reviews, one Explore subagent each (ADR-0013 fan-out).
+    for module in ("src/decode/permissions/", "src/decode/sandbox/", "src/decode/context/"):
+        assert module in body, f"body must name the {module} review target"
+    # The merged verdict is severity-ranked and carries a text diagram per module.
+    for severity in ("Critical", "Major", "Minor"):
+        assert severity in body, f"verdict must rank by {severity}"
+    assert re.search(r"mermaid|ascii", body, re.IGNORECASE), "verdict must include a text diagram"
+
+
+# demo-6: the documented invocation matches the REAL CLI (no invented --sandbox flag)
+
+
+def _cli_option_names(command: click.Command) -> set[str]:
+    """Every long-option string declared on a Click command (e.g. ``--repo``)."""
+    return {opt for param in command.params for opt in getattr(param, "opts", [])}
+
+
+def test_cli_exposes_repo_but_no_sandbox_flag():
+    # Guards the demo-6 body against drift: ``--repo`` is real, ``--sandbox`` was never added.
+    root_opts = _cli_option_names(cli)
+    run_opts = _cli_option_names(cli.commands["run"])
+
+    assert "--repo" in root_opts
+    assert "--repo" in run_opts
+    assert "--sandbox" not in root_opts
+    assert "--sandbox" not in run_opts
+
+
+def test_demo_6_body_uses_the_real_invocation_shape():
+    body = _skill_text(DEMO_6)
+
+    # The documented launch uses SANDBOX_MODE=docker + --repo, names the modal rung, and ends in a
+    # draft PR — and never invents a --sandbox flag the CLI does not have.
+    assert "SANDBOX_MODE=docker" in body
+    assert "SANDBOX_MODE=modal" in body
+    assert "--repo" in body
+    assert "--sandbox" not in body
+    assert "gh pr create" in body and "--draft" in body
+
+
+def test_demo_6_targets_the_real_course_repo():
+    body = _skill_text(DEMO_6)
+
+    # The invocation clones the actual course repo (matches ``git remote get-url origin``).
+    assert "decodingai-magazine/building-a-coding-agent-from-scratch-course" in body
+
+
+def test_no_demo_mentions_the_credential_proxy():
+    # Credential-proxy involvement is an explicit non-goal (ADR-0017 Context) — keep it out of all
+    # authored demo bodies, not just demo-6.
+    for demo in AUTHORED_DEMOS:
+        assert "credential proxy" not in _skill_text(demo).lower()
+
+
+# demo-7: the todo-app body pins the zero-dep, single-file, localStorage contract
+
+
+def test_demo_7_pins_single_file_localstorage_contract():
+    body = _skill_text(DEMO_7)
+
+    assert "index.html" in body
+    assert "localStorage" in body
+    # The three filter states the body promises.
+    for state in ("all", "active", "done"):
+        assert state in body
 
 
 # fixtures the bodies reference exist
