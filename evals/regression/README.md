@@ -74,3 +74,29 @@ own metrics; `run_regression` wraps each in a `ProbeScopedMetric` so a single `e
 every probe only on its own item — one experiment, clean per-probe scores. The threshold gate over
 those scores lands in task 115. Regression runs cost real money and need keys — they are **never** part
 of `make ci` (ADR-0017 §9).
+
+## Two regression surfaces — code metrics vs natural-language assertions
+
+There are **two** regression surfaces on purpose, and the contrast between them is the teaching point
+(ADR-0017 §6):
+
+| | Surface (a) — `python -m evals regression` | Surface (b) — `python -m evals suite` |
+|---|---|---|
+| Grader | Deterministic `BaseMetric` code (`evals/harness/metrics.py`) + G-Eval judges | An LLM judge checks **natural-language assertions** |
+| "Correct" is | A number over a threshold (`aggregate_evaluation_scores() >= thresholds`) | *"the response never invents a file that does not exist"*, *"the response follows the requested template sections"* — English quality bars |
+| Opik API | `evaluate()` → per-metric scores → pytest threshold gate | `get_or_create_test_suite(global_assertions=...)` → `run_tests()` → `result.pass_rate` gate |
+| Scope | All 20 probes | A ~5-probe subset of the most **judge-flavored** probes (17, 18, 19 + `05-web-fetch-discipline`, `20-json-output-contract`) — the ones whose quality shows in the agent's answer text |
+| Gate | Per-metric thresholds (task 115) | Suite `pass_rate` below `SUITE_PASS_BAR` → non-zero exit |
+
+Surface (b) reuses the **same** run-and-grade path: its task adapter (`evals/harness/test_suite.py`)
+calls the identical `regression_task_fn`, then reshapes the result to the Test Suites `{"input",
+"output"}` contract — keeping `input` to just the prompt the agent received so a leaked expected answer
+can never let the judge cheat. Deterministic metrics catch exact regressions cheaply; NL assertions
+catch "the answer got worse in a way no single number captures". Neither replaces the other.
+
+> **Version note.** The Test Suites API is **Opik 2.0**. This repo is pinned to `opik==1.9.8` because
+> Opik 2.x pulls `litellm 1.92`, whose Rust bridge needs `rustc >= 1.86` and ships no prebuilt macOS
+> wheel (the build host has `rustc 1.85.1`). `evals/harness/test_suite.py` is written against the
+> documented 2.0 API and guarded: on the pinned Opik, `python -m evals suite` exits with a clear
+> message naming the version gate, and the surface activates unchanged once the `opik`/`litellm` pins
+> in `pyproject.toml` are lifted (task 116).

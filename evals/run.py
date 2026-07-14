@@ -108,6 +108,41 @@ def regression(probe_id: str | None) -> None:
 
 
 @cli.command()
+def suite() -> None:
+    """Run the Opik 2.0 Test Suite regression surface — natural-language assertions (ADR-0017 §6).
+
+    The CONTRAST to ``regression``: instead of deterministic code metrics + a threshold gate, a small
+    subset of the most judge-flavored probes is graded against natural-language quality bars by an LLM
+    judge, and the run is gated on its ``pass_rate``. Needs opik>=2.0; on the pinned opik 1.9.8 this
+    exits with a clear version-gate message (task 116). Opik + the harness are imported lazily so
+    ``--help`` never needs keys or a network (ADR-0017 §1).
+    """
+    from evals.harness.test_suite import (
+        SUITE_PASS_BAR,
+        SuitePassRateError,
+        SuiteSelectionError,
+        SuiteUnavailableError,
+        assert_pass_rate,
+        run_test_suite,
+    )
+
+    try:
+        result = run_test_suite()
+    except (SuiteUnavailableError, SuiteSelectionError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    pass_rate = result.pass_rate
+    click.echo(
+        f"evals suite: pass rate {pass_rate:.0%} (bar {SUITE_PASS_BAR:.0%}), "
+        f"logged under {settings_project_name()}."
+    )
+    try:
+        assert_pass_rate(pass_rate)
+    except SuitePassRateError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@cli.command()
 @click.option(
     "--benchmark/--no-benchmark",
     "benchmark",

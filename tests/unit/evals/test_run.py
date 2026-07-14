@@ -29,12 +29,13 @@ def _subprocess_env() -> dict[str, str]:
 
 
 def test_help_lists_the_eval_tracks():
-    """``evals --help`` exits clean and names both track subcommands."""
+    """``evals --help`` exits clean and names the track subcommands."""
     result = CliRunner().invoke(cli, ["--help"])
 
     assert result.exit_code == 0
     assert "benchmark" in result.output
     assert "regression" in result.output
+    assert "suite" in result.output
 
 
 def test_benchmark_subcommand_invokes_run_benchmark(mocker):
@@ -129,6 +130,44 @@ def test_regression_subcommand_reports_an_empty_selection(mocker):
 
     assert result.exit_code != 0
     assert "no regression probe matched" in result.output
+
+
+def test_suite_subcommand_runs_and_reports_pass_rate(mocker):
+    """``evals suite`` runs the Test Suite, reports the pass rate + project, and exits clean above bar."""
+    run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
+    run_test_suite.return_value = mocker.Mock(pass_rate=1.0)
+
+    result = CliRunner().invoke(cli, ["suite"])
+
+    assert result.exit_code == 0, result.output
+    assert "pass rate 100%" in result.output
+    assert "decode-evals" in result.output
+
+
+def test_suite_subcommand_gates_non_zero_below_the_bar(mocker):
+    """A pass rate under the suite bar is a friendly non-zero exit — the regression gate fires (§6)."""
+    run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
+    run_test_suite.return_value = mocker.Mock(pass_rate=0.5)
+
+    result = CliRunner().invoke(cli, ["suite"])
+
+    assert result.exit_code != 0
+    assert "below the bar" in result.output
+
+
+def test_suite_subcommand_reports_the_version_gate_when_opik_is_too_old(mocker):
+    """On the pinned opik 1.9.8 the surface exits with a clear versioned message, not a traceback."""
+    from evals.harness.test_suite import SuiteUnavailableError
+
+    mocker.patch(
+        "evals.harness.test_suite.run_test_suite",
+        side_effect=SuiteUnavailableError("Opik Test Suites need opik>=2.0"),
+    )
+
+    result = CliRunner().invoke(cli, ["suite"])
+
+    assert result.exit_code != 0
+    assert "opik>=2.0" in result.output
 
 
 def test_sync_regression_upserts_probe_items(mocker):
