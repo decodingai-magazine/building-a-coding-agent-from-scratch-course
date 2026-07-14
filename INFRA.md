@@ -190,9 +190,10 @@ CI) there is nothing to type on, so pass it as the argument instead — same con
 scripts/deploy.sh down coding-agent-course
 ```
 
-It touches **only GCP**. The Modal apps (`decode-<env>`, `decode-sandbox-<env>`) survive — they cost
-nothing idle and the next `up` reuses them; `modal app stop <name>` if you want them gone. If you took
-the §1.6 org-policy exception, undo it with `enable-enforce`.
+It also stops this environment's two Modal apps — `decode-<env>` (the flow container's app) and
+`decode-sandbox-<env>` (its nested bash sandboxes). Stopping is permanent; the next `up` recreates them
+on the first submit. Apps from *other* environments are left alone. If you took the §1.6 org-policy
+exception, undo it with `enable-enforce`.
 
 `status` works on an empty stack too — that is the point of running it after a teardown.
 

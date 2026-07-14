@@ -432,6 +432,17 @@ cmd_down() {
   gcloud artifacts repositories delete "${AR_REPO}" --location="${REGION}" --project="${PROJECT}" --quiet || true
   gcloud iam service-accounts delete "${SA}" --project="${PROJECT}" --quiet || true  # takes the key with it
 
+  # Modal, the other half of the stack: the orchestrator App a flow container runs in, and the App its
+  # nested bash sandboxes attach to — one of each per environment (runtime/modal_app.py,
+  # sandbox/modal_backend.py). Idle Apps bill nothing, but a teardown that leaves them running is not
+  # a teardown. Stopping is permanent; the next ``up`` creates them again on first submit.
+  local app
+  for app in "decode-${DECODE_ENV}" "decode-sandbox-${DECODE_ENV}"; do
+    if (cd "${REPO_ROOT}" && uv run modal app stop "${app}" -y) >/dev/null 2>&1; then
+      log "stopped modal app ${app}"
+    fi
+  done
+
   rm -f "${SA_KEY}" "${ADMIN_PASSWORD_FILE}" "${API_KEY_FILE}"
   log 'torn down. The local kitaru client still points at a dead server — log in again when you rebuild.'
 }
