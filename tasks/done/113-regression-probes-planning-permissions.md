@@ -1,7 +1,7 @@
 ---
 id: 113
 feature: evals
-status: in-progress
+status: done
 ---
 
 # Author regression probes 08–14 (planning, delegation, permissions)
@@ -481,3 +481,25 @@ threshold gate) grew the suite past what task 113's own local full-suite runs ve
 pollution source may live in a later commit and needs auditing too.
 
 Fixing now — see fix task handed to SWE (`Refs #113`).
+
+### [On-Call] 2026-07-14 14:45 — CI Resolution
+
+**Root cause confirmed (SWE):** GitHub runs PR checks on the **merge commit** of the PR branch against
+the base branch, not the PR head in isolation. `origin/main`'s PR #33 had already changed the `agent`
+subagent tool's signature to `prompts: list[str]` (fan-out); `feat/evals` never had that change, so its
+own tree (which I checked out and tested directly) always looked internally consistent — the schema
+mismatch only existed on the merge commit CI actually built and ran. That's exactly why this was
+unreproducible locally against the `feat/evals` head across every environment I tried (macOS, Linux/
+arm64 Docker, Linux/amd64 QEMU Docker) despite matching `pydantic-ai==1.95.1` and the identical commit:
+I was never testing the merge commit.
+
+**Fix:** SWE merged `origin/main` into `feat/evals` (`8b2ae61`) and adapted the scripted model +
+regression probe to the new `prompts: list[str]` fan-out signature (`903a54d`, `Refs #113`). Full
+merged-tree suite: 2205 passed locally, matching CI's `2208`-item collection order of magnitude (the
+earlier local/CI collected-count mismatch I flagged is explained by the same missing merge — my local
+`feat/evals`-only checkout was simply missing the tests PR #33 added on `main`).
+
+**Verification:** pushed `903a54d`; new CI run `29333129891` on head `903a54d` — `gh run view
+29333129891 --json status,conclusion` → `{"status":"completed","conclusion":"success"}`. Green.
+
+Closing again.
