@@ -475,30 +475,9 @@ def run(task: str, hitl: bool, model: str | None, repo: str | None, local: bool)
         _load_runtime_output(handle.exec_id)
     )  # stdout: only the clean agent answer (pipe-safe)
     _echo_replay_anchor(handle.exec_id, model)  # stderr: exec_id + a paste-ready decode replay hint
-    # Git hand-back (ADR-0012 §8): best-effort no-op in ``none`` mode / no-repo; the outcome line
-    # goes to stderr (stdout stays clean).
-    _auto_ship_headless(resolved_repo, handle.exec_id)
-
-
-def _auto_ship_headless(repo: str | None, exec_id: str) -> None:
-    """Ship the Workspace back after a headless ``decode run --repo`` completes — best-effort (ADR-0012 §8).
-
-    Secures the Workspace onto a ``decode/<exec_id>`` Session Branch and pushes it host-side (no
-    credential ever enters the sandbox). No-op when ``repo`` is None — returning *before* the import
-    keeps the REPL/``none`` path free of any sandbox module. Best-effort: failures are logged, never
-    raised (a completed run must still exit 0); the outcome line goes to stderr; a skip prints nothing.
-    """
-    if repo is None:
-        return
-    from decode.sandbox.handback import ship_workspace
-
-    try:
-        result = ship_workspace(Path.cwd(), repo=repo, session_id=exec_id)
-    except Exception:
-        logger.warning("headless sandbox hand-back failed; continuing", exc_info=True)
-        return
-    if result.branch is not None:
-        click.echo(f"Decode: {result.message}", err=True)
+    # The Git hand-back (ADR-0012 §8) runs INSIDE the flow, not here: the flow's process is the one
+    # that owns the Workspace — on a remote stack that is the Modal container, and this submitting
+    # process's ``.decode/sandbox`` is a stranger to the run (``flow._ship_headless_workspace``).
 
 
 def _echo_replay_anchor(exec_id: str, model: str | None) -> None:

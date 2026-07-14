@@ -183,6 +183,32 @@ def _warm_headless_executor(workspace: Path) -> None:
         loop.close()
 
 
+def _ship_headless_workspace(repo: str | None) -> None:
+    """Hand the Workspace back **from inside the flow**, after the executor is reaped (ADR-0012 §8).
+
+    The flow's own process is the one that owns the Workspace: it clones ``repo`` there, and the
+    executor reap above is what sweeps a modal sandbox's filesystem back into it. On a remote stack
+    that process is the Modal flow container — NOT the laptop that submitted the run, whose
+    ``.decode/sandbox`` the run never touched — so the hand-back has to live here rather than in the
+    cli (a headless run's work is otherwise lost with the container). The push authenticates with
+    ``SANDBOX_GIT_TOKEN``, the only git credential a flow container has (ADR-0016 §2,4).
+
+    Best-effort: a hand-back failure never fails a completed run; the outcome is logged (Kitaru
+    streams a remote flow's logs back to the submitter).
+    """
+    if repo is None or settings.sandbox_mode == "none":
+        return
+    from decode.sandbox.handback import ship_workspace
+
+    try:
+        result = ship_workspace(Path.cwd(), repo=repo, session_id=current_execution_id())
+    except Exception:
+        logger.warning("[handback] headless hand-back failed; continuing", exc_info=True)
+        return
+    if result.branch is not None:
+        logger.info("[handback] %s", result.message)
+
+
 def _prepare_headless_tool_scope(repo: str | None = None, local: bool = False) -> Path:
     """The headless agent tool scope: the prepared+warmed Workspace in a sandbox mode, else cwd (ADR-0012 §3,6).
 
@@ -266,7 +292,9 @@ def run_agent_task(
     and read back by name — not ``.wait().output``, which the ``"calls"`` terminal shape breaks.
     ``model`` is the Model Override (ADR-0010 §2) and ``repo`` / ``local`` the Workspace clone
     inputs (ADR-0012 §3); all are flow inputs so a what-if Replay can swap or reuse them. The body
-    runs under a ``finally`` that reaps the sandbox executor on completion and on error.
+    runs under a ``finally`` that reaps the sandbox executor and then hands the Workspace back
+    (ADR-0012 §8) — in that order, because the reap is what sweeps the sandbox's filesystem into the
+    Workspace the hand-back ships. Both run on error too: a crashed run still ships its work.
     """
     try:
         # Init tracing INSIDE the flow: idempotent + a silent no-op without a key (ADR-0014 §4-5).
@@ -292,6 +320,7 @@ def run_agent_task(
         return _capture_runtime_output(output)
     finally:
         _reap_runtime_executor()
+        _ship_headless_workspace(repo)
 
 
 # ---------------------------------------------------------------------------

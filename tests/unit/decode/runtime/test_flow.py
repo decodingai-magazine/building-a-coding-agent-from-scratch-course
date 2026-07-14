@@ -237,6 +237,81 @@ def test_build_headless_deps_splits_the_workspace_from_harness_home(tmp_path):
     assert deps.harness_home == Path.cwd()  # harness artifacts (memory, skills) anchor here
 
 
+# the hand-back runs INSIDE the flow, after the executor reap (ADR-0012 §8)
+
+
+def test_flow_ships_the_workspace_after_reaping_the_executor(monkeypatch, tmp_path):
+    """The reap sweeps the sandbox filesystem into the Workspace, so the ship must follow it.
+
+    Ordering is the whole point: ship first and a modal run would push the Workspace as it stood
+    BEFORE the export sweep — i.e. without the agent's work.
+    """
+    from decode.sandbox.handback import ShipResult
+
+    order: list[str] = []
+
+    def _ship(home, *, repo, session_id):
+        order.append("ship")
+        return ShipResult(branch="decode/abc", pushed=True, message="handed it back.")
+
+    durable, _counter = _durable([ModelResponse(parts=[TextPart(content="done")])])
+    monkeypatch.setattr(flow_mod, "_build_runtime_agent", lambda model=None: durable)
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "modal")
+    monkeypatch.setattr(flow_mod, "_reap_runtime_executor", lambda: order.append("reap"))
+    monkeypatch.setattr(flow_mod, "_prepare_headless_tool_scope", lambda repo, local: tmp_path)
+    monkeypatch.setattr("decode.sandbox.handback.ship_workspace", _ship)
+
+    handle = run_agent_task.run(task="do it", repo="https://example.com/repo.git")
+
+    assert flow_mod._load_runtime_output(handle.exec_id) == "done"
+    assert order == ["reap", "ship"]
+
+
+def test_ship_headless_workspace_ships_under_the_execution_id(monkeypatch, mocker):
+    """The Session Branch is keyed on the flow's OWN execution id — the same id the cli prints."""
+    from decode.sandbox.handback import ShipResult
+
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "modal")
+    monkeypatch.setattr(flow_mod, "current_execution_id", lambda: "exec-abc")
+    ship = mocker.patch(
+        "decode.sandbox.handback.ship_workspace",
+        return_value=ShipResult(branch="decode/exec-abc", pushed=True, message="handed it back."),
+    )
+
+    flow_mod._ship_headless_workspace("/src")
+
+    ship.assert_called_once_with(Path.cwd(), repo="/src", session_id="exec-abc")
+
+
+@pytest.mark.parametrize(
+    ("repo", "sandbox_mode"),
+    [
+        (None, "modal"),  # nothing was cloned, so there is nothing to hand back
+        (
+            "/src",
+            "none",
+        ),  # the tool scope IS the launch cwd — shipping it would push the user's repo
+    ],
+)
+def test_ship_headless_workspace_is_a_no_op_without_a_workspace(
+    monkeypatch, mocker, repo, sandbox_mode
+):
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", sandbox_mode)
+    ship = mocker.patch("decode.sandbox.handback.ship_workspace")
+
+    flow_mod._ship_headless_workspace(repo)
+
+    ship.assert_not_called()
+
+
+def test_ship_headless_workspace_swallows_a_hand_back_failure(monkeypatch, mocker):
+    """A completed run still returns its answer when the hand-back blows up (best-effort, §8)."""
+    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "modal")
+    mocker.patch("decode.sandbox.handback.ship_workspace", side_effect=RuntimeError("boom"))
+
+    flow_mod._ship_headless_workspace("/src")  # must not raise
+
+
 def test_prepare_headless_tool_scope_is_the_launch_cwd_in_none_mode(monkeypatch):
     monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "none")
 
