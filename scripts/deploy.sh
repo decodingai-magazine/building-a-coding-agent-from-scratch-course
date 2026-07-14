@@ -33,6 +33,7 @@ VM="kitaru-server"
 IP_NAME="kitaru-server-ip"
 FIREWALL="allow-kitaru-tls"       # 80 (ACME) + 443 (TLS). :8080 is never exposed.
 LEGACY_FIREWALL="allow-kitaru"    # the pre-TLS rule that opened :8080 — deleted on `up`
+DENY_FIREWALL="deny-kitaru-plaintext"   # priority 100: beats default-allow-internal on :8080
 STACK="prod-modal"
 
 # Pin the server image to the client: `kitaru --version` and the container must move together.
@@ -222,6 +223,21 @@ ensure_server() {
     log "removing the pre-TLS rule ${LEGACY_FIREWALL} (:8080 no longer needs to be public)"
     gcloud compute firewall-rules delete "${LEGACY_FIREWALL}" --project="${PROJECT}" --quiet
   fi
+
+  # The container listens on 0.0.0.0:8080 (konlet uses host networking; the server has no
+  # bind-to-loopback knob), and GCP's default network ships `default-allow-internal`, which permits
+  # tcp:0-65535 from 10.128.0.0/9 — so ANY VM in the VPC could read the admin password and every
+  # secret off the plaintext port. Priority 100 beats that rule (65534) and any stray allow at the
+  # default 1000. Loopback is not subject to VPC firewalls, so Caddy → localhost:8080 is untouched.
+  if have compute firewall-rules describe "${DENY_FIREWALL}" --project="${PROJECT}"; then
+    log "deny rule ${DENY_FIREWALL} exists"
+  else
+    log "denying tcp:8080 outright (Caddy is the only front door)"
+    gcloud compute firewall-rules create "${DENY_FIREWALL}" --project="${PROJECT}" \
+      --direction=INGRESS --priority=100 --action=DENY --rules=tcp:8080 \
+      --target-tags=kitaru-server --source-ranges=0.0.0.0/0 \
+      --description="Kitaru speaks plaintext on :8080; Caddy is the only front door"
+  fi
 }
 
 # The Kitaru server ships an HSTS header (`max-age=63072000`) while serving plain HTTP: a browser
@@ -395,6 +411,7 @@ cmd_down() {
   gcloud compute instances delete "${VM}" --zone="${ZONE}" --project="${PROJECT}" --quiet || true
   gcloud compute firewall-rules delete "${FIREWALL}" --project="${PROJECT}" --quiet || true
   gcloud compute firewall-rules delete "${LEGACY_FIREWALL}" --project="${PROJECT}" --quiet || true
+  gcloud compute firewall-rules delete "${DENY_FIREWALL}" --project="${PROJECT}" --quiet || true
   gcloud compute addresses delete "${IP_NAME}" --region="${REGION}" --project="${PROJECT}" --quiet || true
   gcloud storage rm -r "${BUCKET}" || true
   gcloud artifacts repositories delete "${AR_REPO}" --location="${REGION}" --project="${PROJECT}" --quiet || true
@@ -419,6 +436,7 @@ cmd_status() {
   printf 'vm         %s\n' "$(gcloud compute instances describe "${VM}" --zone="${ZONE}" --project="${PROJECT}" --format='value(status)' 2>/dev/null || echo '<none>')"
   printf 'firewall   %s\n' "$(have compute firewall-rules describe "${FIREWALL}" --project="${PROJECT}" && echo "${FIREWALL} (tcp:80,443 → 0.0.0.0/0)" || echo '<none>')"
   printf 'legacy     %s\n' "$(have compute firewall-rules describe "${LEGACY_FIREWALL}" --project="${PROJECT}" && echo "${LEGACY_FIREWALL} (tcp:8080 → 0.0.0.0/0) — PLAINTEXT, delete it" || echo 'none (:8080 not exposed)')"
+  printf 'plaintext  %s\n' "$(have compute firewall-rules describe "${DENY_FIREWALL}" --project="${PROJECT}" && echo 'denied (tcp:8080 DENY @ priority 100)' || echo 'NOT DENIED — any VM in the VPC can read :8080 in the clear')"
   printf 'tls        %s\n' "$(curl -sf -m 8 "${url}/health" >/dev/null 2>&1 && echo "Let's Encrypt, valid" || echo '<no cert>')"
   printf 'stack      %s\n' "$(cd "${REPO_ROOT}" && uv run kitaru stack current 2>/dev/null \
     | awk -F': ' '/Active stack:/ {print $2; exit}' || echo '<none>')"
