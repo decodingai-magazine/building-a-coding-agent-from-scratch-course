@@ -202,12 +202,27 @@ ensure_server() {
 
     # The container runs as UID 1000 but the mounted host dir is created root-owned, so the very
     # first boot dies with `sqlite3.OperationalError: unable to open database file` and crash-loops.
-    log "waiting for the VM to boot, then fixing /var/kitaru ownership (container runs as UID 1000)"
-    sleep 45
-    gcloud compute ssh "${VM}" --zone="${ZONE}" --project="${PROJECT}" --quiet --command="\
-      sudo chown -R 1000:1000 /var/kitaru && \
-      sudo docker restart \$(sudo docker ps -aqf name=klt-${VM}) >/dev/null" \
-      || warn "could not fix /var/kitaru over SSH — if the server never gets healthy, do it by hand"
+    #
+    # POLL, never a fixed sleep: /var/kitaru does not exist until konlet starts the container, and
+    # sshd is not up before that either. A `sleep 45` raced both — `chown: cannot access
+    # '/var/kitaru'` — and the miss is silent (a warning), leaving a server that crash-loops forever
+    # while `up` marches on to TLS and fails there instead, far from the cause.
+    log "waiting for the container to create /var/kitaru, then fixing its ownership (UID 1000)"
+    local fixed=0 attempt
+    for attempt in $(seq 1 20); do
+      if gcloud compute ssh "${VM}" --zone="${ZONE}" --project="${PROJECT}" --quiet --command="\
+        test -d /var/kitaru && \
+        sudo chown -R 1000:1000 /var/kitaru && \
+        sudo docker restart \$(sudo docker ps -aqf name=klt-${VM}) >/dev/null" 2>/dev/null; then
+        fixed=1
+        log "fixed /var/kitaru ownership (attempt ${attempt})"
+        break
+      fi
+      sleep 15
+    done
+    [ "${fixed}" = 1 ] || die "could not chown /var/kitaru after 5 min — the server will crash-loop on
+    'sqlite3.OperationalError: unable to open database file'. Fix it by hand, then re-run \`up\`:
+      gcloud compute ssh ${VM} --zone=${ZONE} --command='sudo chown -R 1000:1000 /var/kitaru'"
   fi
 
   if have compute firewall-rules describe "${FIREWALL}" --project="${PROJECT}"; then
@@ -218,7 +233,14 @@ ensure_server() {
     warn "server must stay reachable from Modal, whose egress IPs cannot be pinned on standard"
     warn "plans, so it cannot be narrowed to your laptop. TLS stops eavesdropping, NOT reachability:"
     warn "the login page remains exposed to the internet, so treat its secrets as rotatable."
-    read -r -p "Create the firewall rule? [y/N] " reply
+    # Approved by a human — interactively when there is a terminal, otherwise by passing
+    # ``allow-firewall`` (``up allow-firewall``). A piped/EOF ``read`` would answer this itself, and
+    # this is the one step that exposes a port to the internet.
+    local reply="${ALLOW_FIREWALL:-}"
+    if [ -z "${reply}" ]; then
+      [ -t 0 ] || die "no terminal to approve on — re-run as: scripts/deploy.sh up allow-firewall"
+      read -r -p "Create the firewall rule? [y/N] " reply
+    fi
     [ "${reply}" = "y" ] || die "aborted — the stack cannot work until Modal can reach the server"
     gcloud compute firewall-rules create "${FIREWALL}" --project="${PROJECT}" \
       --allow=tcp:80,tcp:443 --target-tags=kitaru-server \
@@ -479,9 +501,10 @@ cmd_status() {
 }
 
 case "${1:-}" in
-  up)     cmd_up ;;
+  up)     if [ "${2:-}" = "allow-firewall" ]; then ALLOW_FIREWALL=y; fi   # `&&` here would trip `set -e`
+          cmd_up ;;
   update) cmd_update ;;
   down)   cmd_down "${2:-}" ;;
   status) cmd_status ;;
-  *)      die "usage: scripts/deploy.sh {up|update|down [<project>]|status}" ;;
+  *)      die "usage: scripts/deploy.sh {up [allow-firewall]|update|down [<project>]|status}" ;;
 esac
