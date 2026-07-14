@@ -410,9 +410,12 @@ async def test_spawn_builds_fresh_narrowed_read_only_child_deps(agent, tmp_path)
     from decode.permissions.types import PermissionMode
 
     assert child_deps.gate.mode is PermissionMode.BYPASS
-    # Silent in the TUI (ADR-0013 §8): the child's emit is the module no-op sink, not the parent's.
-    assert child_deps.emit is agent_module._silent_emit
+    # Silent in the TUI (ADR-0013 §8): the child's sink is its OWN closure, never the parent's — and
+    # with the verbose toggle OFF (the default) it swallows the event into ``_silent_emit``.
     assert child_deps.emit is not parent_deps.emit
+    before = len(emitted)
+    child_deps.emit(events.ToolCallStarted(tool_call_id="x", name="read", args="{}"))
+    assert len(emitted) == before  # silent by default
     # The child IS the explore subagent; scope (cwd / harness_home) is inherited from the parent.
     assert child_deps.active_agent.name == "explore"
     assert child_deps.active_agent.subagent is True
@@ -435,6 +438,90 @@ async def test_child_run_does_not_thread_parent_usage(agent, tmp_path):
     # The child made a model request, but it was NOT folded into the passed-in parent usage.
     assert parent_usage.requests == 0
     assert parent_usage.input_tokens == 0
+
+
+# the Ctrl+O verbose toggle: children silent by default, labelled + LIVE when it is on
+
+
+def _child_tool_calls(emitted: list[events.Event]) -> list[tuple[str, int | None]]:
+    """Every emitted tool-call as ``(name, child_index)`` — a child's is the one with an index."""
+    return [(e.name, e.child_index) for e in emitted if isinstance(e, events.ToolCallStarted)]
+
+
+async def test_children_are_silent_in_the_parents_sink_by_default(agent, tmp_path):
+    """Verbose OFF (the default): a child's tool calls never reach the parent's sink (ADR-0013 §8)."""
+    emitted: list[events.Event] = []
+    deps = _loop_deps(emitted.append, gate=PermissionGate(), cwd=tmp_path)
+    handler = AgentTurnHandler(agent, deps=deps)
+
+    ctx = TurnContext(0, "explore the repo", emitted.append)
+    with agent.override(
+        model=_fanout_model(
+            _child_globs_then_reports("CHILD-REPORT"), spawn_prompts=(_PROMPT_A, _PROMPT_B)
+        )
+    ):
+        await _drive(handler, ctx)
+
+    calls = _child_tool_calls(emitted)
+    # The parent's OWN fan-out call renders (no child index); the children's ``glob``s stay silent.
+    assert (AGENT_TOOL_NAME, None) in calls
+    assert not [c for c in calls if c[1] is not None]
+    assert "glob" not in [name for name, _ in calls]
+
+
+async def test_verbose_mode_forwards_child_tool_calls_labelled_with_their_1_based_index(
+    agent, tmp_path
+):
+    """Verbose ON: each child's tool calls ride the parent's sink, tagged with its ``## Subagent i`` index."""
+    emitted: list[events.Event] = []
+    deps = _loop_deps(emitted.append, gate=PermissionGate(), cwd=tmp_path)
+    deps.verbose.enabled = True  # what Ctrl+O flips
+    handler = AgentTurnHandler(agent, deps=deps)
+
+    ctx = TurnContext(0, "explore the repo", emitted.append)
+    with agent.override(
+        model=_fanout_model(
+            _child_globs_then_reports("CHILD-REPORT"), spawn_prompts=(_PROMPT_A, _PROMPT_B)
+        )
+    ):
+        await _drive(handler, ctx)
+
+    child_calls = [c for c in _child_tool_calls(emitted) if c[1] is not None]
+    # Both children's ``glob`` surfaced, each labelled with its own 1-based prompt index (1 and 2) —
+    # the SAME numbering the ``## Subagent i`` sections of the fold use, so a reader can correlate.
+    assert sorted(child_calls) == [("glob", 1), ("glob", 2)]
+
+
+async def test_verbose_toggle_is_read_at_emit_time_so_it_takes_effect_mid_fan_out(agent, tmp_path):
+    """The LIVE property: flipping the flag MID-TURN changes the very next child event.
+
+    The user presses Ctrl+O *while* a fan-out is running, so the child's sink must read the flag at
+    EMIT time — not capture it when the child was spawned. Here one child calls ``glob`` (flag still
+    OFF → silent), the flag flips between its legs, then it calls ``grep`` (flag now ON → surfaced).
+    A spawn-time capture would have swallowed the ``grep`` too.
+    """
+    emitted: list[events.Event] = []
+    deps = _loop_deps(emitted.append, gate=PermissionGate(), cwd=tmp_path)
+    handler = AgentTurnHandler(agent, deps=deps)
+
+    def child(messages, info):
+        if not _tool_called(messages, "glob"):
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="glob", args={"pattern": "**/*.py"})]
+            )
+        if not _tool_called(messages, "grep"):
+            deps.verbose.enabled = True  # Ctrl+O, pressed mid-turn — AFTER this child was spawned
+            return ModelResponse(parts=[ToolCallPart(tool_name="grep", args={"pattern": "x"})])
+        return ModelResponse(parts=[TextPart(content="CHILD-REPORT")])
+
+    ctx = TurnContext(0, "explore the repo", emitted.append)
+    with agent.override(model=_fanout_model(child)):
+        await _drive(handler, ctx)
+
+    child_calls = [c for c in _child_tool_calls(emitted) if c[1] is not None]
+    assert child_calls == [
+        ("grep", 1)
+    ]  # the pre-toggle ``glob`` stayed silent; the post-toggle grep did not
 
 
 async def test_child_toolset_is_exactly_read_glob_grep_lsp(agent, tmp_path):
@@ -956,7 +1043,7 @@ async def test_a_child_that_raises_gets_a_failure_note_and_its_siblings_still_fo
     from pydantic_ai.exceptions import UsageLimitExceeded
 
     class _OneChildExplodes:
-        async def run(self, prompt, *, deps, usage_limits):
+        async def run(self, prompt, *, deps, usage_limits, event_stream_handler=None):
             if prompt == _PROMPT_B:
                 raise UsageLimitExceeded("the request limit was exceeded")
             return _report(f"report for: {prompt}")
@@ -1311,7 +1398,7 @@ async def test_the_footer_is_appended_even_when_a_section_carries_a_failure_note
     from pydantic_ai.exceptions import UsageLimitExceeded
 
     class _OneRaisesOneIsTwiceBad:
-        async def run(self, prompt, *, deps, usage_limits):
+        async def run(self, prompt, *, deps, usage_limits, event_stream_handler=None):
             if prompt.startswith(_PROMPT_B):
                 raise UsageLimitExceeded("the request limit was exceeded")
             if prompt.startswith(_PROMPT_C):
@@ -1397,7 +1484,7 @@ class _StubAgent:
     def __init__(self, result):
         self._result = result
 
-    async def run(self, prompt, *, deps, usage_limits):
+    async def run(self, prompt, *, deps, usage_limits, event_stream_handler=None):
         return self._result
 
 
@@ -1414,7 +1501,7 @@ class _ScriptedAgent:
         self._script = {prompt: list(results) for prompt, results in script.items()}
         self.prompts: list[str] = []
 
-    async def run(self, prompt, *, deps, usage_limits):
+    async def run(self, prompt, *, deps, usage_limits, event_stream_handler=None):
         await asyncio.sleep(
             0
         )  # yield, so a broken (sequential) gather still cannot reorder results
@@ -1433,7 +1520,7 @@ class _ScriptedAgent:
 class _EchoAgent:
     """A stand-in main agent whose child report echoes its own spawn prompt (proves section pairing)."""
 
-    async def run(self, prompt, *, deps, usage_limits):
+    async def run(self, prompt, *, deps, usage_limits, event_stream_handler=None):
         await asyncio.sleep(0)  # yield, so a broken (sequential) gather still can't reorder results
         return _report(f"report for: {prompt}")
 
@@ -1491,7 +1578,7 @@ class _ConcurrencyTracker:
         self.max_concurrent = 0
         self.spawns = 0
 
-    async def run(self, prompt, *, deps, usage_limits):
+    async def run(self, prompt, *, deps, usage_limits, event_stream_handler=None):
         self.live += 1
         self.spawns += 1
         self.max_concurrent = max(self.max_concurrent, self.live)

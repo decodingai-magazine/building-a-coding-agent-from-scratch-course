@@ -101,8 +101,21 @@ def _render_thinking_delta(event: events.ThinkingDelta) -> Text:
 
 
 def _render_tool_call_started(event: events.ToolCallStarted) -> Text:
-    """A one-line notice that a tool call started (full panel lands on the result)."""
-    return Text.assemble(("-> ", "dim cyan"), (event.name, "cyan"), (f" {event.args}", "dim"))
+    """A one-line notice that a tool call started (full panel lands on the result).
+
+    An Explore Subagent's call (Verbose Mode / Ctrl+O — ``child_index`` set) is indented under the
+    parent's ``-> agent`` line and labelled ``[child N]`` with its 1-based prompt index, so it reads
+    as a child's work and correlates with the ``## Subagent N`` section of the fold.
+    """
+    if event.child_index is None:
+        return Text.assemble(("-> ", "dim cyan"), (event.name, "cyan"), (f" {event.args}", "dim"))
+    return Text.assemble(
+        ("  ", "dim"),
+        (f"[child {event.child_index}] ", "dim magenta"),
+        ("-> ", "dim cyan"),
+        (event.name, "cyan"),
+        (f" {event.args}", "dim"),
+    )
 
 
 def _render_tool_result(event: events.ToolResult) -> Panel:

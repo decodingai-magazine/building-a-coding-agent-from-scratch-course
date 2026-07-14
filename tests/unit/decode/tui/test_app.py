@@ -145,7 +145,7 @@ def test_is_compact_command_is_false_for_other_input():
 
 
 def test_footer_hint_mentions_steer_followup_and_abort():
-    hint = app.footer_hint("build", "default")
+    hint = app.footer_hint("build", "default", verbose=False)
 
     assert "steer" in hint.lower()
     assert "follow-up" in hint.lower()
@@ -155,13 +155,13 @@ def test_footer_hint_mentions_steer_followup_and_abort():
 
 
 def test_footer_hint_mentions_quit():
-    hint = app.footer_hint("build", "default")
+    hint = app.footer_hint("build", "default", verbose=False)
 
     assert "/quit" in hint
 
 
 def test_footer_hint_mentions_compact():
-    hint = app.footer_hint("build", "default")
+    hint = app.footer_hint("build", "default", verbose=False)
 
     assert "/compact" in hint
 
@@ -182,7 +182,7 @@ def test_is_clear_command_is_false_for_other_input():
 
 
 def test_footer_hint_mentions_clear():
-    hint = app.footer_hint("build", "default")
+    hint = app.footer_hint("build", "default", verbose=False)
 
     assert "/clear" in hint
 
@@ -203,25 +203,35 @@ def test_is_ship_command_is_false_for_other_input():
 
 
 def test_footer_hint_mentions_ship():
-    hint = app.footer_hint("build", "default")
+    hint = app.footer_hint("build", "default", verbose=False)
 
     assert "/ship" in hint
 
 
 def test_footer_hint_includes_the_active_agent_and_mode():
     # ADR-0003 §9: the footer shows the live agent + mode so the user always knows the state.
-    hint = app.footer_hint("plan", "edit")
+    hint = app.footer_hint("plan", "edit", verbose=False)
 
     assert "agent:plan" in hint
     assert "mode:edit" in hint
 
 
 def test_footer_hint_mentions_the_mode_cycle_and_slash_commands():
-    hint = app.footer_hint("build", "default")
+    hint = app.footer_hint("build", "default", verbose=False)
 
     assert "Shift+Tab" in hint
     assert "/agent" in hint
     assert "/mode" in hint
+
+
+def test_footer_hint_surfaces_the_verbose_state_and_makes_ctrl_o_discoverable():
+    # The toggle must be learnable WITHOUT reading the source: the footer names the key and the state.
+    off = app.footer_hint("build", "default", verbose=False)
+    on = app.footer_hint("build", "default", verbose=True)
+
+    assert "Ctrl+O" in off
+    assert "verbose:off" in off
+    assert "verbose:on" in on
 
 
 def test_startup_banner_none_is_byte_identical_to_the_pre_sandbox_line():

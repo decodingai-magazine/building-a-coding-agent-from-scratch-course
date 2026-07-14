@@ -8,6 +8,11 @@ single-report result shape are **superseded by
 `agent(prompts: list[str])` — one call, harness-gathered fan-out, labelled aggregation, input and
 output validation. §1–6, the §7 semaphore / `UsageLimits` / no-usage-threading, the §8 `truncate()`
 idiom / ephemerality / silence, §9 and §10 stand. The body below is left unedited.
+**Amended:** 2026-07-14 — §8's "silent-until-done" is now **conditional**: silence remains the
+DEFAULT, but the TUI's **Verbose Mode** toggle (Ctrl+O, live mid-turn) lets a child's tool calls emit
+to the PARENT's sink, rendered by decode's own renderer as indented `[child N]` lines (N = the child's
+1-based prompt index). Nothing else changes: the child's gate stays BYPASS, its usage stays
+un-threaded, its transcript stays ephemeral, and the fold is untouched.
 **Supersession:** Partially supersedes [ADR-0003](0003-milestone-2-permission-system-and-agents-catalog.md)
 §5 — specifically its "Four built-ins (main-agent only — **no subagent spawning** this milestone)"
 clause and the matching "Seams left for later milestones: subagent spawning" consequence. Everything
