@@ -200,3 +200,137 @@ $ make lint-check           → All checks passed!
   a broad question" contract — this task only moved its trigger into the personas that can act on it.
 - `.env` was borrowed from the main worktree for every live run and deleted immediately afterwards
   (`git status` confirms it is not in the tree, and `.env` is gitignored regardless).
+
+### [Tester] 2026-07-14 09:20 — QA (reviewing committed state, PR #33, commit e6beba6)
+
+**Test summary**
+- Format / lint / pre-commit: PASS (`make format-check` — 181 files already formatted;
+  `make lint-check` — all checks passed; `make pre-commit` — 1590 passed in 87.59s)
+- Unit tests: 1590 passed / 0 failed (`make unit-tests`, 89.73s)
+- Integration tests: 120 passed / 0 failed / 0 skipped (`make integration-tests`, 385.31s — real
+  `GEMINI_API_KEY` borrowed from the main worktree's `.env`, deleted immediately after; both live
+  smokes ran for real, confirmed via `pytest -k live -v` showing `test_live_gemini_fanout_smoke` and
+  `test_live_gemini_unsteered_broad_question_fans_out` both PASSED, not skipped)
+- Warnings: 0
+
+**E2E adversarial pass**
+- Happy path: unsteered `"explore this repo"` through real `build_agent()` + `Runner` (the actual
+  `test_live_gemini_unsteered_broad_question_fans_out`) → ONE `agent` call, `prompts` width >= 3
+  (PASS). Ran it independently (not the SWE's numbers) **14 times total**: 3 runs in an interrupted
+  first batch (44.95s/38.79s/39.79s, all PASS), 10 more in a full uninterrupted batch (all PASS,
+  25.6s-101.6s each), 1 more via the `-k live` pair run (PASS). **14/14 independent live runs PASSED**
+  — a materially larger and equally clean sample than the SWE's own 9-run claim, corroborating it.
+- Break path 1 (over-trigger check — does the nudge cause a NARROW single-file question to
+  needlessly fan out, which the spec explicitly forbids?): wrote a standalone probe script driving
+  the real `build_agent()` + `Runner` with two narrow prompts — `"What does the init_logger function
+  in src/decode/logging.py do? Just tell me what that one function does."` and `"Read pyproject.toml
+  and tell me the Python version required."` Both runs: `agent() calls made: 0`, `all tools used:
+  ['read']` (PASS — the nudge does not over-trigger on narrow questions).
+- Break path 2 (persona-guard regression — did the nudge leak synthesis/diagram wording into any
+  persona, or edit the §9 guard test?): `git show e6beba6 -- tests/unit/decode/agents/test_loader.py`
+  shows `test_no_builtin_persona_body_carries_the_synthesis_instruction` is untouched by the diff
+  (only two new tests appended below it); ran it explicitly —
+  `test_no_builtin_persona_body_carries_the_synthesis_instruction[build|plan|code-reviewer|explore]`
+  all PASSED (PASS).
+- Break path 3 (silent behavior change in the `_fault` refactor / comment trim — dead code, changed
+  nag text, or lost regression pins?): `grep -rn "_faults" src/ tests/` → zero hits anywhere in the
+  tree (PASS, the old name is fully gone); `git show e6beba6 -- src/decode/tools/agent.py` shows
+  `_TERSE` is byte-identical before/after (only the `"; ".join` of a one-element list was removed);
+  diffed the test-battery comment trims against the phrasing arrays themselves — every
+  `_ROUND_1_PROMPTS` / `_ROUND_2_PROMPTS` / `_VARIED_PROMPTS` / `_WELL_FORMED_PROMPTS` /
+  `_LAZY_PROMPTS` entry is untouched; only the narrated design-history prose above them shrank
+  (PASS).
+
+**Acceptance criteria**
+- [x] PASS — `build.md`, `plan.md`, `code-reviewer.md` each carry a one-to-two-line delegation nudge
+      naming the `agent` tool and "at least 3 distinct angles"; `explore.md` carries none — Evidence:
+      `git show e6beba6 -- src/decode/agents/builtin/{build,plan,code-reviewer}.md` (each adds
+      exactly the nudge, 3/5/3 lines); `git show e6beba6 -- src/decode/agents/builtin/explore.md`
+      is empty (untouched); `grep -n "agent\` call\|at least 3 distinct angles\|serially"` on all
+      three primaries confirms the literal pin markers exist; `test_the_explore_subagent_is_never_told_to_delegate`
+      PASSED.
+- [x] PASS — nudge says WHEN, never how to synthesize;
+      `test_no_builtin_persona_body_carries_the_synthesis_instruction` stays green, unedited —
+      Evidence: diff shows the test function body is byte-identical (only two new tests appended
+      after it); re-ran it, 4/4 parametrizations PASSED.
+- [x] PASS — a LIVE, UNSTEERED "explore this repo" through the real stack produces ONE `agent` call
+      with >= 3 prompts, captured as a skipif-gated test, demonstrated FAIL-before/PASS-after —
+      Evidence: `test_live_gemini_unsteered_broad_question_fans_out` in
+      `tests/integration/test_subagents_capstone.py:1359-1400`; ran it 14 times independently against
+      the real Gemini API, 14/14 PASSED (see E2E pass above); the SWE's before/after evidence in this
+      file's own Log entry (9 pre-nudge runs with 3 failures, 9 post-nudge runs 9/9 clean) is
+      consistent with what I reproduced live.
+- [x] PASS — `_fault(prompt) -> str | None`, the `"; ".join` is gone, nag text unchanged — Evidence:
+      `src/decode/tools/agent.py:87-94`; `grep -rn "_faults" src/ tests/` → 0 hits; `_TERSE` string
+      literal byte-identical in the diff; `uv run ty check src/decode/tools/agent.py` → all checks
+      passed.
+- [x] PASS — the guard's code comment states the rule + points at ADR-0017 §3, test-battery comments
+      trimmed the same way — Evidence: `src/decode/tools/agent.py:65-79` (12-line comment, rule +
+      pointer, down from 27); `docs/adr/0017-resilient-parallel-subagent-fanout.md` §3 confirmed
+      present and matching; the anti-whack-a-mole battery's phrasing arrays in
+      `tests/unit/decode/tools/test_agent.py` are untouched, only their header comments shrank.
+- [x] PASS — the seven `tasks/done/*.md` log appendices are committed — Evidence:
+      `git show e6beba6 --stat` lists `tasks/done/103..109-*.md` each with a `### [PA] ... —
+      Acceptance Review` appendix (`+6` to `+33` lines), consistent with the PA verdicts already in
+      this PR's history.
+- [x] PASS — full local gauntlet green — Evidence: `make format-check` (181 files formatted),
+      `make lint-check` (all checks passed), `make pre-commit` (1590 passed), `make unit-tests`
+      (1590 passed), `make integration-tests` (120 passed, 0 skipped) — all re-run independently
+      above, matching the SWE's reported counts exactly.
+
+**Evidence**
+
+```
+$ make unit-tests
+======================= 1590 passed in 89.73s (0:01:29) ========================
+
+$ make integration-tests
+tests/integration/test_subagents_capstone.py ..............              [ 97%]
+======================= 120 passed in 385.31s (0:06:25) ========================
+
+$ uv run pytest tests/integration/test_subagents_capstone.py -v -k "live"
+tests/integration/test_subagents_capstone.py::test_live_gemini_fanout_smoke PASSED [ 50%]
+tests/integration/test_subagents_capstone.py::test_live_gemini_unsteered_broad_question_fans_out PASSED [100%]
+====================== 2 passed, 12 deselected in 54.64s =======================
+
+$ for i in 1..10; do uv run pytest tests/integration/test_subagents_capstone.py -k unsteered -q; done
+1 passed, 13 deselected in 44.95s
+1 passed, 13 deselected in 38.79s
+1 passed, 13 deselected in 39.79s
+1 passed, 13 deselected in 57.07s
+1 passed, 13 deselected in 25.63s
+1 passed, 13 deselected in 28.21s
+1 passed, 13 deselected in 101.63s
+1 passed, 13 deselected in 28.15s
+1 passed, 13 deselected in 36.11s
+1 passed, 13 deselected in 42.47s
+# 10/10 PASS (plus 3 more from an interrupted earlier batch = 13/13, plus the -k live run = 14/14)
+
+$ grep -rn "_faults" src/ tests/
+# (no output — zero references left)
+
+$ git show e6beba6 --stat
+ src/decode/agents/builtin/build.md                 |   3 +
+ src/decode/agents/builtin/code-reviewer.md         |   5 +
+ src/decode/agents/builtin/plan.md                  |   3 +
+ src/decode/tools/agent.py                          |  48 ++---
+ tasks/done/103..109-*.md (7 files)                 |  each +6 (108: +33)
+ tasks/done/110-delegation-nudge-and-guard-cleanup.md | 202 +++
+ tests/integration/test_subagents_capstone.py       |  49 +++++
+ tests/unit/decode/agents/test_loader.py             |  33 ++++
+ tests/unit/decode/tools/test_agent.py               |  38 ++--
+ 15 files changed, 398 insertions(+), 52 deletions(-)
+# Scoped exactly as claimed: 3 personas, agent.py, 8 task files (103-110), 3 test files. No stray files.
+```
+
+**Other issues found**
+- None blocking. Minor observation only: the SWE's own live-probe evidence (a standalone `probe.py`
+  script) isn't checked into the repo, so it isn't independently re-runnable from the commit alone —
+  not an issue since the *committed* skipif-gated pytest test is the actual regression pin and I
+  reproduced its live behavior 14/14 independently myself.
+- Confirmed (adversarially, beyond the AC): the nudge does not over-trigger on narrow single-file
+  questions — two live probes on narrow prompts both used only `read`, zero `agent` calls. This
+  matters because a heuristic that fans out on everything would be worse than the pre-nudge state;
+  the SWE's design correctly left the judgment call to the model and it holds up live.
+
+**VERDICT: PASS**
