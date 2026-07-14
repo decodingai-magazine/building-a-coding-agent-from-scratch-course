@@ -42,8 +42,18 @@ _T = TypeVar("_T")
 # The remote Workspace: workdir of every command, base of every file op (≡ the host workspace dir).
 _WORKSPACE = "/workspace"
 
-# The modal App the sandbox is looked up / created under (``create_if_missing=True`` on first use).
-_APP_NAME = "decode-sandbox"
+# The modal App every bash sandbox is looked up / created under — ONE per environment, never one per
+# run. Modal's own guidance: ``App.lookup(name, create_if_missing=True)`` reuses a persistent named
+# App and many Sandboxes attach to it. Naming it per ``DECODE_ENV`` keeps a local experiment's
+# sandboxes out of the app a prod run is using, so "terminate everything in decode-sandbox-local"
+# stays a safe sentence to say.
+_APP_NAME_PREFIX = "decode-sandbox"
+
+
+def _app_name() -> str:
+    """``decode-sandbox-<env>`` — local / dev / staging / prod."""
+    return f"{_APP_NAME_PREFIX}-{settings.decode_env}"
+
 
 # ``gh`` is not in Debian bookworm — it comes from GitHub's own apt repo. Baked as a cached image
 # layer (unlike docker, which installs it per session). ``gh`` authenticates off the ``GITHUB_TOKEN``
@@ -361,7 +371,7 @@ class ModalBackend:
         just-created sandbox is reaped and the error re-raised — never a half-built handle or a leak.
         """
         modal = _load_modal()
-        app = await modal.App.lookup.aio(_APP_NAME, create_if_missing=True)
+        app = await modal.App.lookup.aio(_app_name(), create_if_missing=True)
         # The slim base ships no git and no gh — bake both into the image (cached layers, no
         # per-session cost). gh rides along because a model that pushes a branch is asked, in the same
         # breath, to open the PR; without it the turn dies on ``gh: command not found`` (ADR-0012 §10).

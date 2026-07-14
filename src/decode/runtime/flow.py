@@ -36,6 +36,7 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
+from decode.runtime.modal_app import pin_orchestrator_app
 from decode.tools.askuser import ASK_USER_TOOL_NAME, deny_user_question_resolver
 from decode.tools.bash import BASH_TOOL_NAME, close_executor
 from decode.tools.files import EDIT_TOOL_NAME, WRITE_TOOL_NAME
@@ -47,6 +48,11 @@ from decode.tools.sleep import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Import-time, because a submit happens the moment a flow's ``.run()`` is called and the App name is
+# read inside it. Importing this module IS the decision to run durably, so there is no earlier hook —
+# and it is a no-op on the local stack (ADR-0008 §1; see ``runtime/modal_app.py``).
+pin_orchestrator_app()
 
 # Stable Agent names for Kitaru checkpoint identity — must not change across runs or replay misses
 # cache. The HITL name is distinct so its checkpoints never collide with the bypass run's.
