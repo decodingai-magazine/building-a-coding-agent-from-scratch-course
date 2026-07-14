@@ -88,6 +88,15 @@ provided by the proxy at all. It is provided by `Settings` never being serialise
    `git push` / `gh pr create` from inside the sandbox. Leave it unset and the sandbox has no
    credentials at all.
 
+   **Amendment (2026-07, first remote run).** A **headless flow container has no ambient git
+   credential at all**, so "ambient creds only" made the hand-back a guaranteed no-op there. The push
+   now uses `SANDBOX_GIT_TOKEN` when it is set, through the *same* credential helper the Worker gets —
+   run in the **harness** process (the flow container), with the token passed via the environment and
+   never into a command line. The load-bearing property is unchanged and still holds in every mode:
+   **no credential is placed inside the sandbox for hand-back.** The token is opt-in as before; unset
+   it and a headless run's hand-back simply cannot push (it says so, and names the branch it left
+   behind). See ADR-0012 §8's amendment for where the hand-back runs.
+
 5. **Non-goal: a replacement.** No egress allowlist, no rebuilt proxy behind a flag, no "credential
    broker" service. If a future step needs a sandboxed worker to call a *third-party* API without
    holding its key, that is a new ADR with a real use case behind it — not a hook left dangling here.
