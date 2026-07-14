@@ -216,15 +216,25 @@ def _ship_headless_workspace(repo: str | None) -> None:
 def _prepare_headless_tool_scope(repo: str | None = None, local: bool = False) -> Path:
     """The headless agent tool scope: the prepared+warmed Workspace in a sandbox mode, else cwd (ADR-0012 §3,6).
 
-    Clones ``repo`` at HEAD when given (``local`` → a fast local clone), degrading to an empty
-    Workspace on a clone failure rather than crashing. The sandbox import stays lazy so ``none``
-    mode pulls in no sandbox module.
+    Clones ``repo`` at HEAD when given (``local`` → a fast local clone). A clone failure here is
+    **fatal**, unlike in the REPL: ADR-0012 §3's degrade-to-empty policy assumes a human who sees the
+    warning and reacts, and nobody is watching a headless run. Degrading burned the whole (paid) run
+    on an empty directory — the agent worked against nothing, and the Hand-back then skipped it as
+    "not a git repo", so the results were unshippable. Failing at once costs one clone instead
+    (a browser URL like ``…/tree/main`` is the easy way to hit this).
+
+    The sandbox import stays lazy so ``none`` mode pulls in no sandbox module.
     """
     if settings.sandbox_mode == "none":
         return Path.cwd()
     from decode.sandbox.workspace import prepare_workspace_or_empty
 
-    workspace, _clone_error = prepare_workspace_or_empty(Path.cwd(), repo=repo, local=local)
+    workspace, clone_error = prepare_workspace_or_empty(Path.cwd(), repo=repo, local=local)
+    if clone_error is not None:
+        raise RuntimeError(
+            f"could not clone {repo!r} into the Workspace, so this run has nothing to work on "
+            f"(a headless run has no one to warn): {clone_error}"
+        )
     _warm_headless_executor(workspace)
     return workspace
 

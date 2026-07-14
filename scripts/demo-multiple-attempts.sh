@@ -38,6 +38,20 @@ die()  { printf '\033[31mxx\033[0m  %s\n' "$*" >&2; exit 1; }
 case "${ATTEMPTS}" in ''|*[!0-9]*) die "attempts must be a number, got: ${ATTEMPTS}" ;; esac
 [ "${ATTEMPTS}" -ge 2 ] || die "attempts must be at least 2 — the point is comparing them"
 
+# Validate the repo BEFORE spending money. A browser URL (…/tree/main, …/blob/…) is the easy mistake,
+# and it does not fail loudly: the clone inside each flow container just degrades to an empty
+# Workspace, so N agents dutifully do the work against nothing and the Hand-back has no repo to ship
+# to. One `git ls-remote` up front is the difference between a typo and N wasted agent runs.
+case "${REPO}" in
+  *"/tree/"*|*"/blob/"*)
+    normalized="${REPO%%/tree/*}"; normalized="${normalized%%/blob/*}"
+    warn "that is a browser URL, not a git URL — using ${normalized}"
+    REPO="${normalized}"
+    ;;
+esac
+git ls-remote --exit-code "${REPO}" HEAD >/dev/null 2>&1 \
+  || die "cannot read ${REPO} — is it a clonable git URL you have access to?"
+
 # The Makefile's run-remote, inlined so each attempt can be backgrounded with its own log.
 run_remote() {
   local task="$1" log_file="$2" repo_arg=("${@:3}")

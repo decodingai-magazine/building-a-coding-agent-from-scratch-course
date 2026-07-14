@@ -361,7 +361,14 @@ def test_prepare_headless_tool_scope_threads_repo_and_local_to_the_clone(monkeyp
     assert captured["local"] is True  # ...and the --local flag too
 
 
-def test_prepare_headless_tool_scope_degrades_to_empty_on_a_clone_failure(monkeypatch, tmp_path):
+def test_prepare_headless_tool_scope_fails_loudly_on_a_clone_failure(monkeypatch, tmp_path):
+    """A bad ``--repo`` FAILS a headless run — it does not quietly work against an empty directory.
+
+    The REPL's degrade-to-empty (ADR-0012 §3) assumes a human reading the warning. A headless run has
+    no such human: a browser URL (`…/tree/main`) once let three paid agents build their work in an
+    empty Workspace, which the Hand-back then refused to ship ("not a git repo"). The clone is the
+    cheapest possible place to stop.
+    """
     from unittest.mock import AsyncMock
 
     workspace = tmp_path / ".decode" / "sandbox"
@@ -377,8 +384,7 @@ def test_prepare_headless_tool_scope_degrades_to_empty_on_a_clone_failure(monkey
     warm = AsyncMock()
     monkeypatch.setattr("decode.tools.bash.warm_executor", warm)
 
-    scope = flow_mod._prepare_headless_tool_scope("/broken/repo")
+    with pytest.raises(RuntimeError, match="nothing to work on"):
+        flow_mod._prepare_headless_tool_scope("/broken/repo")
 
-    # Degraded to the empty Workspace path (never raised), and still warmed against it.
-    assert scope == workspace
-    warm.assert_awaited_once_with(workspace)
+    warm.assert_not_awaited()  # no sandbox is started for a run that cannot do its job

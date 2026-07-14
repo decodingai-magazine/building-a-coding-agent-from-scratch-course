@@ -70,6 +70,14 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
    `SANDBOX_MODE=none` → one friendly stderr line, non-zero exit. Results are returned via the built
    **Hand-back** (§8), not manual pushing.
 
+   **Amendment (2026-07).** Degrade-to-empty on a failed clone stays the **REPL's** policy and only
+   the REPL's: it assumes a human who reads the warning and reacts. A **headless** run has no such
+   human, so there a clone failure is now **fatal** (`runtime/flow.py::_prepare_headless_tool_scope`).
+   What forced this: a browser URL (`…/tree/main`) passed as `--repo` let three paid agents run to
+   completion inside empty Workspaces, and the Hand-back then refused to ship any of them ("not a git
+   repo with an origin"). Silent degradation is a reasonable default only when someone is watching;
+   otherwise it converts a one-second typo into N wasted runs.
+
 4. **File tools operate on the sandbox filesystem through the seam ("swap the set").** The
    `SandboxBackend` Protocol grows `read_bytes` / `write_bytes` / `make_directory` / `list_dir` /
    `stat` / `remove`; the shared host-side logic (containment, edit's search/replace, truncation,
