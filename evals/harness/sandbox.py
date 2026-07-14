@@ -33,7 +33,12 @@ from pathlib import Path
 from typing import Any
 
 from decode.config.settings import settings
-from decode.tools.bash import close_executor, reset_executor, warm_executor
+from decode.tools.bash import (
+    active_executor,
+    close_executor,
+    reset_executor,
+    warm_executor,
+)
 from decode.tools.exec import ExecResult
 from evals.harness.task_loader import VERIFY_SCRIPT_NAME, BenchmarkTask
 
@@ -96,10 +101,6 @@ def benchmark_sandbox(task: BenchmarkTask, *, sandbox: str = "docker") -> Iterat
     executor (``close_executor``), restores ``SANDBOX_MODE`` and deletes the temp Workspace whether
     the ``with`` body succeeds or raises.
     """
-    # The seam's memoized-executor getter; imported here because ``evals/`` is not shipped in the
-    # wheel and this keeps the module top-level import free of the private handle.
-    from decode.tools.bash import _get_executor
-
     workspace = Path(tempfile.mkdtemp(prefix="decode-eval-")).resolve()
     _seed_setup(task, workspace)
     previous_mode = settings.sandbox_mode
@@ -107,7 +108,9 @@ def benchmark_sandbox(task: BenchmarkTask, *, sandbox: str = "docker") -> Iterat
     reset_executor()
     try:
         _run_async(warm_executor(workspace))
-        executor = _get_executor()
+        # ``active_executor`` is the seam's public read accessor — it returns the SAME executor
+        # ``warm_executor`` just started (shared memo), no private handle needed.
+        executor = active_executor()
         _run_setup_script(executor, workspace, task)
         yield SandboxRun(workspace=workspace, executor=executor)
     finally:

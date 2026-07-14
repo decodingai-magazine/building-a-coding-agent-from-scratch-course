@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 from decode.config.settings import settings
 from evals.harness.judges import resolve_judge_model
+from evals.harness.keys import eval_keys_missing
 
 if TYPE_CHECKING:
     from opik.evaluation.metrics.conversation.conversation_thread_metric import (
@@ -61,26 +62,16 @@ def live_project_name() -> str:
 def online_keys_missing() -> list[str]:
     """The env-var names online eval needs but does not have — empty means good to run (ADR-0017 §10).
 
-    Reads only ``settings`` (never ``opik``), so the CLI can decide to skip friendly without importing
-    the Opik client or touching the network. Two things are required: ``OPIK_API_KEY`` to reach the
-    threads, and the active provider's judge key so the conversation judge can actually grade
-    (``gemini`` → ``GEMINI_API_KEY``, ``openrouter`` → ``OPENROUTER_API_KEY``, ``modal`` →
-    ``MODAL_ENDPOINT_URL``). An explicit ``EVAL_JUDGE_MODEL`` override does not change WHICH provider
-    key LiteLLM will need, so the provider check stands regardless.
+    Delegates to the ONE shared, settings-backed, provider-aware preflight
+    (:func:`evals.harness.keys.eval_keys_missing`) so this track cannot drift from the offline gates:
+    the required set is identical — ``OPIK_API_KEY`` to reach the threads, plus the active provider's
+    key so the conversation judge can actually grade (``gemini`` → ``GEMINI_API_KEY``, ``openrouter``
+    → ``OPENROUTER_API_KEY``, ``modal`` → ``MODAL_ENDPOINT_URL``). Reads only ``settings`` (never
+    ``opik``), so the CLI can decide to skip friendly without importing the Opik client or touching the
+    network. An explicit ``EVAL_JUDGE_MODEL`` override does not change WHICH provider key LiteLLM will
+    need, so the provider check stands regardless.
     """
-    missing: list[str] = []
-    if not settings.opik_api_key.get_secret_value().strip():
-        missing.append("OPIK_API_KEY")
-    provider = settings.llm_provider
-    if provider == "openrouter":
-        if not settings.openrouter_api_key.get_secret_value().strip():
-            missing.append("OPENROUTER_API_KEY")
-    elif provider == "modal":
-        if not settings.modal_endpoint_url.strip():
-            missing.append("MODAL_ENDPOINT_URL")
-    elif not settings.gemini_api_key.get_secret_value().strip():
-        missing.append("GEMINI_API_KEY")
-    return missing
+    return eval_keys_missing()
 
 
 def make_conversation_metric() -> ConversationThreadMetric:

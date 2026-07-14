@@ -294,15 +294,19 @@ def experiment_config(sandbox: str) -> dict[str, Any]:
     sandbox rung executed it.
     """
     return {
-        "agent_model": _agent_model(),
+        "agent_model": agent_model(),
         "provider": settings.llm_provider,
-        "git_sha": _git_sha(),
+        "git_sha": git_sha(),
         "sandbox": sandbox,
     }
 
 
-def _agent_model() -> str:
-    """The model string the agent runs on, resolved from the active provider (mirrors the gateway)."""
+def agent_model() -> str:
+    """The model string the agent runs on, resolved from the active provider (mirrors the gateway).
+
+    Public so the regression harness reuses it (:func:`evals.harness.regression.experiment_config`)
+    instead of reaching for a private name across modules — one resolver, both experiment tracks.
+    """
     provider = settings.llm_provider
     if provider == "openrouter":
         return settings.openrouter_model
@@ -311,8 +315,11 @@ def _agent_model() -> str:
     return settings.gemini_model
 
 
-def _git_sha() -> str:
-    """The current commit sha, or ``"unknown"`` if git is unavailable (never crash a benchmark on it)."""
+def git_sha() -> str:
+    """The current commit sha, or ``"unknown"`` if git is unavailable (never crash a benchmark on it).
+
+    Public so both experiment tracks (benchmark + regression) label their rows with the same resolver.
+    """
     try:
         completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],

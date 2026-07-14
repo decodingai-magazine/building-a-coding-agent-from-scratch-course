@@ -323,6 +323,20 @@ def test_online_subcommand_reports_an_invalid_opik_key(mocker):
     _assert_friendly_opik_key_error(result)
 
 
+def test_suite_subcommand_reports_an_invalid_opik_key(mocker):
+    """``suite`` wraps ``run_test_suite`` in ``opik_boundary`` too — a wrong key stays friendly.
+
+    Version-gated on the pinned opik 1.9.8 today, but the moment the pin lifts a present-but-invalid
+    ``OPIK_API_KEY`` here must not dump the raw ``ApiError`` traceback the other four subcommands
+    already suppress (task 122, Nit 2).
+    """
+    mocker.patch("evals.harness.test_suite.run_test_suite", side_effect=_api_error(401))
+
+    result = CliRunner().invoke(cli, ["suite"])
+
+    _assert_friendly_opik_key_error(result)
+
+
 def test_a_non_auth_api_error_is_still_friendly(mocker):
     """A non-401 Opik failure (e.g. 500) is still one friendly line naming the status, not a traceback."""
     mocker.patch("evals.harness.regression.run_regression", side_effect=_api_error(500))

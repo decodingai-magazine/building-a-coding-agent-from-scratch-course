@@ -231,3 +231,10 @@ was never filed; the rollup is that task (Issue 3). (b) ADR-0017's Mermaid diagr
 Core reject reason (Issue 1) is the seven "Score 1.0/0.0" G-Eval judges — see the rollup.
 Filed rollup task: `tasks/121-pa-rejection-evals.md`. Pipeline re-runs from the inner loop on the
 rollup; on green, PA re-reviews the feature.
+
+### [PA] 2026-07-14 — Acceptance Review (re-review, cycle 2)
+
+**VERDICT: ACCEPT** — Issue 3 fixed by `opik_boundary()` in `evals/run.py` (invalid key → one
+friendly line, exit 1, verified e2e via `make eval-regression`); Issue 2 fixed by the ADR-0017
+Mermaid node edit. Both in rollup task 121 (commit 6ecfe86). Feature-level acceptance recorded in
+`tasks/done/121-pa-rejection-evals.md`.

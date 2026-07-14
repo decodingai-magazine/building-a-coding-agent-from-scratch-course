@@ -420,3 +420,9 @@ The `minimal_diff` (015), `resolution_quality` (019), and `code_quality` (020) j
 task.yaml files use the "Score 1 … Score 0 …" numeric-anchor phrasing task 114 empirically proved
 miscalibrates G-Eval (perfect answer → 0.1). Filed rollup task: `tasks/121-pa-rejection-evals.md`
 (Issue 1). Pipeline re-runs from the inner loop on the rollup; on green, PA re-reviews the feature.
+
+### [PA] 2026-07-14 — Acceptance Review (re-review, cycle 2)
+
+**VERDICT: ACCEPT** — the 015/019/020 judges were rephrased qualitatively in rollup task 121
+(commit 6ecfe86), judged intent preserved, guarded by `tests/unit/evals/test_judge_phrasing.py`.
+Feature-level acceptance recorded in `tasks/done/121-pa-rejection-evals.md`.

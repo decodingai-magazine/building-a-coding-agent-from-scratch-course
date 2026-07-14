@@ -9,10 +9,11 @@ Makefile runs FIRST — invoked as ``python -m evals.harness.keys``:
 * when a required key is missing it prints ONE friendly line and exits non-zero, so the Make recipe
   skips the expensive command instead of crashing (see the ``if`` guard in the Makefile).
 
-The required set is provider-aware, exactly like the online track's own gate
-(:func:`evals.harness.online.online_keys_missing`): ``OPIK_API_KEY`` plus the active provider's key
-(``gemini`` → ``GEMINI_API_KEY``, ``openrouter`` → ``OPENROUTER_API_KEY``, ``modal`` →
-``MODAL_ENDPOINT_URL``).
+:func:`eval_keys_missing` is the ONE shared preflight for every eval track — this Makefile guard, the
+online judge (:func:`evals.harness.online.online_keys_missing` delegates to it) and the pre-merge
+threshold ritual (``evals/regression/test_thresholds.py`` calls it). The required set is provider-
+aware and settings-backed: ``OPIK_API_KEY`` plus the active provider's key (``gemini`` →
+``GEMINI_API_KEY``, ``openrouter`` → ``OPENROUTER_API_KEY``, ``modal`` → ``MODAL_ENDPOINT_URL``).
 """
 
 from __future__ import annotations
@@ -23,9 +24,11 @@ import click
 def eval_keys_missing() -> list[str]:
     """The env-var names an eval target needs but does not have — empty means good to run.
 
-    Reads the resolved decode ``settings`` (imported lazily so importing this module stays cheap), so a
-    key in ``.env`` counts. ``OPIK_API_KEY`` is always required; the second entry is the active
-    provider's inference key.
+    The single shared, settings-backed, provider-aware key preflight for the whole suite (this
+    Makefile guard, the online judge, and the pre-merge threshold gate all route through here, so they
+    cannot drift). Reads the resolved decode ``settings`` (imported lazily so importing this module
+    stays cheap), so a key in ``.env`` counts — never a raw ``os.environ`` read. ``OPIK_API_KEY`` is
+    always required; the second entry is the active provider's inference key.
     """
     from decode.config.settings import settings
 

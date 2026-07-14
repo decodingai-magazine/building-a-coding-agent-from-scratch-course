@@ -437,3 +437,9 @@ miscalibrates G-Eval and that `evals/README.md` now explicitly forbids. Both jud
 `g_eval_metric ≥ 0.7` hard floor in `make eval-regression`. Filed rollup task:
 `tasks/121-pa-rejection-evals.md` (Issue 1). Pipeline re-runs from the inner loop on the rollup;
 on green, PA re-reviews the feature.
+
+### [PA] 2026-07-14 — Acceptance Review (re-review, cycle 2)
+
+**VERDICT: ACCEPT** — probes 13/14 judges rephrased qualitatively in rollup task 121
+(commit 6ecfe86), judged intent preserved, guarded by `tests/unit/evals/test_judge_phrasing.py`.
+Feature-level acceptance recorded in `tasks/done/121-pa-rejection-evals.md`.

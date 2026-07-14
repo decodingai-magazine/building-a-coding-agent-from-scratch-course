@@ -225,3 +225,57 @@ E       AssertionError: ... Offenders: 04-diff-minimality: ['Score 1.0']
 **VERDICT: PASS**
 
 Hand off to PA for acceptance review.
+
+### [PA] 2026-07-14 — Acceptance Review (re-review, cycle 2)
+
+**VERDICT: ACCEPT** — all three rollup issues fixed and independently verified from the user's POV.
+
+- **Issue 1 (seven judges):** read every rephrased criterion in the diff — probes 04/05/13/14 +
+  benchmark 015/019/020 all now state qualities ("The answer is fully correct when … It is wrong
+  when …"), mirroring the task-114-validated phrasing of probes 17/18/19, and each preserves its
+  exact judged bar (05 still anchors on the served `_RATE_LIMIT` value; 13 still fails
+  claimed-success/silence; 14 still fails claimed-deletion; 04 still demands definition + every
+  call site + nothing else; 015/019/020 keep identical conditions). Bonus: the
+  `evals/benchmark/tasks/README.md` authoring example — the last reintroduction vector — was also
+  rephrased and now carries the warning.
+- **Issue 1 guard:** `tests/unit/evals/test_judge_phrasing.py` scans every loaded probe's GEval
+  fields AND every `task.yaml` judge spec, self-pins the regex against loosening, and was
+  revert-checked RED by the Tester (offender named: `04-diff-minimality: ['Score 1.0']`). The
+  repo can no longer contradict its own documented convention silently.
+- **Issue 2 (ADR diagram):** the `EV` node now reads `evaluate(trial_count) + post-hoc aggregates
+  → trace feedback scores` — matches Decision §8 verbatim; one-line diff, no other ADR drift.
+- **Issue 3 (invalid-key UX):** `opik_boundary()` wraps all four opik-reaching subcommands
+  (`suite` correctly excluded — its version gate fires before any Opik call on the 1.9.8 pin);
+  message style mirrors the missing-key guard line; verified e2e twice (direct CLI and the real
+  `make eval-regression` ritual) → one friendly line, exit 1, no traceback, no secret echoed;
+  lazy import preserves the keyless `--help` invariant (ADR-0017 §1).
+
+Remaining unchecked item: the `[HUMAN]` keyed revalidation spot-run (Opik experiment ids for one
+rephrased regression + one benchmark judge) — honestly tagged, genuinely key-gated, consistent
+with the feature's other accepted `[HUMAN]` items; the identical phrasing pattern was already
+live-validated by task 114. It stays visible for the human; it does not block acceptance.
+
+Previously-PASS surfaces spot-checked: the diff touches only judge text, the CLI boundary, one ADR
+line, READMEs, and tests; Tester re-ran the full `make ci` (2070 passed, 2 legitimate key-gated
+skips). Feature `evals` (tasks 103–121) is ACCEPTED. Hand off to the PR Reviewer.
+
+### [PR Reviewer] 2026-07-14 13:52 — Review (rollup)
+
+**VERDICT: BLOCKERS**
+
+Reviewed the full PR #35 diff (232 files, ~21k insertions) against merge-base
+`51d7457`: harness, benchmark tasks 001-020 (+ oracles), regression probes 01-20,
+demo skills 2-7, Makefile/docs/settings, and the whole test suite. Walked all six
+review dimensions incl. the simplicity pass; PA-accepted limitations ([HUMAN]
+spot-runs, opik>=2.0 gate, probe-12 skip, pre-push flake) were not re-flagged.
+
+Filed rollup task: `tasks/122-pr-review-rollup.md`.
+
+Blockers: 1 (`evals/regression/test_thresholds.py` key preflight — gemini-hardcoded
+`os.environ` check makes `make eval-regression` exit 0 with the gate never run for
+openrouter/modal or .env-only checkouts; diverges from keys.py/online.py and
+docs/evals.md). Nits: 5 (Makefile sync scoping, `suite` missing opik_boundary,
+duplicated provider-key map, two private-symbol imports).
+
+Caveman-format PR comment posted on #35. Pipeline re-runs from inner loop on the
+rollup; re-invoke me after PA ACCEPT + re-push.

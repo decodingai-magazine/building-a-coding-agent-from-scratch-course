@@ -177,7 +177,8 @@ def suite() -> None:
     )
 
     try:
-        result = run_test_suite()
+        with opik_boundary():
+            result = run_test_suite()
     except (SuiteUnavailableError, SuiteSelectionError) as exc:
         raise click.ClickException(str(exc)) from exc
 

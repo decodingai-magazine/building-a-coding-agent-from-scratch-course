@@ -374,11 +374,11 @@ def experiment_config() -> dict[str, Any]:
     are told apart by what actually changed. ``harness`` labels the row as a regression run (always
     host-native ``none`` mode).
     """
-    from evals.harness.benchmark import _agent_model, _git_sha
+    from evals.harness.benchmark import agent_model, git_sha
 
     return {
-        "agent_model": _agent_model(),
+        "agent_model": agent_model(),
         "provider": settings.llm_provider,
-        "git_sha": _git_sha(),
+        "git_sha": git_sha(),
         "harness": "regression",
     }

@@ -7,8 +7,12 @@ runs only when invoked explicitly::
     make eval-regression          # -> uv run pytest evals/regression/test_thresholds.py
     uv run pytest evals/regression/test_thresholds.py
 
-It costs real money and needs ``GEMINI_API_KEY`` + ``OPIK_API_KEY`` (the agent runs and Opik stores the
-experiment), so with either key absent it SKIPS with a friendly reason and exits 0.
+It costs real money and needs ``OPIK_API_KEY`` plus the active provider's inference key (the agent
+runs and Opik stores the experiment), so with a required key absent it SKIPS with a friendly reason and
+exits 0. The skip predicate is the suite's ONE shared, provider-aware, settings-backed preflight
+(:func:`evals.harness.keys.eval_keys_missing`) — the same guard the Makefile runs first and the online
+track uses — so an openrouter/modal operator's run is gated on the RIGHT key, not a hardcoded
+``GEMINI_API_KEY`` (which would let the gate vacuously skip and ``make`` exit 0 having gated nothing).
 
 The module stays thin on purpose. It runs the probe suite ONCE (a session-scoped fixture over
 :func:`evals.harness.regression.run_regression`) and then delegates every judgement to the pure,
@@ -23,12 +27,12 @@ offline-tested helpers in :mod:`evals.regression.thresholds`:
 from __future__ import annotations
 
 import logging
-import os
 import warnings
 from typing import TYPE_CHECKING
 
 import pytest
 
+from evals.harness.keys import eval_keys_missing
 from evals.regression.thresholds import (
     BaselineCandidate,
     baseline_scores_from_feedback,
@@ -46,9 +50,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The keys the ritual needs to actually run (agent inference + Opik storage). Absent → skip, exit 0.
-REQUIRED_KEYS = ("GEMINI_API_KEY", "OPIK_API_KEY")
-
 # The stable experiment name every regression run shares, so ``get_experiments_by_name`` can find the
 # previous run to compare against. Kept distinct from the dataset name (``decode-regression-v1``).
 EXPERIMENT_NAME = "decode-regression-gate"
@@ -57,19 +58,17 @@ EXPERIMENT_NAME = "decode-regression-gate"
 BASELINE_TOLERANCE = 0.05
 
 
-def _missing_keys() -> list[str]:
-    """The required keys that are unset/empty — the friendly skip reason names them."""
-    return [key for key in REQUIRED_KEYS if not os.environ.get(key)]
-
-
 @pytest.fixture(scope="session")
 def regression_result() -> EvaluationResult:
     """Run the whole probe suite ONCE and hand its Opik result to every gate test (ADR-0017 §6).
 
     Skips with a clear reason (exit 0) when a required key is absent, so the ritual is safe to invoke
-    on a machine without eval credentials. Session-scoped so the money-costing agent runs happen once.
+    on a machine without eval credentials. The skip predicate is the shared, provider-aware
+    :func:`eval_keys_missing` (settings-backed — a key in ``.env`` counts), so the gate demands the
+    active provider's key, not a hardcoded one. Session-scoped so the money-costing agent runs happen
+    once.
     """
-    missing = _missing_keys()
+    missing = eval_keys_missing()
     if missing:
         pytest.skip(f"regression gate needs {', '.join(missing)} — skipping (exit 0).")
 

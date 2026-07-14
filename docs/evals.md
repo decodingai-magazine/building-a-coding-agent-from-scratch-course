@@ -90,7 +90,7 @@ so the suite is fast enough to be a **per-feature-branch pre-merge ritual**. The
 exactly that ritual — sync the probe dataset, then run the threshold gate:
 
 ```bash
-make eval-regression        # == python -m evals sync --regression && pytest evals/regression/test_thresholds.py
+make eval-regression        # == python -m evals sync --no-benchmark --regression && pytest evals/regression/test_thresholds.py
 ```
 
 You can also drive the pieces directly (both need the keys above):
