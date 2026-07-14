@@ -101,7 +101,7 @@ flowchart LR
 
     subgraph opik["Opik"]
         DS["datasets<br/>decode-benchmark-v1<br/>decode-regression-v1"]:::opik
-        EV["evaluate(trial_count,<br/>experiment_scoring_functions)"]:::opik
+        EV["evaluate(trial_count)<br/>+ post-hoc aggregates<br/>→ trace feedback scores"]:::opik
         TS["Test Suites<br/>run_tests → pass_rate"]:::opik
         ON["online rule +<br/>evaluate_threads"]:::opik
     end

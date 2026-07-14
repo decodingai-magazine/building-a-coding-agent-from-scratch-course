@@ -218,3 +218,16 @@ $ make pre-commit
 ```
 
 **Re-check:** both previously-unchecked AC boxes flipped to PASS (round 2) above. Handing back to the Tester for re-review. Not committed.
+
+### [PA] 2026-07-14 — Acceptance Review (feature: evals, PR #35)
+
+**VERDICT: REJECT** (feature-level; two issues route through this task's surfaces)
+
+Found 3 issues across the feature; the two touching this task's territory: (a) the twice-QA-flagged
+present-but-invalid `OPIK_API_KEY` raw `ApiError` traceback, reachable from `make eval-regression`
+(the ritual this task's docs tell developers to type) — deferred in QA to "a follow-up task" that
+was never filed; the rollup is that task (Issue 3). (b) ADR-0017's Mermaid diagram still names
+`experiment_scoring_functions`, contradicting Decision §8's own correct 1.9.8 text (Issue 2).
+Core reject reason (Issue 1) is the seven "Score 1.0/0.0" G-Eval judges — see the rollup.
+Filed rollup task: `tasks/121-pa-rejection-evals.md`. Pipeline re-runs from the inner loop on the
+rollup; on green, PA re-reviews the feature.

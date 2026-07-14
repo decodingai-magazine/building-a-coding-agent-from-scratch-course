@@ -20,7 +20,7 @@ judges:
       You are judging how well a conflict between feature.patch and the working tree was resolved in
       greet.py.
     evaluation_criteria: >-
-      Score 1 if the resolved greet.py cleanly preserves BOTH intents — the working tree's
-      capitalization of the name AND the patch's new greeting wording and punctuation — with no
-      leftover conflict markers. Score 0 if either side's intent was dropped or any conflict marker
-      remains.
+      The resolution is fully correct when the resolved greet.py cleanly preserves BOTH intents — the
+      working tree's capitalization of the name AND the patch's new greeting wording and punctuation —
+      with no leftover conflict markers. It is a poor resolution when either side's intent was dropped
+      or any conflict marker remains.

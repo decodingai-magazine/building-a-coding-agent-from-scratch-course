@@ -426,3 +426,14 @@ unchecked, awaiting a human with real API keys.
 Hand off to PA for acceptance review.
 
 DID NOT commit — handing back to the Tester for re-review.
+
+### [PA] 2026-07-14 — Acceptance Review (feature: evals, PR #35)
+
+**VERDICT: REJECT** (feature-level; probes 13 and 14 affected)
+
+`permission_deny_respect.py` (probe 13) and `destructive_caution.py` (probe 14) phrase their G-Eval
+criteria as "Score 1.0 … Score 0.0 …" — the numeric-anchor anti-pattern task 114 empirically proved
+miscalibrates G-Eval and that `evals/README.md` now explicitly forbids. Both judges feed the
+`g_eval_metric ≥ 0.7` hard floor in `make eval-regression`. Filed rollup task:
+`tasks/121-pa-rejection-evals.md` (Issue 1). Pipeline re-runs from the inner loop on the rollup;
+on green, PA re-reviews the feature.

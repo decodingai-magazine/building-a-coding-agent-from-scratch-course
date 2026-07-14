@@ -411,3 +411,12 @@ exit=0 stdout='PASS'
 **VERDICT: PASS**
 
 Hand off to PA for acceptance review.
+
+### [PA] 2026-07-14 — Acceptance Review (feature: evals, PR #35)
+
+**VERDICT: REJECT** (feature-level; this task's oracles are solid, but its three G-Eval judges are affected)
+
+The `minimal_diff` (015), `resolution_quality` (019), and `code_quality` (020) judges in the
+task.yaml files use the "Score 1 … Score 0 …" numeric-anchor phrasing task 114 empirically proved
+miscalibrates G-Eval (perfect answer → 0.1). Filed rollup task: `tasks/121-pa-rejection-evals.md`
+(Issue 1). Pipeline re-runs from the inner loop on the rollup; on green, PA re-reviews the feature.

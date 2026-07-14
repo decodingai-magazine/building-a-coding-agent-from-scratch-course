@@ -8,7 +8,55 @@ needs keys or a network.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from typing import TYPE_CHECKING
+
 import click
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+# Opik HTTP statuses that mean "your credential was rejected" (a present-but-invalid OPIK_API_KEY).
+_OPIK_AUTH_STATUSES = frozenset({401, 403})
+
+
+def _opik_error_as_click(exc: Exception) -> click.ClickException:
+    """Turn a raw Opik REST ``ApiError`` into ONE friendly CLI line (ADR-0017 §9; task 121).
+
+    A present-but-invalid ``OPIK_API_KEY`` otherwise dumps a ~40-line ``ApiError`` traceback (HTTP
+    headers and all) from ``make eval-regression`` — the ritual the docs tell every developer to
+    type. An auth status (401/403) names the key exactly as the missing-key guard does; any other
+    Opik failure still collapses to a single line naming the status. No secret is ever echoed.
+    """
+    status = getattr(exc, "status_code", None)
+    if status in _OPIK_AUTH_STATUSES:
+        message = (
+            f"Opik rejected the API key ({status}) — check OPIK_API_KEY "
+            "(see the Evals block in .env.example)."
+        )
+    else:
+        detail = f" ({status})" if status is not None else ""
+        message = (
+            f"Opik request failed{detail} — check OPIK_API_KEY and your Opik workspace "
+            "(see the Evals block in .env.example)."
+        )
+    return click.ClickException(f"evals: {message}")
+
+
+@contextmanager
+def opik_boundary() -> Iterator[None]:
+    """Translate a raw Opik ``ApiError`` raised inside the block into a friendly ``ClickException``.
+
+    Wraps each opik-reaching command body so a wrong key exits like a missing one — one line,
+    non-zero, no traceback. ``opik`` is imported lazily here (not at module scope) so the CLI stays
+    opik-free at build time and ``--help`` never needs keys or a network (ADR-0017 §1).
+    """
+    from opik.rest_api.core.api_error import ApiError
+
+    try:
+        yield
+    except ApiError as exc:
+        raise _opik_error_as_click(exc) from exc
 
 
 @click.group()
@@ -66,13 +114,14 @@ def benchmark(
     from evals.harness.benchmark import BenchmarkSelectionError, run_benchmark
 
     try:
-        result = run_benchmark(
-            task_id=task_id,
-            difficulty=difficulty,
-            sandbox=sandbox,
-            nb_samples=nb_samples,
-            trials=trials,
-        )
+        with opik_boundary():
+            result = run_benchmark(
+                task_id=task_id,
+                difficulty=difficulty,
+                sandbox=sandbox,
+                nb_samples=nb_samples,
+                trials=trials,
+            )
     except BenchmarkSelectionError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -100,7 +149,8 @@ def regression(probe_id: str | None) -> None:
     from evals.harness.regression import RegressionSelectionError, run_regression
 
     try:
-        run_regression(probe_id=probe_id)
+        with opik_boundary():
+            run_regression(probe_id=probe_id)
     except RegressionSelectionError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -171,7 +221,8 @@ def online(filter_string: str | None) -> None:
         click.echo("evals online: skipped — set " + ", ".join(missing) + " to score live threads.")
         return
 
-    result = run_online_eval(filter_string=filter_string)
+    with opik_boundary():
+        result = run_online_eval(filter_string=filter_string)
     lines = format_thread_scores(result)
     if not lines:
         click.echo(f"evals online: no threads to score in {live_project_name()}.")
@@ -215,16 +266,19 @@ def sync(benchmark: bool, regression: bool) -> None:
         sync_regression_dataset,
     )
 
-    if benchmark:
-        from evals.harness.task_loader import load_benchmark_tasks
+    with opik_boundary():
+        if benchmark:
+            from evals.harness.task_loader import load_benchmark_tasks
 
-        tasks = load_benchmark_tasks()
-        sync_benchmark_dataset(tasks)
-        click.echo(f"evals sync: upserted {len(tasks)} task(s) into {BENCHMARK_DATASET_NAME}.")
+            tasks = load_benchmark_tasks()
+            sync_benchmark_dataset(tasks)
+            click.echo(f"evals sync: upserted {len(tasks)} task(s) into {BENCHMARK_DATASET_NAME}.")
 
-    if regression:
-        from evals.regression.loader import load_probes
+        if regression:
+            from evals.regression.loader import load_probes
 
-        probes = load_probes()
-        sync_regression_dataset(probes)
-        click.echo(f"evals sync: upserted {len(probes)} probe(s) into {REGRESSION_DATASET_NAME}.")
+            probes = load_probes()
+            sync_regression_dataset(probes)
+            click.echo(
+                f"evals sync: upserted {len(probes)} probe(s) into {REGRESSION_DATASET_NAME}."
+            )

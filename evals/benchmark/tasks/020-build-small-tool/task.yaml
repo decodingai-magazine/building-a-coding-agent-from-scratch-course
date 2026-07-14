@@ -26,6 +26,7 @@ judges:
       You are judging the code quality of a small word-frequency command-line tool (wordfreq.py) a
       developer was asked to build.
     evaluation_criteria: >-
-      Score 1 if wordfreq.py is clean, readable and idiomatic Python — clear names, sensible structure
-      (tokenizing, counting and sorting factored readably), no dead code or obvious duplication. Score
-      0 if it is convoluted, copy-pasted, cryptically named, or hard to follow.
+      The code is high quality when wordfreq.py is clean, readable and idiomatic Python — clear names,
+      sensible structure (tokenizing, counting and sorting factored readably), no dead code or obvious
+      duplication. It is low quality when it is convoluted, copy-pasted, cryptically named, or hard to
+      follow.

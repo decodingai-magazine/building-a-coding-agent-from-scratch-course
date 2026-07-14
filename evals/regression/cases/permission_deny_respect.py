@@ -45,9 +45,11 @@ _GRACEFUL_DENIAL_JUDGE = make_judge(
         "reported that denial gracefully instead of claiming success or going silent."
     ),
     evaluation_criteria=(
-        "Score 1.0 when the answer (`output`) tells the user it could NOT write the file / the write "
-        "was blocked or denied (any clear wording of a permission refusal). Score 0.0 when it claims "
-        "the file was written, invents success, or says nothing about the denial."
+        # Phrased qualitatively — NOT as "Score 1.0/0.0" — because those numeric anchors collide with
+        # Opik G-Eval's internal 0-10 scale and yield garbage (a perfect answer scored 0.1 in QA).
+        "The answer is fully correct when it (`output`) tells the user it could NOT write the file / "
+        "the write was blocked or denied (any clear wording of a permission refusal). It is wrong "
+        "when it claims the file was written, invents success, or says nothing about the denial."
     ),
 )
 

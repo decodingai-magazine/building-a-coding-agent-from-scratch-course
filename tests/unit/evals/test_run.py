@@ -265,6 +265,73 @@ def test_sync_nothing_selected_is_a_friendly_no_op():
     assert "nothing selected" in result.output
 
 
+def _api_error(status_code: int = 401):
+    """A raw Opik REST ``ApiError`` — what a present-but-invalid ``OPIK_API_KEY`` surfaces (task 121)."""
+    from opik.rest_api.core.api_error import ApiError
+
+    return ApiError(status_code=status_code, body={"errors": ["Unauthorized"]})
+
+
+def _assert_friendly_opik_key_error(result, *, status: str = "401") -> None:
+    """A raw ``ApiError`` must become ONE friendly line — non-zero, names the key, no traceback."""
+    assert result.exit_code != 0
+    assert "OPIK_API_KEY" in result.output
+    assert ".env.example" in result.output
+    assert status in result.output
+    # No raw REST traceback / exception class leaks to the user.
+    assert "Traceback" not in result.output
+    assert "ApiError" not in result.output
+
+
+def test_benchmark_subcommand_reports_an_invalid_opik_key(mocker):
+    """A present-but-invalid ``OPIK_API_KEY`` → one friendly line, not a raw ``ApiError`` traceback."""
+    mocker.patch("evals.harness.benchmark.run_benchmark", side_effect=_api_error(401))
+
+    result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting"])
+
+    _assert_friendly_opik_key_error(result)
+
+
+def test_regression_subcommand_reports_an_invalid_opik_key(mocker):
+    """The headline ``make eval-regression`` ritual: a wrong key stays friendly (twice-flagged; task 121)."""
+    mocker.patch("evals.harness.regression.run_regression", side_effect=_api_error(401))
+
+    result = CliRunner().invoke(cli, ["regression", "--probe", "05-web-fetch-discipline"])
+
+    _assert_friendly_opik_key_error(result)
+
+
+def test_sync_subcommand_reports_an_invalid_opik_key(mocker):
+    """``evals sync`` (the first thing ``make eval-regression`` runs) friendly-fails on a wrong key."""
+    probe = mocker.Mock()
+    mocker.patch("evals.regression.loader.load_probes", return_value=[probe])
+    mocker.patch("evals.harness.datasets.sync_regression_dataset", side_effect=_api_error(401))
+
+    result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--regression"])
+
+    _assert_friendly_opik_key_error(result)
+
+
+def test_online_subcommand_reports_an_invalid_opik_key(mocker):
+    """The online track translates a raw ``ApiError`` the same way — no leaked traceback."""
+    mocker.patch("evals.harness.online.online_keys_missing", return_value=[])
+    mocker.patch("evals.harness.online.live_project_name", return_value="decode-prod")
+    mocker.patch("evals.harness.online.run_online_eval", side_effect=_api_error(401))
+
+    result = CliRunner().invoke(cli, ["online"])
+
+    _assert_friendly_opik_key_error(result)
+
+
+def test_a_non_auth_api_error_is_still_friendly(mocker):
+    """A non-401 Opik failure (e.g. 500) is still one friendly line naming the status, not a traceback."""
+    mocker.patch("evals.harness.regression.run_regression", side_effect=_api_error(500))
+
+    result = CliRunner().invoke(cli, ["regression", "--probe", "05-web-fetch-discipline"])
+
+    _assert_friendly_opik_key_error(result, status="500")
+
+
 def test_importing_the_cli_does_not_import_opik():
     """Building the CLI must not import ``opik`` at module scope (ADR-0017 §1).
 

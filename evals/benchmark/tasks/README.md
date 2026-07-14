@@ -34,7 +34,11 @@ tags: [python, testing]       # slice labels (may be empty)
 judges:                       # OPTIONAL G-Eval add-ons (ADR-0017 §7)
   - name: minimal_diff
     task_introduction: Judge whether the fix is minimal.
-    evaluation_criteria: Score 1 if only the flaky assertion changed, 0 if unrelated files churned.
+    # Phrase criteria QUALITATIVELY (qualities of a good/bad answer) — never "Score 1 if …" numeric
+    # verdicts, which collide with the judge's 0–10 scale (task-114 lesson; see ../../README.md step 6).
+    evaluation_criteria: >-
+      The fix is fully minimal when only the flaky assertion changed; it is a poor, bloated diff when
+      unrelated files churned.
 ```
 
 Unknown keys are rejected — a typo'd field fails loudly rather than being ignored.

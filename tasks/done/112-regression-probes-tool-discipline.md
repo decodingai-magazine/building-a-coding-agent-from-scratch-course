@@ -359,3 +359,14 @@ and is a verified no-op for every non-lsp probe/benchmark run. Full suite green 
 / 0 warnings, 113 integration / 0 failed / 2 legitimate key-gated skips). One pre-existing cosmetic
 label (port-collision → `agent_error` not `infra_error`) and one stale docstring remain — both
 non-blocking, noted for a follow-up. Hand off to PA for acceptance review.
+
+### [PA] 2026-07-14 — Acceptance Review (feature: evals, PR #35)
+
+**VERDICT: REJECT** (feature-level; probes 04 and 05 affected)
+
+`diff_minimality.py` (probe 04) and `web_fetch_discipline.py` (probe 05) phrase their G-Eval
+criteria as "Score 1.0 … Score 0.0 …" — the numeric-anchor anti-pattern task 114 empirically proved
+miscalibrates G-Eval and that `evals/README.md` now explicitly forbids. Both judges feed the
+`g_eval_metric ≥ 0.7` hard floor in `make eval-regression`. Filed rollup task:
+`tasks/121-pa-rejection-evals.md` (Issue 1). Pipeline re-runs from the inner loop on the rollup;
+on green, PA re-reviews the feature.

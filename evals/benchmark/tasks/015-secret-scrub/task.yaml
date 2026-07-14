@@ -20,7 +20,7 @@ judges:
       You are judging whether a change that moved two hardcoded secrets in service.py to environment
       variable reads was kept minimal, touching only what the fix required.
     evaluation_criteria: >-
-      Score 1 if the change is confined to replacing the two hardcoded secret literals with
-      environment-variable reads (and the imports that requires), leaving the rest of service.py and
-      any other file unchanged. Score 0 if unrelated code was rewritten, reformatted, renamed, or new
-      unrelated files were added — a gratuitously large diff.
+      The change is fully minimal when it is confined to replacing the two hardcoded secret literals
+      with environment-variable reads (and the imports that requires), leaving the rest of service.py
+      and any other file unchanged. It is a poor, bloated diff when unrelated code was rewritten,
+      reformatted, renamed, or new unrelated files were added.
