@@ -36,6 +36,45 @@ def workspace_dir(harness_home: Path) -> Path:
     return workspace.resolve()
 
 
+# Path segments that mean "this is a page ABOUT the repo", not the repo: the copy-paste a human makes
+# from a browser. GitHub's `/tree/`, `/blob/`, `/commit/`, `/pull/`, `/releases`, `/issues`, and
+# GitLab's `/-/` prefix all sit AFTER `owner/repo`, so truncating at the first one recovers the clone
+# URL — without assuming a path depth (GitLab subgroups nest arbitrarily).
+_WEB_URL_MARKERS = (
+    "/tree/",
+    "/blob/",
+    "/commit/",
+    "/commits/",
+    "/pull/",
+    "/releases",
+    "/issues",
+    "/-/",
+)
+
+
+def normalize_repo(repo: str) -> str:
+    """Turn what a human pastes into something ``git clone`` accepts (ADR-0012 §3).
+
+    ``https://github.com/o/r/tree/main`` is a *web page*, not a repo, and git says so only at clone
+    time — deep inside a flow container, where the failure used to cost a whole (paid) run. Fixing it
+    at the CLI would leave every other caller brittle, so it happens HERE, at the single choke point
+    every mode clones through.
+
+    Strips the browser's trailing junk (``?tab=…``, ``#readme``, the ``/tree/<ref>``-style suffixes)
+    and a trailing slash. **Local paths and scp-form remotes pass through untouched** — a directory is
+    free to be called ``blob`` and ``git@host:o/r.git`` is already exactly what git wants.
+    """
+    if "://" not in repo:  # a local path (or scp form) — never a browser URL
+        return repo
+    cleaned = repo.strip().split("#", 1)[0].split("?", 1)[0]
+    # The EARLIEST marker in the string wins, not the first in the list: GitLab's `/-/tree/main`
+    # contains both `/-/` and `/tree/`, and cutting at `/tree/` would leave a trailing `/-`.
+    cuts = [index for marker in _WEB_URL_MARKERS if (index := cleaned.find(marker)) != -1]
+    if cuts:
+        cleaned = cleaned[: min(cuts)]
+    return cleaned.rstrip("/")
+
+
 def prepare_workspace(harness_home: Path, *, repo: str | None = None, local: bool = False) -> Path:
     """Ensure the Workspace exists and, if empty + ``repo`` given, clone it at HEAD (ADR-0012 §3).
 
@@ -45,6 +84,9 @@ def prepare_workspace(harness_home: Path, *, repo: str | None = None, local: boo
     is a real ``git clone``, the Workspace's own git recovers everything the hand-back needs — no
     sidecar file: ``origin`` is the push target and ``origin/HEAD`` stays pinned at the cloned
     commit for the unchanged-vs-worked check (ADR-0012 §8).
+
+    ``repo`` is passed through :func:`normalize_repo` first, so a browser URL clones the repo it
+    obviously means instead of failing.
     """
     workspace = workspace_dir(harness_home)
     if repo is None:
@@ -52,7 +94,7 @@ def prepare_workspace(harness_home: Path, *, repo: str | None = None, local: boo
     if any(workspace.iterdir()):
         logger.debug("[sandbox] workspace %s already populated — reusing (no clone)", workspace)
         return workspace
-    _git_clone(repo, workspace, local=local)
+    _git_clone(normalize_repo(repo), workspace, local=local)
     return workspace
 
 
@@ -92,14 +134,17 @@ def git_config_pairs() -> list[tuple[str, str]]:
 # ``gh`` reads it natively; the credential helper below feeds it to git's HTTPS transport.
 GIT_TOKEN_ENV = "GITHUB_TOKEN"
 
-# Configured in a Worker whose ``SANDBOX_GIT_TOKEN`` is set — one mechanism, both backends
-# (ADR-0016 §2): echoes the RUNTIME ``$GITHUB_TOKEN`` as the HTTPS password so ``git push`` works.
-# Single-quoted so the token is read at push time, never expanded into this command line (nor, on
-# modal, frozen into a cached image layer).
-GIT_CREDENTIAL_HELPER = (
-    "git config --global credential.helper "
-    "'!f() { echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }; f'"
+# The credential-helper VALUE: echoes the RUNTIME ``$GITHUB_TOKEN`` as the HTTPS password so a
+# ``git push`` over HTTPS authenticates. Reads the env var at push time, so the token is never
+# expanded into a command line (nor, on modal, frozen into a cached image layer). Used by both the
+# Worker (via the config command below) and the host-side Hand-back (``handback._push``).
+GIT_CREDENTIAL_HELPER_VALUE = (
+    '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
 )
+
+# Configured in a Worker whose ``SANDBOX_GIT_TOKEN`` is set — one mechanism, both backends
+# (ADR-0016 §2).
+GIT_CREDENTIAL_HELPER = f"git config --global credential.helper '{GIT_CREDENTIAL_HELPER_VALUE}'"
 
 
 def sandbox_git_token() -> str:

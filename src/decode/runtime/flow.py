@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from kitaru import checkpoint, current_execution_id, flow, save
+from kitaru import ImageSettings, checkpoint, current_execution_id, flow, save
 from kitaru.adapters.pydantic_ai import KitaruAgent, wait_for_input
 from kitaru.adapters.pydantic_ai._toolset import _ToolApprovalDenied
 from pydantic_ai import DeferredToolRequests
@@ -36,6 +36,7 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
+from decode.runtime.modal_app import pin_orchestrator_app
 from decode.tools.askuser import ASK_USER_TOOL_NAME, deny_user_question_resolver
 from decode.tools.bash import BASH_TOOL_NAME, close_executor
 from decode.tools.files import EDIT_TOOL_NAME, WRITE_TOOL_NAME
@@ -47,6 +48,11 @@ from decode.tools.sleep import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Import-time, because a submit happens the moment a flow's ``.run()`` is called and the App name is
+# read inside it. Importing this module IS the decision to run durably, so there is no earlier hook —
+# and it is a no-op on the local stack (ADR-0008 §1; see ``runtime/modal_app.py``).
+pin_orchestrator_app()
 
 # Stable Agent names for Kitaru checkpoint identity — must not change across runs or replay misses
 # cache. The HITL name is distinct so its checkpoints never collide with the bypass run's.
@@ -64,6 +70,39 @@ RUNTIME_OUTPUT_ARTIFACT = "decode_runtime_output"
 _HITL_DENIED_MESSAGE = (
     "The operator denied a required tool approval, so the task was stopped before that step ran."
 )
+
+# The Kitaru secret carrying MODAL_TOKEN_ID / MODAL_TOKEN_SECRET into the flow container. They are
+# the modal CLI's tokens, not ``Settings`` fields, so the Environment Bucket never carries them
+# (ADR-0015); ``secret_environment_from`` is their only route into the container's process env.
+MODAL_TOKEN_SECRET_NAME = "decode-modal"
+
+
+def _runtime_image() -> ImageSettings:
+    """The flow container for a remote stack (INFRA.md §4) — ignored by the local stack, which never builds.
+
+    ``DECODE_ENV`` and ``SANDBOX_MODE`` are propagated from the submitting process so a remote run
+    keeps the config surface the operator chose: ``DECODE_ENV=prod`` makes the container's
+    ``Settings`` read the ``decode-prod`` Environment Bucket off the same Kitaru server (ADR-0015),
+    and ``SANDBOX_MODE`` decides where its ``bash`` lands. Only ``modal`` needs the Modal tokens, so
+    only ``modal`` demands the secret exist.
+
+    **No ``platform=``** — it is pinned in the Dockerfile's ``FROM`` instead. Passing it here gives
+    ZenML's ``DockerSettings`` a ``build_config``, which its builder mutates mid-build; the reuse
+    lookup hashes the settings before that mutation and the stored build after it, so no build is
+    ever reusable and every submit rebuilds the image (see docker/flow.Dockerfile, INFRA.md §4).
+    """
+    return ImageSettings(
+        dockerfile="docker/flow.Dockerfile",
+        build_context_root=".",
+        environment={
+            "DECODE_ENV": settings.decode_env,
+            "SANDBOX_MODE": settings.sandbox_mode,
+        },
+        secret_environment_from=(
+            [MODAL_TOKEN_SECRET_NAME] if settings.sandbox_mode == "modal" else None
+        ),
+    )
+
 
 # Tools that pause on a flow-scope wait in the durable runtime and so must be opted out of their
 # per-call checkpoints — a Kitaru wait must live at flow scope, not inside a tool checkpoint
@@ -148,18 +187,54 @@ def _warm_headless_executor(workspace: Path) -> None:
         loop.close()
 
 
+def _ship_headless_workspace(repo: str | None) -> None:
+    """Hand the Workspace back **from inside the flow**, after the executor is reaped (ADR-0012 §8).
+
+    The flow's own process is the one that owns the Workspace: it clones ``repo`` there, and the
+    executor reap above is what sweeps a modal sandbox's filesystem back into it. On a remote stack
+    that process is the Modal flow container — NOT the laptop that submitted the run, whose
+    ``.decode/sandbox`` the run never touched — so the hand-back has to live here rather than in the
+    cli (a headless run's work is otherwise lost with the container). The push authenticates with
+    ``SANDBOX_GIT_TOKEN``, the only git credential a flow container has (ADR-0016 §2,4).
+
+    Best-effort: a hand-back failure never fails a completed run; the outcome is logged (Kitaru
+    streams a remote flow's logs back to the submitter).
+    """
+    if repo is None or settings.sandbox_mode == "none":
+        return
+    from decode.sandbox.handback import ship_workspace
+
+    try:
+        result = ship_workspace(Path.cwd(), repo=repo, session_id=current_execution_id())
+    except Exception:
+        logger.warning("[handback] headless hand-back failed; continuing", exc_info=True)
+        return
+    if result.branch is not None:
+        logger.info("[handback] %s", result.message)
+
+
 def _prepare_headless_tool_scope(repo: str | None = None, local: bool = False) -> Path:
     """The headless agent tool scope: the prepared+warmed Workspace in a sandbox mode, else cwd (ADR-0012 §3,6).
 
-    Clones ``repo`` at HEAD when given (``local`` → a fast local clone), degrading to an empty
-    Workspace on a clone failure rather than crashing. The sandbox import stays lazy so ``none``
-    mode pulls in no sandbox module.
+    Clones ``repo`` at HEAD when given (``local`` → a fast local clone). A clone failure here is
+    **fatal**, unlike in the REPL: ADR-0012 §3's degrade-to-empty policy assumes a human who sees the
+    warning and reacts, and nobody is watching a headless run. Degrading burned the whole (paid) run
+    on an empty directory — the agent worked against nothing, and the Hand-back then skipped it as
+    "not a git repo", so the results were unshippable. Failing at once costs one clone instead
+    (a browser URL like ``…/tree/main`` is the easy way to hit this).
+
+    The sandbox import stays lazy so ``none`` mode pulls in no sandbox module.
     """
     if settings.sandbox_mode == "none":
         return Path.cwd()
     from decode.sandbox.workspace import prepare_workspace_or_empty
 
-    workspace, _clone_error = prepare_workspace_or_empty(Path.cwd(), repo=repo, local=local)
+    workspace, clone_error = prepare_workspace_or_empty(Path.cwd(), repo=repo, local=local)
+    if clone_error is not None:
+        raise RuntimeError(
+            f"could not clone {repo!r} into the Workspace, so this run has nothing to work on "
+            f"(a headless run has no one to warn): {clone_error}"
+        )
     _warm_headless_executor(workspace)
     return workspace
 
@@ -220,7 +295,7 @@ def _capture_runtime_output(output: str) -> str:
     return output
 
 
-@flow
+@flow(image=_runtime_image())
 def run_agent_task(
     task: str, model: str | None = None, repo: str | None = None, local: bool = False
 ) -> str:
@@ -231,7 +306,9 @@ def run_agent_task(
     and read back by name — not ``.wait().output``, which the ``"calls"`` terminal shape breaks.
     ``model`` is the Model Override (ADR-0010 §2) and ``repo`` / ``local`` the Workspace clone
     inputs (ADR-0012 §3); all are flow inputs so a what-if Replay can swap or reuse them. The body
-    runs under a ``finally`` that reaps the sandbox executor on completion and on error.
+    runs under a ``finally`` that reaps the sandbox executor and then hands the Workspace back
+    (ADR-0012 §8) — in that order, because the reap is what sweeps the sandbox's filesystem into the
+    Workspace the hand-back ships. Both run on error too: a crashed run still ships its work.
     """
     try:
         # Init tracing INSIDE the flow: idempotent + a silent no-op without a key (ADR-0014 §4-5).
@@ -257,6 +334,7 @@ def run_agent_task(
         return _capture_runtime_output(output)
     finally:
         _reap_runtime_executor()
+        _ship_headless_workspace(repo)
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +415,7 @@ def _build_hitl_deps(cwd: Path | None = None) -> AgentDeps:
     )
 
 
-@flow
+@flow(image=_runtime_image())
 def run_agent_task_hitl(
     task: str, model: str | None = None, repo: str | None = None, local: bool = False
 ) -> str:

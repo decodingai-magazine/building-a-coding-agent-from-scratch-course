@@ -1,209 +1,331 @@
 # Infra — the remote runtime stack (`decode run` on Modal, orchestrated by ZenML/Kitaru)
 
-> **Status: design approved, repo wiring pending.** The GCP/Modal/Kitaru infrastructure below is real and
-> reproducible today; the repo-side pieces (`kitaru init`, flow `ImageSettings`, in-flow hand-back,
-> `make deploy`) land with ADR-0016. Until then this file is the operator's bootstrap manual.
+> **Status: deployed and verified.** `make run-remote TASK="…"` submits a headless agent to a
+> self-hosted Kitaru server, it executes in a Modal container, spawns its own Modal bash sandbox, and
+> every checkpoint lands on the server — durable, replayable, resumable from any machine.
 
-decode already runs its *sandboxes* on Modal (`SANDBOX_MODE=modal`). This stack moves the **headless agent
-itself** there: `decode run` submits the Kitaru flow to a **Modal orchestrator stack**, the flow executes in a
-Modal container, and every checkpoint / artifact / HITL wait is recorded on a **self-hosted Kitaru/ZenML
-server** so the run is durable, replayable, and resumable from any machine.
+decode already runs its *sandboxes* on Modal (`SANDBOX_MODE=modal`). This stack moves the **headless
+agent itself** there. [`scripts/deploy.sh`](scripts/deploy.sh) provisions all of it; **§1 is the only
+part you type by hand.**
 
 ## The shape (and why each piece exists)
 
 | Piece | What | Why this and not more |
 |---|---|---|
-| **Kitaru/ZenML server** | one `zenmldocker/kitaru` container on one GCE VM, SQLite on the boot disk | The durability core: executions, checkpoint metadata, replay, HITL waits, and the [Environment Bucket](CREDENTIALS.md) all live here. It must be reachable *from Modal*, so it cannot stay on the laptop. One VM + SQLite beats Cloud Run/GKE/MySQL for a single-user course — the MySQL/helm path exists for teams ([docs](https://docs.zenml.io/kitaru/server-deployment/docker.md)). |
-| **Modal orchestrator stack** | `kitaru stack create --type modal` | Kitaru's native Modal stack type — wraps the [ZenML Modal orchestrator](https://docs.zenml.io/stacks/stack-components/orchestrators/modal). The flow container runs in a Modal sandbox; decode's own `SANDBOX_MODE=modal` bash sandboxes are spawned *from* it. |
-| **GCS bucket** | artifact store (`gs://…`) | Checkpoint payloads and artifacts. Modal cannot read a local artifact store — remote is mandatory. |
+| **Kitaru/ZenML server** | one `zenmldocker/kitaru` container on one GCE VM, SQLite on the boot disk, Caddy in front for TLS | The durability core: executions, checkpoint metadata, replay, HITL waits, and the [Environment Bucket](CREDENTIALS.md). It must be reachable *from Modal*, so it cannot stay on the laptop. One VM + SQLite beats Cloud Run/GKE/MySQL for a single-user course. |
+| **Modal orchestrator stack** | ZenML's `modal` orchestrator + `modal` sandbox flavors | The flow container runs as a Modal Sandbox; decode's own bash sandboxes are spawned *from* it (nested). |
+| **GCS bucket** | artifact store (`gs://…`) | Checkpoint payloads, artifacts, uploaded code. Modal cannot read a local artifact store — remote is mandatory. |
 | **Artifact Registry repo** | container registry | The flow image is built locally at submit time and pushed here; Modal pulls it. Also mandatory-remote. |
-| **Runtime service account** | `decode-kitaru@…` with 2 roles | Least privilege: the stack needs GCS read/write + image push/pull, nothing else. Your human account (owner) is only for the one-time bootstrap. |
+| **Runtime service account** | `decode-kitaru@…` | Least privilege: GCS objects + image push/pull, plus one bucket-scoped admin binding (§4). Your human account is only for the bootstrap. |
 
-Deliberately **not** in the picture:
-
-- **ZenML Pro / managed workspace** — ~$999/mo Scale tier vs ~$15/mo VM. Self-hosting is one command; swapping
-  to SaaS later is one `kitaru login`.
-- **Server-side deployments** (`kitaru deploy` + HTTP invoke) — unconfirmed on Modal stacks (docs name
-  k8s/Vertex/SageMaker/AzureML), and client-submit needs fewer concepts: `decode run` *is* the trigger.
-- **MySQL / Cloud SQL** — only needed for multi-replica servers.
-
-## 0. Prerequisites (all verified from the laptop)
-
-```bash
-gcloud auth list                      # your human account, roles/owner on the project
-docker info >/dev/null && echo ok     # builds the flow image locally; DOCKER_BUILDKIT=1 required at submit
-test -f ~/.modal.toml && echo ok      # Modal account tokens (kitaru picks up standard Modal auth)
-uv run kitaru --version               # ships with the repo deps — pin the server image to this version
-```
-
-Reference values for this course's deployment — adapt to your own project:
-
-```bash
-export PROJECT=coding-agent-course
-export REGION=europe-west2
-export ZONE=europe-west2-a
-export SA=decode-kitaru@${PROJECT}.iam.gserviceaccount.com
-export BUCKET=gs://${PROJECT}-kitaru
-export REGISTRY=${REGION}-docker.pkg.dev/${PROJECT}/kitaru-images
-```
-
-### Resuming an existing deployment — verify before you create
-
-Every resource below is create-once, not idempotent — a re-run fails with "already exists". Audit what is
-already there and **skip any section whose check passes**:
-
-```bash
-gcloud services list --enabled --format='value(config.name)' | grep -E '^(compute|artifactregistry|storage)\.'   # §1 APIs
-gcloud iam service-accounts describe ${SA} && ls ~/.config/decode/decode-kitaru-key.json                        # §1 SA + key
-gcloud storage buckets describe ${BUCKET} --format='value(name)'                                                # §2 bucket
-gcloud artifacts repositories describe kitaru-images --location=${REGION}                                       # §2 registry
-gcloud compute instances describe kitaru-server --zone=${ZONE} --format='value(status)'                         # §3 VM (RUNNING)
-gcloud compute firewall-rules describe allow-kitaru                                                             # §3 firewall
-uv run kitaru stack list                                                                                        # §4 stack
-```
-
-## 1. GCP project — APIs and the runtime service account
-
-Your human account does the bootstrap; the **runtime SA** is what the stack holds. Two roles, no more.
-
-```bash
-gcloud config set project ${PROJECT}
-gcloud services enable compute.googleapis.com artifactregistry.googleapis.com storage.googleapis.com
-
-gcloud iam service-accounts create decode-kitaru \
-  --display-name="decode Kitaru stack (GCS artifacts + AR images)"
-gcloud projects add-iam-policy-binding ${PROJECT} \
-  --member="serviceAccount:${SA}" --role="roles/storage.objectAdmin"
-gcloud projects add-iam-policy-binding ${PROJECT} \
-  --member="serviceAccount:${SA}" --role="roles/artifactregistry.writer"
-
-# long-lived key — keep it OUT of the repo; the stack registers it server-side as a service connector
-gcloud iam service-accounts keys create ~/.config/decode/decode-kitaru-key.json \
-  --iam-account=${SA}
-```
-
-> **If key creation fails with `constraints/iam.disableServiceAccountKeyCreation`:** your org has Google's
-> secure-by-default policy on (any org created since mid-2024 does). The key is still the right call here —
-> Modal is foreign compute with no GCP identity, so *something* portable must reach it, and a 2-role SA key
-> beats storing your owner-powered user token server-side. Exempt **only this project** (org-wide enforcement
-> stays on) — needs `roles/orgpolicy.policyAdmin` on the org, which an org admin can self-grant:
->
-> ```bash
-> gcloud organizations add-iam-policy-binding <ORG_ID> \
->   --member=user:<you> --role=roles/orgpolicy.policyAdmin
-> gcloud resource-manager org-policies disable-enforce \
->   iam.disableServiceAccountKeyCreation --project=${PROJECT}
-> ```
->
-> Propagation takes a minute or two — an immediate retry still fails with the same error. Reverse anytime
-> with `enable-enforce`.
-
-## 2. Storage + registry
-
-```bash
-gcloud storage buckets create ${BUCKET} --location=${REGION}
-gcloud artifacts repositories create kitaru-images \
-  --repository-format=docker --location=${REGION}
-gcloud auth configure-docker ${REGION}-docker.pkg.dev   # once per machine
-```
-
-## 3. The server — one VM, one container
-
-```bash
-gcloud compute addresses create kitaru-server-ip --region=${REGION}
-export KITARU_IP=$(gcloud compute addresses describe kitaru-server-ip \
-  --region=${REGION} --format='value(address)')
-
-# admin password: generated once, lives only in this file — never in the repo or shell history
-umask 077 && openssl rand -base64 24 > ~/.config/decode/kitaru-admin-password
-
-gcloud compute instances create-with-container kitaru-server \
-  --machine-type=e2-small --zone=${ZONE} \
-  --address=${KITARU_IP} --tags=kitaru-server \
-  --container-image=zenmldocker/kitaru:0.18.0 \
-  --container-env=ZENML_SERVER_AUTO_ACTIVATE=1,ZENML_DEFAULT_USER_NAME=admin,ZENML_DEFAULT_USER_PASSWORD="$(cat ~/.config/decode/kitaru-admin-password)" \
-  --container-mount-host-path=host-path=/var/kitaru,mount-path=/zenml/.zenconfig/local_stores/default_zen_store
-
-# the flow container in Modal must reach :8080; restrict the source range if you can pin Modal egress,
-# otherwise this is admin-password-over-HTTP on an open port — fine for a course VM, not for real secrets
-gcloud compute firewall-rules create allow-kitaru \
-  --allow=tcp:8080 --target-tags=kitaru-server
-```
-
-The success criterion — first boot pulls the image and runs DB migrations, so give it 2-3 minutes:
-
-```bash
-until curl -sf http://${KITARU_IP}:8080/health >/dev/null; do sleep 5; done; echo "server up"
-```
-
-Notes that bite:
-
-- **Pin the image tag to the client** (`kitaru --version` → `0.18.0`). Upgrades = bump both together.
-- The container runs as UID 1000 — `/var/kitaru` on the VM must be writable by it
-  (`sudo chown 1000 /var/kitaru` over SSH if the first boot loops).
-- SQLite on the boot disk is the whole database. `gcloud compute disks snapshot` is your backup story.
-
-## 4. Connect + create the Modal stack
-
-```bash
-# interactive — username `admin`, password from ~/.config/decode/kitaru-admin-password
-uv run kitaru login http://${KITARU_IP}:8080
-
-uv run kitaru stack create prod-modal \
-  --type modal \
-  --artifact-store ${BUCKET}/kitaru \
-  --container-registry ${REGISTRY} \
-  --sandbox modal \
-  --credentials gcp-service-account:$HOME/.config/decode/decode-kitaru-key.json \
-  --extra orchestrator.timeout=7200 \
-  --extra sandbox.timeout=1800
-
-uv run kitaru stack use prod-modal
-```
-
-Modal API credentials ride ambient `~/.modal.toml` — Modal auth and GCP credentials are separate channels.
-Both timeouts are billing caps: a Modal sandbox keeps charging while alive.
-
-For headless/CI submission (no interactive login):
-
-```bash
-uv run kitaru auth service-accounts create decode-runner
-uv run kitaru auth api-keys create decode-runner default -o json   # → kitaru login <url> --api-key kat_…
-```
+Deliberately **not** here: ZenML Pro (~$999/mo vs ~$16/mo), server-side `kitaru deploy` (client-submit
+needs fewer concepts — `decode run` *is* the trigger), MySQL/Cloud SQL (multi-replica only).
 
 ---
 
-> **STOP — the infra runbook ends here.** §4 completing means the GCP/Modal/Kitaru infrastructure is fully
-> provisioned. §5 and §6 depend on repo work that ships with ADR-0016 (`make sync-secrets` needs the
-> env-bucket feature merged; `make deploy` / `make run-remote` do not exist yet). An executor following this
-> file step-by-step must not attempt them before that lands.
+## 1. What you MUST do by hand
 
-## 5. Secrets — the Environment Bucket, unchanged
+`deploy.sh` cannot do these — they need a browser, a GUI toggle, an org admin, or your judgement.
+Do them once, in order.
 
-Nothing new. The remote env's config surface is the same [Environment Bucket](CREDENTIALS.md) mechanism,
-now stored on *this* server instead of the local one:
+### 1.1 Install the toolchain
 
 ```bash
-make sync-secrets ENV=prod      # .env → kitaru secret decode-prod, on the server you just logged into
+make install                    # uv sync + git hooks
+brew install --cask docker      # or Docker Desktop from docker.com
+brew install google-cloud-sdk   # gcloud
 ```
 
-The one documented exception carries over (ADR-0015): `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` are not
-`Settings` fields — the *flow container* needs them in process env to spawn bash sandboxes
-(`SANDBOX_MODE=modal`). They reach it via the image's `secret_environment_from`, not the bucket (ADR-0016).
+`uv`, `docker`, and `gcloud` must all be on your PATH. `deploy.sh` refuses to start otherwise.
 
-## 6. Running (the target UX)
+### 1.2 Authenticate — interactive, browser-based, cannot be scripted
 
 ```bash
-make deploy                      # idempotent: login check → sync-secrets → stack ensure → stack use
-make run-remote TASK="…" REPO=…  # KITARU_STACK=prod-modal DECODE_ENV=prod uv run decode run "$TASK" --repo $REPO
+gcloud auth login               # a human account with roles/owner on the project
+gcloud config set project <your-project>
+modal token set                 # writes ~/.modal.toml — the tokens the orchestrator submits with
 ```
 
-`KITARU_STACK` is the zero-code seam: decode's flows call `.run()` with no stack argument, so the ambient
-stack decides where they execute (`flow.run(stack=…)` > `@flow(stack=…)` > `kitaru.configure` >
-`KITARU_STACK` > `[tool.kitaru].stack` > active stack). First submit builds and pushes the image
-(`DOCKER_BUILDKIT=1`, `linux/amd64` by default — Apple Silicon safe); later submits reuse the cached build.
+Both open a browser. `gcloud` credentials also **expire**, and a `deploy.sh` run will then die with
+`Reauthentication failed. cannot prompt during non-interactive execution.` — just `gcloud auth login`
+again.
 
-Operate a live run from anywhere the server is reachable:
+### 1.3 Turn OFF Docker Desktop's containerd image store
+
+**Not optional.** It is the default since Docker Desktop 4.34, and it pushes an OCI manifest whose
+layers keep *Docker* media types. Modal unpacks images with `umoci`, which validates strictly against
+the OCI spec and dies on the hybrid:
+
+```
+Terminating task due to error: command umoci raw unpack … had exit status: 1
+```
+
+**Settings → General → uncheck "Use containerd for pulling and storing images" → Apply & Restart.**
+
+`deploy.sh` preflight refuses to run while it is on, so you cannot forget. (Scriptable alternative:
+set `UseContainerdSnapshotter=false` in
+`~/Library/Group Containers/group.com.docker/settings-store.json`, then `docker desktop restart`.)
+
+### 1.4 Fill in `.env`
+
+```bash
+cp .env.example .env            # then fill in the keys
+```
+
+At minimum `GEMINI_API_KEY`, plus `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` (copy them out of
+`~/.modal.toml`), and `SANDBOX_GIT_TOKEN` if you want the agent to push its work back as a branch.
+`deploy.sh` mirrors this file into the server's `decode-prod` Environment Bucket.
+
+### 1.5 Approve the firewall rule when the script asks
+
+`deploy.sh up` **stops and asks** before opening ports, because the answer is a security decision, not
+a default:
+
+```
+The next rule opens tcp:80 and tcp:443 to 0.0.0.0/0 …
+Create the firewall rule? [y/N]
+```
+
+Port 80 is required (Let's Encrypt validates the ACME challenge over it) and 443 is the server. It
+**cannot** be narrowed to your laptop: the Modal flow container must reach the server too, and Modal's
+egress IPs are not pinnable on standard plans. Consequence: **the login page is reachable from the
+internet and scanners find it within hours.** TLS stops eavesdropping, not reachability. Treat every
+key in that server's secret store as rotatable.
+
+### 1.6 Only if SA-key creation fails: the org-policy exception
+
+If `deploy.sh up` dies on `constraints/iam.disableServiceAccountKeyCreation`, your org has Google's
+secure-by-default policy on (any org created since mid-2024 does). The key is still the right call —
+Modal is foreign compute with no GCP identity, so *something* portable must reach it, and a scoped SA
+key beats storing your owner-powered user token server-side. Exempt **only this project**; needs
+`roles/orgpolicy.policyAdmin` on the org:
+
+```bash
+gcloud organizations add-iam-policy-binding <ORG_ID> \
+  --member=user:<you> --role=roles/orgpolicy.policyAdmin
+gcloud resource-manager org-policies disable-enforce \
+  iam.disableServiceAccountKeyCreation --project=<your-project>
+```
+
+Propagation takes a minute or two — an immediate retry fails with the same error. Reverse anytime with
+`enable-enforce`.
+
+---
+
+## 2. Deploy
+
+```bash
+scripts/deploy.sh up        # provision everything
+scripts/deploy.sh status    # what exists right now
+scripts/deploy.sh update    # re-apply the mutable parts
+scripts/deploy.sh down      # delete everything it created
+```
+
+Override any of `PROJECT`, `REGION`, `ZONE`, `DECODE_ENV` as env vars; the defaults are this course's
+(`coding-agent-course`, `europe-west2`, `europe-west2-a`, `prod`).
+
+### `up` — provision, safely re-runnable
+
+Every step checks before it creates, so a re-run after a failure resumes instead of erroring with
+"already exists". In order:
+
+1. **Preflight** — gcloud/uv/docker present, an active gcloud account, `~/.modal.toml` exists, the
+   containerd store is OFF, and pulls `python:3.12-slim` for **linux/amd64** (Modal is x86-64 only;
+   without this an Apple Silicon build produces an arm64 image Modal cannot run).
+2. **APIs** — compute, artifactregistry, storage.
+3. **Service account** `decode-kitaru` — `roles/storage.objectAdmin` + `roles/artifactregistry.writer`,
+   and a JSON key at `~/.config/decode/decode-kitaru-key.json`.
+4. **Bucket + registry** — plus a **bucket-scoped `roles/storage.admin`** binding (§4 explains why the
+   project-level roles are not enough).
+5. **Server** — static IP, generated admin password, the GCE VM running the Kitaru container, the
+   `/var/kitaru` ownership repair (**every** `up`, not just the first — that is how a crash-looping
+   server heals), the 80/443 firewall rule (**asks you first**), a DENY rule on `:8080`, and deletion
+   of any pre-TLS `allow-kitaru` rule.
+6. **TLS** — installs Caddy on the VM, which gets a real Let's Encrypt cert for `<ip>.nip.io` and
+   reverse-proxies to the server. Waits for `https://…/health`.
+7. **Login** — mints the `decode-runner` service account + API key over the REST API, then
+   `kitaru login`.
+8. **Stack** — registers the GCP connector, GCS artifact store, AR registry, Modal orchestrator and
+   sandbox, assembles the `prod-modal` stack, activates it, and runs `kitaru init`.
+9. **Secrets** — writes the `decode-modal` secret (Modal tokens) and mirrors `.env` into the
+   `decode-prod` Environment Bucket.
+
+Files it writes, and nothing else outside GCP/Modal/Kitaru:
+
+| Path | What |
+|---|---|
+| `~/.config/decode/decode-kitaru-key.json` | the runtime SA key the stack authenticates GCS + AR with |
+| `~/.config/decode/kitaru-admin-password` | the server's admin password (generated once) |
+| `~/.config/decode/kitaru-api-key` | the `decode-runner` key the CLI logs in with |
+
+### `update` — after you change code, deps, or `.env`
+
+Re-applies TLS (a dead Caddy self-heals), the login, the stack, and the secrets. Does **not** touch the
+VM or the bucket. The next `run-remote` rebuilds the flow image if the code or deps changed.
+
+### `status` — the one-screen truth
+
+```
+project    coding-agent-course
+server     https://34.13.23.119.nip.io  (healthy)
+bucket     gs://coding-agent-course-kitaru
+registry   europe-west2-docker.pkg.dev/coding-agent-course/kitaru-images
+vm         RUNNING
+firewall   allow-kitaru-tls (tcp:80,443 → 0.0.0.0/0)
+legacy     none (:8080 not exposed)
+plaintext  denied (tcp:8080 DENY @ priority 100)
+tls        Let's Encrypt, valid
+stack      prod-modal
+```
+
+The URL moves with the IP: `nip.io` encodes the address in the hostname, so every rebuilt server gets a
+new name (and a new cert). `status` is where you read the current one.
+
+### Verify the deploy
+
+Four checks, cheapest first. Each proves a different layer, so the first one that fails tells you
+where to look.
+
+**1. The stack exists** (~10s, free):
+
+```bash
+scripts/deploy.sh status
+```
+
+Want: `server … (healthy)`, `tls  Let's Encrypt, valid`, `plaintext  denied`, `stack  prod-modal`, and
+nothing `<none>`. A `(unreachable)` server with a `RUNNING` vm is almost always the `/var/kitaru`
+ownership trap (§4) — re-run `up`, which now repairs it.
+
+**2. The agent runs remotely** — flow container, Environment-Bucket hydration, the model call, and the
+nested Modal sandbox. No `--repo`, so nothing is shipped:
+
+```bash
+make run-remote TASK="run bash 'uname -a && pwd' and tell me what you see"
+```
+
+Want: a **Linux x86-64** kernel and `/workspace`. That is the proof the `bash` landed in the Modal
+sandbox and not on your laptop — a macOS kernel here means `SANDBOX_MODE` never reached the container.
+
+**3. The work comes back** — the Hand-back (ADR-0012 §8). The task must *forbid* pushing, so that the
+harness is what ships the branch, not the model:
+
+```bash
+make run-remote REPO=https://github.com/you/your-repo.git \
+  TASK="add a line to README.md saying hello. commit it. do NOT push and do NOT open a PR."
+git ls-remote https://github.com/you/your-repo.git 'refs/heads/decode/*'
+```
+
+Want: a `decode/<first-8-of-the-exec_id>` branch carrying the model's commit. Missing means the flow
+container could not push: confirm `SANDBOX_GIT_TOKEN` reached the bucket with
+
+```bash
+make sync-secrets ENV=prod      # re-mirrors .env; prints key NAMES only, never values
+```
+
+and that the token can write to that repo. Hand-back fails soft, so the run still returns its answer
+either way — read the `[handback]` line in the run's output for which it was.
+
+**4. The record is durable** — the server saw it:
+
+```bash
+uv run kitaru executions list
+uv run kitaru executions logs <exec_id>
+```
+
+Or open the dashboard (`scripts/deploy.sh status` prints the URL; user `admin`, password in
+`~/.config/decode/kitaru-admin-password`) — the run is on the Flows page.
+
+One more worth a glance, because it is the difference between a tidy account and 16 orphaned apps:
+
+```bash
+uv run modal app list      # exactly decode-prod + decode-sandbox-prod, one per environment
+```
+
+### `down` — teardown
+
+Deletes the VM — **with it every execution record and both Kitaru secrets** (`decode-<env>`,
+`decode-modal`), which live in the SQLite on its boot disk — plus the IP, the firewall rules, the bucket
+**and every artifact in it**, the registry, and the service account with its key; removes the three
+local files above. A rebuilt server gets its secrets back from your `.env` (`make sync-secrets`), but the
+run history is gone.
+
+It asks you to type the project name to confirm. Without a terminal (a `!` command in an agent session,
+CI) there is nothing to type on, so pass it as the argument instead — same confirmation, typed by you:
+
+```bash
+scripts/deploy.sh down coding-agent-course
+```
+
+It also stops this environment's two Modal apps — `decode-<env>` (the flow container's app) and
+`decode-sandbox-<env>` (its nested bash sandboxes). Stopping is permanent; the next `up` recreates them
+on the first submit. Apps from *other* environments are left alone. If you took the §1.6 org-policy
+exception, undo it with `enable-enforce`.
+
+### Verify the teardown
+
+`status` works on an empty stack too — that is the point of running it after a teardown:
+
+```bash
+scripts/deploy.sh status
+```
+
+Want: every row `<none>`, plus `plaintext  n/a (no server)` and `stack  <none>`. Then confirm nothing
+survives that could still bill you:
+
+```bash
+gcloud compute instances list --project=coding-agent-course           # no kitaru-server
+gcloud compute addresses list --project=coding-agent-course           # no kitaru-server-ip (a reserved
+                                                                      #   IP with nothing attached BILLS)
+gcloud compute firewall-rules list --project=coding-agent-course      # no allow-kitaru-tls / deny-…
+gcloud storage ls --project=coding-agent-course                       # no gs://…-kitaru
+gcloud artifacts repositories list --project=coding-agent-course      # no kitaru-images
+gcloud iam service-accounts list --project=coding-agent-course        # no decode-kitaru
+uv run modal app list                                                 # decode-prod + decode-sandbox-prod
+                                                                      #   both `stopped`
+ls ~/.config/decode                                                   # empty
+```
+
+The old URL should now fail to connect at all (not merely 502 — that would mean Caddy is still up).
+Your local `kitaru` client still points at the dead server; the next `up` logs it in again.
+
+---
+
+## 3. Run a headless agent
+
+```bash
+make run-remote TASK="explain what this repo does"
+make run-remote TASK="fix the failing test" REPO=https://github.com/you/your-repo.git
+make run-remote TASK="…" SANDBOX=none          # bash runs in the flow container itself
+```
+
+which is just:
+
+```bash
+DOCKER_BUILDKIT=1 KITARU_STACK=prod-modal DECODE_ENV=prod SANDBOX_MODE=modal \
+  uv run --group remote decode run "$TASK" --repo "$REPO"
+```
+
+`KITARU_STACK` is the zero-code seam: decode's flows call `.run()` with no stack argument, so the
+ambient stack decides where they execute. A submit builds and pushes the flow image (3-5 min) only when
+the code, the deps or the Docker settings changed; otherwise it reuses the recorded build (`Reusing
+existing build …`, ~90s). `SANDBOX_MODE` picks where the agent's `bash` lands:
+
+| `SANDBOX_MODE` | Where `bash` runs | `--repo` Workspace | Hand-back |
+|---|---|---|---|
+| `modal` (default) | a **nested** Modal sandbox, `/workspace` | yes | yes — pushes `decode/<exec-id>` with `SANDBOX_GIT_TOKEN` |
+| `none` | inside the flow container itself, `/app/code` | no (ADR-0012 §3) | no |
+
+**The Hand-back runs inside the flow container, not on your laptop** (ADR-0012 §8, amended). That is
+where the Workspace is cloned, worked in, and swept back from the sandbox — the submitting machine's
+`.decode/sandbox` is a stranger to the run. It is also the only reason the push needs
+`SANDBOX_GIT_TOKEN`: a flow container has no ambient git credential at all. Without the token the run
+still returns its answer, and says plainly that it could not push. Verify it with check 3 above.
+
+**Modal apps: one per environment, never one per run.** The flow container lands in `decode-<env>` and
+its bash sandboxes in `decode-sandbox-<env>` (`runtime/modal_app.py`, `sandbox/modal_backend.py`).
+ZenML would otherwise name the app `zenml-<run_id>` and leave a fresh app behind on every single run.
+
+### Operate a live run
 
 ```bash
 uv run kitaru executions list
@@ -212,29 +334,113 @@ uv run kitaru executions input <exec_id> --wait <name> --value "…"   # resolve
 uv run kitaru executions replay <exec_id> --from <checkpoint>
 ```
 
-## 7. Costs
+**Dashboard:** the same URL `deploy.sh status` prints. User `admin`, password from
+`~/.config/decode/kitaru-admin-password` (`pbcopy < …` — do not echo it). Its **Flows** page shows one
+row per flow with only its latest run; **Executions** is the per-run list.
+
+---
+
+## 4. Reference — the traps, and why the script does what it does
+
+Read this when something breaks. Every item cost a debugging cycle.
+
+**`roles/storage.objectAdmin` is not enough.** ZenML's GCS connector calls `get_bucket()` **every time
+it mints credentials** — not just on `verify`. `objectAdmin` grants object read/write/list/delete but
+not `storage.buckets.get`, so a submit dies with `403 … does not have storage.buckets.get access`.
+Hence the bucket-scoped `storage.admin` binding (`legacyBucketReader` is the tighter alternative).
+
+**`/var/kitaru` must be chowned to UID 1000.** The container runs as UID 1000; the mounted host dir is
+created root-owned. The first boot therefore dies with `sqlite3.OperationalError: unable to open
+database file` and crash-loops forever, while the health check just hangs. `up` **polls** for the
+directory — it does not exist until konlet starts the container, so any fixed sleep races it — and it
+re-checks on *every* `up`, not only when it creates the VM: a crash-looping server is exactly the state
+you re-run `up` to repair. An already-correct dir is left alone (no restart of a healthy server).
+
+**Concurrent submits race on the code upload.** ZenML archives the source root, names the object after
+its content hash, and uploads it with a **check-then-copy** — a TOCTOU. Submit N runs at once when that
+archive is not already in the bucket and they all decide to upload it; the losers die with
+`FileExistsError: Destination file 'gs://…/code_uploads/<hash>.tar.gz' already exists`. One warm-up run
+first uploads the archive, and every later submit then skips the upload — so warm, THEN fan out, and do
+not edit tracked files in between (any edit changes the hash and re-arms the race).
+`scripts/demo-multiple-attempts.sh` does both, plus an 8s stagger as insurance.
+
+**Never pass `platform=` to `ImageSettings` — pin it in the Dockerfile's `FROM`.** Otherwise *every*
+submit rebuilds and re-pushes the image, forever. ZenML decides whether it can reuse a build by hashing
+the Docker settings, but its builder **mutates those settings mid-build** (`build_config.build_options`:
+`pull`/`rm` flip `None → False`). `find_existing_build` hashes them *before* the mutation, and the
+checksum stored on the build is computed *after* it, so the lookup can never match what the build
+recorded — a permanent miss, not a cache miss. Default users never see it because `build_config` is
+`None` and there is nothing to mutate; passing `platform` is what creates the object. Modal is x86-64
+and a Mac is not, so the platform must be pinned *somewhere* — `FROM --platform=linux/amd64` does it
+with no `build_config`, and the image ZenML layers on top inherits the architecture. Confirmed fixed:
+the second consecutive submit now logs `Reusing existing build … for stack prod-modal`.
+
+**TLS is mandatory, not polish.** The Kitaru server sends `strict-transport-security: max-age=63072000`
+*while serving plain HTTP*. A browser obeys it, upgrades the next request to HTTPS, hits a port that
+speaks none, and the dashboard dies parsing uvicorn's plaintext `Invalid HTTP request received.` as
+JSON: **`Unexpected token 'I', "Invalid HT"... is not valid JSON`**. Let's Encrypt will not issue for a
+bare IP and there is no DNS zone here, so the server is named via `nip.io` (`<ip>.nip.io` → `<ip>`).
+
+**Deny `:8080`; "no allow rule" is not the same as closed.** The container listens on `0.0.0.0:8080`
+(konlet uses host networking; no bind-to-loopback knob), and GCP's default network ships
+`default-allow-internal` — `tcp:0-65535` from `10.128.0.0/9`. Any VM in the VPC could read the admin
+password and every secret in the clear. The DENY rule at priority 100 beats it.
+
+**`kitaru stack create --type modal` does not exist.** The types are local/kubernetes/vertex/sagemaker/
+azureml. Modal ships as a ZenML *integration*, so the stack is assembled with the `zenml` CLI — Kitaru
+reads the same stacks off the same server.
+
+**`kitaru init` is mandatory.** Without the `.kitaru` marker, ZenML infers the source root from the
+entrypoint script — for `uv run decode` that is `.venv/bin` — and the code archive uploads **empty**:
+`RuntimeError: The code archive to be uploaded does not contain any files.`
+
+**The `remote` dependency group is all-or-nothing.** Submitting needs ZenML's *entire* `gcp`
+integration locally (`gcsfs`, `kfp`, `google-cloud-aiplatform`, `kubernetes`, …). Miss one package and
+`check_installation()` fails, the integration never activates, and you get `Service connector type gcp
+is not available locally` even though the connector exists on the server. Hence `uv run --group remote`
+on every remote command; the base install stays light for everyone else.
+
+**`ENV UV_SYSTEM_PYTHON=1` in the flow image.** ZenML layers its own `uv pip install -r
+.zenml_stack_integration_requirements` on top *without* `--system`, and uv refuses to install when it
+finds no virtualenv (exit 2).
+
+**ZenML caches builds server-side.** Change the Docker setup, resubmit, and ZenML may reuse the old
+image by digest — your fix looks like a no-op. Force a rebuild:
+
+```bash
+uv run --group remote zenml pipeline builds list
+uv run --group remote zenml pipeline builds delete <id>
+```
+
+**Headless login needs a REST bootstrap.** `kitaru login` takes `--api-key` or an interactive browser
+flow, and creating an API key needs a login first. `scripts/kitaru_bootstrap_api_key.py` breaks the
+cycle with an OAuth2 password grant.
+
+**Debugging a failed remote run.** The server log only carries what the flow *logged*. The container's
+traceback lives in the Modal sandbox the error names (`Modal orchestration sandbox sb-… failed`):
+
+```python
+import modal
+print(modal.Sandbox.from_id("sb-…").stderr.read())
+```
+
+**Not a wiring bug:** Gemini occasionally returns empty / thinking-only responses, and pydantic-ai
+retries until `UnexpectedModelBehavior: Exceeded maximum output retries (3)`. No tool ran, no
+checkpoint appears. Re-run it.
+
+**Secrets.** `make sync-secrets ENV=prod` mirrors `.env` into the `decode-prod` bucket. The one
+exception (ADR-0015): `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` are not `Settings` fields, so the bucket
+never carries them — but the flow container needs them in process env to spawn bash sandboxes. They
+ride a separate `decode-modal` secret via `ImageSettings.secret_environment_from`.
+
+**Pin the server image to the client.** `kitaru --version` → `0.18.0` must match the container tag.
+Upgrades bump both together. SQLite on the boot disk is the whole database; `gcloud compute disks
+snapshot` is your backup story.
+
+## 5. Costs
 
 | Item | ~/month |
 |---|---|
 | e2-small VM + 10GB disk + static IP | ~$15 |
 | GCS + Artifact Registry (course-scale) | ~$1 |
-| Modal flow + sandbox containers | usage-based; both timeouts above cap the burn |
-
-## 8. Teardown
-
-```bash
-gcloud compute instances delete kitaru-server --zone=${ZONE}
-gcloud compute addresses delete kitaru-server-ip --region=${REGION}
-gcloud compute firewall-rules delete allow-kitaru
-gcloud storage rm -r ${BUCKET}
-gcloud artifacts repositories delete kitaru-images --location=${REGION}
-gcloud iam service-accounts delete ${SA}                # kills the key with it
-
-# undo the security exceptions from §1, if you made them
-gcloud resource-manager org-policies enable-enforce \
-  iam.disableServiceAccountKeyCreation --project=${PROJECT}
-gcloud organizations remove-iam-policy-binding <ORG_ID> \
-  --member=user:<you> --role=roles/orgpolicy.policyAdmin
-
-rm -f ~/.config/decode/decode-kitaru-key.json ~/.config/decode/kitaru-admin-password
-```
+| Modal flow + sandbox containers | usage-based; the orchestrator (2h) and sandbox (30m) timeouts cap the burn |

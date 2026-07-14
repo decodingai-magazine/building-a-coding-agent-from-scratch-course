@@ -222,5 +222,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# kitaru source-root marker (per-checkout; `kitaru init` recreates it)
+.kitaru/
+
 # Claude
 .claude/worktrees/

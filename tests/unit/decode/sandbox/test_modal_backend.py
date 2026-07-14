@@ -389,7 +389,11 @@ async def test_create_spawns_the_sandbox_once_with_the_configured_image_and_life
 
     assert len(fake_modal["create"].calls) == 1  # created exactly once
     assert len(fake_modal["lookup"].calls) == 1
-    assert fake_modal["lookup"].calls[0] == (("decode-sandbox",), {"create_if_missing": True})
+    # ONE App per environment, never one per run — many sandboxes attach to the same named App.
+    assert fake_modal["lookup"].calls[0] == (
+        ("decode-sandbox-local",),
+        {"create_if_missing": True},
+    )
     assert fake_modal["from_registry"].calls[0] == (
         ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim",),
         {},

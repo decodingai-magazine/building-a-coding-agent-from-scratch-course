@@ -70,6 +70,14 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
    `SANDBOX_MODE=none` → one friendly stderr line, non-zero exit. Results are returned via the built
    **Hand-back** (§8), not manual pushing.
 
+   **Amendment (2026-07).** Degrade-to-empty on a failed clone stays the **REPL's** policy and only
+   the REPL's: it assumes a human who reads the warning and reacts. A **headless** run has no such
+   human, so there a clone failure is now **fatal** (`runtime/flow.py::_prepare_headless_tool_scope`).
+   What forced this: a browser URL (`…/tree/main`) passed as `--repo` let three paid agents run to
+   completion inside empty Workspaces, and the Hand-back then refused to ship any of them ("not a git
+   repo with an origin"). Silent degradation is a reasonable default only when someone is watching;
+   otherwise it converts a one-second typo into N wasted runs.
+
 4. **File tools operate on the sandbox filesystem through the seam ("swap the set").** The
    `SandboxBackend` Protocol grows `read_bytes` / `write_bytes` / `make_directory` / `list_dir` /
    `stat` / `remove`; the shared host-side logic (containment, edit's search/replace, truncation,
@@ -133,6 +141,21 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
    alongside the memory/LSP/executor teardown; headless `decode run --repo` completion) **and**
    explicitly (the idle-only `/ship` TUI command, reserved like `/compact`/`/clear`, printing the
    branch + push outcome; a friendly "no sandbox workspace" line in `none` mode).
+
+   **Amendment (2026-07, first remote run).** "Host-side" means *the process that owns the Workspace*,
+   which on a remote stack is **not** the machine that typed `decode run`. A headless run clones,
+   works in, and sweeps back its Workspace inside the **Kitaru flow container**; shipping from the
+   submitting cli therefore pushed that laptop's unrelated `.decode/sandbox` while the run's actual
+   work died with the container. Two corrections, both live in the code:
+   - The headless hand-back runs **inside the flow** (`runtime/flow.py::_ship_headless_workspace`),
+     in the `finally`, **after** the executor reap — the reap is what sweeps a modal sandbox's
+     filesystem into the Workspace being shipped. The local stack is unaffected (the flow runs
+     in-process, same cwd). The REPL / `/ship` paths are unchanged.
+   - The push has **no ambient credential** in a flow container, so it authenticates with
+     `SANDBOX_GIT_TOKEN` when one is set — in the *harness* process, through the same credential
+     helper the Worker gets. Unchanged: no credential enters the sandbox (ADR-0016 §4). And the
+     never-lose-results line no longer promises the local branch is "safe": in a remote run that
+     branch lives exactly as long as the container does.
 
 9. **Retained from ADR-0011, unchanged.** The `CommandExecutor` run-seam + `SANDBOX_MODE` startup
    guard (§1); the replay-safety `{"cache": False}` bash checkpoint when `sandbox_mode != "none"` (§5);
