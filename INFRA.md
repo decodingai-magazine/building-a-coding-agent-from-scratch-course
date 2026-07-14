@@ -356,6 +356,14 @@ directory — it does not exist until konlet starts the container, so any fixed 
 re-checks on *every* `up`, not only when it creates the VM: a crash-looping server is exactly the state
 you re-run `up` to repair. An already-correct dir is left alone (no restart of a healthy server).
 
+**Concurrent submits race on the code upload.** ZenML archives the source root, names the object after
+its content hash, and uploads it with a **check-then-copy** — a TOCTOU. Submit N runs at once when that
+archive is not already in the bucket and they all decide to upload it; the losers die with
+`FileExistsError: Destination file 'gs://…/code_uploads/<hash>.tar.gz' already exists`. One warm-up run
+first uploads the archive, and every later submit then skips the upload — so warm, THEN fan out, and do
+not edit tracked files in between (any edit changes the hash and re-arms the race).
+`scripts/demo-multiple-attempts.sh` does both, plus an 8s stagger as insurance.
+
 **Never pass `platform=` to `ImageSettings` — pin it in the Dockerfile's `FROM`.** Otherwise *every*
 submit rebuilds and re-pushes the image, forever. ZenML decides whether it can reuse a build by hashing
 the Docker settings, but its builder **mutates those settings mid-build** (`build_config.build_options`:

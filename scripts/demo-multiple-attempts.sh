@@ -27,7 +27,15 @@ TASK="${2:-}"
 ATTEMPTS="${3:-5}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN_DIR="${REPO_ROOT}/.decode/attempts"
+RUN_DIR="${REPO_ROOT}/.decode/attempts"   # gitignored, so it stays out of ZenML's code archive
+
+# Seconds between submits. ZenML uploads the code archive with a check-then-copy — a TOCTOU — so N
+# submits that all find the archive missing will all upload it, and the losers die with
+# `FileExistsError: Destination file 'gs://…/code_uploads/<hash>.tar.gz' already exists`. The warm-up
+# below normally uploads that exact archive first, which is the real protection; this stagger covers
+# the case where it does not (the repo changed between the warm-up and the fan-out, so the attempts
+# archive a different tree — an edit mid-run is enough).
+STAGGER_S=8
 
 log()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m!!\033[0m  %s\n' "$*" >&2; }
@@ -70,6 +78,8 @@ log "repo:     ${REPO}"
 log "attempts: ${ATTEMPTS} (concurrent — wall-clock is about one attempt)"
 
 # ---------------------------------------------------------------- warm the image (see header)
+# Do NOT edit the repo from here on: the warm-up uploads the code archive the attempts will reuse, and
+# a tracked-file change invalidates it (the archive is content-hashed), putting the upload race back.
 log "warming the flow image with one throwaway run (so the ${ATTEMPTS} attempts do not race to build it)"
 if ! run_remote "reply with the single word: warm" "${RUN_DIR}/warmup.log"; then
   tail -5 "${RUN_DIR}/warmup.log" >&2
@@ -84,9 +94,10 @@ FULL_TASK="${TASK}
 
 Commit your work when you are done. Do NOT push and do NOT open a pull request."
 
-log "launching ${ATTEMPTS} attempts"
+log "launching ${ATTEMPTS} attempts (${STAGGER_S}s apart — see the code-upload TOCTOU above)"
 pids=()
 for i in $(seq 1 "${ATTEMPTS}"); do
+  if [ "${i}" -gt 1 ]; then sleep "${STAGGER_S}"; fi   # `&&` here would trip `set -e` on i=1
   run_remote "${FULL_TASK}" "${RUN_DIR}/attempt-${i}.log" --repo "${REPO}" &
   pids+=("$!")
 done
