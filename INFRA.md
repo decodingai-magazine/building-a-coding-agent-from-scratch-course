@@ -199,6 +199,14 @@ error reads `Timeout during connect (likely firewall problem)`), renews it forev
 `:80` → `:443`. `/data` is a volume so certs survive a reboot. The server URL is then
 `https://<ip>.nip.io`, and `:8080` never needs to leave the VM.
 
+> **There is no plaintext option, and `deploy.sh` keeps it that way.** No rule opens `:8080`, and `up`
+> / `update` *delete* the pre-TLS `allow-kitaru` rule if an older deployment left one behind; `status`
+> flags it in red if it ever reappears. Be aware of the one residual: the Kitaru container listens on
+> `0.0.0.0:8080` *inside* the VM (konlet runs it on the host network, and the server has no
+> bind-to-loopback knob). GCP ingress is default-deny and nothing opens that port, so it is unreachable
+> from the internet — but it is the firewall, not the listener, that enforces this. Do not add a
+> `tcp:8080` rule "just to check something".
+
 Success criterion — first boot pulls the image and runs DB migrations, so give it 2-3 minutes:
 
 ```bash
