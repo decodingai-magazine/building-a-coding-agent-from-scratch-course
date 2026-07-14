@@ -2,21 +2,26 @@
 #
 # N headless agents, one task, N branches to compare — the demo the remote runtime exists for.
 #
-#   scripts/demo-multiple-attempts.sh <repo-url> "<task>" [attempts]
+#   scripts/demo-multiple-attempts.sh <repo-url> "<task>" [attempts] [--pr]
 #
 # Each attempt is its own Kitaru execution → its own Modal flow container → its own cloned Workspace
 # → its own nested bash sandbox. They share nothing, run concurrently (wall-clock ≈ one attempt), and
 # each hands its work back as a `decode/<exec-id>` branch on <repo-url>. The script then prints a
 # comparison table and the diff commands.
 #
+# `--pr` opens one pull request per shipped branch, HOST-side, after the runs. The models are still
+# forbidden to open their own (see below) — a PR raised here is titled and numbered by attempt, which
+# is what makes N attempts reviewable side by side. Without it you get branches only.
+#
 # Two things it is careful about, both learned the hard way (INFRA.md §3):
 #
 #   * It WARMS the flow image with one throwaway run before fanning out. A cold submit builds the
 #     image and pushes it to the `run_agent_task-orchestrator` tag — N cold submits would each build
-#     and race to push that same tag.
-#   * It tells the model NOT to push and NOT to open a PR. If the model ships its own work the
-#     attempts stop being comparable; forbidding it makes the Hand-back (ADR-0012 §8) the only path,
-#     so every attempt lands identically as `decode/<exec-id>`.
+#     and race to push that same tag (and race on the code upload, INFRA.md §4).
+#   * It tells the model NOT to push and NOT to open a PR. A model that ships its own work names its
+#     own branch and sometimes forgets entirely, so the attempts stop being comparable; forbidding it
+#     makes the Hand-back (ADR-0012 §8) the only path, and every attempt lands identically as
+#     `decode/<exec-id>`.
 #
 # Costs real money: N × (one agent's tokens + a few minutes of Modal CPU). Needs a deployed stack
 # (`scripts/deploy.sh status`) and a repo the SANDBOX_GIT_TOKEN can write to.
@@ -25,6 +30,7 @@ set -euo pipefail
 REPO="${1:-}"
 TASK="${2:-}"
 ATTEMPTS="${3:-5}"
+OPEN_PRS="${4:-}"   # `--pr` → one PR per shipped branch, opened host-side after the runs
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="${REPO_ROOT}/.decode/attempts"   # gitignored, so it stays out of ZenML's code archive
@@ -60,6 +66,13 @@ fi
 # costs N runs.
 git ls-remote --exit-code "${REPO}" HEAD >/dev/null 2>&1 \
   || die "cannot read ${REPO} — is it a clonable git URL you have access to?"
+
+# Same reason: an unauthenticated `gh` must not be discovered AFTER N paid runs have finished.
+if [ -n "${OPEN_PRS}" ]; then
+  [ "${OPEN_PRS}" = "--pr" ] || die "unknown option ${OPEN_PRS} (did you mean --pr?)"
+  command -v gh >/dev/null || die "--pr needs the gh cli"
+  gh auth status >/dev/null 2>&1 || die "--pr needs an authenticated gh — run: gh auth login"
+fi
 
 # The Makefile's run-remote, inlined so each attempt can be backgrounded with its own log.
 run_remote() {
@@ -124,6 +137,8 @@ printf '\n%-3s  %-38s  %-18s  %-7s  %-9s  %s\n' '#' 'exec_id' 'branch' 'commits'
 printf -- '---  --------------------------------------  ------------------  -------  ---------  ---------\n'
 
 shipped=()
+shipped_attempt=()
+shipped_exec=()
 for i in $(seq 1 "${ATTEMPTS}"); do
   log_file="${RUN_DIR}/attempt-${i}.log"
   [ -f "${log_file}" ] || continue
@@ -146,12 +161,43 @@ for i in $(seq 1 "${ATTEMPTS}"); do
   printf '%-3s  %-38s  %-18s  %-7s  %-9s  %s\n' \
     "${i}" "${exec_id}" "${branch}" "${commits}" "${files}" "${churn:-—}"
   shipped+=("${branch}")
+  shipped_attempt+=("${i}")
+  shipped_exec+=("${exec_id}")
 done
 
 printf '\n'
 [ "${#shipped[@]}" -gt 0 ] || die "no attempt shipped a branch — INFRA.md §3 'Verify the deploy', check 3"
 
-log "${#shipped[@]}/${ATTEMPTS} attempts shipped a branch. Compare them:"
+log "${#shipped[@]}/${ATTEMPTS} attempts shipped a branch."
+
+# ---------------------------------------------------------------- one PR per attempt (--pr)
+# Opened HERE, not by the models: the branch is already named for its execution, so the PR can say
+# which attempt it is and reviewers can read N of them against each other. `gh pr create` is
+# idempotent enough for a re-run — an existing PR for the branch makes it fail, which we tolerate.
+if [ -n "${OPEN_PRS}" ]; then
+  base_branch="$(git -C "${compare_dir}" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
+  base_branch="${base_branch#origin/}"
+  log "opening ${#shipped[@]} pull requests against ${base_branch:-main}"
+  for idx in "${!shipped[@]}"; do
+    url="$(gh pr create --repo "${REPO}" \
+      --head "${shipped[$idx]}" --base "${base_branch:-main}" \
+      --title "attempt ${shipped_attempt[$idx]}/${ATTEMPTS}: ${TASK}" \
+      --body "One of ${ATTEMPTS} independent headless attempts at the same task, for comparison.
+
+**Task:** ${TASK}
+
+Run by \`scripts/demo-multiple-attempts.sh\` on the remote runtime: its own Kitaru execution
+(\`${shipped_exec[$idx]}\`), its own Modal flow container, its own cloned Workspace and bash sandbox.
+The agent was told NOT to push — this branch was shipped by the Hand-back (ADR-0012 §8), which is
+why it is named for the execution.
+
+Replay it: \`decode replay ${shipped_exec[$idx]} --from <checkpoint> --model <model-id>\`" 2>&1 | tail -1)" \
+      || url="FAILED (does a PR already exist for ${shipped[$idx]}?)"
+    printf '  attempt %s → %s\n' "${shipped_attempt[$idx]}" "${url}"
+  done
+fi
+
+printf '\nCompare them:\n'
 printf '\n'
 for branch in "${shipped[@]}"; do
   printf '  git -C %s diff %s..%s\n' "${compare_dir}" "${base:0:8}" "${branch}"
