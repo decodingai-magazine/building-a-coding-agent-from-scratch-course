@@ -198,10 +198,13 @@ class Settings(BaseSettings):
     # ``sleep(seconds)`` is capped to this value (never rejected) so a model cannot stall a turn.
     sleep_max_s: float = 60.0
 
-    # --- Subagents: the ``agent`` tool + Explore-subagent runner caps (ADR-0013 §7,8) ---
+    # --- Subagents: the ``agent`` tool + Explore-subagent runner caps (ADR-0013 §7,8; ADR-0017 §2,6) ---
     # Parallel cap enforced by a per-running-loop Semaphore (keep modest — fan-out multiplies model
-    # calls); per-child request cap + report truncation via the shared truncate() idiom. All gt=0 —
-    # a non-positive value is a misconfiguration and fails fast.
+    # calls) — the CONCURRENCY ceiling, distinct from the fan-out WIDTH cap (deliberately NOT a
+    # setting: a module constant in ``tools/agent.py``). ``subagent_result_max_bytes`` is the SHARED fold budget: one
+    # ``agent`` call divides it across its children, so the fold costs the same at any width.
+    # Per-child request cap + report truncation via the shared truncate() idiom. All gt=0 — a
+    # non-positive value is a misconfiguration and fails fast.
     subagent_max_parallel: int = Field(4, gt=0)
     subagent_max_requests: int = Field(25, gt=0)
     subagent_result_max_bytes: int = Field(16_000, gt=0)

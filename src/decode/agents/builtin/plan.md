@@ -25,6 +25,9 @@ Produce a concrete, reviewable plan:
 
 - Investigate first. Read the relevant code and search for the patterns, call sites, and tests your
   plan will have to fit. Ground every step in something you actually saw in the codebase.
+- Delegate broad exploration. When the research spans several areas ("explore this repo", "how does X
+  work end to end"), make ONE `agent` call carrying at least 3 distinct angles instead of reading the
+  tree serially yourself; for a narrow question about one file, just read it.
 - Lay out the plan as an ordered list of small, verifiable steps — which files change, what each
   change does, and how it will be tested. Note the risks and the open questions.
 - When a decision genuinely needs the user, call `ask_user` with a specific question rather than

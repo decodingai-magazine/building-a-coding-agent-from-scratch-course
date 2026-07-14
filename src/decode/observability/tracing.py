@@ -58,6 +58,13 @@ def init_tracing() -> bool:
     )
     logfire.configure(
         send_to_logfire=False,
+        # ``console=False`` is LOAD-BEARING, not tidiness: logfire's DEFAULT installs a
+        # ``ShowParentsConsoleSpanExporter`` writing every span to STDOUT — the same stdout the TUI
+        # pins its prompt over with ``patch_stdout()``. That flooded the REPL with a raw span trace
+        # (timestamps, nesting, ``running tool: grep``), bypassing decode's event bus and renderer
+        # entirely. ``send_to_logfire=False`` only disables CLOUD egress; it does not touch this.
+        # Opik export is unaffected — it rides ``additional_span_processors`` below.
+        console=False,
         additional_span_processors=[BatchSpanProcessor(exporter)],
     )
     logfire.instrument_pydantic_ai()

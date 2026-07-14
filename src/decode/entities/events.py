@@ -59,11 +59,17 @@ class ToolCallStarted:
 
     ``args`` is the (already-serialized) argument summary; rendering happens on completion
     via :class:`ToolResult` to avoid flicker (ADR-0002 §6).
+
+    ``child_index`` is set ONLY for a call made by an Explore Subagent surfaced in Verbose Mode
+    (Ctrl+O): the 1-based prompt index of the child that made it — the same numbering the
+    ``## Subagent i`` fold sections use. ``None`` (the default) = the main agent's own call, so a
+    child's ``read`` can never be mistaken for the parent's (ADR-0013 §8 amendment).
     """
 
     tool_call_id: str
     name: str
     args: str
+    child_index: int | None = None
     kind: Literal["tool_call_started"] = "tool_call_started"
 
 

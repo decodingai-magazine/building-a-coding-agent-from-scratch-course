@@ -694,6 +694,57 @@ async def test_run_app_shift_tab_to_edit_lets_a_write_run_without_a_prompt(monke
     assert "permission? write" not in output
 
 
+async def test_run_app_ctrl_o_toggles_verbose_on_and_back_off(monkeypatch):
+    """Ctrl+O (``\\x0f``) flips the verbose toggle live and confirms each new state.
+
+    The mirror of the Shift+Tab mode cycle: the keybind mutates the flag on ``deps`` and invalidates
+    the app (no submit), so the REPL stays on its single input surface and keeps running.
+    """
+    agent = _build_chat_agent()
+
+    async def script(
+        buf: io.StringIO, send: Callable[[str], None], send_keys: Callable[[str], None]
+    ) -> None:
+        send_keys("\x0f")
+        await _wait_for(buf, "verbose: on")
+        send_keys("\x0f")
+        await _wait_for(buf, "verbose: off")
+        send("still here?")  # the REPL survived both presses
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app_with_keys(monkeypatch, agent, script=script)
+
+    assert "verbose: on" in output
+    assert "verbose: off" in output
+    assert _CHAT_REPLY in output
+
+
+async def test_run_app_ctrl_o_neither_submits_nor_clears_a_half_typed_prompt(monkeypatch):
+    """A half-typed line survives a Ctrl+O press: the toggle must not submit or wipe the buffer.
+
+    The user presses Ctrl+O mid-sentence. Nothing is submitted (no reply yet), and when they then hit
+    Enter the SAME text runs as the turn — proving the buffer was left intact (the Shift+Tab contract).
+    """
+    agent = _build_chat_agent()
+
+    async def script(
+        buf: io.StringIO, send: Callable[[str], None], send_keys: Callable[[str], None]
+    ) -> None:
+        send_keys("half typed prompt")  # typed, NOT submitted (no carriage return)
+        send_keys("\x0f")
+        await _wait_for(buf, "verbose: on")
+        assert _CHAT_REPLY not in buf.getvalue()  # Ctrl+O did not submit the buffer
+        send_keys("\r")  # now submit the still-intact line
+        await _wait_for(buf, _CHAT_REPLY)
+        send("/quit")
+
+    output = await _drive_run_app_with_keys(monkeypatch, agent, script=script)
+
+    assert 'you "half typed prompt"' in output  # the buffer survived the toggle, verbatim
+    assert _CHAT_REPLY in output
+
+
 def _build_capturing_chat_agent(
     captured: list[list[ModelMessage]],
 ) -> Agent[AgentDeps, str | DeferredToolRequests]:
