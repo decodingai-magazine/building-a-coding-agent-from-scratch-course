@@ -2,6 +2,12 @@
 
 **Status:** Accepted
 **Date:** 2026-07-04
+**Amended:** 2026-07-13 — §7's fan-out mechanism (N `agent(prompt)` calls per response) and §8's
+single-report result shape are **superseded by
+[ADR-0017](0017-resilient-parallel-subagent-fanout.md)**: the tool is now
+`agent(prompts: list[str])` — one call, harness-gathered fan-out, labelled aggregation, input and
+output validation. §1–6, the §7 semaphore / `UsageLimits` / no-usage-threading, the §8 `truncate()`
+idiom / ephemerality / silence, §9 and §10 stand. The body below is left unedited.
 **Supersession:** Partially supersedes [ADR-0003](0003-milestone-2-permission-system-and-agents-catalog.md)
 §5 — specifically its "Four built-ins (main-agent only — **no subagent spawning** this milestone)"
 clause and the matching "Seams left for later milestones: subagent spawning" consequence. Everything

@@ -33,6 +33,11 @@ Review against four lenses, in order:
   fixed)? Would the tests actually fail if the code were wrong?
 - Standards. Does it follow the project's conventions, naming, and documented decisions?
 
+Delegate broad exploration. When judging the change needs more of the codebase than the diff shows
+(several subsystems, "how does X work end to end"), make ONE `agent` call carrying at least 3
+distinct angles instead of reading the tree serially yourself; for a narrow question about one file,
+just read it.
+
 Ground every comment in a specific file and line you read in the diff. Separate blocking problems
 from optional suggestions, and say plainly whether the change is ready to merge. If you need context
 the diff does not give you, call `ask_user`.
