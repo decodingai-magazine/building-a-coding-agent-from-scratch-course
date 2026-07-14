@@ -31,6 +31,16 @@ def _last_request_has_tool_return(messages: list[ModelMessage]) -> bool:
     return False
 
 
+def _tool_called(messages: list[ModelMessage], name: str) -> bool:
+    """True when a ``ToolCallPart`` for ``name`` appears anywhere in this leg's own transcript."""
+    return any(
+        isinstance(part, ToolCallPart) and part.tool_name == name
+        for message in messages
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+    )
+
+
 def read_then_finish(path: str, final_text: str) -> FunctionModel:
     """A model that calls ``read(path)`` once, then finishes with ``final_text`` (capstone pattern)."""
 
@@ -225,15 +235,21 @@ def skill_then_finish(name: str, final_text: str) -> FunctionModel:
 def agent_delegate_then_finish(
     child_prompt: str, final_text: str, child_report: str
 ) -> FunctionModel:
-    """A parent that spawns the ``agent`` subagent once, then finishes; the child finishes at once.
+    """A parent that spawns the ``agent`` subagent once, then finishes; the child reads then reports.
 
     Drives the subagent-delegation probe. One scripted model plays BOTH roles because the ``agent``
     tool re-enters the SAME agent for the child (ADR-0013 §6), so ``build_agent()`` hands this model
     to parent and child alike. The two are told apart by their available tools: the read-only Explore
     child's toolset never includes the ``agent`` tool (``prepare=`` narrows it, ADR-0013 §1), so when
-    ``agent`` is absent from ``info.function_tools`` this is the child — it returns ``child_report``
-    immediately (a real Explore run would read + report). As the parent it spawns the child once, then
-    finishes with ``final_text`` on the resume leg.
+    ``agent`` is absent from ``info.function_tools`` this is the child.
+
+    The ``agent`` tool takes a LIST of prompts and fans out one Explore child per prompt (ADR-0017 §1),
+    so the parent spawns with ``prompts=[child_prompt]`` (one child). The child must READ code before
+    reporting: the report contract (ADR-0017 §7-ii) rejects a child that called no tool as answering
+    from model memory, which would burn the child's one retry and fold a "no usable report" note. So
+    the child ``glob``s first, then hands back ``child_report`` — the shape a real Explore run has.
+    ``child_prompt`` must itself clear the substance guard (ADR-0017 §3): at least a full question +
+    scope + report ask, or the parent spawn is nagged back with ``ModelRetry``.
 
     Provides BOTH a streamed and a non-streamed callback: the eval driver streams the parent turn
     (``request_stream``), but the ``agent`` tool spawns the child via a nested ``agent.run()`` that
@@ -245,21 +261,30 @@ def agent_delegate_then_finish(
         messages: list[ModelMessage], info: AgentInfo
     ) -> AsyncIterator[object]:
         tool_names = {tool.name for tool in info.function_tools}
-        if "agent" not in tool_names:  # the narrowed Explore child — hand back its report at once
+        if "agent" not in tool_names:  # the narrowed Explore child — read code, then report
+            if not _tool_called(messages, "glob"):
+                yield {0: DeltaToolCall(name="glob", json_args=json.dumps({"pattern": "**/*.py"}))}
+                return
             yield child_report
             return
         if _last_request_has_tool_return(messages):
             yield final_text
             return
-        yield {0: DeltaToolCall(name="agent", json_args=json.dumps({"prompt": child_prompt}))}
+        yield {0: DeltaToolCall(name="agent", json_args=json.dumps({"prompts": [child_prompt]}))}
 
     def function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         tool_names = {tool.name for tool in info.function_tools}
         if "agent" not in tool_names:  # the non-streamed child leg (nested agent.run())
+            if not _tool_called(messages, "glob"):
+                return ModelResponse(
+                    parts=[ToolCallPart(tool_name="glob", args={"pattern": "**/*.py"})]
+                )
             return ModelResponse(parts=[TextPart(content=child_report)])
         if _last_request_has_tool_return(messages):
             return ModelResponse(parts=[TextPart(content=final_text)])
-        return ModelResponse(parts=[ToolCallPart(tool_name="agent", args={"prompt": child_prompt})])
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name="agent", args={"prompts": [child_prompt]})]
+        )
 
     return FunctionModel(function, stream_function=stream_function)
 

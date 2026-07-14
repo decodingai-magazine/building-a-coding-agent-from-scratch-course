@@ -133,7 +133,10 @@ def test_subagent_delegation_runs_green_offline(install_model) -> None:
     """The parent spawns the Explore child; one scripted model plays both roles (ADR-0013 §6)."""
     install_model(
         agent_delegate_then_finish(
-            child_prompt="How is the app configuration loaded?",
+            child_prompt=(
+                "How is the application configuration loaded? Search src/app and report which "
+                "module reads the environment, with file:line evidence."
+            ),
             final_text="Config is loaded from environment variables via load_config().",
             child_report="load_config() reads APP_HOST / APP_PORT from os.environ with defaults.",
         )
