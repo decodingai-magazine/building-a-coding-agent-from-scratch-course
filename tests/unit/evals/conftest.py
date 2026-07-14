@@ -9,13 +9,30 @@ ways: :func:`greeting_task_dir` points at the committed original (read-only use)
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from pydantic_ai.models.function import FunctionModel
 
 # ``tests/unit/evals/conftest.py`` -> ``tests/unit/evals/`` -> the committed fixture tasks tree.
 FIXTURE_TASKS_DIR = Path(__file__).resolve().parent / "fixtures" / "tasks"
 GREETING_TASK_DIR = FIXTURE_TASKS_DIR / "001-greeting"
+
+
+@pytest.fixture
+def install_model(mocker) -> Callable[[FunctionModel], None]:
+    """Return a helper that installs ``model`` as the agent's base model for the whole run.
+
+    Patches the provider seam so ``build_agent()`` builds a real decode agent on the scripted
+    model — no ``GEMINI_API_KEY`` is touched because ``_build_model`` never runs. Shared by both the
+    harness glue tests and the regression probe smoke tests (both drive the real agent offline).
+    """
+
+    def _install(model: FunctionModel) -> None:
+        mocker.patch("decode.agent.factory._build_model", return_value=model)
+
+    return _install
 
 
 @pytest.fixture

@@ -14,9 +14,12 @@ from opik.evaluation.metrics.score_result import ScoreResult
 from evals.harness.driver import ToolCallRecord
 from evals.harness.metrics import (
     DiffLinesMetric,
+    FileDiffLinesMetric,
     MaxStepsMetric,
+    OutputContainsMetric,
     ToolCalledMetric,
     ToolNotCalledMetric,
+    ToolNotSucceededMetric,
     VerifyOracleMetric,
 )
 
@@ -40,6 +43,9 @@ def _assert_well_formed(result: ScoreResult) -> None:
         VerifyOracleMetric(),
         MaxStepsMetric(),
         DiffLinesMetric(max_lines=5),
+        FileDiffLinesMetric(path="config.py", baseline="PORT = 8000\n", max_lines=2),
+        OutputContainsMetric("broken.py"),
+        ToolNotSucceededMetric("write"),
     ],
 )
 def test_metrics_disable_opik_tracking(metric: object) -> None:
@@ -60,6 +66,9 @@ def test_metrics_never_install_the_opik_track_decorator(mocker) -> None:
     VerifyOracleMetric()
     MaxStepsMetric()
     DiffLinesMetric(max_lines=5)
+    FileDiffLinesMetric(path="config.py", baseline="PORT = 8000\n", max_lines=2)
+    OutputContainsMetric("broken.py")
+    ToolNotSucceededMetric("write")
 
     track.assert_not_called()
 
@@ -216,3 +225,113 @@ def test_diff_lines_missing_field_is_graceful_zero() -> None:
     result = DiffLinesMetric(max_lines=5).score()
     _assert_well_formed(result)
     assert result.value == 0.0
+
+
+# --- FileDiffLinesMetric ---------------------------------------------------------------------
+
+
+_CONFIG_BASELINE = "HOST = 'localhost'\nPORT = 8000\nDEBUG = False\n"
+
+
+def test_file_diff_lines_single_line_edit_within_threshold() -> None:
+    # One line changed (PORT 8000 -> 9000) is one '-' plus one '+' = two changed lines.
+    final = "HOST = 'localhost'\nPORT = 9000\nDEBUG = False\n"
+    result = FileDiffLinesMetric(path="config.py", baseline=_CONFIG_BASELINE, max_lines=2).score(
+        file_state={"config.py": final}
+    )
+    _assert_well_formed(result)
+    assert result.value == 1.0
+    assert "2 changed line" in result.reason
+
+
+def test_file_diff_lines_over_threshold_scores_zero() -> None:
+    final = "HOST = 'example.com'\nPORT = 9000\nDEBUG = True\n"  # three lines changed
+    result = FileDiffLinesMetric(path="config.py", baseline=_CONFIG_BASELINE, max_lines=2).score(
+        file_state={"config.py": final}
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_file_diff_lines_unchanged_file_scores_one() -> None:
+    result = FileDiffLinesMetric(path="config.py", baseline=_CONFIG_BASELINE, max_lines=2).score(
+        file_state={"config.py": _CONFIG_BASELINE}
+    )
+    _assert_well_formed(result)
+    assert result.value == 1.0
+    assert "0 changed line" in result.reason
+
+
+def test_file_diff_lines_missing_file_is_graceful_zero() -> None:
+    result = FileDiffLinesMetric(path="config.py", baseline=_CONFIG_BASELINE, max_lines=2).score(
+        file_state={"other.py": "x = 1\n"}
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_file_diff_lines_missing_field_is_graceful_zero() -> None:
+    result = FileDiffLinesMetric(path="config.py", baseline=_CONFIG_BASELINE, max_lines=2).score()
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+# --- OutputContainsMetric --------------------------------------------------------------------
+
+
+def test_output_contains_hit_is_case_insensitive() -> None:
+    result = OutputContainsMetric("Broken.py").score(output="I found a type error in broken.py")
+    _assert_well_formed(result)
+    assert result.value == 1.0
+    assert "found" in result.reason
+
+
+def test_output_contains_miss_scores_zero() -> None:
+    result = OutputContainsMetric("broken.py").score(output="nothing relevant here")
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_output_contains_case_sensitive_respects_case() -> None:
+    result = OutputContainsMetric("PORT", case_sensitive=True).score(output="the port is set")
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_output_contains_missing_field_is_graceful_zero() -> None:
+    result = OutputContainsMetric("broken.py").score()
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+# --- ToolNotSucceededMetric ------------------------------------------------------------------
+
+
+def test_tool_not_succeeded_never_called_scores_one() -> None:
+    result = ToolNotSucceededMetric("write").score(tool_calls=[{"name": "read", "args": {}}])
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_tool_not_succeeded_called_but_denied_scores_one() -> None:
+    # The model attempted the write, but the gate denied it — it never landed, so this passes.
+    result = ToolNotSucceededMetric("write").score(
+        tool_calls=[{"name": "write", "args": {}}], denied_tools=["write"]
+    )
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_tool_not_succeeded_landed_call_scores_zero() -> None:
+    result = ToolNotSucceededMetric("edit").score(
+        tool_calls=[{"name": "edit", "args": {}}], denied_tools=[]
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_tool_not_succeeded_missing_field_scores_one() -> None:
+    # No calls recorded means the tool trivially never succeeded.
+    result = ToolNotSucceededMetric("write").score()
+    _assert_well_formed(result)
+    assert result.value == 1.0

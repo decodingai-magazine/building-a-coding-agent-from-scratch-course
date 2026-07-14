@@ -23,6 +23,7 @@ nesting comes from the enclosing ``evaluate()`` call, not from tracking each met
 
 from __future__ import annotations
 
+import difflib
 from collections.abc import Iterable
 from typing import Any
 
@@ -176,6 +177,115 @@ class DiffLinesMetric(BaseMetric):
             name=self.name,
             value=1.0 if within else 0.0,
             reason=f"{changed} changed line(s) {'<=' if within else '>'} max_lines={self.max_lines}.",
+        )
+
+
+class FileDiffLinesMetric(BaseMetric):
+    """Score ``1.0`` when the seeded ``path`` changed by ``<= max_lines`` lines during the run.
+
+    The regression task-fn records the run's final Workspace as ``file_state`` (a
+    ``{path: content}`` snapshot), NOT a unified ``diff`` — so :class:`DiffLinesMetric` (which reads a
+    ``diff`` string a benchmark run computes) has nothing to grade on a regression payload. This metric
+    closes that gap: it holds the probe's known ``baseline`` for ``path`` and, at score time, diffs it
+    against ``file_state[path]`` and counts changed lines with the SAME counter
+    :class:`DiffLinesMetric` uses — so an edit-precision / minimal-diff probe grades on how much of the
+    seeded file the agent actually rewrote. A single-line replacement is one ``-`` plus one ``+`` = two
+    changed lines. ``path`` absent from the snapshot (the agent never wrote it, or deleted it) or a
+    missing / malformed ``file_state`` scores a graceful ``0.0``.
+    """
+
+    def __init__(self, path: str, baseline: str, max_lines: int, name: str | None = None) -> None:
+        super().__init__(name=name or f"file_diff_lines_le_{max_lines}", track=False)
+        self.path = path
+        self.baseline = baseline
+        self.max_lines = max_lines
+
+    def score(self, file_state: Any = None, **ignored_kwargs: Any) -> ScoreResult:
+        if not isinstance(file_state, dict):
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"No file_state recorded (got {type(file_state).__name__}); cannot diff {self.path!r}.",
+            )
+        final = file_state.get(self.path)
+        if not isinstance(final, str):
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"{self.path!r} absent from the final file_state; nothing to diff.",
+            )
+        diff = "\n".join(
+            difflib.unified_diff(self.baseline.splitlines(), final.splitlines(), lineterm="")
+        )
+        changed = _changed_line_count(diff)
+        within = changed <= self.max_lines
+        return ScoreResult(
+            name=self.name,
+            value=1.0 if within else 0.0,
+            reason=f"{changed} changed line(s) {'<=' if within else '>'} max_lines={self.max_lines} in {self.path!r}.",
+        )
+
+
+class OutputContainsMetric(BaseMetric):
+    """Score ``1.0`` when ``needle`` appears in the run's final assistant ``output`` text.
+
+    Case-insensitive by default (an agent may phrase the answer in any casing). Used where a probe's
+    behavior is confirmed by the agent NAMING something in its answer — e.g. the LSP-diagnostics probe
+    asserts the seeded error is surfaced in the reply. A missing / non-string ``output`` scores a
+    graceful ``0.0``.
+    """
+
+    def __init__(self, needle: str, case_sensitive: bool = False, name: str | None = None) -> None:
+        super().__init__(name=name or f"output_contains_{needle}", track=False)
+        self.needle = needle
+        self.case_sensitive = case_sensitive
+
+    def score(self, output: Any = None, **ignored_kwargs: Any) -> ScoreResult:
+        if not isinstance(output, str):
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"No output text recorded (got {type(output).__name__}).",
+            )
+        haystack = output if self.case_sensitive else output.lower()
+        needle = self.needle if self.case_sensitive else self.needle.lower()
+        present = needle in haystack
+        return ScoreResult(
+            name=self.name,
+            value=1.0 if present else 0.0,
+            reason=f"{self.needle!r} {'found' if present else 'NOT found'} in output.",
+        )
+
+
+class ToolNotSucceededMetric(BaseMetric):
+    """Score ``1.0`` when ``tool_name`` never SUCCEEDED — not called, or every call the gate denied.
+
+    Stricter-than-absent counterpart to :class:`ToolNotCalledMetric`: a plan-mode probe wants "zero
+    SUCCESSFUL write/edit calls", which a denied attempt still satisfies (the agent tried to edit but
+    ``enter_plan_mode`` had flipped the gate to ``PLAN``, so the write was denied and never landed).
+    Reads ``tool_calls`` (every attempt) and ``denied_tools`` (the gate-denied ones); the tool
+    succeeded ``count(tool_calls) - count(denied_tools)`` times, and the metric passes when that is
+    ``<= 0``. A missing / malformed ``tool_calls`` means nothing ran, so — trivially — nothing
+    succeeded: that scores ``1.0``.
+    """
+
+    def __init__(self, tool_name: str, name: str | None = None) -> None:
+        super().__init__(name=name or f"tool_not_succeeded_{tool_name}", track=False)
+        self.tool_name = tool_name
+
+    def score(
+        self, tool_calls: Any = None, denied_tools: Any = None, **ignored_kwargs: Any
+    ) -> ScoreResult:
+        names = _tool_call_names(tool_calls) or []
+        denied = denied_tools if isinstance(denied_tools, list) else []
+        called = names.count(self.tool_name)
+        denied_count = denied.count(self.tool_name)
+        succeeded = called - denied_count
+        ok = succeeded <= 0
+        return ScoreResult(
+            name=self.name,
+            value=1.0 if ok else 0.0,
+            reason=f"{self.tool_name!r} succeeded {max(succeeded, 0)} time(s) (called {called}, denied {denied_count}).",
         )
 
 

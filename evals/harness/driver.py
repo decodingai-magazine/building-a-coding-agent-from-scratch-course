@@ -200,14 +200,24 @@ async def run_agent_once(
     handler: AgentTurnHandler = AgentTurnHandler(agent, deps=deps, message_history=message_history)
     runner = Runner(handler, on_event=_capture_emit)
 
+    from decode.services.lsp import service as lsp_service
+
     cap = (
         agent.override(model=_RequestCappedModel(agent.model, max_requests))
         if max_requests is not None
         else nullcontext()
     )
-    with cap:
-        await runner.submit(prompt, InputIntent.STEER)
-        await runner.wait_idle()
+    try:
+        with cap:
+            await runner.submit(prompt, InputIntent.STEER)
+            await runner.wait_idle()
+    finally:
+        # Reap any Language Server the run spawned (the ``lsp`` tool), IN this loop — a probe run is
+        # sync (``run_agent_once_sync`` → ``asyncio.run``), so a caller's later ``asyncio.run`` teardown
+        # would try to close a subprocess transport bound to this now-dead loop (an unclosed-transport
+        # ResourceWarning). Each run also gets a fresh temp Workspace, so a cached client is stale
+        # anyway. No-op (empty cache) for every probe that never touches ``lsp``. Idempotent, never raises.
+        await lsp_service.shutdown_all()
 
     return _build_record(handler.message_history, agent_error=errors[0] if errors else None)
 

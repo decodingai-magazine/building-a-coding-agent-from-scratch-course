@@ -14,7 +14,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import pytest
-from pydantic_ai.models.function import FunctionModel
 from support.fake_sandbox import FakeExecutor
 
 from decode.tools.bash import reset_executor
@@ -25,20 +24,6 @@ def _reset_seam():
     """Leave the ``decode.tools.bash`` executor seam clean after each test (the memo is process-global)."""
     yield
     reset_executor()
-
-
-@pytest.fixture
-def install_model(mocker) -> Callable[[FunctionModel], None]:
-    """Return a helper that installs ``model`` as the agent's base model for the whole run.
-
-    Patches the provider seam so ``build_agent()`` builds a real decode agent on the scripted
-    model — no ``GEMINI_API_KEY`` is touched because ``_build_model`` never runs.
-    """
-
-    def _install(model: FunctionModel) -> None:
-        mocker.patch("decode.agent.factory._build_model", return_value=model)
-
-    return _install
 
 
 @pytest.fixture

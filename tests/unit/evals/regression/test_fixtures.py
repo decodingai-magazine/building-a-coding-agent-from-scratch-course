@@ -60,6 +60,15 @@ def test_serve_page_serves_the_body_then_shuts_down() -> None:
         urllib.request.urlopen(url, timeout=1)
 
 
+def test_serve_page_honours_a_fixed_port() -> None:
+    # A probe whose prompt cites the URL verbatim needs a deterministic port, not an ephemeral one.
+    with serve_page("<html>fixed</html>", port=8479) as url:
+        assert url == "http://127.0.0.1:8479"
+        fetched = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
+
+    assert fetched == "<html>fixed</html>"
+
+
 def test_near_limit_history_reaches_the_token_target() -> None:
     history = near_limit_history(target_tokens=1000)
 

@@ -75,6 +75,104 @@ def bash_then_finish(command: str, final_text: str) -> FunctionModel:
     return FunctionModel(stream_function=stream_function)
 
 
+def grep_then_finish(pattern: str, final_text: str) -> FunctionModel:
+    """A model that calls ``grep(pattern)`` once, then finishes with ``final_text``.
+
+    Drives the grep-vs-bash probe: the discipline being graded is that a content search uses the
+    ``grep`` tool, not a ``bash`` shell-out.
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        if _last_request_has_tool_return(messages):
+            yield final_text
+            return
+        yield {0: DeltaToolCall(name="grep", json_args=json.dumps({"pattern": pattern}))}
+
+    return FunctionModel(stream_function=stream_function)
+
+
+def edit_then_finish(path: str, old_string: str, new_string: str, final_text: str) -> FunctionModel:
+    """A model that calls ``edit(path, old_string, new_string)`` once, then finishes.
+
+    Drives the edit-precision / diff-minimality probes: one surgical ``edit`` whose changed-line
+    footprint the diff metric grades.
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        if _last_request_has_tool_return(messages):
+            yield final_text
+            return
+        yield {
+            0: DeltaToolCall(
+                name="edit",
+                json_args=json.dumps(
+                    {"path": path, "old_string": old_string, "new_string": new_string}
+                ),
+            )
+        }
+
+    return FunctionModel(stream_function=stream_function)
+
+
+def web_fetch_then_finish(url: str, final_text: str) -> FunctionModel:
+    """A model that calls ``web_fetch(url)`` once, then finishes with ``final_text``.
+
+    Drives the web-fetch-discipline probe against the local ``http.server`` fixture — no real network.
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        if _last_request_has_tool_return(messages):
+            yield final_text
+            return
+        yield {0: DeltaToolCall(name="web_fetch", json_args=json.dumps({"url": url}))}
+
+    return FunctionModel(stream_function=stream_function)
+
+
+def lsp_diagnostics_then_finish(path: str, final_text: str) -> FunctionModel:
+    """A model that calls ``lsp(op="diagnostics", path=path)`` once, then finishes with ``final_text``.
+
+    Drives the lsp-diagnostics probe against a REAL ``ty`` language server (offline, no keys) — the tool
+    spawns ``ty`` on the seeded file and returns its diagnostics before the model reports them.
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        if _last_request_has_tool_return(messages):
+            yield final_text
+            return
+        yield {
+            0: DeltaToolCall(name="lsp", json_args=json.dumps({"op": "diagnostics", "path": path}))
+        }
+
+    return FunctionModel(stream_function=stream_function)
+
+
+def enter_plan_mode_then_finish(final_text: str) -> FunctionModel:
+    """A model that calls ``enter_plan_mode`` once, then finishes with ``final_text`` — no edits.
+
+    Drives the plan-mode-discipline probe: the agent switches to plan mode and presents a plan instead
+    of changing anything.
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        if _last_request_has_tool_return(messages):
+            yield final_text
+            return
+        yield {0: DeltaToolCall(name="enter_plan_mode", json_args=json.dumps({}))}
+
+    return FunctionModel(stream_function=stream_function)
+
+
 def runaway_reader(path: str) -> FunctionModel:
     """A model that calls ``read(path)`` on every leg forever — only the request cap can stop it."""
 
