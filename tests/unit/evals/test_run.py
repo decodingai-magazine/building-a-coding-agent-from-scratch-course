@@ -104,12 +104,66 @@ def test_benchmark_subcommand_reports_an_empty_selection(mocker):
     assert "no benchmark task matched" in result.output
 
 
-def test_regression_subcommand_is_stubbed():
-    """The regression track is a stub until task 106 — it runs and says so, never errors."""
-    result = CliRunner().invoke(cli, ["regression"])
+def test_regression_subcommand_invokes_run_regression(mocker):
+    """``evals regression --probe X`` forwards the id to ``run_regression`` and reports the project."""
+    run_regression = mocker.patch("evals.harness.regression.run_regression")
+
+    result = CliRunner().invoke(cli, ["regression", "--probe", "smoke-read-tool"])
+
+    assert result.exit_code == 0, result.output
+    _, kwargs = run_regression.call_args
+    assert kwargs["probe_id"] == "smoke-read-tool"
+    assert "decode-evals" in result.output
+
+
+def test_regression_subcommand_reports_an_empty_selection(mocker):
+    """A ``RegressionSelectionError`` becomes a friendly non-zero CLI error, not a traceback."""
+    from evals.harness.regression import RegressionSelectionError
+
+    mocker.patch(
+        "evals.harness.regression.run_regression",
+        side_effect=RegressionSelectionError("no regression probe matched"),
+    )
+
+    result = CliRunner().invoke(cli, ["regression", "--probe", "nope"])
+
+    assert result.exit_code != 0
+    assert "no regression probe matched" in result.output
+
+
+def test_sync_regression_upserts_probe_items(mocker):
+    """``evals sync --regression --no-benchmark`` syncs the probe registry into the regression dataset."""
+    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_dataset")
+    probe = mocker.Mock()
+    mocker.patch("evals.regression.loader.load_probes", return_value=[probe])
+
+    result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--regression"])
+
+    assert result.exit_code == 0, result.output
+    sync_regression.assert_called_once_with([probe])
+    assert "decode-regression-v1" in result.output
+
+
+def test_sync_default_syncs_both_datasets(mocker):
+    """Plain ``evals sync`` upserts BOTH the benchmark and the regression datasets."""
+    sync_benchmark = mocker.patch("evals.harness.datasets.sync_benchmark_dataset")
+    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_dataset")
+    mocker.patch("evals.harness.task_loader.load_benchmark_tasks", return_value=[])
+    mocker.patch("evals.regression.loader.load_probes", return_value=[])
+
+    result = CliRunner().invoke(cli, ["sync"])
+
+    assert result.exit_code == 0, result.output
+    sync_benchmark.assert_called_once()
+    sync_regression.assert_called_once()
+
+
+def test_sync_nothing_selected_is_a_friendly_no_op():
+    """``evals sync --no-benchmark --no-regression`` selects nothing and says so, never errors."""
+    result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--no-regression"])
 
     assert result.exit_code == 0
-    assert "not implemented yet" in result.output
+    assert "nothing selected" in result.output
 
 
 def test_importing_the_cli_does_not_import_opik():

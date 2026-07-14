@@ -1,9 +1,9 @@
 """The ``python -m evals`` CLI body — a Click group with the eval tracks as subcommands (ADR-0017).
 
-``benchmark`` runs the outcome benchmark (task 106); ``sync`` upserts the Opik datasets (task 105);
-``regression`` (behavior probes) is still a stub. Deliberately imports no ``opik`` at module scope —
-the Opik harness is pulled in lazily by the tracks that need it, so building the CLI never needs keys
-or a network.
+``benchmark`` runs the outcome benchmark (task 106); ``regression`` runs the behavior probes host-native
+(task 111); ``sync`` upserts the Opik datasets (tasks 105, 111). Deliberately imports no ``opik`` at
+module scope — the Opik harness is pulled in lazily by the tracks that need it, so building the CLI never
+needs keys or a network.
 """
 
 from __future__ import annotations
@@ -88,9 +88,23 @@ def settings_project_name() -> str:
 
 
 @cli.command()
-def regression() -> None:
-    """Run the behavior regression probes (lands in task 106)."""
-    click.echo("evals regression: not implemented yet (task 106).")
+@click.option("--probe", "probe_id", default=None, help="Run only this regression probe id.")
+def regression(probe_id: str | None) -> None:
+    """Run the behavior regression probes host-native as an Opik experiment (ADR-0017 §3,4,6).
+
+    Each selected probe seeds a fresh temp Workspace, runs the real agent HOST-NATIVE (``none`` mode —
+    no docker) under the probe's gate policy, and scores its behavior with the probe's metrics under
+    ``settings.eval_project_name``. Opik + the harness are imported lazily so ``--help`` never needs keys
+    or a network (ADR-0017 §1).
+    """
+    from evals.harness.regression import RegressionSelectionError, run_regression
+
+    try:
+        run_regression(probe_id=probe_id)
+    except RegressionSelectionError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"evals regression: experiment logged under {settings_project_name()}.")
 
 
 @cli.command()
@@ -101,21 +115,42 @@ def regression() -> None:
     show_default=True,
     help="Sync the benchmark tasks into the decode-benchmark-v1 Opik dataset.",
 )
-def sync(benchmark: bool) -> None:
-    """Upsert the eval tracks' Opik datasets (ADR-0017 §2).
+@click.option(
+    "--regression/--no-regression",
+    "regression",
+    default=True,
+    show_default=True,
+    help="Sync the behavior probes into the decode-regression-v1 Opik dataset.",
+)
+def sync(benchmark: bool, regression: bool) -> None:
+    """Upsert the eval tracks' Opik datasets (ADR-0017 §2,6).
 
-    ``--benchmark`` (on by default) loads ``evals/benchmark/tasks/`` and upserts one item per task
-    into ``decode-benchmark-v1``. Opik is imported lazily here (not at CLI build time) so
-    ``--help`` never needs keys or a network. Regression dataset sync lands with task 106.
+    ``--benchmark`` loads ``evals/benchmark/tasks/`` into ``decode-benchmark-v1``; ``--regression``
+    loads the probe registry into ``decode-regression-v1`` (both on by default). Opik is imported lazily
+    here (not at CLI build time) so ``--help`` never needs keys or a network.
     """
-    if not benchmark:
-        click.echo("evals sync: nothing selected (pass --benchmark).")
+    if not benchmark and not regression:
+        click.echo("evals sync: nothing selected (pass --benchmark and/or --regression).")
         return
 
     # Lazy import: keeps the CLI module opik-free at import time (ADR-0017 §1).
-    from evals.harness.datasets import BENCHMARK_DATASET_NAME, sync_benchmark_dataset
-    from evals.harness.task_loader import load_benchmark_tasks
+    from evals.harness.datasets import (
+        BENCHMARK_DATASET_NAME,
+        REGRESSION_DATASET_NAME,
+        sync_benchmark_dataset,
+        sync_regression_dataset,
+    )
 
-    tasks = load_benchmark_tasks()
-    sync_benchmark_dataset(tasks)
-    click.echo(f"evals sync: upserted {len(tasks)} task(s) into {BENCHMARK_DATASET_NAME}.")
+    if benchmark:
+        from evals.harness.task_loader import load_benchmark_tasks
+
+        tasks = load_benchmark_tasks()
+        sync_benchmark_dataset(tasks)
+        click.echo(f"evals sync: upserted {len(tasks)} task(s) into {BENCHMARK_DATASET_NAME}.")
+
+    if regression:
+        from evals.regression.loader import load_probes
+
+        probes = load_probes()
+        sync_regression_dataset(probes)
+        click.echo(f"evals sync: upserted {len(probes)} probe(s) into {REGRESSION_DATASET_NAME}.")
