@@ -306,8 +306,9 @@ DOCKER_BUILDKIT=1 KITARU_STACK=prod-modal DECODE_ENV=prod SANDBOX_MODE=modal \
 ```
 
 `KITARU_STACK` is the zero-code seam: decode's flows call `.run()` with no stack argument, so the
-ambient stack decides where they execute. First submit builds and pushes the image (3-5 min); later
-submits reuse it (~90s). `SANDBOX_MODE` picks where the agent's `bash` lands:
+ambient stack decides where they execute. A submit builds and pushes the flow image (3-5 min) only when
+the code, the deps or the Docker settings changed; otherwise it reuses the recorded build (`Reusing
+existing build …`, ~90s). `SANDBOX_MODE` picks where the agent's `bash` lands:
 
 | `SANDBOX_MODE` | Where `bash` runs | `--repo` Workspace | Hand-back |
 |---|---|---|---|
@@ -354,6 +355,17 @@ database file` and crash-loops forever, while the health check just hangs. `up` 
 directory — it does not exist until konlet starts the container, so any fixed sleep races it — and it
 re-checks on *every* `up`, not only when it creates the VM: a crash-looping server is exactly the state
 you re-run `up` to repair. An already-correct dir is left alone (no restart of a healthy server).
+
+**Never pass `platform=` to `ImageSettings` — pin it in the Dockerfile's `FROM`.** Otherwise *every*
+submit rebuilds and re-pushes the image, forever. ZenML decides whether it can reuse a build by hashing
+the Docker settings, but its builder **mutates those settings mid-build** (`build_config.build_options`:
+`pull`/`rm` flip `None → False`). `find_existing_build` hashes them *before* the mutation, and the
+checksum stored on the build is computed *after* it, so the lookup can never match what the build
+recorded — a permanent miss, not a cache miss. Default users never see it because `build_config` is
+`None` and there is nothing to mutate; passing `platform` is what creates the object. Modal is x86-64
+and a Mac is not, so the platform must be pinned *somewhere* — `FROM --platform=linux/amd64` does it
+with no `build_config`, and the image ZenML layers on top inherits the architecture. Confirmed fixed:
+the second consecutive submit now logs `Reusing existing build … for stack prod-modal`.
 
 **TLS is mandatory, not polish.** The Kitaru server sends `strict-transport-security: max-age=63072000`
 *while serving plain HTTP*. A browser obeys it, upgrades the next request to HTTPS, hits a port that

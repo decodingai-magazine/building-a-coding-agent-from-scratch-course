@@ -7,7 +7,15 @@
 # The `remote` dependency group is mandatory, not optional: the flow container loads the active
 # stack, and ZenML only registers the `gcp` connector/artifact-store flavors when EVERY package in
 # its gcp integration list is importable.
-FROM python:3.12-slim
+#
+# The platform is pinned HERE, and deliberately not via `ImageSettings(platform=...)`. Modal runs
+# x86-64 while the build host may be an arm64 Mac, so it has to be pinned somewhere — but setting it
+# through ZenML gives DockerSettings a `build_config` object, and ZenML's builder MUTATES that object
+# mid-build (`pull`/`rm`: None → False). The stored build checksum is computed after the mutation and
+# the reuse lookup before it, so the two never match and EVERY submit rebuilds the image. Pinning the
+# base image's platform in the Dockerfile is equivalent (the layered image inherits it) and leaves
+# `build_config` unset, so builds are reusable (INFRA.md §4).
+FROM --platform=linux/amd64 python:3.12-slim
 
 # UV_SYSTEM_PYTHON: ZenML layers its own `uv pip install -r .zenml_stack_integration_requirements`
 # on top of this image WITHOUT `--system`, and uv refuses to install when it finds no virtualenv

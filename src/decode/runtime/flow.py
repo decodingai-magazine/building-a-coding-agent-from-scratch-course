@@ -85,11 +85,15 @@ def _runtime_image() -> ImageSettings:
     ``Settings`` read the ``decode-prod`` Environment Bucket off the same Kitaru server (ADR-0015),
     and ``SANDBOX_MODE`` decides where its ``bash`` lands. Only ``modal`` needs the Modal tokens, so
     only ``modal`` demands the secret exist.
+
+    **No ``platform=``** — it is pinned in the Dockerfile's ``FROM`` instead. Passing it here gives
+    ZenML's ``DockerSettings`` a ``build_config``, which its builder mutates mid-build; the reuse
+    lookup hashes the settings before that mutation and the stored build after it, so no build is
+    ever reusable and every submit rebuilds the image (see docker/flow.Dockerfile, INFRA.md §4).
     """
     return ImageSettings(
         dockerfile="docker/flow.Dockerfile",
         build_context_root=".",
-        platform="linux/amd64",  # Modal runs x86-64; the build host may not
         environment={
             "DECODE_ENV": settings.decode_env,
             "SANDBOX_MODE": settings.sandbox_mode,
