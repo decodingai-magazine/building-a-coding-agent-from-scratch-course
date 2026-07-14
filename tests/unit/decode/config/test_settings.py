@@ -70,6 +70,13 @@ _OPIK_ENV_VARS = (
     "OPIK_URL_OVERRIDE",
 )
 
+# Evals vars (ADR-0017). The eval suite is not shipped in the wheel, but its judges + Opik project
+# read off this same Settings surface.
+_EVAL_ENV_VARS = (
+    "EVAL_JUDGE_MODEL",
+    "EVAL_PROJECT_NAME",
+)
+
 
 def test_defaults(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
@@ -615,6 +622,37 @@ def test_loads_opik_vars_from_a_dotenv_file(tmp_path, monkeypatch):
 def test_opik_api_key_not_in_repr():
     s = Settings(_env_file=None, opik_api_key="topsecretopik")
     assert "topsecretopik" not in repr(s)
+
+
+# Evals (ADR-0017)
+
+
+def test_eval_defaults(monkeypatch):
+    for var in _EVAL_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    s = Settings(_env_file=None)
+    # Empty judge model = derive from the active provider (task 104); the project keeps eval traces
+    # out of the live-REPL project (ADR-0014).
+    assert s.eval_judge_model == ""
+    assert s.eval_project_name == "decode-evals"
+
+
+def test_reads_eval_vars_from_process_env(monkeypatch):
+    monkeypatch.setenv("EVAL_JUDGE_MODEL", "gemini/gemini-2.5-flash")
+    monkeypatch.setenv("EVAL_PROJECT_NAME", "decode-evals-ci")
+    s = Settings(_env_file=None)
+    assert s.eval_judge_model == "gemini/gemini-2.5-flash"
+    assert s.eval_project_name == "decode-evals-ci"
+
+
+def test_loads_eval_vars_from_a_dotenv_file(tmp_path, monkeypatch):
+    for var in _EVAL_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    env = tmp_path / ".env"
+    env.write_text("EVAL_JUDGE_MODEL=openrouter/some-model\nEVAL_PROJECT_NAME=proj-evals\n")
+    s = Settings(_env_file=str(env))
+    assert s.eval_judge_model == "openrouter/some-model"
+    assert s.eval_project_name == "proj-evals"
 
 
 def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):

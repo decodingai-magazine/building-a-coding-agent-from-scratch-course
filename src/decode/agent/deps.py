@@ -12,6 +12,7 @@ as ``ctx.deps``. Field meaning, one line each:
 * ``task_store`` — the per-run TodoWrite list the ``todo_write`` tool rewrites in place.
 * ``active_agent`` — the selected persona (prompt + tool allowlist), reassigned by ``/agent`` and read fresh per turn.
 * ``headless_durable_waits`` — headless HITL flag (ADR-0008 §3): mutating tools raise ``ApprovalRequired`` → a durable wait.
+* ``verbose`` — the live Verbose Mode flag (Ctrl+O): mutable, flipped by the TUI keybind mid-turn, read at emit time by the ``agent`` tool's child sink.
 
 Plain callable fields (not methods) let tools and the loop share one event channel and one
 decision channel without importing the harness or the TUI.
@@ -42,6 +43,25 @@ def _default_active_agent() -> AgentDef:
     return load_agent("build")
 
 
+@dataclass(slots=True)
+class VerboseFlag:
+    """The live Verbose Mode toggle (Ctrl+O): show Explore Subagent activity in the TUI.
+
+    A MUTABLE object on the deps — deliberately, and for the same reason
+    :class:`~decode.permissions.gate.PermissionGate` is one: the user flips it MID-TURN (Ctrl+O
+    while a fan-out is running), so every reader must see the new value on its very next read. The
+    ``agent`` tool's child sink therefore reads ``enabled`` at EMIT time, never captures it at spawn
+    time. Off by default (ADR-0013 §8 amendment).
+    """
+
+    enabled: bool = False
+
+    def toggle(self) -> bool:
+        """Flip the flag in place and return the NEW state (what the keybind renders)."""
+        self.enabled = not self.enabled
+        return self.enabled
+
+
 EventSink = Callable[[events.Event], None]
 # Resolve a gated tool call into the human's allow/deny verdict (async: blocks on the TUI).
 PermissionResolver = Callable[[PermissionRequest], Awaitable[PermissionDecision]]
@@ -65,6 +85,8 @@ class AgentDeps:
     task_store: list[Task] = field(default_factory=list)
     active_agent: AgentDef = field(default_factory=_default_active_agent)
     headless_durable_waits: bool = False
+    # The Ctrl+O Verbose Mode toggle; the TUI keybind mutates it live, the ``agent`` tool reads it.
+    verbose: VerboseFlag = field(default_factory=VerboseFlag)
     # Harness-Home artifact root (ADR-0012 §6); ``None`` defaults to ``cwd`` in __post_init__.
     harness_home: Path | None = None
 

@@ -56,6 +56,12 @@ dev = [
     "ruff>=0.15.21",
     "pre-commit>=4.6.0",
     "ty>=0.0.59",
+    "opik>=1.9.8",  # eval harness (ADR-0017); dev group — evals is not shipped in the wheel
+    # litellm is opik's transitive judge backend; pinned <1.78 because 1.92+ (what opik 2.x pulls)
+    # ships a Rust bridge that needs rustc >=1.86 to build from sdist. 1.77.x is pure-python wheels,
+    # so `uv sync` / `make ci` build everywhere without a Rust toolchain. Lift once opik 2.0 Test
+    # Suites are needed (ADR-0017 §6) and the build env has rustc >=1.86.
+    "litellm<1.78",
 ]
 remote = [
     "gcsfs<=2024.12.0,!=2025.5.0,!=2025.5.0.post1",

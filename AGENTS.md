@@ -86,6 +86,8 @@ Core verbs at repo root via [`Makefile`](Makefile) wrapping `uv` — `make help`
 
 **Manual QA order:** `format-fix → lint-fix → format-check → lint-check → pre-commit → unit-tests`.
 
+**Evals** (ADR-0017, never in `make ci`): `make eval-benchmark` (outcome) + `make eval-regression` (behavior gate) — need `OPIK_API_KEY` + the provider key, cost money, skip friendly without; full map in [`docs/evals.md`](docs/evals.md).
+
 **Deps & env vars.** Runtime: `uv add <pkg>`; dev: `uv add --group dev <pkg>` (PEP 735 — never `[project.optional-dependencies]`). New env vars → `.env.example` + `config/settings.py`; never read `os.environ` deep in call sites.
 
 # Key Principles

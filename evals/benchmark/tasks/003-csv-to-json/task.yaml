@@ -1,0 +1,16 @@
+id: 003-csv-to-json
+prompt: |
+  The file people.csv in the current directory has a header row followed by data rows with the
+  columns: name, age, active. Convert it to a JSON file named people.json in the current directory.
+
+  people.json must be a JSON array with one object per data row, in the same order as the CSV, where
+  each object has exactly these keys and types:
+    - "name": the name as a string
+    - "age": the age as an integer (a JSON number, not a quoted string)
+    - "active": a boolean true/false (the CSV holds the literal text "true" or "false")
+max_steps: 12
+difficulty: easy
+tags:
+  - data
+  - csv
+  - json

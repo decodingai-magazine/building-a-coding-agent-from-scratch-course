@@ -1,0 +1,17 @@
+id: 014-cli-flag-add
+prompt: |
+  The current directory holds a small command-line program, cli.py, built with argparse. It takes a
+  positional argument NAME and an optional integer flag --times (default 1), and in its default mode
+  it prints the line `Hello, NAME!` once per `--times`, each on its own line.
+
+  Add a new optional flag `--json` to cli.py. When `--json` is given, the program must print a single
+  JSON object to standard output with exactly these keys: `name` (the NAME argument as a string),
+  `times` (the --times value as an integer), and `greeting` (the string `Hello, NAME!`). When
+  `--json` is NOT given, the program must behave exactly as it does today — the existing default
+  text output must be unchanged.
+max_steps: 20
+difficulty: medium
+tags:
+  - python
+  - cli
+  - argparse

@@ -1,0 +1,12 @@
+id: 002-regex-extraction
+prompt: |
+  The file contacts.txt in the current directory is free-form prose with email addresses scattered
+  through it, some of them repeated. Extract every email address, keep only the unique ones, sort
+  them in ascending (lexicographic) order, and write them one per line to a new file named
+  emails.txt in the current directory.
+max_steps: 12
+difficulty: easy
+tags:
+  - text
+  - regex
+  - extraction

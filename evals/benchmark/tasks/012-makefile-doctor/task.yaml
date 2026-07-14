@@ -1,0 +1,16 @@
+id: 012-makefile-doctor
+prompt: |
+  The Makefile in the current directory is broken. Running its `build` target fails for two reasons:
+  the recipe under `build` is indented with spaces instead of a tab, and `build` does not depend on
+  the `prepare` target that creates the input file it needs.
+
+  Repair the Makefile so that building the `build` target succeeds from a clean checkout: its recipe
+  must be tab-indented and the target must actually cause its prerequisite work to run, so that
+  building produces a file named artifact.txt containing the text `payload`. Do not change what the
+  build ultimately produces.
+max_steps: 20
+difficulty: medium
+tags:
+  - make
+  - build
+  - debugging

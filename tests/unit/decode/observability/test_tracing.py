@@ -100,8 +100,26 @@ def test_init_tracing_with_key_returns_true_and_configures_once(fake_opik_key, m
     mock_logfire.configure.assert_called_once()
     kwargs = mock_logfire.configure.call_args.kwargs
     assert kwargs["send_to_logfire"] is False
+    assert kwargs["console"] is False
     assert kwargs["additional_span_processors"] == [mock_logfire.bsp_cls.return_value]
     mock_logfire.instrument.assert_called_once_with()
+
+
+def test_init_tracing_disables_the_logfire_console_exporter(fake_opik_key, mock_logfire):
+    """``console=False``: logfire must NOT print spans to stdout — the REPL owns that surface.
+
+    Regression pin. ``send_to_logfire=False`` only disables cloud egress; logfire's DEFAULT console
+    setting installs a ``ShowParentsConsoleSpanExporter`` straight to stdout, which flooded the TUI
+    with a raw span trace (timestamps, ``_MAIN_AGENT run``, ``running tool: grep``) *through* the
+    ``patch_stdout()`` the prompt is pinned under. decode renders events through its OWN event bus.
+    """
+    init_tracing()
+
+    assert mock_logfire.configure.call_args.kwargs["console"] is False
+    # ...and the OTLP export path is untouched: Opik still receives the spans.
+    assert mock_logfire.configure.call_args.kwargs["additional_span_processors"] == [
+        mock_logfire.bsp_cls.return_value
+    ]
 
 
 def test_init_tracing_builds_cloud_exporter_with_settings_headers(monkeypatch, mock_logfire):

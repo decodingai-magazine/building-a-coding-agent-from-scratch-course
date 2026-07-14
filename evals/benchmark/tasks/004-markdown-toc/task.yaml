@@ -1,0 +1,17 @@
+id: 004-markdown-toc
+prompt: |
+  The file README.md in the current directory has a line that reads exactly "## Table of Contents"
+  but nothing under it. Fill in a table of contents there.
+
+  Directly under the "## Table of Contents" heading, insert a bullet list linking to every other
+  section heading in the document, in document order, excluding the Table of Contents heading itself.
+  Use GitHub-style anchor links. Each level-2 heading (##) is a top-level bullet; each level-3
+  heading (###) is a bullet indented by two spaces nested under its section. Format every entry as
+  "- [Heading Text](#anchor)" where the anchor is the heading text lowercased with spaces replaced by
+  hyphens. Do not change any other part of the file.
+max_steps: 15
+difficulty: easy
+tags:
+  - markdown
+  - docs
+  - toc

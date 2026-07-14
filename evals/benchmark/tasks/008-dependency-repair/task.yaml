@@ -1,0 +1,15 @@
+id: 008-dependency-repair
+prompt: |
+  The current directory holds a small Python program. Its entrypoint, main.py, imports two helper
+  functions from other modules in the same directory, but the program crashes on startup with an
+  import error: one of the modules it imports from was renamed and main.py was never updated.
+
+  Fix the program so that running `python3 main.py` from the current directory exits successfully and
+  prints its two output lines. Do not change what the program computes or prints — only repair the
+  broken import so the existing code runs.
+max_steps: 15
+difficulty: medium
+tags:
+  - python
+  - imports
+  - bugfix

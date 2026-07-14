@@ -1,0 +1,26 @@
+id: 015-secret-scrub
+prompt: |
+  The file service.py in the current directory hardcodes two secrets directly in the source: an API
+  key and a database password. Hardcoded secrets must never live in code.
+
+  Replace both literals so the values are read from environment variables instead: the API key from
+  the environment variable API_KEY and the database password from DB_PASSWORD (for example with
+  os.environ). The two accessor functions api_key() and db_password() must keep their names and,
+  when those environment variables are set, return exactly the value from the matching variable.
+  Make the smallest change that removes the hardcoded secrets — do not rewrite unrelated code.
+max_steps: 25
+difficulty: hard
+tags:
+  - python
+  - security
+  - secrets
+judges:
+  - name: minimal_diff
+    task_introduction: >-
+      You are judging whether a change that moved two hardcoded secrets in service.py to environment
+      variable reads was kept minimal, touching only what the fix required.
+    evaluation_criteria: >-
+      The change is fully minimal when it is confined to replacing the two hardcoded secret literals
+      with environment-variable reads (and the imports that requires), leaving the rest of service.py
+      and any other file unchanged. It is a poor, bloated diff when unrelated code was rewritten,
+      reformatted, renamed, or new unrelated files were added.

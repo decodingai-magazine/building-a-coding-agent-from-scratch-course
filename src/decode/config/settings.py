@@ -198,10 +198,13 @@ class Settings(BaseSettings):
     # ``sleep(seconds)`` is capped to this value (never rejected) so a model cannot stall a turn.
     sleep_max_s: float = 60.0
 
-    # --- Subagents: the ``agent`` tool + Explore-subagent runner caps (ADR-0013 §7,8) ---
+    # --- Subagents: the ``agent`` tool + Explore-subagent runner caps (ADR-0013 §7,8; ADR-0017 §2,6) ---
     # Parallel cap enforced by a per-running-loop Semaphore (keep modest — fan-out multiplies model
-    # calls); per-child request cap + report truncation via the shared truncate() idiom. All gt=0 —
-    # a non-positive value is a misconfiguration and fails fast.
+    # calls) — the CONCURRENCY ceiling, distinct from the fan-out WIDTH cap (deliberately NOT a
+    # setting: a module constant in ``tools/agent.py``). ``subagent_result_max_bytes`` is the SHARED fold budget: one
+    # ``agent`` call divides it across its children, so the fold costs the same at any width.
+    # Per-child request cap + report truncation via the shared truncate() idiom. All gt=0 — a
+    # non-positive value is a misconfiguration and fails fast.
     subagent_max_parallel: int = Field(4, gt=0)
     subagent_max_requests: int = Field(25, gt=0)
     subagent_result_max_bytes: int = Field(16_000, gt=0)
@@ -300,6 +303,14 @@ class Settings(BaseSettings):
     # Max lifetime (seconds) of a REMOTE (modal) sandbox before Modal reaps it; docker's session
     # container has no lifetime cap (``sleep infinity``).
     sandbox_timeout_s: float = Field(600.0, gt=0)
+
+    # --- Evals (ADR-0017) — the eval suite is NOT shipped in the wheel, but its judges + Opik
+    # project are read from this SAME Settings surface so the harness needs no config of its own. ---
+    # The LiteLLM model string G-Eval judges run on; empty derives it from ``llm_provider`` (task 104).
+    eval_judge_model: str = ""
+    # The Opik project eval runs log under — kept distinct from the live-REPL project (ADR-0014) so
+    # eval traces never mix into ``decode-<env>``.
+    eval_project_name: str = "decode-evals"
 
     @model_validator(mode="after")
     def _derive_opik_project_name(self) -> Settings:

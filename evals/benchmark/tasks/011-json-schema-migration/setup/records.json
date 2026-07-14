@@ -1,0 +1,20 @@
+[
+  {
+    "id": 1,
+    "name": "Ada Lovelace",
+    "mail": "ada@example.com",
+    "created": "2021-01-05"
+  },
+  {
+    "id": 2,
+    "name": "Grace Hopper",
+    "mail": "grace@example.com",
+    "created": "2021-02-10"
+  },
+  {
+    "id": 3,
+    "name": "Alan Turing",
+    "mail": "alan@example.com",
+    "created": "2021-03-15"
+  }
+]

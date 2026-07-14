@@ -19,11 +19,37 @@ from pydantic import SecretStr
 # developer's real ZenML store (task 065). The rootdir conftest is the only ancestor always in scope
 # for every collected test, so its fixtures apply in any order. ``isolated_kitaru_store`` is autouse
 # but gated to the unit runtime package (a no-op importing nothing elsewhere); see the module.
+from support.git_env import GIT_HOOK_ENV_VARS
 from support.runtime_fixtures import (  # noqa: F401 — re-exported so pytest registers them
     env_bucket_name,
     inline_wait_resolver,
     isolated_kitaru_store,
 )
+
+
+@pytest.fixture(autouse=True)
+def _scrub_git_hook_env(monkeypatch):
+    """Hermeticity guard — no test inherits git's repository location (task 111).
+
+    Git exports ``GIT_DIR`` & friends into every hook it runs, and our pre-push hook runs the unit
+    suite. Every test that shells out to ``git`` therefore inherited a pointer to the *repository
+    being pushed* and quietly worked on it instead of the throwaway repo it had just built under
+    ``tmp_path`` — ``git -C <tmp_path>`` stops meaning ``<tmp_path>`` once ``GIT_DIR`` is set.
+
+    Two things this cost us, both observed: a leaked ``GIT_DIR`` fails 7 of the ``test_workspace.py``
+    tests (~20 across the suite under the real hook), so pushing from a worktree meant ``--no-verify``
+    every time — a hook you must always skip is a hook that will miss the one real failure; and a
+    leaked ``GIT_INDEX_FILE`` let a test's ``git add`` stage against the *outer* repo's index, leaving
+    a worktree with 252 files staged as deleted while the identical files sat on disk.
+
+    The fix belongs here, not in the tests that call git: the leak is environmental, so it would
+    otherwise have to be re-defended in every future git-touching test. See ``support/git_env`` for
+    why exactly these variables and not a blanket ``GIT_*`` purge. Tests that point git somewhere on
+    purpose still can — their ``monkeypatch.setenv`` runs after this fixture and wins (pinned by
+    ``test_a_test_may_still_set_a_git_var_itself``).
+    """
+    for name in GIT_HOOK_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

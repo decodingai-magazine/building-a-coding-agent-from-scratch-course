@@ -41,7 +41,7 @@ class _StubSpawnAgent:
     never spawned and the visibility assertions stay about ``prepare=``, not about sub-runs.
     """
 
-    async def run(self, prompt, *, deps, usage_limits):
+    async def run(self, prompt, *, deps, usage_limits, event_stream_handler=None):
         return SimpleNamespace(output="explored")
 
 

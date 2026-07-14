@@ -130,15 +130,17 @@ def is_ship_command(line: str) -> bool:
     return line.strip() == _SHIP_COMMAND
 
 
-def footer_hint(agent: str, mode: str) -> str:
-    """The bottom-toolbar hint: the live agent + mode, then the interaction keys (plain text).
+def footer_hint(agent: str, mode: str, *, verbose: bool) -> str:
+    """The bottom-toolbar hint: the live agent + mode + verbose state, then the interaction keys.
 
-    Pure and string-returning; :func:`_bottom_toolbar` supplies the live ``agent`` / ``mode`` each
-    render (ADR-0003 §9) so the footer updates after a switch.
+    Pure and string-returning; :func:`_bottom_toolbar` supplies the live ``agent`` / ``mode`` /
+    ``verbose`` each render (ADR-0003 §9) so the footer updates after a switch. The footer is the ONLY
+    place Ctrl+O is discoverable, so it names both the key and the current state.
     """
     return (
-        f"agent:{agent} mode:{mode} | Enter steer | Alt+Enter follow-up | "
-        "Esc abort | Shift+Tab mode | /agent /mode /compact /clear /ship /quit"
+        f"agent:{agent} mode:{mode} verbose:{'on' if verbose else 'off'} | Enter steer | "
+        "Alt+Enter follow-up | Esc abort | Shift+Tab mode | Ctrl+O verbose | "
+        "/agent /mode /compact /clear /ship /quit"
     )
 
 
@@ -246,6 +248,13 @@ def next_mode(mode: PermissionMode) -> PermissionMode:
 def mode_switch_confirmation(mode: str) -> str:
     """The one-line confirmation rendered after a mode switch (Shift+Tab / ``/mode``; §9)."""
     return f"Decode - mode: {mode}."
+
+
+def verbose_switch_confirmation(enabled: bool) -> str:
+    """The one-line confirmation rendered after a Ctrl+O verbose toggle (ADR-0013 §8 amendment)."""
+    if enabled:
+        return "Decode - verbose: on (subagent activity shown)."
+    return "Decode - verbose: off."
 
 
 def agent_switch_confirmation(name: str, mode: str) -> str:
@@ -570,7 +579,7 @@ def _bottom_toolbar(
     warn_at = 1 - settings.microcompaction_reserve_fraction
     danger_at = 1 - settings.compaction_reserve_fraction
     label, color = render.context_gauge(fraction, warn_at=warn_at, danger_at=danger_at)
-    hint = footer_hint(deps.active_agent.name, gate.mode.value)
+    hint = footer_hint(deps.active_agent.name, gate.mode.value, verbose=deps.verbose.enabled)
     if runner.phase is Phase.IDLE or decisions.pending:
         spinner = ""
     else:
@@ -579,12 +588,15 @@ def _bottom_toolbar(
     return HTML(f'{spinner}<style fg="{color}">{label}</style> <b>{hint}</b>')
 
 
-def _build_key_bindings(*, on_cycle_mode: Callable[[], None]) -> KeyBindings:
-    """Register the follow-up (Alt+Enter), abort (Esc), and mode-cycle (Shift+Tab) keybindings.
+def _build_key_bindings(
+    *, on_cycle_mode: Callable[[], None], on_toggle_verbose: Callable[[], None]
+) -> KeyBindings:
+    """Register follow-up (Alt+Enter), abort (Esc), mode-cycle (Shift+Tab), verbose (Ctrl+O).
 
-    Alt+Enter / Esc accept the prompt with an explicit ``(intent, text)`` result. Shift+Tab does
-    NOT submit: it cycles the gate mode and invalidates the app so the toolbar redraws, leaving
-    the typed buffer intact (ADR-0003 §9).
+    Alt+Enter / Esc accept the prompt with an explicit ``(intent, text)`` result. Shift+Tab and
+    Ctrl+O do NOT submit: they mutate live state (the gate mode / the verbose flag) and invalidate
+    the app so the toolbar redraws, leaving the typed buffer intact — a half-typed prompt survives
+    a toggle (ADR-0003 §9; ADR-0013 §8 amendment).
     """
     bindings = KeyBindings()
 
@@ -600,6 +612,11 @@ def _build_key_bindings(*, on_cycle_mode: Callable[[], None]) -> KeyBindings:
     def _cycle_mode(event: KeyPressEvent) -> None:
         on_cycle_mode()
         event.app.invalidate()  # redraw the bottom toolbar with the new mode
+
+    @bindings.add("c-o")
+    def _toggle_verbose(event: KeyPressEvent) -> None:
+        on_toggle_verbose()
+        event.app.invalidate()  # redraw the bottom toolbar with the new verbose state
 
     return bindings
 
@@ -799,8 +816,15 @@ async def run_app(
         gate.set_mode(new_mode)
         emit_line(mode_switch_confirmation(new_mode.value))
 
+    def toggle_verbose() -> None:
+        # Mutates the flag ON ``deps`` (never a captured copy), so a fan-out already in flight sees
+        # the new state on its very next child event (ADR-0013 §8 amendment).
+        emit_line(verbose_switch_confirmation(deps.verbose.toggle()))
+
     session: PromptSession[object] = PromptSession(
-        key_bindings=_build_key_bindings(on_cycle_mode=cycle_mode),
+        key_bindings=_build_key_bindings(
+            on_cycle_mode=cycle_mode, on_toggle_verbose=toggle_verbose
+        ),
         # Skills are a harness artifact → complete from Harness Home, not the Workspace (§6).
         completer=SlashCompleter(harness_home),
         complete_while_typing=True,

@@ -13,6 +13,7 @@ from decode.agents import loader
 from decode.entities.agent_def import AgentDef
 from decode.permissions.rules import Rule
 from decode.permissions.types import PermissionMode
+from decode.tools import agent as agent_tool
 
 _BUILTIN_NAMES = {"build", "plan", "explore", "code-reviewer"}
 # ``lsp`` (task 052 / ADR-0007) is a read-only Code Intelligence tool, so every persona that has
@@ -98,6 +99,75 @@ def test_code_reviewer_carries_the_git_allow_rule():
     assert set(reviewer.tools) == _READ_ONLY_TOOLS | {"bash", "ask_user", "skill", "agent"}
     assert "bash(git *)" in reviewer.allow
     assert Rule(tool_name="bash", pattern="git *") in reviewer.allow_rules
+
+
+# the explore body — the Subagent Report contract (ADR-0017 §8)
+
+
+def test_explore_body_states_the_three_part_report_contract():
+    # ADR-0017 §8: an Explore child hands back a tight structured summary — the finding, the
+    # file:line evidence, the trace it followed. Pinned on stable structural markers (the section
+    # labels + the ``file:line`` term), never on full sentences, so a wording tweak cannot shatter
+    # this. A report with no file:line evidence is the hallucination tell §7-ii pairs with.
+    body = loader.load_agent("explore").prompt.lower()
+
+    for marker in ("finding", "file:line", "trace"):
+        assert marker in body, f"the explore report contract must name {marker!r}"
+    # The compression contract: N sibling reports share ONE caller budget (§6), a report can be
+    # cut from the end, so the finding leads.
+    assert "sibling" in body
+    assert "truncat" in body
+
+
+@pytest.mark.parametrize("name", sorted(_BUILTIN_NAMES))
+def test_no_builtin_persona_body_carries_the_synthesis_instruction(name):
+    # ADR-0017 §9: compiling the N reports into one answer (prose + text diagram) is the Synthesis
+    # FOOTER's job — appended just-in-time by the harness to every aggregated ``agent`` result. It
+    # lives in exactly ONE place so a future persona author CANNOT forget it, and so it costs nothing
+    # on the (many) turns that fan out no children. Both halves of that break if a persona also
+    # carries the wording: the PARENTS (build / plan / code-reviewer) would pay for it every turn and
+    # drift out of sync with the harness, and the CHILD (explore) would be told to do its parent's
+    # job. Pinned on stable markers, not sentences, so a footer re-wording cannot shatter this.
+    body = loader.load_agent(name).prompt.lower()
+
+    for leaked in ("synthes", "diagram", "mermaid", "ascii", "box-drawing"):
+        assert leaked not in body, (
+            f"{leaked!r} belongs to the Synthesis Footer, not the {name} persona"
+        )
+    assert agent_tool.SYNTHESIS_FOOTER.lower() not in body  # nor the footer itself, verbatim
+
+
+# the primaries' delegation nudge — WHEN to reach for the agent tool (task 110)
+
+
+@pytest.mark.parametrize("name", sorted(_BUILTIN_NAMES - {"explore"}))
+def test_every_primary_that_grants_the_agent_tool_is_told_when_to_delegate(name):
+    # The fan-out is only worth building if the model REACHES for it. The tool description says how
+    # to fan out once the model has decided to call the tool; nothing in the personas said WHEN to
+    # decide that — and their "read the relevant files and search the codebase" bullet actively pulls
+    # the other way, so a bare "explore this repo" fanned out only by luck (a live unsteered probe
+    # went 0-tool-call / 1-angle / 3-angle / 5-angle across runs). Pinned on the stable markers — the
+    # tool's name, the broad-question trigger, and ADR-0017 §1's minimum width — never on a sentence.
+    persona = loader.load_agent(name)
+    # Whitespace-collapsed: the model reads the body as flowed prose, so a marker must not depend on
+    # where a paragraph happens to wrap (it wraps at 100 columns, mid-phrase, in every persona file).
+    body = " ".join(persona.prompt.lower().split())
+
+    assert agent_tool.AGENT_TOOL_NAME in persona.tools, f"{name} must grant the agent tool"
+    assert f"`{agent_tool.AGENT_TOOL_NAME}` call" in body, (
+        f"{name} must name the agent tool to call"
+    )
+    assert "at least 3 distinct angles" in body  # ADR-0017 §1's default width for a broad question
+    assert "serially" in body  # …and what it is instead of
+
+
+def test_the_explore_subagent_is_never_told_to_delegate():
+    # explore has no ``agent`` tool (recursion is structurally impossible, ADR-0013 §3) — telling a
+    # child to delegate would coach it toward a tool it cannot see.
+    explore = loader.load_agent("explore")
+
+    assert agent_tool.AGENT_TOOL_NAME not in explore.tools
+    assert "distinct angles" not in explore.prompt.lower()
 
 
 # packaged-data loading
