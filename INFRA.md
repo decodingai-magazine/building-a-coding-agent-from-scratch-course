@@ -138,8 +138,9 @@ Every step checks before it creates, so a re-run after a failure resumes instead
 4. **Bucket + registry** — plus a **bucket-scoped `roles/storage.admin`** binding (§4 explains why the
    project-level roles are not enough).
 5. **Server** — static IP, generated admin password, the GCE VM running the Kitaru container, the
-   `/var/kitaru` ownership fix, the 80/443 firewall rule (**asks you first**), a DENY rule on `:8080`,
-   and deletion of any pre-TLS `allow-kitaru` rule.
+   `/var/kitaru` ownership repair (**every** `up`, not just the first — that is how a crash-looping
+   server heals), the 80/443 firewall rule (**asks you first**), a DENY rule on `:8080`, and deletion
+   of any pre-TLS `allow-kitaru` rule.
 6. **TLS** — installs Caddy on the VM, which gets a real Let's Encrypt cert for `<ip>.nip.io` and
    reverse-proxies to the server. Waits for `https://…/health`.
 7. **Login** — mints the `decode-runner` service account + API key over the REST API, then
@@ -165,14 +166,79 @@ VM or the bucket. The next `run-remote` rebuilds the flow image if the code or d
 ### `status` — the one-screen truth
 
 ```
-server     https://35.234.151.4.nip.io  (healthy)
+project    coding-agent-course
+server     https://34.13.23.119.nip.io  (healthy)
 bucket     gs://coding-agent-course-kitaru
 registry   europe-west2-docker.pkg.dev/coding-agent-course/kitaru-images
 vm         RUNNING
 firewall   allow-kitaru-tls (tcp:80,443 → 0.0.0.0/0)
+legacy     none (:8080 not exposed)
 plaintext  denied (tcp:8080 DENY @ priority 100)
 tls        Let's Encrypt, valid
 stack      prod-modal
+```
+
+The URL moves with the IP: `nip.io` encodes the address in the hostname, so every rebuilt server gets a
+new name (and a new cert). `status` is where you read the current one.
+
+### Verify the deploy
+
+Four checks, cheapest first. Each proves a different layer, so the first one that fails tells you
+where to look.
+
+**1. The stack exists** (~10s, free):
+
+```bash
+scripts/deploy.sh status
+```
+
+Want: `server … (healthy)`, `tls  Let's Encrypt, valid`, `plaintext  denied`, `stack  prod-modal`, and
+nothing `<none>`. A `(unreachable)` server with a `RUNNING` vm is almost always the `/var/kitaru`
+ownership trap (§4) — re-run `up`, which now repairs it.
+
+**2. The agent runs remotely** — flow container, Environment-Bucket hydration, the model call, and the
+nested Modal sandbox. No `--repo`, so nothing is shipped:
+
+```bash
+make run-remote TASK="run bash 'uname -a && pwd' and tell me what you see"
+```
+
+Want: a **Linux x86-64** kernel and `/workspace`. That is the proof the `bash` landed in the Modal
+sandbox and not on your laptop — a macOS kernel here means `SANDBOX_MODE` never reached the container.
+
+**3. The work comes back** — the Hand-back (ADR-0012 §8). The task must *forbid* pushing, so that the
+harness is what ships the branch, not the model:
+
+```bash
+make run-remote REPO=https://github.com/you/your-repo.git \
+  TASK="add a line to README.md saying hello. commit it. do NOT push and do NOT open a PR."
+git ls-remote https://github.com/you/your-repo.git 'refs/heads/decode/*'
+```
+
+Want: a `decode/<first-8-of-the-exec_id>` branch carrying the model's commit. Missing means the flow
+container could not push: confirm `SANDBOX_GIT_TOKEN` reached the bucket with
+
+```bash
+make sync-secrets ENV=prod      # re-mirrors .env; prints key NAMES only, never values
+```
+
+and that the token can write to that repo. Hand-back fails soft, so the run still returns its answer
+either way — read the `[handback]` line in the run's output for which it was.
+
+**4. The record is durable** — the server saw it:
+
+```bash
+uv run kitaru executions list
+uv run kitaru executions logs <exec_id>
+```
+
+Or open the dashboard (`scripts/deploy.sh status` prints the URL; user `admin`, password in
+`~/.config/decode/kitaru-admin-password`) — the run is on the Flows page.
+
+One more worth a glance, because it is the difference between a tidy account and 16 orphaned apps:
+
+```bash
+uv run modal app list      # exactly decode-prod + decode-sandbox-prod, one per environment
 ```
 
 ### `down` — teardown
@@ -195,7 +261,32 @@ It also stops this environment's two Modal apps — `decode-<env>` (the flow con
 on the first submit. Apps from *other* environments are left alone. If you took the §1.6 org-policy
 exception, undo it with `enable-enforce`.
 
-`status` works on an empty stack too — that is the point of running it after a teardown.
+### Verify the teardown
+
+`status` works on an empty stack too — that is the point of running it after a teardown:
+
+```bash
+scripts/deploy.sh status
+```
+
+Want: every row `<none>`, plus `plaintext  n/a (no server)` and `stack  <none>`. Then confirm nothing
+survives that could still bill you:
+
+```bash
+gcloud compute instances list --project=coding-agent-course           # no kitaru-server
+gcloud compute addresses list --project=coding-agent-course           # no kitaru-server-ip (a reserved
+                                                                      #   IP with nothing attached BILLS)
+gcloud compute firewall-rules list --project=coding-agent-course      # no allow-kitaru-tls / deny-…
+gcloud storage ls --project=coding-agent-course                       # no gs://…-kitaru
+gcloud artifacts repositories list --project=coding-agent-course      # no kitaru-images
+gcloud iam service-accounts list --project=coding-agent-course        # no decode-kitaru
+uv run modal app list                                                 # decode-prod + decode-sandbox-prod
+                                                                      #   both `stopped`
+ls ~/.config/decode                                                   # empty
+```
+
+The old URL should now fail to connect at all (not merely 502 — that would mean Caddy is still up).
+Your local `kitaru` client still points at the dead server; the next `up` logs it in again.
 
 ---
 
@@ -220,13 +311,14 @@ submits reuse it (~90s). `SANDBOX_MODE` picks where the agent's `bash` lands:
 
 | `SANDBOX_MODE` | Where `bash` runs | `--repo` Workspace | Hand-back |
 |---|---|---|---|
-| `modal` (default) | a **nested** Modal sandbox, `/workspace` | yes | needs `SANDBOX_GIT_TOKEN` — **not yet verified from a remote run** |
+| `modal` (default) | a **nested** Modal sandbox, `/workspace` | yes | yes — pushes `decode/<exec-id>` with `SANDBOX_GIT_TOKEN` |
 | `none` | inside the flow container itself, `/app/code` | no (ADR-0012 §3) | no |
 
-Verified end to end: the flow container, Environment-Bucket hydration, the model call, the nested Modal
-bash sandbox, and the `--repo` clone (read-only, public repo). **Not** verified: Hand-back actually
-*pushing* a `decode/<session-id>` branch — that needs a repo you can write to. It fails soft, so a run
-never loses its result over it.
+**The Hand-back runs inside the flow container, not on your laptop** (ADR-0012 §8, amended). That is
+where the Workspace is cloned, worked in, and swept back from the sandbox — the submitting machine's
+`.decode/sandbox` is a stranger to the run. It is also the only reason the push needs
+`SANDBOX_GIT_TOKEN`: a flow container has no ambient git credential at all. Without the token the run
+still returns its answer, and says plainly that it could not push. Verify it with check 3 above.
 
 **Modal apps: one per environment, never one per run.** The flow container lands in `decode-<env>` and
 its bash sandboxes in `decode-sandbox-<env>` (`runtime/modal_app.py`, `sandbox/modal_backend.py`).
