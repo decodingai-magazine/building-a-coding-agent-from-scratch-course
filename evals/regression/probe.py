@@ -56,6 +56,12 @@ class RegressionProbe:
     asked; ``fixture`` seeds the fresh temp Workspace; ``metrics`` are the Opik metric instances that
     grade the run's behavior. The remaining fields map one-to-one onto the eval driver's knobs and
     default to the headless ``BYPASS`` posture so the simplest probe is a three-field declaration.
+
+    ``skip_reason`` marks a probe that is DECLARED but not yet runnable — it stays discoverable in the
+    registry (so it activates the moment its blocker clears) while
+    :func:`evals.harness.regression.run_regression` excludes it from live runs, logging the reason.
+    The MCP probe uses it: decode has no MCP tool factory yet (ADR-0017 §10 defers probe 12), so it
+    ships behind a skip until MCP lands.
     """
 
     id: str
@@ -70,6 +76,7 @@ class RegressionProbe:
     context: FixtureContext | None = None
     max_requests: int | None = None
     tags: list[str] = field(default_factory=list)
+    skip_reason: str | None = None
 
     def __post_init__(self) -> None:
         """Reject a probe that could never grade: a blank ``id`` / ``prompt`` or no metrics.

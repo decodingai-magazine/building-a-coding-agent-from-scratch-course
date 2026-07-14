@@ -14,7 +14,9 @@ import pytest
 from pydantic_ai.messages import ModelRequest, ModelResponse
 
 from evals.regression.fixtures import (
+    mcp_stdio_server_stub,
     near_limit_history,
+    seed_mcp_note,
     seed_skills_dir,
     seed_type_error,
     serve_page,
@@ -92,3 +94,19 @@ def test_estimate_tokens_uses_the_chars_per_token_divisor() -> None:
     request = ModelRequest(parts=[UserPromptPart(content="x" * (CHARS_PER_TOKEN * 10))])
 
     assert _estimate_tokens([request]) == 10
+
+
+def test_seed_mcp_note_writes_the_documentation_note(tmp_path: Path) -> None:
+    path = seed_mcp_note(tmp_path)
+
+    assert path == tmp_path / "MCP_FIXTURE.md"
+    assert "MCP tool-usage probe" in path.read_text(encoding="utf-8")
+
+
+def test_mcp_stdio_server_stub_raises_until_mcp_ships(tmp_path: Path) -> None:
+    # The stub guards against wiring the MCP probe in before fastmcp + decode's MCP factory land.
+    with (
+        pytest.raises(NotImplementedError, match="no MCP tool factory yet"),
+        mcp_stdio_server_stub(tmp_path),
+    ):
+        pass

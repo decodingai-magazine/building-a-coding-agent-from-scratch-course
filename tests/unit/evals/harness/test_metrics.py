@@ -15,8 +15,10 @@ from evals.harness.driver import ToolCallRecord
 from evals.harness.metrics import (
     DiffLinesMetric,
     FileDiffLinesMetric,
+    FileEqualsMetric,
     MaxStepsMetric,
     OutputContainsMetric,
+    ToolArgsMetric,
     ToolCalledMetric,
     ToolNotCalledMetric,
     ToolNotSucceededMetric,
@@ -46,6 +48,8 @@ def _assert_well_formed(result: ScoreResult) -> None:
         FileDiffLinesMetric(path="config.py", baseline="PORT = 8000\n", max_lines=2),
         OutputContainsMetric("broken.py"),
         ToolNotSucceededMetric("write"),
+        ToolArgsMetric("skill", lambda a: True, description="x", name="args_metric"),
+        FileEqualsMetric(path="hello.txt", expected="hi"),
     ],
 )
 def test_metrics_disable_opik_tracking(metric: object) -> None:
@@ -335,3 +339,107 @@ def test_tool_not_succeeded_missing_field_scores_one() -> None:
     result = ToolNotSucceededMetric("write").score()
     _assert_well_formed(result)
     assert result.value == 1.0
+
+
+# --- ToolArgsMetric ---------------------------------------------------------------------------
+
+
+def _min_three_items(args: dict) -> bool:
+    tasks = args.get("tasks")
+    return isinstance(tasks, list) and len(tasks) >= 3
+
+
+def test_tool_args_predicate_satisfied_scores_one() -> None:
+    result = ToolArgsMetric(
+        "todo_write", _min_three_items, description="3+ items", name="todo_3"
+    ).score(tool_calls=[{"name": "todo_write", "args": {"tasks": [1, 2, 3]}}])
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_tool_args_predicate_unsatisfied_scores_zero() -> None:
+    result = ToolArgsMetric(
+        "todo_write", _min_three_items, description="3+ items", name="todo_3"
+    ).score(tool_calls=[{"name": "todo_write", "args": {"tasks": [1]}}])
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_tool_args_matches_a_named_argument() -> None:
+    metric = ToolArgsMetric(
+        "skill", lambda a: a.get("name") == "greet", description="greet skill", name="skill_greet"
+    )
+    assert metric.score(tool_calls=[{"name": "skill", "args": {"name": "greet"}}]).value == 1.0
+    assert metric.score(tool_calls=[{"name": "skill", "args": {"name": "other"}}]).value == 0.0
+
+
+def test_tool_args_reads_tool_call_record_shape() -> None:
+    # The driver's own ToolCallRecord (name + args attributes) is a valid input shape.
+    result = ToolArgsMetric(
+        "skill", lambda a: a.get("name") == "greet", description="greet", name="skill_greet"
+    ).score(tool_calls=[ToolCallRecord(name="skill", args={"name": "greet"})])
+    assert result.value == 1.0
+
+
+def test_tool_args_decodes_json_string_args() -> None:
+    # When the driver records raw JSON string args, the metric decodes them before the predicate.
+    result = ToolArgsMetric(
+        "skill", lambda a: a.get("name") == "greet", description="greet", name="skill_greet"
+    ).score(tool_calls=[{"name": "skill", "args": '{"name": "greet"}'}])
+    assert result.value == 1.0
+
+
+def test_tool_args_tool_not_called_scores_zero() -> None:
+    result = ToolArgsMetric("skill", lambda a: True, description="any", name="skill_any").score(
+        tool_calls=[{"name": "read", "args": {}}]
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_tool_args_missing_field_is_graceful_zero() -> None:
+    result = ToolArgsMetric("skill", lambda a: True, description="any", name="skill_any").score()
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_tool_args_raising_predicate_is_graceful_zero() -> None:
+    # A predicate that trips on a malformed args dict must not crash scoring — it counts as unmet.
+    def _boom(args: dict) -> bool:
+        raise KeyError("nope")
+
+    result = ToolArgsMetric("skill", _boom, description="explodes", name="skill_boom").score(
+        tool_calls=[{"name": "skill", "args": {}}]
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+# --- FileEqualsMetric -------------------------------------------------------------------------
+
+
+def test_file_equals_exact_match_scores_one() -> None:
+    result = FileEqualsMetric(path="hello.txt", expected="hi").score(file_state={"hello.txt": "hi"})
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_file_equals_trailing_newline_scores_zero() -> None:
+    # "exactly 'hi'" is byte-for-byte — a trailing newline is a fail, unlike a line-count diff.
+    result = FileEqualsMetric(path="hello.txt", expected="hi").score(
+        file_state={"hello.txt": "hi\n"}
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_file_equals_absent_file_is_graceful_zero() -> None:
+    result = FileEqualsMetric(path="hello.txt", expected="hi").score(file_state={})
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_file_equals_missing_field_is_graceful_zero() -> None:
+    result = FileEqualsMetric(path="hello.txt", expected="hi").score()
+    _assert_well_formed(result)
+    assert result.value == 0.0

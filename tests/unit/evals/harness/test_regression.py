@@ -276,6 +276,37 @@ def test_run_regression_raises_when_no_probe_matches(mocker):
         run_regression(probe_id="does-not-exist")
 
 
+def test_run_regression_excludes_skip_guarded_probes(mocker):
+    """A ``skip_reason`` probe is loaded (discoverable) but never enters the live ``evaluate`` run."""
+    runnable = _read_probe(id="runs")
+    skipped = _read_probe(id="skipped", skip_reason="not ready")
+    mocker.patch("evals.harness.regression.load_probes", return_value=[runnable, skipped])
+    evaluate = mocker.patch("opik.evaluation.evaluate")
+    opik_cls = mocker.patch("opik.Opik")
+    dataset = opik_cls.return_value.get_or_create_dataset.return_value
+    dataset.get_items.return_value = [
+        {"id": "item-1", "probe_id": "runs"},
+        {"id": "item-2", "probe_id": "skipped"},
+    ]
+
+    run_regression()
+
+    _, kwargs = evaluate.call_args
+    scoped_ids = {metric._probe_id for metric in kwargs["scoring_metrics"]}
+    assert scoped_ids == {"runs"}  # the skipped probe contributed no metrics
+
+
+def test_run_regression_raises_when_only_a_skipped_probe_matches(mocker):
+    """Selecting only a skip-guarded probe is an empty runnable set — the friendly stop fires."""
+    mocker.patch(
+        "evals.harness.regression.load_probes",
+        return_value=[_read_probe(id="skipped", skip_reason="not ready")],
+    )
+
+    with pytest.raises(RegressionSelectionError):
+        run_regression(probe_id="skipped")
+
+
 def test_experiment_config_has_model_provider_and_git_sha():
     config = experiment_config()
 

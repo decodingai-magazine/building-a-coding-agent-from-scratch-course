@@ -40,6 +40,13 @@ def test_defaults_are_the_headless_bypass_posture() -> None:
     assert probe.context is None
     assert probe.max_requests is None
     assert probe.tags == []
+    assert probe.skip_reason is None
+
+
+def test_skip_reason_is_carried_when_set() -> None:
+    probe = _probe(skip_reason="not ready")
+
+    assert probe.skip_reason == "not ready"
 
 
 def test_blank_id_is_rejected() -> None:

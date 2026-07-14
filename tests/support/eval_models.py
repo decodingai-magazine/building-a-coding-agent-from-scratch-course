@@ -12,7 +12,14 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 
-from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 
 
@@ -171,6 +178,90 @@ def enter_plan_mode_then_finish(final_text: str) -> FunctionModel:
         yield {0: DeltaToolCall(name="enter_plan_mode", json_args=json.dumps({}))}
 
     return FunctionModel(stream_function=stream_function)
+
+
+def todo_write_then_finish(contents: list[str], final_text: str) -> FunctionModel:
+    """A model that calls ``todo_write`` with one task per entry in ``contents``, then finishes.
+
+    Drives the todo-planning probe: each ``contents`` string becomes a pending
+    :class:`~decode.entities.task.Task` (id + content + status), so the recorded call carries the
+    ``tasks`` list a :class:`~evals.harness.metrics.ToolArgsMetric` inspects for a genuinely
+    multi-step plan (``>= 3`` items).
+    """
+    tasks = [
+        {"id": str(index), "content": content, "status": "pending"}
+        for index, content in enumerate(contents, start=1)
+    ]
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        if _last_request_has_tool_return(messages):
+            yield final_text
+            return
+        yield {0: DeltaToolCall(name="todo_write", json_args=json.dumps({"tasks": tasks}))}
+
+    return FunctionModel(stream_function=stream_function)
+
+
+def skill_then_finish(name: str, final_text: str) -> FunctionModel:
+    """A model that calls ``skill(name)`` once, then finishes with ``final_text``.
+
+    Drives the skill-dispatch probe: the discipline graded is that the agent dispatches the RIGHT
+    skill by name (a :class:`~evals.harness.metrics.ToolArgsMetric` on the ``name`` argument).
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        if _last_request_has_tool_return(messages):
+            yield final_text
+            return
+        yield {0: DeltaToolCall(name="skill", json_args=json.dumps({"name": name}))}
+
+    return FunctionModel(stream_function=stream_function)
+
+
+def agent_delegate_then_finish(
+    child_prompt: str, final_text: str, child_report: str
+) -> FunctionModel:
+    """A parent that spawns the ``agent`` subagent once, then finishes; the child finishes at once.
+
+    Drives the subagent-delegation probe. One scripted model plays BOTH roles because the ``agent``
+    tool re-enters the SAME agent for the child (ADR-0013 §6), so ``build_agent()`` hands this model
+    to parent and child alike. The two are told apart by their available tools: the read-only Explore
+    child's toolset never includes the ``agent`` tool (``prepare=`` narrows it, ADR-0013 §1), so when
+    ``agent`` is absent from ``info.function_tools`` this is the child — it returns ``child_report``
+    immediately (a real Explore run would read + report). As the parent it spawns the child once, then
+    finishes with ``final_text`` on the resume leg.
+
+    Provides BOTH a streamed and a non-streamed callback: the eval driver streams the parent turn
+    (``request_stream``), but the ``agent`` tool spawns the child via a nested ``agent.run()`` that
+    issues a non-streamed ``request`` — so a stream-only ``FunctionModel`` would trip its "must receive
+    a `function`" assertion on the child leg. Both callbacks share the parent/child branch.
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        tool_names = {tool.name for tool in info.function_tools}
+        if "agent" not in tool_names:  # the narrowed Explore child — hand back its report at once
+            yield child_report
+            return
+        if _last_request_has_tool_return(messages):
+            yield final_text
+            return
+        yield {0: DeltaToolCall(name="agent", json_args=json.dumps({"prompt": child_prompt}))}
+
+    def function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        tool_names = {tool.name for tool in info.function_tools}
+        if "agent" not in tool_names:  # the non-streamed child leg (nested agent.run())
+            return ModelResponse(parts=[TextPart(content=child_report)])
+        if _last_request_has_tool_return(messages):
+            return ModelResponse(parts=[TextPart(content=final_text)])
+        return ModelResponse(parts=[ToolCallPart(tool_name="agent", args={"prompt": child_prompt})])
+
+    return FunctionModel(function, stream_function=stream_function)
 
 
 def runaway_reader(path: str) -> FunctionModel:

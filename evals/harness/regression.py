@@ -252,10 +252,10 @@ def run_regression(
     from evals.harness.datasets import sync_regression_dataset
 
     all_probes = load_probes()
-    selected = _select_probes(all_probes, probe_id=probe_id)
+    selected = _runnable(_select_probes(all_probes, probe_id=probe_id))
     if not selected:
         raise RegressionSelectionError(
-            f"no regression probe matched (probe={probe_id!r}); {len(all_probes)} probe(s) available."
+            f"no runnable regression probe matched (probe={probe_id!r}); {len(all_probes)} probe(s) available."
         )
 
     client = client or opik.Opik()
@@ -281,6 +281,23 @@ def _select_probes(probes: list[RegressionProbe], *, probe_id: str | None) -> li
     if probe_id is None:
         return probes
     return [probe for probe in probes if probe.id == probe_id]
+
+
+def _runnable(probes: list[RegressionProbe]) -> list[RegressionProbe]:
+    """Drop the skip-guarded probes from a run, logging each reason (ADR-0017 §10; the MCP probe).
+
+    A ``skip_reason`` probe is DECLARED (discoverable via :func:`~evals.regression.loader.load_probes`)
+    but not yet runnable — decode's MCP tool factory has not shipped, so probe 12 would grade a
+    behavior the agent cannot perform. It is excluded here rather than at load time so the registry
+    still lists it and it activates the moment its ``skip_reason`` is removed.
+    """
+    runnable: list[RegressionProbe] = []
+    for probe in probes:
+        if probe.skip_reason is not None:
+            logger.info("[eval] skipping regression probe %s: %s", probe.id, probe.skip_reason)
+            continue
+        runnable.append(probe)
+    return runnable
 
 
 def _selected_item_ids(dataset: Any, selected_ids: set[str]) -> list[str]:

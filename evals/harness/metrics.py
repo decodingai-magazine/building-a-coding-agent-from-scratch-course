@@ -24,7 +24,8 @@ nesting comes from the enclosing ``evaluate()`` call, not from tracking each met
 from __future__ import annotations
 
 import difflib
-from collections.abc import Iterable
+import json
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from opik.evaluation.metrics.base_metric import BaseMetric
@@ -50,6 +51,99 @@ def _tool_call_names(tool_calls: Any) -> list[str] | None:
         elif hasattr(call, "name"):
             names.append(str(call.name))
     return names
+
+
+def _tool_call_args(tool_calls: Any, tool_name: str) -> list[dict[str, Any]] | None:
+    """The decoded ``args`` dicts of every call to ``tool_name`` in ``tool_calls``.
+
+    Returns ``None`` when ``tool_calls`` is unusable (missing / a string blob / non-iterable) so the
+    caller can grade a graceful ``0.0`` rather than raise, and an empty list when the field is usable
+    but ``tool_name`` was never called. Each matched call's ``args`` is coerced to a dict: a
+    ``ToolCallRecord``-style payload already carries a mapping, but a raw JSON string (the shape the
+    driver records when a ``ToolCallPart`` is not a mapping) is best-effort ``json.loads``-ed; anything
+    that does not decode to a dict becomes ``{}`` so a predicate always sees a mapping.
+    """
+    if tool_calls is None or isinstance(tool_calls, str) or not isinstance(tool_calls, Iterable):
+        return None
+    matched: list[dict[str, Any]] = []
+    for call in tool_calls:
+        if isinstance(call, dict):
+            name, args = call.get("name"), call.get("args")
+        elif hasattr(call, "name"):
+            name, args = call.name, getattr(call, "args", None)
+        else:
+            continue
+        if name == tool_name:
+            matched.append(_coerce_args_dict(args))
+    return matched
+
+
+def _coerce_args_dict(args: Any) -> dict[str, Any]:
+    """Coerce a tool call's recorded ``args`` to a dict — JSON-decoding a string, else ``{}``."""
+    if isinstance(args, dict):
+        return args
+    if isinstance(args, str):
+        try:
+            decoded = json.loads(args)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+class ToolArgsMetric(BaseMetric):
+    """Score ``1.0`` when SOME recorded call to ``tool_name`` has args satisfying ``predicate``.
+
+    :class:`ToolCalledMetric` only proves a tool WAS called; some probes need to grade the CALL's
+    arguments — a genuinely multi-step plan is ``todo_write`` with ``>= 3`` items, a skill-dispatch
+    probe wants the ``skill`` tool called with the RIGHT ``name``. ``predicate`` is a plain
+    ``dict -> bool`` callable evaluated against each matching call's decoded args; the metric passes
+    when any one call satisfies it. ``description`` is the human phrase the ``reason`` cites (e.g.
+    "at least 3 todo items"). A predicate that raises on a malformed args dict is treated as an
+    unmet condition, never a crash. A missing / malformed ``tool_calls`` field, or ``tool_name`` never
+    called, scores a graceful ``0.0`` — same offline ``track=False`` posture as the other metrics.
+    """
+
+    def __init__(
+        self,
+        tool_name: str,
+        predicate: Callable[[dict[str, Any]], bool],
+        *,
+        description: str,
+        name: str,
+    ) -> None:
+        super().__init__(name=name, track=False)
+        self.tool_name = tool_name
+        self.predicate = predicate
+        self.description = description
+
+    def score(self, tool_calls: Any = None, **ignored_kwargs: Any) -> ScoreResult:
+        calls = _tool_call_args(tool_calls, self.tool_name)
+        if calls is None:
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"No usable tool_calls recorded; cannot check {self.tool_name!r} args ({self.description}).",
+            )
+        if not calls:
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"{self.tool_name!r} was not called; cannot check its args ({self.description}).",
+            )
+        matched = any(self._satisfies(args) for args in calls)
+        return ScoreResult(
+            name=self.name,
+            value=1.0 if matched else 0.0,
+            reason=f"{self.tool_name!r} args {'satisfy' if matched else 'do NOT satisfy'}: {self.description}.",
+        )
+
+    def _satisfies(self, args: dict[str, Any]) -> bool:
+        """Whether ``args`` meets the predicate — a raising predicate counts as unmet, never a crash."""
+        try:
+            return bool(self.predicate(args))
+        except Exception:  # a malformed args dict must not abort scoring — grade it as unmet
+            return False
 
 
 class ToolCalledMetric(BaseMetric):
@@ -223,6 +317,44 @@ class FileDiffLinesMetric(BaseMetric):
             name=self.name,
             value=1.0 if within else 0.0,
             reason=f"{changed} changed line(s) {'<=' if within else '>'} max_lines={self.max_lines} in {self.path!r}.",
+        )
+
+
+class FileEqualsMetric(BaseMetric):
+    """Score ``1.0`` when ``file_state[path]`` equals ``expected`` byte-for-byte (as text), else ``0.0``.
+
+    The exact-match counterpart to :class:`FileDiffLinesMetric` (which grades a line-count budget): a
+    step-efficiency probe asks for a file containing EXACTLY a value, so a trailing newline or extra
+    prose is a fail, not a within-threshold pass. Reads the run's ``file_state`` snapshot the
+    regression task-fn records ({path: content}); ``path`` absent (never written / deleted) or a
+    missing / malformed ``file_state`` scores a graceful ``0.0``.
+    """
+
+    def __init__(self, path: str, expected: str, name: str | None = None) -> None:
+        super().__init__(name=name or f"file_equals_{path}", track=False)
+        self.path = path
+        self.expected = expected
+
+    def score(self, file_state: Any = None, **ignored_kwargs: Any) -> ScoreResult:
+        if not isinstance(file_state, dict):
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"No file_state recorded (got {type(file_state).__name__}); cannot check {self.path!r}.",
+            )
+        actual = file_state.get(self.path)
+        if not isinstance(actual, str):
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"{self.path!r} absent from the final file_state; nothing to compare.",
+            )
+        equal = actual == self.expected
+        return ScoreResult(
+            name=self.name,
+            value=1.0 if equal else 0.0,
+            reason=f"{self.path!r} {'equals' if equal else 'does NOT equal'} the expected content "
+            f"({self.expected!r} vs {actual!r}).",
         )
 
 
