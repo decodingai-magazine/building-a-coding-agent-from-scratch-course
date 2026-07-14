@@ -1,7 +1,7 @@
 ---
 id: 113
 feature: evals
-status: done
+status: in-progress
 ---
 
 # Author regression probes 08–14 (planning, delegation, permissions)
@@ -443,3 +443,41 @@ on green, PA re-reviews the feature.
 **VERDICT: ACCEPT** — probes 13/14 judges rephrased qualitatively in rollup task 121
 (commit 6ecfe86), judged intent preserved, guarded by `tests/unit/evals/test_judge_phrasing.py`.
 Feature-level acceptance recorded in `tasks/done/121-pa-rejection-evals.md`.
+
+### [On-Call] 2026-07-14 14:20 — CI Failure
+
+**Failed step:** `CI` → `ci` → `Lint, format & test` (`make ci` → `make test` → `uv run pytest`)
+
+**Error**
+```
+tests/unit/evals/regression/test_cases_planning.py::test_subagent_delegation_runs_green_offline
+>       assert payload["agent_error"] is None
+E       assert "Tool 'agent' exceeded max retries count of 3" is None
+
+pydantic_core._pydantic_core.ValidationError: 2 validation errors for agent
+prompts
+  Field required [type=missing, input_value={'prompt': 'How is the app configuration loaded?'}, input_type=dict]
+prompt
+  Extra inputs are not permitted [type=extra_forbidden, input_value='How is the app configuration loaded?', input_type=str]
+```
+Identical failure on all 3 CI runs so far on this PR (f6bab7c, 6ecfe86, 463da6f) — `1 failed, 2188
+passed, 19 skipped` on the latest (run 29329300002).
+
+**Root cause**
+The `agent` subagent tool's live schema on CI is being validated against a `prompts` (plural) field
+that does not exist anywhere in the current tree — `src/decode/tools/agent.py::agent(ctx, prompt:
+str)` and the scripted model `tests/support/eval_models.py::agent_delegate_then_finish` both agree on
+singular `prompt`, and a direct schema dump of a freshly built agent confirms `{"prompt": ...,
+"required": ["prompt"]}`. This is CI-only: the exact same commit (463da6f) passes locally on macOS,
+in a Linux/arm64 Docker container, and in a Linux/amd64 (QEMU) Docker container, running `uv run
+pytest tests/unit` (1967 passed) and 6x repeated `tests/unit/evals` + `tests/unit/decode/tools/
+test_agent.py` runs with randomized `PYTHONHASHSEED` — never reproduces there. Points to a
+CI-environment-specific state leak of the module-global subagent seam
+(`decode.tools.agent._MAIN_AGENT`, reset by the autouse `_reset_subagent_seam` fixture in
+`tests/conftest.py`) or a duplicate/stale tool registration, not a bug visible from reading this
+task's own diff. Handing to the SWE with full repro notes — this task (113) introduced the failing
+test + probe, but later commits on this branch (demo skills, online eval track, Opik Test Suites,
+threshold gate) grew the suite past what task 113's own local full-suite runs verified, so the actual
+pollution source may live in a later commit and needs auditing too.
+
+Fixing now — see fix task handed to SWE (`Refs #113`).
