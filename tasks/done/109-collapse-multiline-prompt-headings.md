@@ -259,3 +259,9 @@ SCOPE: src/decode/permissions/gate.py WHAT THE REPORT MUST CONTAIN: ..."'
   diff before proceeding. No SWE work was lost in the final state; flagging for the record.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-14 — Acceptance Review
+
+**VERDICT: ACCEPT**
+
+Reviewed as part of the subagent-fanout feature acceptance (PR #33). `_label` (`src/decode/tools/agent.py:356-371`) collapses whitespace in the heading only; `_run_attempt` (`:451`) hands the child the model's original multi-line brief untouched. The live smoke now asserts the strict single-line heading. Closes the human-readability defect 108 found — good example of the capstone loop working. The no-elision judgment call (long-but-single-line headings stay whole) is right: the full brief is what lets a reader attribute a section to its angle.

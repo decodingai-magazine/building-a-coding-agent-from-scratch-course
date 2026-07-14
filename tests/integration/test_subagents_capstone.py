@@ -1349,3 +1349,52 @@ async def test_live_gemini_fanout_smoke(monkeypatch):
     )
 
     gc.collect()  # finalize any straggler within this test's scope (belt-and-braces with keep-alive-off)
+
+
+# 12. Live-Gemini UNSTEERED probe — the delegation nudge's only real proof (task 110).
+
+
+@pytest.mark.filterwarnings("ignore::ResourceWarning")
+@pytest.mark.skipif(
+    not _LIVE_GEMINI_KEY,
+    reason="GEMINI_API_KEY is unset — the live unsteered delegation probe is skipped",
+)
+async def test_live_gemini_unsteered_broad_question_fans_out(monkeypatch):
+    """The bare user message "explore this repo" — UNSTEERED — must fan out. The nudge's proof.
+
+    The smoke above *tells* the model to use the ``agent`` tool with one prompt per angle, so it proves
+    the MECHANISM and proves nothing about the TRIGGER. This test removes every instruction: the user
+    says four words, and the persona is the only thing that can make a fan-out happen. Before the
+    delegation nudge landed in ``build.md`` the real model explored serially (glob → read → read → …)
+    and never called ``agent`` at all — the headline behavior of this whole feature depended on luck.
+
+    Presence-only and TOLERANT (a live model is non-deterministic; the angles' wording, the reports and
+    the final answer are all unasserted): ONE ``agent`` call, whose ``prompts`` list carries >= 3 angles
+    — the ADR-0017 §1 default for a broad question. Live-model flake is the accepted cost of the only
+    assertion in the suite that can tell "the persona nudges" apart from "the harness can fan out".
+    """
+    monkeypatch.setattr(factory.settings, "gemini_api_key", SecretStr(_LIVE_GEMINI_KEY))
+    monkeypatch.setattr(factory.settings, "llm_provider", "gemini")
+    monkeypatch.setattr(settings, "subagent_max_requests", 8)  # bound each child's real model legs
+
+    agent = build_agent(flow_mode=True)  # real Gemini + the subagent-spawn seam (build persona)
+    sink = _RecordingSink()
+    resolvers = _RecordingResolvers()
+    repo_root = Path(__file__).resolve().parents[2]  # read THIS repo, read-only
+    handler = AgentTurnHandler(agent, deps=_parent_deps(sink, resolvers, repo_root))
+    runner = Runner(handler, on_event=sink)
+
+    await _run_turn(runner, "explore this repo")  # …and nothing else. No steering whatsoever.
+
+    fanouts = _tool_calls_in_history(handler.message_history, AGENT_TOOL_NAME)
+    assert fanouts, (
+        "the model explored WITHOUT calling the agent tool — the delegation nudge did not fire, so a "
+        f"broad question does not fan out. Tools it reached for: {sorted(sink.tool_call_names())}"
+    )
+    widths = [len(_call_args(call).get("prompts") or []) for call in fanouts]
+    assert max(widths) >= 3, (
+        f"the fan-out was too narrow for a broad question: prompt-list widths {widths} (ADR-0017 §1 "
+        "asks for at least 3 distinct angles)"
+    )
+
+    gc.collect()  # finalize any straggler within this test's scope (keep-alive-off belt-and-braces)

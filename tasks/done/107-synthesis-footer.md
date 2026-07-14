@@ -277,3 +277,9 @@ FAILED [...] AssertionError: 'diagram' belongs to the Synthesis Footer, not the 
   Docker-daemon flakes unrelated to this task.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-14 — Acceptance Review
+
+**VERDICT: ACCEPT**
+
+Reviewed as part of the subagent-fanout feature acceptance (PR #33). `SYNTHESIS_FOOTER` (`src/decode/tools/agent.py:214-226`) appended post-truncation on every fold (`:353`) — this is what turns the user's "aggregate their result" from a wall of concatenated reports into one compiled answer, and 108's live runs prove a real model obeys it (prose + ASCII diagram, behaviorally asserted by `_looks_like_a_text_diagram` in the live smoke). ASCII-default/Mermaid-only-for-graphs is the right call for a Rich terminal. Persona guard covers all four builtins.

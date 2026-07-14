@@ -339,3 +339,36 @@ and clearly not (c) severe enough to block this ship.** Reasoning:
   task is cheap and low-risk — worth opening, not worth blocking on.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-14 — Acceptance Review (feature verdict for subagent-fanout, PR #33)
+
+**VERDICT: ACCEPT**
+
+Judged against the user's original ask, not just the task files:
+
+1. **"Properly run subagents in parallel … run by default 3 agents in parallel with different prompts and aggregate their result."** The harness now GUARANTEES the parallelism, the aggregation, and the width-independent cost from ONE `agent(prompts=[…])` call (`src/decode/tools/agent.py:338`, `asyncio.gather` under the per-loop semaphore) — parallelism stopped being a model courtesy, which was the real defect ADR-0013 left. The "3 by default" lives in the tool description's "at least 3 DISTINCT angles for a broad question" (`agent.py:310-312`). **Deliberate position: no hard floor of 3 is the correct product call.** The same tool serves narrow questions — a one-element list is documented and tested — so a floor would either break the focused case or force two wasted children onto it; and a floor conditional on "broad" would need the harness to classify broadness deterministically, exactly the class of fuzzy semantic gate that 104's guard saga proved false-fires and never converges. Where a guarantee is possible the harness guarantees; where only the model can judge, the description pushes. Live evidence (this log + 109's): real Gemini authored 3 distinct well-formed angles in ONE call and the footer produced a genuinely compiled answer. **Caveat honestly noted:** the live smoke's prompt names three files and asks for parallel angles — it proves the mechanism and the model's compliance, NOT that a bare two-word "explore repo" reliably fans out 3-wide. That residual is a model-behavior question, flagged to the human as an optional follow-up (see PA report), not a defect in what shipped.
+2. **"Aggregate their result."** The user gets a compiled report, not a wall: labelled sections + the Synthesis Footer, and the live smoke asserts BEHAVIOR (`_looks_like_a_text_diagram` on the parent's final answer) — both live runs produced one synthesis with file:line evidence plus an ASCII diagram.
+3. **"More resilient to prompts."** Two-sided: a truthful 8-word substance floor + width cap + retries=3 on the way in (the permissive floor is the adjudicated, ADR-amended survivor of two failed stricter designs — the false-reject was the harmful error), and the genuinely load-bearing half on the way out: zero-tool-call/empty detection, one nudged retry, honest failure notes, sibling isolation. Padded-junk prompts pass the floor by design — and if they yield a memory-only report, 106's validator catches them where it matters.
+
+Docs verified: glossary rows match code constants (6 / 4 / 8 / retry-once / footer); ADR-0013 carries the dated amendment header, body unedited; ADR-0017 is honest about what shipped (dated §3 amendment); manual-e2e-qa row matches final behavior. No AC quietly dropped — 104's drift is recorded and adjudicated. Hand off to the PR Reviewer.
+
+### [PR Reviewer] 2026-07-14 — Review
+
+**VERDICT: NO BLOCKERS**
+
+Reviewed PR #33 (branch `feat/subagent-fanout`), 19 files, ~4.9k added lines — the whole diff, `src/decode/tools/agent.py` read as a whole file. Findings:
+
+- Blockers: 0
+- Nits: 2 (appended to the PR description for the human merger)
+  1. [Simplicity] `agent.py:99-108` — `_faults()` is a list that can only hold one element; `str | None` is simpler until a second rejection criterion exists.
+  2. [Docs/Simplicity] `agent.py:65-90` — the guard's design history is told in full three times (code comment, ADR-0017 §3, test-battery comments); the ADR should stay canonical, the code comment a pointer.
+
+Independently re-verified (not taken from the logs):
+- `ToolSpec.retries` is safe: on a built agent, every other tool's `max_retries` is 1; only `agent` is 3 (`retries=None` falls through to the pydantic-ai default at registration).
+- Mutation `AGENT_TOOL_RETRIES = 1` → 2 tests red (unit pin + width-cap round-trip capstone). Reverted.
+- Byte-theft mutation (footer bytes reserved out of the children's shared budget) → 2 truncate-spy tests red. Reverted.
+- Concurrency: the semaphore is acquired per attempt inside `_run_attempt` and released before validation, so a bad child's retry never starves a sibling; no code path spawns a 3rd attempt; `_spawn_child` catches `Exception` (not `BaseException`), so no exception escapes `agent()` and cancellation still propagates.
+- Docs match code: ADR-0017 (incl. the dated §3 bare-floor amendment), ADR-0013 amendment header, glossary (Fan-out / Subagent Report / Synthesis Footer), manual-e2e-qa row (8-word floor, cap 6, retries=3) all consistent with the shipped constants.
+- QA gates re-run here: changed test files 156 passed / 2 live-key skips; `make format-check lint-check` clean.
+
+Caveman comments posted on PR #33. Pipeline may advance to hand-off.

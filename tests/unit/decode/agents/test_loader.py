@@ -137,6 +137,39 @@ def test_no_builtin_persona_body_carries_the_synthesis_instruction(name):
     assert agent_tool.SYNTHESIS_FOOTER.lower() not in body  # nor the footer itself, verbatim
 
 
+# the primaries' delegation nudge — WHEN to reach for the agent tool (task 110)
+
+
+@pytest.mark.parametrize("name", sorted(_BUILTIN_NAMES - {"explore"}))
+def test_every_primary_that_grants_the_agent_tool_is_told_when_to_delegate(name):
+    # The fan-out is only worth building if the model REACHES for it. The tool description says how
+    # to fan out once the model has decided to call the tool; nothing in the personas said WHEN to
+    # decide that — and their "read the relevant files and search the codebase" bullet actively pulls
+    # the other way, so a bare "explore this repo" fanned out only by luck (a live unsteered probe
+    # went 0-tool-call / 1-angle / 3-angle / 5-angle across runs). Pinned on the stable markers — the
+    # tool's name, the broad-question trigger, and ADR-0017 §1's minimum width — never on a sentence.
+    persona = loader.load_agent(name)
+    # Whitespace-collapsed: the model reads the body as flowed prose, so a marker must not depend on
+    # where a paragraph happens to wrap (it wraps at 100 columns, mid-phrase, in every persona file).
+    body = " ".join(persona.prompt.lower().split())
+
+    assert agent_tool.AGENT_TOOL_NAME in persona.tools, f"{name} must grant the agent tool"
+    assert f"`{agent_tool.AGENT_TOOL_NAME}` call" in body, (
+        f"{name} must name the agent tool to call"
+    )
+    assert "at least 3 distinct angles" in body  # ADR-0017 §1's default width for a broad question
+    assert "serially" in body  # …and what it is instead of
+
+
+def test_the_explore_subagent_is_never_told_to_delegate():
+    # explore has no ``agent`` tool (recursion is structurally impossible, ADR-0013 §3) — telling a
+    # child to delegate would coach it toward a tool it cannot see.
+    explore = loader.load_agent("explore")
+
+    assert agent_tool.AGENT_TOOL_NAME not in explore.tools
+    assert "distinct angles" not in explore.prompt.lower()
+
+
 # packaged-data loading
 
 

@@ -329,3 +329,9 @@ SPAWN LOG (label, event, t):
   recurring, but out of scope here.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-14 — Acceptance Review
+
+**VERDICT: ACCEPT**
+
+Reviewed as part of the subagent-fanout feature acceptance (PR #33). This is the substantive half of "more resilient to prompts": `_usable_report` (`src/decode/tools/agent.py:179-193`) catches the answered-from-memory case via `_read_any_code`'s transcript scan (`:165-176`), the one nudged retry + honest give-up note in `_spawn_child` (`:396-411`) bounds a broken child at two attempts, and the exception path (`:404-406`) keeps siblings intact. From the user's POV: a hallucinated child report can no longer masquerade as evidence, and the transcript says plainly which angle produced nothing.

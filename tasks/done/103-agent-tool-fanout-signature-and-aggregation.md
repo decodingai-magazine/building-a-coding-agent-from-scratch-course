@@ -322,3 +322,9 @@ agent ToolKind.READ_ONLY 3
   rewrite) is untouched in this diff.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-14 — Acceptance Review
+
+**VERDICT: ACCEPT**
+
+Reviewed as part of the subagent-fanout feature acceptance (PR #33). All 10 AC re-verified against shipped code: `agent(ctx, prompts: list[str])` at `src/decode/tools/agent.py:297`, guards pre-spawn (`:319`, `:323`, `MAX_FANOUT_PROMPTS=6` at `:59`), harness `asyncio.gather` (`:338`), shared budget `subagent_result_max_bytes // len(prompts)` (`:335`), labelled fold (`:349-352`), failure-note isolation (`:404-406`), `AGENT_TOOL_RETRIES=3` wired through `registry.py:120`. No new setting. User satisfaction verified at feature level — see the feature verdict in the 108 log entry.

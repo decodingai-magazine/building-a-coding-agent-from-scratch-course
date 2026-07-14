@@ -571,14 +571,11 @@ _LAZY_PROMPTS = [
 # THE ANTI-WHACK-A-MOLE BATTERY: realistic, well-formed exploration briefs a parent model
 # plausibly writes. EVERY ONE MUST PASS THE GUARD — a false reject is the dangerous failure mode
 # (it burns a model turn and eats AGENT_TOOL_RETRIES), so any change that re-narrows the guard
-# into a prompt GRADER instead of a substance FLOOR fails here, loudly.
-#
-# Two QA rounds died on exactly that: an AND-gate (and then an OR) over keyword sets for
-# question/scope/report kept rejecting good briefs whose phrasing the word lists did not happen to
-# contain. The battery pins the phrasings that were falsely rejected, plus more, so the next edit
-# cannot quietly re-narrow the guard to fit the last failing example handed to it.
+# into a prompt GRADER instead of a substance FLOOR fails here, loudly. These are the phrasings two
+# demolished keyword-grader designs actually rejected; ADR-0017 §3 tells that story once, and this
+# battery is what stops the next edit from quietly re-narrowing the guard to fit one failing example.
 
-# QA round 1 — imperative phrasings, rejected 5/5 by the then-guard.
+# QA round 1 — imperative phrasings.
 _ROUND_1_PROMPTS = [
     "Summarize the retry logic in src/decode/tools/agent.py including the ModelRetry budget and "
     "report the file:line for each check.",
@@ -592,8 +589,8 @@ _ROUND_1_PROMPTS = [
     "points with file:line evidence.",
 ]
 
-# QA round 2 — a fresh battery, rejected 6/8 by the widened word lists ("note", "describe" as a
-# report ask, and the phrasal verbs "break down" / "walk through" / "dig into" / "chart").
+# QA round 2 — the phrasings no widened word list ever caught ("note", "describe", "break down",
+# "walk through", "dig into", "chart"): every widened list invites the next miss.
 _ROUND_2_PROMPTS = [
     "Outline the tool registration flow in src/decode/tools/registry.py and note which module each "
     "tool lives in with file:line references.",
@@ -613,9 +610,8 @@ _ROUND_2_PROMPTS = [
     "back up your finding with file:line detail.",
 ]
 
-# More phrasings, spanning the styles a keyword guard is worst at. The no-punctuation one is why
-# the "reject when NO signal at all" check was dropped: it names no path, asks no "?", and uses no
-# question/scope/report keyword, yet is a perfectly good brief.
+# More phrasings, spanning the styles a keyword guard is worst at. The no-punctuation one names no
+# path, asks no "?", and uses no question/scope/report keyword — yet is a perfectly good brief.
 _VARIED_PROMPTS = [
     # interrogative, no path token at all
     "Which module owns conversation compaction and what is the token threshold that triggers it?",
@@ -648,7 +644,7 @@ _WELL_FORMED_PROMPTS = [
 @pytest.mark.parametrize("prompt", _LAZY_PROMPTS)
 def test_a_lazy_prompt_is_rejected(prompt):
     """The guard's reason to exist: a prompt too thin to brief a colleague with never spawns a child."""
-    assert agent_module._faults(prompt) == [agent_module._TERSE]
+    assert agent_module._fault(prompt) == agent_module._TERSE
 
 
 @pytest.mark.parametrize("prompt", _WELL_FORMED_PROMPTS)
@@ -658,7 +654,7 @@ def test_a_well_formed_prompt_is_never_rejected(prompt):
     Interrogative, imperative, phrasal-verb, declarative, colloquial, punctuation-free, terse — the
     guard must not care. It is a substance FLOOR, not a grader.
     """
-    assert agent_module._faults(prompt) == []
+    assert agent_module._fault(prompt) is None
 
 
 @pytest.mark.parametrize("prompt", _WELL_FORMED_PROMPTS)
@@ -682,13 +678,13 @@ def test_the_substance_floor_is_the_only_rejection_criterion():
 
     A prompt one word under the floor is rejected; the same prompt one word over it passes, even
     with no "?", no path token and no report word. This is what stops the guard from drifting back
-    into an AND-gate over fuzzy keyword lists, which false-rejected 6 of 8 realistic briefs.
+    into a keyword grader.
     """
     under = " ".join(["word"] * (agent_module.MIN_PROMPT_WORDS - 1))
     over = " ".join(["word"] * agent_module.MIN_PROMPT_WORDS)
 
-    assert agent_module._faults(under) == [agent_module._TERSE]
-    assert agent_module._faults(over) == []
+    assert agent_module._fault(under) == agent_module._TERSE
+    assert agent_module._fault(over) is None
 
 
 async def test_the_nag_names_the_floor_and_never_invents_a_missing_part(tmp_path, mocker):
@@ -714,8 +710,8 @@ async def test_the_nag_names_the_floor_and_never_invents_a_missing_part(tmp_path
 
 def test_the_guard_is_pure_and_deterministic_on_repeat():
     """Same input, same outcome — no LLM, no I/O, no clock, no randomness (ADR-0017 §3)."""
-    assert agent_module._faults("explore") == agent_module._faults("explore")
-    assert agent_module._faults(_PROMPT_A) == agent_module._faults(_PROMPT_A) == []
+    assert agent_module._fault("explore") == agent_module._fault("explore")
+    assert agent_module._fault(_PROMPT_A) is agent_module._fault(_PROMPT_A) is None
 
 
 async def test_an_under_specified_prompt_raises_model_retry_naming_its_index_and_what_is_missing(
@@ -1154,7 +1150,7 @@ async def test_a_retry_never_re_runs_the_substance_guard_over_the_nudged_prompt(
     assert spy.call_count == 1  # …and the guard still ran exactly once
     assert spy.call_args.args[0] == [_PROMPT_A]
     # Belt-and-braces: even IF it were re-run, the nudged prompt passes the floor (it is longer).
-    assert agent_module._faults(_PROMPT_A + agent_module._RETRY_NUDGE) == []
+    assert agent_module._fault(_PROMPT_A + agent_module._RETRY_NUDGE) is None
 
 
 async def test_a_bad_report_body_never_reaches_a_warning_log_line(tmp_path, mocker, caplog):

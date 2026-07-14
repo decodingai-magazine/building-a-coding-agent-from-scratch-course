@@ -65,29 +65,17 @@ AGENT_TOOL_RETRIES = 3
 # --- The substance guard (ADR-0017 §3) --------------------------------------------------------
 #
 # A one-word spawn prompt ("explore") produces a useless child, so quality is enforced on the way
-# IN — deterministically, with ZERO extra LLM calls (no scoring model, no I/O, no network): pure
-# string inspection over the prompt the parent model already wrote.
+# IN — deterministically, with ZERO extra LLM calls: pure string inspection over the prompt the
+# parent model already wrote.
 #
-# The guard has exactly ONE rejection criterion: a SUBSTANCE FLOOR, a word count below
-# MIN_PROMPT_WORDS. That is what catches "explore" / "explore the repo" / "look around" — the
-# failure the guard exists to prevent. Nobody briefs a colleague on a codebase in six words.
-#
-# It is deliberately NOT a grader of prompt quality. The three-part shape (QUESTION + SCOPE +
-# REPORT) is COACHING and lives in the tool description, where the model reads it BEFORE writing;
-# it is not a rejection predicate. An earlier revision made it one — an AND-gate over three fuzzy
-# keyword sets — and it false-rejected 6 of 8 realistic briefs, because the false-reject
-# probability COMPOUNDS across three independent fuzzy tests: "note", "describe", "walk through",
-# "break down", "give me a table" are all perfectly good phrasings that no closed word list has,
-# and every list you widen invites the next miss. It never converges. A permissive OR over the same
-# three signals (reject only if NONE is present) was tried next and still false-rejected a good
-# 17-word brief ("Tell me every place the harness shells out to git ... and quote the exact
-# commands" — no "?", no path token, no keyword), so it was dropped too. The floor stands alone.
-#
-# This is the bias the guard MUST have, because the two errors are NOT symmetric:
-#   * a false ACCEPT merely restores the pre-guard status quo (one weak child report);
-#   * a false REJECT actively breaks a run — it burns a model turn and eats AGENT_TOOL_RETRIES.
-# So: when in doubt, ACCEPT. The floor stops SHORT gaming, not PADDED gaming — keyword salad or
-# rambling stretched past the floor gets through, and that is the accepted trade, not an oversight.
+# THE RULE, whole: reject a prompt iff its word count is under MIN_PROMPT_WORDS. A substance FLOOR,
+# and nothing else — no keyword set gets a vote. The three-part shape (QUESTION + SCOPE + REPORT) is
+# COACHING in the tool description, never a rejection predicate; when in doubt, ACCEPT, because a
+# false accept merely costs one weak report while a false reject BREAKS a run (it burns a model turn
+# and eats AGENT_TOOL_RETRIES). Two keyword-grader designs were built and demolished on exactly that
+# asymmetry — ADR-0017 §3 records why, and the anti-whack-a-mole battery in
+# ``tests/unit/decode/tools/test_agent.py`` pins the briefs they falsely rejected. Read the ADR
+# before widening this.
 MIN_PROMPT_WORDS = 8
 
 # The one rejection reason — the ModelRetry's vocabulary, and the tests'. It is TRUE of every
@@ -96,16 +84,14 @@ MIN_PROMPT_WORDS = 8
 _TERSE = f"too terse — give more detail (aim for at least {MIN_PROMPT_WORDS} words)"
 
 
-def _faults(prompt: str) -> list[str]:
-    """Every reason the guard rejects ``prompt`` — today, exactly one: the substance floor.
+def _fault(prompt: str) -> str | None:
+    """Why the guard rejects ``prompt``, or ``None`` if it is accepted (ADR-0017 §3).
 
-    Empty list == the prompt is accepted. Deterministic and pure — same string in, same list out;
-    no LLM, no I/O, no network, no clock. A list (not a bool) because it is also the nag's clause
-    list, and because the ModelRetry must say WHAT is wrong, not merely that something is.
+    Deterministic and pure — same string in, same answer out; no LLM, no I/O, no network, no clock.
     """
     if len(prompt.split()) < MIN_PROMPT_WORDS:
-        return [_TERSE]
-    return []
+        return _TERSE
+    return None
 
 
 def _check_substance(prompts: list[str]) -> None:
@@ -116,9 +102,9 @@ def _check_substance(prompts: list[str]) -> None:
     1-based, matching the ``## Subagent i`` section labels the model already sees.
     """
     problems = [
-        f'- Prompt {index} ("{prompt}"): {"; ".join(faults)}.'
+        f'- Prompt {index} ("{prompt}"): {fault}.'
         for index, prompt in enumerate(prompts, start=1)
-        if (faults := _faults(prompt))
+        if (fault := _fault(prompt))
     ]
     if not problems:
         return

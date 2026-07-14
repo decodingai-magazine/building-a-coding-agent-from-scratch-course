@@ -220,3 +220,9 @@ child to be conversational or verbose, so there is no fight between base and per
   manual diff read + line-level frontmatter verification + live-model behavioral check instead.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-14 — Acceptance Review
+
+**VERDICT: ACCEPT**
+
+Reviewed as part of the subagent-fanout feature acceptance (PR #33). `src/decode/agents/builtin/explore.md` re-read in full: frontmatter intact (`read/glob/grep/lsp`, `subagent: true`), body states Finding / `file:line` Evidence / Trace, the sibling-shared-budget compression contract, and lead-with-the-finding; zero synthesis/diagram wording (107's guard test pins all four personas). The Tester's live child report (Finding→Evidence→Trace with accurate citations) proves the contract lands with a real model.
