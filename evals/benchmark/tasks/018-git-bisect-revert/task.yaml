@@ -1,0 +1,17 @@
+id: 018-git-bisect-revert
+prompt: |
+  The current directory is a git repository on branch `main` whose test suite (test_calc.py against
+  calc.py) is currently failing. The history has several commits; exactly one of them introduced the
+  bug, while the commits before and after it are fine.
+
+  Find the single commit that broke the tests and revert it with `git revert`, so that the fix is
+  recorded as a new revert commit on top of the history (a commit whose message begins with
+  "Revert"). Do NOT rewrite, amend, rebase, or drop any existing commit — the original commits must
+  stay exactly as they are, with the revert added on top. When you are done the full test suite must
+  pass.
+max_steps: 35
+difficulty: hard
+tags:
+  - git
+  - version-control
+  - debugging
