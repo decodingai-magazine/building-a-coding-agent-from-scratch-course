@@ -4,7 +4,7 @@
 
 This repository is an **educational, open-source course** that builds `decode` from scratch, step by step. It is a single Python package (`decode`); each module under `src/decode/` maps to one part of the architecture, and every non-obvious design choice ships as an ADR in [`docs/adr/`](docs/adr/).
 
-**What's built today:** the agent loop + TUI + gated tools + memory + session log ([ADR-0002](docs/adr/0002-milestone-1-vanilla-agent-architecture.md)) · permission modes & agents catalog ([ADR-0003](docs/adr/0003-milestone-2-permission-system-and-agents-catalog.md)) · skills ([ADR-0004](docs/adr/0004-milestone-3-skills.md)) · selectable LLM providers ([ADR-0005](docs/adr/0005-multi-llm-provider-support.md)) · context compaction ([ADR-0006](docs/adr/0006-conversation-compaction.md)) · LSP code intelligence ([ADR-0007](docs/adr/0007-lsp-integration.md)) · the Kitaru durable runtime + replay ([ADR-0008](docs/adr/0008-kitaru-durable-runtime.md), [ADR-0010](docs/adr/0010-runtime-replay.md)) · sandboxed isolated workspaces ([ADR-0011](docs/adr/0011-sandboxing-and-credential-proxy.md), [ADR-0012](docs/adr/0012-isolated-workspace.md), [ADR-0016](docs/adr/0016-drop-credential-proxy.md)) · Explore subagents ([ADR-0013](docs/adr/0013-explore-subagents.md)) · Opik observability ([ADR-0014](docs/adr/0014-opik-observability.md)) · environment-scoped secrets ([ADR-0015](docs/adr/0015-environment-bucket-secrets.md)). MCP tools and evaluations are later milestones.
+**What's built today:** the agent loop + TUI + gated tools + memory + session log ([ADR-0002](docs/adr/0002-milestone-1-vanilla-agent-architecture.md)) · permission modes & agents catalog ([ADR-0003](docs/adr/0003-milestone-2-permission-system-and-agents-catalog.md)) · skills ([ADR-0004](docs/adr/0004-milestone-3-skills.md)) · selectable LLM providers ([ADR-0005](docs/adr/0005-multi-llm-provider-support.md)) · context compaction ([ADR-0006](docs/adr/0006-conversation-compaction.md)) · LSP code intelligence ([ADR-0007](docs/adr/0007-lsp-integration.md)) · the Kitaru durable runtime + replay ([ADR-0008](docs/adr/0008-kitaru-durable-runtime.md), [ADR-0010](docs/adr/0010-runtime-replay.md)) · sandboxed isolated workspaces ([ADR-0011](docs/adr/0011-sandboxing-and-credential-proxy.md), [ADR-0012](docs/adr/0012-isolated-workspace.md), [ADR-0016](docs/adr/0016-drop-credential-proxy.md)) · Explore subagents ([ADR-0013](docs/adr/0013-explore-subagents.md)) · Opik observability ([ADR-0014](docs/adr/0014-opik-observability.md)) · environment-scoped secrets ([ADR-0015](docs/adr/0015-environment-bucket-secrets.md)) · the four-track eval suite ([ADR-0017](docs/adr/0017-decode-eval-suite.md)). MCP tools are a later milestone.
 
 ## Requirements
 
@@ -207,6 +207,21 @@ OPIK_API_KEY=your-comet-key     # free at comet.com; optional: OPIK_WORKSPACE, O
 ```
 
 One Trace per REPL turn (a session's traces group into one Thread; the approve/resume leg of a gated tool stays in the same trace) and one Trace per `decode run` (Thread = the Kitaru exec id; stdout stays pipe-clean). Explore subagent children nest inside the parent turn's trace with visible token spend; memory write-back and compaction ride along too. **Unset** (the default) it's a silent no-op — no line, no spans, no network. Self-host by pointing `OPIK_URL_OVERRIDE` at your instance's OTLP base; export never touches global `OTEL_*` env vars.
+
+## Evaluating decode
+
+Beyond tracing, decode ships a **four-track eval suite** — human-judged demo skills, an outcome
+benchmark, harness-behavior regression probes, and an online pass over live traffic — over one Opik
+harness ([ADR-0017](docs/adr/0017-decode-eval-suite.md)):
+
+```bash
+make eval-benchmark      # outcome benchmark (pass@k / pass^k / cost); ARGS='--trials 3 --sandbox modal'
+make eval-regression     # per-branch behavior regression ritual + threshold gate
+```
+
+Both need `OPIK_API_KEY` + your provider's key, cost real money, and are **never** part of `make ci` —
+without keys they skip friendly. The full map of all four tracks (how to run each demo, every flag, the
+threshold gate, and the online-eval story) is [`docs/evals.md`](docs/evals.md).
 
 ## Develop
 
