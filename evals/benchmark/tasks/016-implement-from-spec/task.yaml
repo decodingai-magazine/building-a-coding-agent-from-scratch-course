@@ -1,0 +1,18 @@
+id: 016-implement-from-spec
+prompt: |
+  The file intervals.py in the current directory defines a function merge_intervals with a full
+  docstring but no implementation (it raises NotImplementedError). Implement merge_intervals so it
+  behaves exactly as the docstring specifies:
+
+  Given a list of [start, end] integer intervals (each with start <= end), return a new list of the
+  merged intervals sorted by start, where any intervals that overlap or merely touch are combined
+  into one. Touching intervals such as [1, 2] and [2, 3] merge into [1, 3]. The input list must not
+  be mutated, and an empty input returns an empty list. Return plain [start, end] lists.
+
+  Keep the function's name and signature. Do not change the docstring.
+max_steps: 30
+difficulty: hard
+tags:
+  - python
+  - algorithms
+  - implementation

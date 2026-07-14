@@ -74,6 +74,30 @@ def test_get_executor_none_keeps_the_eager_local_executor(monkeypatch):
     assert isinstance(selected, LocalExecutor)
 
 
+def test_active_executor_is_the_public_read_accessor(monkeypatch):
+    # ``active_executor`` is the documented public seam accessor (out-of-tree callers must not reach
+    # for ``_get_executor``): it returns exactly what the private getter memoizes.
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "none")
+    bash_mod.reset_executor()
+
+    public = bash_mod.active_executor()
+
+    assert public is bash_mod._get_executor()
+    assert isinstance(public, LocalExecutor)
+
+
+def test_active_executor_docker_returns_the_warmed_memo(monkeypatch):
+    # In a sandbox mode it shares the same memo — the executor a prior warm/select produced, so an
+    # out-of-tree caller (the eval harness) reads the already-warmed executor.
+    monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr("decode.sandbox.select_executor", lambda mode: SimpleNamespace(mode=mode))
+    bash_mod.reset_executor()
+
+    selected = bash_mod._get_executor()
+
+    assert bash_mod.active_executor() is selected
+
+
 def test_get_executor_docker_selects_via_the_seam_and_memoizes(monkeypatch):
     monkeypatch.setattr(bash_mod.settings, "sandbox_mode", "docker")
     calls = {"n": 0}

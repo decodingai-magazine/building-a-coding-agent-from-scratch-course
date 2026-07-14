@@ -1,0 +1,12 @@
+id: 005-encoding-normalize
+prompt: |
+  The current directory contains two text files, cafe.txt and zurich.txt, that were saved in legacy
+  character encodings and no longer read as UTF-8. Re-save each file in place as UTF-8 (no byte-order
+  mark) so that its human-readable text is preserved exactly. cafe.txt was written in Latin-1
+  (ISO-8859-1) and zurich.txt was written in UTF-16.
+max_steps: 15
+difficulty: easy
+tags:
+  - encoding
+  - text
+  - unicode

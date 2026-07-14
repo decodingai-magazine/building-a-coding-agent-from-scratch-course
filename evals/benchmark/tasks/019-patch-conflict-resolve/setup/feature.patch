@@ -1,0 +1,8 @@
+--- a/greet.py
++++ b/greet.py
+@@ -5,4 +5,4 @@
+
+
+ def greet(name: str) -> str:
+-    return f"Hello, {name}"
++    return f"Hi there, {name}!"

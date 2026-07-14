@@ -1,0 +1,15 @@
+id: 017-flaky-test-hunt
+prompt: |
+  The current directory holds a small module registry.py and its test file test_registry.py. The
+  test suite is unreliable: whether it passes depends on the order the tests run in, because the two
+  tests share mutable state that leaks from one into the next.
+
+  Find and fix the root cause in registry.py so the whole suite passes reliably, no matter what
+  order its tests execute in and however many times it is run. Fix the source code — do not weaken or
+  delete the tests, and do not change what each test asserts.
+max_steps: 25
+difficulty: hard
+tags:
+  - python
+  - testing
+  - debugging

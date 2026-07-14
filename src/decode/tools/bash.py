@@ -80,6 +80,18 @@ def _get_executor() -> CommandExecutor:
     return _EXECUTOR
 
 
+def active_executor() -> CommandExecutor:
+    """The session's memoized executor behind the seam — the public read accessor (ADR-0011 §4).
+
+    The executor counterpart to :func:`active_backend`: returns the same :class:`CommandExecutor`
+    ``bash`` rides, selecting it by ``SANDBOX_MODE`` on first use (``none`` keeps the eager
+    :class:`LocalExecutor`; ``docker`` / ``modal`` lazily swap in the sandbox executor). Exposed so an
+    out-of-tree caller (the eval harness' per-run sandbox, which warms then drives the executor
+    directly) can read the warmed executor without reaching for the private getter.
+    """
+    return _get_executor()
+
+
 async def warm_executor(workspace: Path) -> None:
     """Eagerly start the selected sandbox backend at REPL launch (ADR-0011 §4; ADR-0012 §2).
 

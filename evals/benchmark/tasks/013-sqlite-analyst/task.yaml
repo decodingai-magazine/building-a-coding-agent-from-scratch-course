@@ -1,0 +1,15 @@
+id: 013-sqlite-analyst
+prompt: |
+  The SQLite database orders.db in the current directory has two tables: customers(id, name) and
+  orders(id, customer_id, amount). Each row in orders records one purchase amount made by the
+  customer with the matching id.
+
+  Determine which customer has the highest total revenue — the largest sum of `amount` across all of
+  that customer's orders — and write that customer's name, and nothing else, to a file named
+  answer.txt in the current directory.
+max_steps: 15
+difficulty: medium
+tags:
+  - sqlite
+  - sql
+  - data

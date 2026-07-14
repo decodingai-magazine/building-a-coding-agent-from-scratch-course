@@ -1,0 +1,16 @@
+id: 006-log-forensics
+prompt: |
+  The file access.log in the current directory is a web server access log in the Common Log Format;
+  each line begins with a client IP address and the HTTP status code is the second-to-last
+  whitespace-separated field on the line.
+
+  Write a Python script named ban_ips.py in the current directory that reads access.log and prints to
+  standard output a JSON array of the client IP addresses that produced 5 or more responses with
+  status code 404. Each offending IP must appear exactly once in the array. The script must print
+  only that JSON array (nothing else) when run with no arguments.
+max_steps: 15
+difficulty: easy
+tags:
+  - logs
+  - python
+  - forensics

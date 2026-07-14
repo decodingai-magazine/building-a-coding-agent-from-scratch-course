@@ -1,0 +1,16 @@
+order_id,order_date,product,region,amount
+1001,2024-01-15,Widget,North,"$1,234.56"
+1002,01/17/2024,Gadget,South,$500.00
+1003,18-Jan-2024,Widget,East,"$2,000.00"
+1004,2024-01-20,Sprocket,,€99
+1005,01/22/2024,Gadget,West,
+1001,2024-01-15,Widget,North,"$1,234.56"
+1006,25-Jan-2024,Widget,North,$750.25
+1007,2024-02-01,Sprocket,South,"$1,500.00"
+1008,02/03/2024,Gadget,,€250
+1009,05-Feb-2024,Widget,East,"$3,120.00"
+1010,2024-02-10,Sprocket,West,$0.00
+1011,02/12/2024,Gadget,North,
+1012,14-Feb-2024,Widget,South,"$1,999.99"
+1007,2024-02-01,Sprocket,South,"$1,500.00"
+1013,2024-02-20,Sprocket,East,$425.50

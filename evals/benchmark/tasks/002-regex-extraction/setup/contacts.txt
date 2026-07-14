@@ -1,0 +1,11 @@
+Onboarding notes — Q3
+=====================
+
+Hi team, please reach out to alice@example.com for anything about onboarding this week.
+Bob (bob@work.io) handled the last release; when in doubt cc carol@example.com as well.
+
+Reminder: alice@example.com already replied to the thread, so no need to ping again.
+For billing questions use billing@corp.net — that inbox is monitored daily.
+
+Duplicate on purpose: bob@work.io shows up twice in these notes. Our new hire is
+dave@example.com and should be added to the rotation. Thanks!

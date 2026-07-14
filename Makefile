@@ -31,6 +31,16 @@ pre-commit:  ## Fast gate: format-check + lint-check + unit tests.
 	$(MAKE) lint-check
 	$(MAKE) unit-tests
 
+eval-benchmark:  ## Outcome benchmark as an Opik experiment (needs OPIK_API_KEY + provider key; skips friendly without). Costs money; never in CI. Pass flags via ARGS='--trials 3 --sandbox modal'.
+	@if uv run python -m evals.harness.keys; then \
+		uv run python -m evals benchmark $(ARGS); \
+	fi
+
+eval-regression:  ## Pre-merge behavior regression gate: sync probes + threshold gate (needs OPIK_API_KEY + provider key; skips friendly without). Costs money; never in CI.
+	@if uv run python -m evals.harness.keys; then \
+		uv run python -m evals sync --no-benchmark --regression && uv run pytest evals/regression/test_thresholds.py; \
+	fi
+
 sync-secrets:  ## Mirror .env into the Kitaru environment bucket decode-$(ENV). Usage: make sync-secrets ENV=staging
 	@[ -n "$(ENV)" ] || { echo "Usage: make sync-secrets ENV=dev|staging|prod   (one-way: .env -> the decode-<ENV> bucket)"; exit 1; }
 	uv run python scripts/sync_secrets.py --env $(ENV)
@@ -55,4 +65,4 @@ help:  ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit sync-secrets build install-cli uninstall-cli ci help
+.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression sync-secrets build install-cli uninstall-cli ci help
