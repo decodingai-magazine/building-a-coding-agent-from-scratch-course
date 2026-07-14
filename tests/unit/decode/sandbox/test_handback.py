@@ -14,7 +14,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from decode.sandbox.handback import ShipResult, ship_workspace
+import pytest
+from pydantic import SecretStr
+
+from decode.config.settings import settings
+from decode.sandbox.handback import ShipResult, _https_push_target, ship_workspace
 from decode.sandbox.workspace import prepare_workspace, seed_skills, workspace_dir
 
 
@@ -115,9 +119,11 @@ def test_dirty_workspace_captured_on_local_branch_even_when_push_fails(tmp_path)
     assert isinstance(result, ShipResult)
     assert result.pushed is False
     assert result.branch == "decode/abcd1234"
-    # The failure message names the branch AND its .decode/sandbox location (never-lose-results).
+    # The failure message names the branch AND the workspace it is in (never-lose-results), and does
+    # not promise durability it cannot give — a remote run's container takes that branch with it.
     assert "decode/abcd1234" in result.message
-    assert ".decode/sandbox" in result.message
+    assert str(workspace) in result.message
+    assert "survives only as long as that workspace does" in result.message
     # The local branch exists and its committed tree carries the uncommitted work.
     assert _branch_exists(workspace, "decode/abcd1234")
     assert "agent_work.txt" in _git_out(workspace, "ls-tree", "--name-only", "decode/abcd1234")
@@ -299,6 +305,68 @@ def test_reship_fast_forwards_the_same_branch(tmp_path):
     assert second_tip != first_tip
     tree = _git_out(source, "ls-tree", "--name-only", "-r", "decode/0badf00d")
     assert "step1.txt" in tree and "step2.txt" in tree
+
+
+# the push authenticates with SANDBOX_GIT_TOKEN when there is no ambient credential (ADR-0016 §2,4)
+
+
+def test_push_authenticates_with_the_sandbox_git_token(mocker, monkeypatch, tmp_path):
+    """With ``SANDBOX_GIT_TOKEN`` set, the push carries the Worker's credential helper + ``GITHUB_TOKEN``.
+
+    The headless flow container has no ambient git credential, so an ambient-only push could never
+    land the Session Branch there (it silently didn't — a real run's work only survived because the
+    model had opened its own PR). The token rides in the ENV, never in argv, and the helper chain is
+    reset first so a host keychain cannot answer ahead of it.
+    """
+    monkeypatch.setattr(settings, "sandbox_git_token", SecretStr("ghp_handback_secret"))
+    source = _make_git_repo(tmp_path / "source")
+    home = tmp_path / "home"
+    workspace = _clone_workspace(source, home)
+    (workspace / "work.txt").write_text("results\n", encoding="utf-8")
+
+    calls: list[tuple[list[str], dict]] = []
+    real_run = subprocess.run
+
+    def _record(cmd, **kwargs):
+        calls.append((list(cmd), kwargs))
+        return real_run(cmd, **kwargs)
+
+    mocker.patch("decode.sandbox.handback.subprocess.run", side_effect=_record)
+
+    result = ship_workspace(home, repo=str(source), session_id="cafed00d-9999")
+
+    assert result.pushed is True  # origin is a local path here, so the push still lands
+    assert _branch_exists(source, "decode/cafed00d")
+    push = next(cmd for cmd, _ in calls if "push" in cmd)
+    assert "credential.helper=" in push  # the reset, ahead of ours
+    assert any(arg.startswith("credential.helper=!f()") for arg in push)
+    env = next(kwargs["env"] for cmd, kwargs in calls if "push" in cmd)
+    assert env["GITHUB_TOKEN"] == "ghp_handback_secret"
+    assert "ghp_handback_secret" not in " ".join(push)  # env only — never a host-visible argv
+
+
+@pytest.mark.parametrize(
+    ("origin", "expected"),
+    [
+        ("git@github.com:owner/repo.git", "https://github.com/owner/repo.git"),
+        ("ssh://git@github.com/owner/repo.git", "https://github.com/owner/repo.git"),
+        ("https://github.com/owner/repo.git", "https://github.com/owner/repo.git"),
+        ("/local/path/to/source", None),  # nothing for a token to authenticate — push to `origin`
+    ],
+)
+def test_ssh_origin_is_pushed_over_https(tmp_path, origin, expected):
+    """A model that re-points ``origin`` at SSH (``gh repo`` does) must not break the token push.
+
+    The export sweep carries the model's rewritten ``.git/config`` back, so the hand-back can find an
+    SSH ``origin`` even though it cloned over HTTPS — a token authenticates only git's HTTPS
+    transport, so the push target is the HTTPS form of the same remote.
+    """
+    source = _make_git_repo(tmp_path / "source")
+    home = tmp_path / "home"
+    workspace = _clone_workspace(source, home)
+    _git(workspace, "remote", "set-url", "origin", origin)
+
+    assert _https_push_target(workspace) == expected
 
 
 # the security crux: all git host-side, never through the executor/backend seam (AC8)

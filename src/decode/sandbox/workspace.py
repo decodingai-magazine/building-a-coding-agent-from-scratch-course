@@ -92,14 +92,17 @@ def git_config_pairs() -> list[tuple[str, str]]:
 # ``gh`` reads it natively; the credential helper below feeds it to git's HTTPS transport.
 GIT_TOKEN_ENV = "GITHUB_TOKEN"
 
-# Configured in a Worker whose ``SANDBOX_GIT_TOKEN`` is set — one mechanism, both backends
-# (ADR-0016 §2): echoes the RUNTIME ``$GITHUB_TOKEN`` as the HTTPS password so ``git push`` works.
-# Single-quoted so the token is read at push time, never expanded into this command line (nor, on
-# modal, frozen into a cached image layer).
-GIT_CREDENTIAL_HELPER = (
-    "git config --global credential.helper "
-    "'!f() { echo username=x-access-token; echo \"password=$GITHUB_TOKEN\"; }; f'"
+# The credential-helper VALUE: echoes the RUNTIME ``$GITHUB_TOKEN`` as the HTTPS password so a
+# ``git push`` over HTTPS authenticates. Reads the env var at push time, so the token is never
+# expanded into a command line (nor, on modal, frozen into a cached image layer). Used by both the
+# Worker (via the config command below) and the host-side Hand-back (``handback._push``).
+GIT_CREDENTIAL_HELPER_VALUE = (
+    '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
 )
+
+# Configured in a Worker whose ``SANDBOX_GIT_TOKEN`` is set — one mechanism, both backends
+# (ADR-0016 §2).
+GIT_CREDENTIAL_HELPER = f"git config --global credential.helper '{GIT_CREDENTIAL_HELPER_VALUE}'"
 
 
 def sandbox_git_token() -> str:
