@@ -31,7 +31,8 @@ AR_REPO="kitaru-images"
 REGISTRY="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}"
 VM="kitaru-server"
 IP_NAME="kitaru-server-ip"
-FIREWALL="allow-kitaru"
+FIREWALL="allow-kitaru-tls"       # 80 (ACME) + 443 (TLS). :8080 is never exposed.
+LEGACY_FIREWALL="allow-kitaru"    # the pre-TLS rule that opened :8080 — deleted on `up`
 STACK="prod-modal"
 
 # Pin the server image to the client: `kitaru --version` and the container must move together.
@@ -53,11 +54,21 @@ warn() { printf '\033[33m!!\033[0m  %s\n' "$*" >&2; }
 die()  { printf '\033[31mxx\033[0m  %s\n' "$*" >&2; exit 1; }
 have() { gcloud "$@" >/dev/null 2>&1; }
 
+server_ip() {
+  gcloud compute addresses describe "${IP_NAME}" --region="${REGION}" \
+    --format='value(address)' 2>/dev/null || true
+}
+
+# Let's Encrypt will not issue for a bare IP, and the server must be reachable from Modal — so it
+# needs a name. nip.io resolves <ip>.nip.io to <ip> with no DNS to own, which is enough for ACME.
+server_domain() {
+  local ip; ip="$(server_ip)"
+  [ -n "${ip}" ] && printf '%s.nip.io' "${ip}"
+}
+
 kitaru_url() {
-  local ip
-  ip="$(gcloud compute addresses describe "${IP_NAME}" --region="${REGION}" \
-    --format='value(address)' 2>/dev/null || true)"
-  [ -n "${ip}" ] && printf 'http://%s:8080' "${ip}"
+  local domain; domain="$(server_domain)"
+  [ -n "${domain}" ] && printf 'https://%s' "${domain}"
 }
 
 # ---------------------------------------------------------------------------- preflight
@@ -194,23 +205,55 @@ ensure_server() {
   if have compute firewall-rules describe "${FIREWALL}" --project="${PROJECT}"; then
     log "firewall ${FIREWALL} exists"
   else
-    warn "The next rule opens tcp:8080 to 0.0.0.0/0. The server speaks plain HTTP, so its admin"
-    warn "password, API keys and secret values all cross the internet unencrypted. It has to be"
-    warn "reachable from Modal, whose egress IPs cannot be pinned on standard plans. Course-grade"
-    warn "only: put nothing in its secret store you would not rotate."
+    warn "The next rule opens tcp:80 and tcp:443 to 0.0.0.0/0. Port 80 is required — Let's Encrypt"
+    warn "validates the ACME challenge over it — and Caddy redirects it to HTTPS thereafter. The"
+    warn "server must stay reachable from Modal, whose egress IPs cannot be pinned on standard"
+    warn "plans, so it cannot be narrowed to your laptop. TLS stops eavesdropping, NOT reachability:"
+    warn "the login page remains exposed to the internet, so treat its secrets as rotatable."
     read -r -p "Create the firewall rule? [y/N] " reply
-    [ "${reply}" = "y" ] || die "aborted — the stack cannot work until Modal can reach :8080"
+    [ "${reply}" = "y" ] || die "aborted — the stack cannot work until Modal can reach the server"
     gcloud compute firewall-rules create "${FIREWALL}" --project="${PROJECT}" \
-      --allow=tcp:8080 --target-tags=kitaru-server
+      --allow=tcp:80,tcp:443 --target-tags=kitaru-server \
+      --description="Caddy: ACME HTTP-01 challenge (80) + TLS (443)"
   fi
 
+  # :8080 is Caddy's upstream on localhost only. If an older deployment exposed it, close it.
+  if have compute firewall-rules describe "${LEGACY_FIREWALL}" --project="${PROJECT}"; then
+    log "removing the pre-TLS rule ${LEGACY_FIREWALL} (:8080 no longer needs to be public)"
+    gcloud compute firewall-rules delete "${LEGACY_FIREWALL}" --project="${PROJECT}" --quiet
+  fi
+}
+
+# The Kitaru server ships an HSTS header (`max-age=63072000`) while serving plain HTTP: a browser
+# obeys it, upgrades the next request to HTTPS, hits a port that speaks none, and the dashboard dies
+# on `Unexpected token 'I' … is not valid JSON` — that string is uvicorn's "Invalid HTTP request
+# received." Caddy makes the header true, and encrypts the admin password and every secret in transit.
+ensure_tls() {
+  local domain; domain="$(server_domain)"
+
+  log "installing Caddy in front of the server (TLS for ${domain})"
+  gcloud compute ssh "${VM}" --zone="${ZONE}" --project="${PROJECT}" --quiet --command="
+    sudo mkdir -p /var/caddy/data /var/caddy/config
+    sudo tee /var/caddy/Caddyfile >/dev/null <<'CADDY'
+${domain} {
+	reverse_proxy localhost:8080
+}
+CADDY
+    sudo docker rm -f caddy >/dev/null 2>&1 || true
+    sudo docker run -d --name caddy --restart=always --network host \
+      -v /var/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
+      -v /var/caddy/data:/data \
+      -v /var/caddy/config:/config \
+      caddy:2-alpine >/dev/null
+  " || die "could not install Caddy over SSH"
+
   local url; url="$(kitaru_url)"
-  log "waiting for ${url}/health (first boot runs DB migrations)"
+  log "waiting for ${url}/health (first boot runs DB migrations; ACME retries every 60s)"
   for _ in $(seq 1 60); do
-    if curl -sf -m 5 "${url}/health" >/dev/null 2>&1; then log "server up"; return 0; fi
-    sleep 5
+    if curl -sf -m 8 "${url}/health" >/dev/null 2>&1; then log "server up over TLS"; return 0; fi
+    sleep 10
   done
-  die "server never became healthy — check: gcloud compute ssh ${VM} --zone=${ZONE} --command='sudo docker logs \$(sudo docker ps -aqf name=klt-${VM})'"
+  die "no healthy TLS endpoint — check: gcloud compute ssh ${VM} --zone=${ZONE} --command='sudo docker logs caddy'"
 }
 
 # ---------------------------------------------------------------------------- §4 login + stack
@@ -303,6 +346,7 @@ cmd_up() {
   ensure_bucket
   ensure_registry
   ensure_server
+  ensure_tls
   ensure_login
   ensure_stack
   ensure_secrets
@@ -339,6 +383,7 @@ cmd_down() {
 
   gcloud compute instances delete "${VM}" --zone="${ZONE}" --project="${PROJECT}" --quiet || true
   gcloud compute firewall-rules delete "${FIREWALL}" --project="${PROJECT}" --quiet || true
+  gcloud compute firewall-rules delete "${LEGACY_FIREWALL}" --project="${PROJECT}" --quiet || true
   gcloud compute addresses delete "${IP_NAME}" --region="${REGION}" --project="${PROJECT}" --quiet || true
   gcloud storage rm -r "${BUCKET}" || true
   gcloud artifacts repositories delete "${AR_REPO}" --location="${REGION}" --project="${PROJECT}" --quiet || true
@@ -361,7 +406,8 @@ cmd_status() {
   printf 'bucket     %s\n' "$(have storage buckets describe "${BUCKET}" && echo "${BUCKET}" || echo '<none>')"
   printf 'registry   %s\n' "$(have artifacts repositories describe "${AR_REPO}" --location="${REGION}" && echo "${REGISTRY}" || echo '<none>')"
   printf 'vm         %s\n' "$(gcloud compute instances describe "${VM}" --zone="${ZONE}" --format='value(status)' 2>/dev/null || echo '<none>')"
-  printf 'firewall   %s\n' "$(have compute firewall-rules describe "${FIREWALL}" && echo "${FIREWALL} (tcp:8080 → 0.0.0.0/0)" || echo '<none>')"
+  printf 'firewall   %s\n' "$(have compute firewall-rules describe "${FIREWALL}" && echo "${FIREWALL} (tcp:80,443 → 0.0.0.0/0)" || echo '<none>')"
+  printf 'tls        %s\n' "$(curl -sf -m 8 "${url}/health" >/dev/null 2>&1 && echo "Let's Encrypt, valid" || echo '<no cert>')"
   printf 'stack      %s\n' "$(cd "${REPO_ROOT}" && uv run kitaru stack current 2>/dev/null \
     | awk -F': ' '/Active stack:/ {print $2; exit}' || echo '<none>')"
   printf '\n'

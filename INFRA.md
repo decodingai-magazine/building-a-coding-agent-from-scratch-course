@@ -146,8 +146,10 @@ gcloud compute ssh kitaru-server --zone=${ZONE} --command='
   sudo chown -R 1000:1000 /var/kitaru &&
   sudo docker restart $(sudo docker ps -aqf name=klt-kitaru-server)'
 
-gcloud compute firewall-rules create allow-kitaru \
-  --allow=tcp:8080 --target-tags=kitaru-server
+# 80 is required: Let's Encrypt validates the ACME challenge over it. Caddy redirects it to HTTPS
+# afterwards. :8080 is never exposed — it is Caddy's upstream on localhost.
+gcloud compute firewall-rules create allow-kitaru-tls \
+  --allow=tcp:80,tcp:443 --target-tags=kitaru-server
 ```
 
 > **`/var/kitaru` must be chowned to UID 1000.** The container runs as UID 1000; the mounted host
@@ -155,21 +157,60 @@ gcloud compute firewall-rules create allow-kitaru \
 > `sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) unable to open database file` and
 > crash-loops forever. This is not a maybe — it happens every time, and the health check just hangs.
 
-> **The firewall rule opens :8080 to `0.0.0.0/0`.** The server speaks plain HTTP, so its admin
-> password, API keys, and every secret value cross the internet unencrypted, and the login endpoint is
-> world-reachable. It *has* to be reachable from Modal, whose egress IPs cannot be pinned on standard
-> plans. Course-grade only: put nothing in this server's secret store you are not willing to rotate.
+> **The firewall opens 80/443 to `0.0.0.0/0`, and that cannot be narrowed.** The server must be
+> reachable *from Modal*, whose egress IPs are not pinnable on standard plans, so the login page stays
+> exposed to the internet — scanners find it within hours. TLS (below) stops eavesdropping, not
+> reachability. The admin password is 24 random bytes; treat everything in the secret store as
+> rotatable.
+
+### TLS — Caddy in front, or the dashboard does not work at all
+
+This is not optional polish. **The Kitaru server sends an HSTS header while serving plain HTTP:**
+
+```
+strict-transport-security: max-age=63072000; includeSubdomains
+```
+
+A browser obeys it, upgrades its next request to HTTPS, hits a port that speaks no TLS, and gets
+uvicorn's plaintext `Invalid HTTP request received.` back — which the dashboard's JS then tries to
+parse as JSON and dies with **`Unexpected token 'I', "Invalid HT"... is not valid JSON`**. The login
+itself succeeds (`POST /api/v1/login → 200`); it is the *next* request that breaks. ZenML ships that
+header because it assumes it is behind TLS. So put it behind TLS.
+
+Let's Encrypt will not issue a certificate for a bare IP, and there is no DNS zone here — so use
+`nip.io`, which resolves `<ip>.nip.io` to `<ip>`:
+
+```bash
+gcloud compute ssh kitaru-server --zone=${ZONE} --command="
+  sudo mkdir -p /var/caddy/data /var/caddy/config
+  sudo tee /var/caddy/Caddyfile >/dev/null <<'CADDY'
+${KITARU_IP}.nip.io {
+	reverse_proxy localhost:8080
+}
+CADDY
+  sudo docker run -d --name caddy --restart=always --network host \
+    -v /var/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
+    -v /var/caddy/data:/data -v /var/caddy/config:/config \
+    caddy:2-alpine"
+```
+
+Caddy obtains the cert on first boot (retrying every 60s until 80/443 are actually open — the ACME
+error reads `Timeout during connect (likely firewall problem)`), renews it forever, and redirects
+`:80` → `:443`. `/data` is a volume so certs survive a reboot. The server URL is then
+`https://<ip>.nip.io`, and `:8080` never needs to leave the VM.
 
 Success criterion — first boot pulls the image and runs DB migrations, so give it 2-3 minutes:
 
 ```bash
-until curl -sf http://${KITARU_IP}:8080/health >/dev/null; do sleep 5; done; echo "server up"
+until curl -sf https://${KITARU_IP}.nip.io/health >/dev/null; do sleep 5; done; echo "server up"
 ```
 
 Notes that bite:
 
 - **Pin the image tag to the client** (`kitaru --version` → `0.18.0`). Upgrades = bump both together.
 - SQLite on the boot disk is the whole database. `gcloud compute disks snapshot` is your backup story.
+- The **dashboard** is the same URL: `https://<ip>.nip.io`, user `admin`, password from
+  `~/.config/decode/kitaru-admin-password` (`pbcopy < …` — do not echo it).
 
 ## 4. Login + the Modal stack
 
@@ -183,7 +224,7 @@ breaks the cycle: an OAuth2 password grant (`POST /api/v1/login`) mints a JWT, w
 `decode-runner` service account and its API key.
 
 ```bash
-uv run kitaru login http://${KITARU_IP}:8080 --api-key "$(cat ~/.config/decode/kitaru-api-key)"
+uv run kitaru login https://${KITARU_IP}.nip.io --api-key "$(cat ~/.config/decode/kitaru-api-key)"
 
 uv run --group remote zenml service-connector register gcp-decode --type gcp \
   --auth-method service-account --project_id=${PROJECT} \
