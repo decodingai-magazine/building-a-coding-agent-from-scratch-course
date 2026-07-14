@@ -55,6 +55,33 @@ def test_render_tool_call_started_is_a_line_not_a_panel():
     assert "ls -la" in text
 
 
+def test_render_tool_call_started_without_a_child_index_carries_no_child_label():
+    # The parent's own tool calls must never look like a subagent's (the default shape is unchanged).
+    text = _render_to_text(
+        render.render_event(events.ToolCallStarted(tool_call_id="t1", name="read", args="loop.py"))
+    )
+
+    assert "child" not in text
+
+
+def test_render_tool_call_started_of_a_subagent_is_indented_and_labelled_with_its_index():
+    # Verbose mode (Ctrl+O): a child's tool call is rendered through decode's OWN renderer, indented
+    # and labelled ``[child N]`` — N is the 1-based prompt index the ``## Subagent N`` fold uses, so a
+    # reader can correlate the two. A child's ``read`` must never be mistaken for the parent's.
+    renderable = render.render_event(
+        events.ToolCallStarted(
+            tool_call_id="t1", name="grep", args='{"pattern": "class .*Agent"}', child_index=2
+        )
+    )
+
+    assert isinstance(renderable, Text)
+    text = _render_to_text(renderable)
+    assert "[child 2]" in text
+    assert "grep" in text
+    assert "class .*Agent" in text
+    assert text.startswith(" ")  # indented under the parent's ``-> agent`` line
+
+
 def test_render_tool_result_is_a_panel_with_output():
     renderable = render.render_event(
         events.ToolResult(tool_call_id="t1", name="bash", output="file.txt")

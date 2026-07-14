@@ -27,22 +27,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import weakref
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from pydantic_ai import DeferredToolRequests, ModelRetry, RunContext, UsageLimits
-from pydantic_ai.messages import ModelResponse, ToolCallPart
+from pydantic_ai.messages import FunctionToolCallEvent, ModelResponse, ToolCallPart
 
-from decode.agent.deps import AgentDeps
+from decode.agent.deps import AgentDeps, EventSink
 from decode.config.settings import settings
+from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.types import PermissionMode
 
 if TYPE_CHECKING:
     # Typing only — none of these is needed at runtime.
-    from pydantic_ai import Agent
-    from pydantic_ai.agent import AgentRunResult
+    from collections.abc import AsyncIterable
 
-    from decode.entities import events
+    from pydantic_ai import Agent
+    from pydantic_ai.agent import AgentRunResult, EventStreamHandler
+    from pydantic_ai.messages import AgentStreamEvent
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +276,54 @@ def _silent_emit(event: events.Event) -> None:
     logger.debug("subagent event (silent): %s", type(event).__name__)
 
 
+def _make_child_emit(parent: AgentDeps, index: int) -> EventSink:
+    """The child's sink: :func:`_silent_emit` by default, the PARENT's sink in Verbose Mode (§8 amendment).
+
+    ``parent.verbose.enabled`` is read at EMIT time — never captured when the child is spawned —
+    because the user presses Ctrl+O *while* a fan-out is running: the very next child event must
+    obey the new state. A child's tool call rides the parent's sink tagged with ``child_index``
+    (its 1-based prompt index), so decode's own renderer indents and labels it ``[child N]``.
+    """
+
+    def child_emit(event: events.Event) -> None:
+        if not parent.verbose.enabled:
+            _silent_emit(event)
+            return
+        if isinstance(event, events.ToolCallStarted):
+            event = replace(event, child_index=index)
+        parent.emit(event)
+
+    return child_emit
+
+
+def _make_child_stream_handler(emit: EventSink) -> EventStreamHandler[AgentDeps]:
+    """Turn the child's run-event stream into decode ``ToolCallStarted`` events on ``emit``.
+
+    A child runs as a nested ``agent.run()``, which does NOT pass through decode's own agent loop —
+    so nothing would otherwise surface its tool calls at all. ``event_stream_handler`` is pydantic-ai's
+    live seam for exactly that (``agent/abstract.py``): it hands us the same ``FunctionToolCallEvent``
+    the parent loop maps, as the child makes each call. Attached on EVERY child (not only when
+    verbose is on) — the toggle is decided downstream, at emit time, in :func:`_make_child_emit`;
+    with it off these events end in ``_silent_emit`` and the TUI is byte-identical to before.
+    Only the CALL is forwarded, never the result: a child's tool outputs are what its report already
+    compresses, and panelling them would bury the parent's own output.
+    """
+
+    async def handler(_ctx: RunContext[AgentDeps], stream: AsyncIterable[AgentStreamEvent]) -> None:
+        async for event in stream:
+            if isinstance(event, FunctionToolCallEvent):
+                call = event.part
+                emit(
+                    events.ToolCallStarted(
+                        tool_call_id=call.tool_call_id,
+                        name=call.tool_name,
+                        args=call.args_as_json_str(),
+                    )
+                )
+
+    return handler
+
+
 async def _deny_permission_resolver(request: PermissionRequest) -> PermissionDecision:
     """Deny safety-net for a child's ``resolve_permission`` — never reached, a read-only child
     never resolves to an ASK; denying is the safe default for an unattended child (ADR-0013 §5)."""
@@ -379,13 +430,13 @@ async def _spawn_child(
     from decode.tools.truncate import truncate  # lazy: mirrors the child-deps imports below
 
     try:
-        report = await _run_attempt(ctx, prompt)
+        report = await _run_attempt(ctx, prompt, index=index)
         if report is None:
             # BAD report → the ONE retry, with the nudge telling the child what to do differently.
             logger.warning(
                 "subagent %d returned an unusable report; retrying once (last try)", index
             )
-            report = await _run_attempt(ctx, prompt + _RETRY_NUDGE)
+            report = await _run_attempt(ctx, prompt + _RETRY_NUDGE, index=index)
     except Exception:
         # One broken child must not discard its siblings — fold an honest note into ITS section.
         logger.warning("explore subagent %d failed (prompt=%r)", index, prompt, exc_info=True)
@@ -399,11 +450,12 @@ async def _spawn_child(
     return truncate(report, max_lines=settings.max_output_lines, max_bytes=max_bytes).text
 
 
-async def _run_attempt(ctx: RunContext[AgentDeps], prompt: str) -> str | None:
+async def _run_attempt(ctx: RunContext[AgentDeps], prompt: str, *, index: int) -> str | None:
     """ONE child attempt: its report text, or ``None`` if the report is BAD (ADR-0013 §5,7,8).
 
-    Builds FRESH, narrowed deps — the parent's ``cwd`` + ``harness_home`` (the child's read scope), a
-    no-op event sink (silent in the TUI), a fresh :class:`~decode.permissions.gate.PermissionGate`, a
+    Builds FRESH, narrowed deps — the parent's ``cwd`` + ``harness_home`` (the child's read scope), its
+    own event sink (silent in the TUI unless Verbose Mode is on — :func:`_make_child_emit`, and
+    ``index`` is what labels its lines ``[child N]``), a fresh :class:`~decode.permissions.gate.PermissionGate`, a
     fresh empty ``task_store``, the headless deny resolvers, and ``active_agent=explore`` — then, under
     the per-loop concurrency semaphore, re-enters the installed main Agent via a nested ``agent.run()``.
     The child is bounded by ``UsageLimits(request_limit=settings.subagent_max_requests)`` and does
@@ -419,10 +471,11 @@ async def _run_attempt(ctx: RunContext[AgentDeps], prompt: str) -> str | None:
     # You may only spawn a *subagent*, never a primary (ADR-0013 §3).
     assert explore.subagent, f"the {_SUBAGENT_PERSONA!r} persona must declare subagent: true"
 
+    child_emit = _make_child_emit(ctx.deps, index)
     child_deps = AgentDeps(
         cwd=ctx.deps.cwd,
         harness_home=ctx.deps.harness_home,
-        emit=_silent_emit,
+        emit=child_emit,
         # A FRESH gate in BYPASS: no harness loop resolves a child's deferred approval, so its
         # read-only tools must run inline (never raise ApprovalRequired) — ADR-0013 §2,5.
         gate=PermissionGate(mode=PermissionMode.BYPASS),
@@ -432,11 +485,15 @@ async def _run_attempt(ctx: RunContext[AgentDeps], prompt: str) -> str | None:
         # ``task_store`` omitted: the default_factory gives each child a fresh empty list.
     )
 
-    logger.debug("spawning explore subagent (prompt=%r)", prompt)
+    logger.debug("spawning explore subagent %d (prompt=%r)", index, prompt)
     async with _semaphore():  # per child ATTEMPT: the ceiling bounds a fan-out wider than it
         result = await _require_main_agent().run(
             prompt,
             deps=child_deps,
             usage_limits=UsageLimits(request_limit=settings.subagent_max_requests),
+            # The child's live tool-call feed (a nested ``run()`` bypasses decode's loop, so this is
+            # the only place its calls exist). It lands in ``child_emit``, which decides — at emit
+            # time — whether Verbose Mode shows it or ``_silent_emit`` swallows it.
+            event_stream_handler=_make_child_stream_handler(child_emit),
         )
     return _usable_report(result)

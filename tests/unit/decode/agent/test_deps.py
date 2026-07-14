@@ -10,7 +10,7 @@ Later tasks widen it further (session_log/task_store).
 
 from pathlib import Path
 
-from decode.agent.deps import AgentDeps
+from decode.agent.deps import AgentDeps, VerboseFlag
 from decode.agents.loader import load_agent
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
@@ -171,6 +171,37 @@ def test_agent_deps_harness_home_is_independent_of_cwd_when_supplied():
     assert deps.cwd == Path("/tmp/project/.decode/sandbox")
     assert deps.harness_home == Path("/tmp/project")
     assert deps.harness_home != deps.cwd
+
+
+def test_agent_deps_verbose_flag_defaults_off_and_is_per_instance():
+    # The Ctrl+O verbose toggle: OFF by default, and a MUTABLE per-instance object (like the gate),
+    # so the TUI keybind can flip it live mid-turn and every reader sees the new value.
+    first = AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
+    )
+    second = AgentDeps(
+        cwd=Path("."),
+        emit=lambda _e: None,
+        gate=PermissionGate(),
+        resolve_permission=_deny_resolver,
+        resolve_user_question=_user_resolver,
+    )
+
+    assert first.verbose.enabled is False
+    assert first.verbose is not second.verbose  # per-instance, never a shared default
+
+
+def test_verbose_flag_toggle_flips_in_place_and_reports_the_new_state():
+    flag = VerboseFlag()
+
+    assert flag.toggle() is True
+    assert flag.enabled is True
+    assert flag.toggle() is False
+    assert flag.enabled is False
 
 
 def test_agent_deps_emit_is_a_callable_field():
