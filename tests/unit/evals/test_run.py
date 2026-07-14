@@ -36,6 +36,7 @@ def test_help_lists_the_eval_tracks():
     assert "benchmark" in result.output
     assert "regression" in result.output
     assert "suite" in result.output
+    assert "online" in result.output
 
 
 def test_benchmark_subcommand_invokes_run_benchmark(mocker):
@@ -168,6 +169,65 @@ def test_suite_subcommand_reports_the_version_gate_when_opik_is_too_old(mocker):
 
     assert result.exit_code != 0
     assert "opik>=2.0" in result.output
+
+
+def test_online_subcommand_prints_thread_scores(mocker):
+    """``evals online`` runs the thread pass and prints one line per scored thread + a total."""
+    mocker.patch("evals.harness.online.online_keys_missing", return_value=[])
+    mocker.patch("evals.harness.online.live_project_name", return_value="decode-prod")
+    mocker.patch("evals.harness.online.run_online_eval", return_value=object())
+    mocker.patch(
+        "evals.harness.online.format_thread_scores",
+        return_value=["sess-1: conversation_coherence=0.88"],
+    )
+
+    result = CliRunner().invoke(cli, ["online"])
+
+    assert result.exit_code == 0, result.output
+    assert "sess-1: conversation_coherence=0.88" in result.output
+    assert "scored 1 thread(s) in decode-prod" in result.output
+
+
+def test_online_subcommand_forwards_the_filter(mocker):
+    """``evals online --filter <oql>`` threads the OQL clause into ``run_online_eval``."""
+    mocker.patch("evals.harness.online.online_keys_missing", return_value=[])
+    mocker.patch("evals.harness.online.live_project_name", return_value="decode-prod")
+    mocker.patch("evals.harness.online.format_thread_scores", return_value=[])
+    run_online = mocker.patch("evals.harness.online.run_online_eval", return_value=object())
+
+    result = CliRunner().invoke(cli, ["online", "--filter", 'status = "inactive"'])
+
+    assert result.exit_code == 0, result.output
+    assert run_online.call_args.kwargs["filter_string"] == 'status = "inactive"'
+
+
+def test_online_subcommand_skips_friendly_without_keys(mocker):
+    """Missing keys → a friendly skip (exit 0) that names the vars; ``run_online_eval`` never runs."""
+    mocker.patch(
+        "evals.harness.online.online_keys_missing",
+        return_value=["OPIK_API_KEY", "GEMINI_API_KEY"],
+    )
+    run_online = mocker.patch("evals.harness.online.run_online_eval")
+
+    result = CliRunner().invoke(cli, ["online"])
+
+    assert result.exit_code == 0
+    assert "skipped" in result.output
+    assert "OPIK_API_KEY" in result.output and "GEMINI_API_KEY" in result.output
+    run_online.assert_not_called()
+
+
+def test_online_subcommand_reports_no_threads(mocker):
+    """An empty result set is a clear message, not a bare success line."""
+    mocker.patch("evals.harness.online.online_keys_missing", return_value=[])
+    mocker.patch("evals.harness.online.live_project_name", return_value="decode-prod")
+    mocker.patch("evals.harness.online.run_online_eval", return_value=object())
+    mocker.patch("evals.harness.online.format_thread_scores", return_value=[])
+
+    result = CliRunner().invoke(cli, ["online"])
+
+    assert result.exit_code == 0, result.output
+    assert "no threads to score in decode-prod" in result.output
 
 
 def test_sync_regression_upserts_probe_items(mocker):

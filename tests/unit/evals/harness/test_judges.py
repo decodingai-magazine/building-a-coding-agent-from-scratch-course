@@ -9,6 +9,7 @@ is asserted without a network call. ``make_judge`` construction is smoke-tested 
 from __future__ import annotations
 
 from opik.evaluation.metrics import GEval
+from opik.evaluation.models.litellm.litellm_chat_model import LiteLLMChatModel
 
 from evals.harness import judges
 
@@ -43,6 +44,34 @@ def test_modal_route(mocker) -> None:
     mocker.patch.object(judges.settings, "llm_provider", "modal")
     mocker.patch.object(judges.settings, "modal_endpoint_model", "Qwen/Qwen3")
     assert judges.judge_model() == "openai/Qwen/Qwen3"
+
+
+def test_resolve_judge_model_is_a_plain_string_off_the_modal_route(mocker) -> None:
+    mocker.patch.object(judges.settings, "eval_judge_model", "")
+    mocker.patch.object(judges.settings, "llm_provider", "gemini")
+
+    assert judges.resolve_judge_model() == "gemini/gemini-2.5-flash"
+
+
+def test_resolve_judge_model_carries_the_base_url_on_the_modal_route(mocker) -> None:
+    """The modal derivation returns a base-URL-bearing LiteLLMChatModel a bare string can't carry."""
+    mocker.patch.object(judges.settings, "eval_judge_model", "")
+    mocker.patch.object(judges.settings, "llm_provider", "modal")
+    mocker.patch.object(judges.settings, "modal_endpoint_model", "Qwen/Qwen3")
+    mocker.patch.object(judges.settings, "modal_endpoint_url", "https://modal.example")
+
+    model = judges.resolve_judge_model()
+
+    assert isinstance(model, LiteLLMChatModel)
+    assert model.model_name == "openai/Qwen/Qwen3"
+
+
+def test_resolve_judge_model_keeps_an_explicit_override_a_plain_string_on_modal(mocker) -> None:
+    """An explicit EVAL_JUDGE_MODEL owns its own routing — no base-URL wrapping is applied."""
+    mocker.patch.object(judges.settings, "eval_judge_model", "openrouter/anthropic/claude")
+    mocker.patch.object(judges.settings, "llm_provider", "modal")
+
+    assert judges.resolve_judge_model() == "openrouter/anthropic/claude"
 
 
 def test_make_judge_carries_resolved_model_string(mocker) -> None:

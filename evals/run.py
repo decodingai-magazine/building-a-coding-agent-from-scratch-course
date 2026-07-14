@@ -144,6 +144,45 @@ def suite() -> None:
 
 @cli.command()
 @click.option(
+    "--filter",
+    "filter_string",
+    default=None,
+    help="Opik OQL clause scoping which threads to score (e.g. 'start_time > \"2026-07-01T00:00:00Z\"').",
+)
+def online(filter_string: str | None) -> None:
+    """Score decode's LIVE REPL threads with one conversation-level judge (ADR-0017 §10).
+
+    The production-eval track: instead of driving a run, it grades the traces decode ALREADY emitted
+    from real sessions (ADR-0014), inside the LIVE project (``settings.opik_project_name``, NOT
+    ``eval_project_name``), via ``evaluate_threads`` with a single conversation judge whose scores log
+    back onto those threads. Skips friendly (no error) when keys are missing; ``--filter`` scopes the
+    run to recent threads. Opik + the harness are imported lazily so ``--help`` never needs keys or a
+    network (ADR-0017 §1).
+    """
+    from evals.harness.online import (
+        format_thread_scores,
+        live_project_name,
+        online_keys_missing,
+        run_online_eval,
+    )
+
+    missing = online_keys_missing()
+    if missing:
+        click.echo("evals online: skipped — set " + ", ".join(missing) + " to score live threads.")
+        return
+
+    result = run_online_eval(filter_string=filter_string)
+    lines = format_thread_scores(result)
+    if not lines:
+        click.echo(f"evals online: no threads to score in {live_project_name()}.")
+        return
+    for line in lines:
+        click.echo(line)
+    click.echo(f"evals online: scored {len(lines)} thread(s) in {live_project_name()}.")
+
+
+@cli.command()
+@click.option(
     "--benchmark/--no-benchmark",
     "benchmark",
     default=True,

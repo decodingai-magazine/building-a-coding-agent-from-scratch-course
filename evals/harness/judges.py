@@ -45,24 +45,35 @@ def judge_model() -> str:
     return DEFAULT_GEMINI_JUDGE
 
 
-def make_judge(task_introduction: str, evaluation_criteria: str) -> GEval:
-    """Build a G-Eval judge carrying the model :func:`judge_model` resolved (ADR-0017 §7).
+def resolve_judge_model() -> str | LiteLLMChatModel:
+    """The judge model object every Opik metric factory feeds to its ``model=`` slot (ADR-0017 §7).
 
-    ``task_introduction`` frames what the judge is grading; ``evaluation_criteria`` is the rubric.
-    For every route but ``modal`` the resolved string goes straight to ``GEval(model=...)``. The
-    ``modal`` derivation instead gets a :class:`LiteLLMChatModel` pre-built with ``api_base`` pointed
-    at ``{settings.modal_endpoint_url}/v1`` (the OpenAI-compatible route), because GEval's string
-    surface cannot carry a base URL. Construction makes no LLM call.
+    For every route but the ``modal`` derivation this is just the :func:`judge_model` string. The
+    ``modal`` derivation instead returns a :class:`LiteLLMChatModel` pre-built with ``api_base``
+    pointed at ``{settings.modal_endpoint_url}/v1`` (the OpenAI-compatible route), because a bare
+    LiteLLM string cannot carry a base URL. Shared by :func:`make_judge` (the G-Eval trace judge) and
+    the online thread metric (:mod:`evals.harness.online`) so the modal wrinkle lives in one place.
+    Construction makes no LLM call. An explicit ``EVAL_JUDGE_MODEL`` override always stays the plain
+    string — the operator owns its full routing then.
     """
     model_string = judge_model()
-    model: str | LiteLLMChatModel = model_string
     if not settings.eval_judge_model.strip() and settings.llm_provider == "modal":
-        model = LiteLLMChatModel(
+        return LiteLLMChatModel(
             model_name=model_string,
             api_base=f"{settings.modal_endpoint_url}/v1",
         )
+    return model_string
+
+
+def make_judge(task_introduction: str, evaluation_criteria: str) -> GEval:
+    """Build a G-Eval judge carrying the model :func:`resolve_judge_model` resolved (ADR-0017 §7).
+
+    ``task_introduction`` frames what the judge is grading; ``evaluation_criteria`` is the rubric.
+    The model comes from :func:`resolve_judge_model` (a plain string, or a base-URL-carrying
+    :class:`LiteLLMChatModel` on the ``modal`` derivation). Construction makes no LLM call.
+    """
     return GEval(
         task_introduction=task_introduction,
         evaluation_criteria=evaluation_criteria,
-        model=model,
+        model=resolve_judge_model(),
     )
