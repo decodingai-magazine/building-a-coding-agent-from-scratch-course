@@ -1,0 +1,15 @@
+id: 009-multi-file-rename
+prompt: |
+  The current directory holds a small Python project. A public function named `compute_total` is
+  defined in billing.py and used from several other modules and the test file.
+
+  Rename that function from `compute_total` to `calculate_total` everywhere it appears — its
+  definition, every call site, and the tests — so that the name `compute_total` no longer occurs
+  anywhere in the project's Python files. Do not change what the function does; the existing tests
+  must still pass after the rename.
+max_steps: 25
+difficulty: medium
+tags:
+  - python
+  - refactor
+  - rename

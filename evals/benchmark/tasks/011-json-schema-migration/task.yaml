@@ -1,0 +1,22 @@
+id: 011-json-schema-migration
+prompt: |
+  The file records.json in the current directory holds a version-1 dataset: a JSON array of user
+  records, each with the fields `id`, `name` (a person's full name as "First Last"), `mail`, and
+  `created`.
+
+  Migrate records.json in place to the version-2 schema. The new file must be a single JSON object
+  with two top-level keys: `version`, set to the integer 2, and `records`, an array of the migrated
+  records. In every migrated record:
+
+    - rename `mail` to `email` (keep the same value),
+    - replace `name` with two fields: `first_name` (the part before the first space) and `last_name`
+      (the remainder after the first space),
+    - keep `id` and `created` unchanged.
+
+  No record may keep the old `name` or `mail` fields.
+max_steps: 20
+difficulty: medium
+tags:
+  - json
+  - migration
+  - data

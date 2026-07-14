@@ -1,0 +1,16 @@
+id: 010-git-hygiene
+prompt: |
+  The current directory is a git repository on branch `main` with one clean initial commit and four
+  uncommitted files: two new source files that implement a search feature — src/search.py and
+  src/search_index.py — and two throwaway scratch files — scratch.txt and debug_output.txt — that
+  must NOT be committed.
+
+  Create and switch to a new branch named `add-search`. Stage ONLY the two files under src/ and make
+  a single commit whose message follows the Conventional Commits format (a type such as `feat:`
+  followed by a short description, e.g. `feat: add search feature`). Leave the two scratch files
+  uncommitted so they still show as untracked in `git status`.
+max_steps: 25
+difficulty: medium
+tags:
+  - git
+  - version-control
