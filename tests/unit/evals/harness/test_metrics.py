@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import pytest
 from opik.evaluation.metrics.score_result import ScoreResult
+from pydantic import BaseModel
 
 from evals.harness.driver import ToolCallRecord
 from evals.harness.metrics import (
     DiffLinesMetric,
     FileDiffLinesMetric,
     FileEqualsMetric,
+    JsonSchemaMetric,
     MaxStepsMetric,
+    NewFileNameMetric,
     OutputContainsMetric,
     ToolArgsMetric,
     ToolCalledMetric,
@@ -24,6 +27,17 @@ from evals.harness.metrics import (
     ToolNotSucceededMetric,
     VerifyOracleMetric,
 )
+
+
+class _SampleSchema(BaseModel):
+    """A tiny pydantic model the JsonSchemaMetric tests validate output against."""
+
+    file: str
+    issue_count: int
+
+
+def _prefix_dc(name: str) -> bool:
+    return name.startswith("dc_")
 
 
 def _assert_well_formed(result: ScoreResult) -> None:
@@ -50,6 +64,8 @@ def _assert_well_formed(result: ScoreResult) -> None:
         ToolNotSucceededMetric("write"),
         ToolArgsMetric("skill", lambda a: True, description="x", name="args_metric"),
         FileEqualsMetric(path="hello.txt", expected="hi"),
+        NewFileNameMetric(".py", _prefix_dc, description="dc_ prefix", name="new_file"),
+        JsonSchemaMetric(_SampleSchema),
     ],
 )
 def test_metrics_disable_opik_tracking(metric: object) -> None:
@@ -441,5 +457,86 @@ def test_file_equals_absent_file_is_graceful_zero() -> None:
 
 def test_file_equals_missing_field_is_graceful_zero() -> None:
     result = FileEqualsMetric(path="hello.txt", expected="hi").score()
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+# --- NewFileNameMetric ------------------------------------------------------------------------
+
+
+def _new_py_metric() -> NewFileNameMetric:
+    return NewFileNameMetric(
+        ".py", _prefix_dc, description="dc_ prefix", name="new_py_files_prefixed_dc"
+    )
+
+
+def test_new_file_name_all_created_files_obey_scores_one() -> None:
+    result = _new_py_metric().score(
+        file_state={"dc_strings.py": "code", "AGENTS.md": "rule", "src/dc_util.py": "x"}
+    )
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_new_file_name_a_violating_file_scores_zero() -> None:
+    # One created .py that breaks the rule fails the whole probe, even if another obeys.
+    result = _new_py_metric().score(file_state={"dc_ok.py": "x", "strings.py": "x"})
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_new_file_name_no_matching_file_is_graceful_zero() -> None:
+    # The agent never created a .py file — the rule cannot be satisfied vacuously.
+    result = _new_py_metric().score(file_state={"AGENTS.md": "rule", "notes.txt": "x"})
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_new_file_name_missing_field_is_graceful_zero() -> None:
+    result = _new_py_metric().score()
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_new_file_name_raising_predicate_is_a_violation_not_a_crash() -> None:
+    def _boom(name: str) -> bool:
+        raise ValueError("nope")
+
+    result = NewFileNameMetric(".py", _boom, description="explodes", name="boom").score(
+        file_state={"dc_x.py": "x"}
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+# --- JsonSchemaMetric -------------------------------------------------------------------------
+
+
+def test_json_schema_valid_output_scores_one() -> None:
+    result = JsonSchemaMetric(_SampleSchema).score(
+        output='{"file": "inventory.py", "issue_count": 2}'
+    )
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_json_schema_wrong_shape_scores_zero() -> None:
+    # Valid JSON, wrong shape (issue_count missing) — IsJson would pass, this must not.
+    result = JsonSchemaMetric(_SampleSchema).score(output='{"file": "inventory.py"}')
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_json_schema_prose_or_fenced_output_scores_zero() -> None:
+    # A ```json fence / trailing prose breaks the raw-JSON contract — the point of the probe.
+    result = JsonSchemaMetric(_SampleSchema).score(
+        output='```json\n{"file": "inventory.py", "issue_count": 2}\n```'
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_json_schema_missing_field_is_graceful_zero() -> None:
+    result = JsonSchemaMetric(_SampleSchema).score()
     _assert_well_formed(result)
     assert result.value == 0.0

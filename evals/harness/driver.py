@@ -85,6 +85,10 @@ class EvalRunRecord:
     * ``input_tokens`` / ``output_tokens`` — summed from each ``ModelResponse.usage`` (the
       message-history equivalent of ``result.usage()``).
     * ``denied_tools`` — the tools the gate denied (``ToolReturnPart.outcome == "denied"``).
+    * ``compaction_events`` — how many :class:`~decode.entities.events.ContextCompacted` /
+      ``ContextMicrocompacted`` the run emitted, so the compaction-survival probe can prove the
+      cascade actually FIRED (not merely that a large history was seeded). ``0`` for every run whose
+      probe leaves ``enable_compaction`` off.
     * ``agent_error`` — the message of an :class:`~decode.entities.events.AgentError` the Runner
       surfaced when a turn crashed, else ``None``. The Runner swallows a turn exception into that
       event and returns an empty-but-valid history, so without this a crashed run is
@@ -99,6 +103,7 @@ class EvalRunRecord:
     input_tokens: int
     output_tokens: int
     denied_tools: list[str] = field(default_factory=list)
+    compaction_events: int = 0
     agent_error: str | None = None
 
 
@@ -166,6 +171,7 @@ async def run_agent_once(
     resolve_user_question: UserQuestionResolver | None = None,
     message_history: list[ModelMessage] | None = None,
     max_requests: int | None = None,
+    enable_compaction: bool = False,
 ) -> EvalRunRecord:
     """Drive one prompt through the real agent stack and return an :class:`EvalRunRecord` (ADR-0017 §4).
 
@@ -176,6 +182,12 @@ async def run_agent_once(
     waits for idle. Resolvers default to the headless auto-deny pair; a probe overrides either.
     ``max_requests`` installs the :class:`_RequestCappedModel` seam so a runaway run stops
     gracefully. The record is read entirely from ``handler.message_history``.
+
+    ``enable_compaction`` wires the auto-compaction cascade (ADR-0006): the summarizer source is the
+    agent's OWN model, captured before the request-cap override — so it runs on whatever provider the
+    agent runs on (real Gemini live, a scripted model offline), never a separate ``Settings``-built
+    model that would phone home in an offline test. Off by default, so a probe that does not grade
+    compaction never pays for a summarizer call.
     """
     from decode.agent.loop import AgentTurnHandler
     from decode.tui.app import InputIntent
@@ -185,10 +197,14 @@ async def run_agent_once(
     # Capture a crashed turn: the Runner swallows a turn exception into an ``AgentError`` event and
     # returns a valid-but-empty history, so the record would otherwise hide the failure (ADR-0017 §4).
     errors: list[str] = []
+    compaction_events = 0
 
     def _capture_emit(event: object) -> None:
+        nonlocal compaction_events
         if isinstance(event, events.AgentError):
             errors.append(event.message)
+        elif isinstance(event, events.ContextCompacted | events.ContextMicrocompacted):
+            compaction_events += 1
 
     deps = AgentDeps(
         cwd=cwd,
@@ -197,7 +213,15 @@ async def run_agent_once(
         resolve_permission=resolve_permission or _deny_permission_resolver,
         resolve_user_question=resolve_user_question or deny_user_question_resolver,
     )
-    handler: AgentTurnHandler = AgentTurnHandler(agent, deps=deps, message_history=message_history)
+    # The summarizer reuses the agent's base model (before any request-cap wrap) so a scripted
+    # offline model doubles as the summarizer and no real network call is made in the unit suite.
+    compaction_source = agent.model if enable_compaction else None
+    handler: AgentTurnHandler = AgentTurnHandler(
+        agent,
+        deps=deps,
+        message_history=message_history,
+        compaction_model_or_settings=compaction_source,
+    )
     runner = Runner(handler, on_event=_capture_emit)
 
     from decode.services.lsp import service as lsp_service
@@ -219,7 +243,11 @@ async def run_agent_once(
         # anyway. No-op (empty cache) for every probe that never touches ``lsp``. Idempotent, never raises.
         await lsp_service.shutdown_all()
 
-    return _build_record(handler.message_history, agent_error=errors[0] if errors else None)
+    return _build_record(
+        handler.message_history,
+        agent_error=errors[0] if errors else None,
+        compaction_events=compaction_events,
+    )
 
 
 def run_agent_once_sync(prompt: str, **kwargs: Any) -> EvalRunRecord:
@@ -227,7 +255,12 @@ def run_agent_once_sync(prompt: str, **kwargs: Any) -> EvalRunRecord:
     return asyncio.run(run_agent_once(prompt, **kwargs))
 
 
-def _build_record(messages: list[ModelMessage], *, agent_error: str | None = None) -> EvalRunRecord:
+def _build_record(
+    messages: list[ModelMessage],
+    *,
+    agent_error: str | None = None,
+    compaction_events: int = 0,
+) -> EvalRunRecord:
     """Assemble the :class:`EvalRunRecord` from the pydantic-ai message history (ADR-0017 §4)."""
     tool_calls: list[ToolCallRecord] = []
     steps = 0
@@ -257,6 +290,7 @@ def _build_record(messages: list[ModelMessage], *, agent_error: str | None = Non
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         denied_tools=denied_tools,
+        compaction_events=compaction_events,
         agent_error=agent_error,
     )
 

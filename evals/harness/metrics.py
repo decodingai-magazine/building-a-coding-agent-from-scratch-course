@@ -358,6 +358,116 @@ class FileEqualsMetric(BaseMetric):
         )
 
 
+class NewFileNameMetric(BaseMetric):
+    """Score ``1.0`` when the run created ≥1 file matching ``suffix`` AND every one obeys ``predicate``.
+
+    The memory-obedience probe (a seeded ``AGENTS.md`` rule such as "every new Python file's name starts
+    with ``dc_``") grades on the NAME of the file the agent chose, not its content — so neither
+    :class:`FileEqualsMetric` (a known path) nor a tool-arg check fits. This metric reads the run's
+    ``file_state`` snapshot, keeps the paths ending in ``suffix``, and passes only when at least one such
+    file exists (the agent did create the file) AND every matched file's basename satisfies ``predicate``
+    (each obeys the naming rule). ``description`` is the human phrase the ``reason`` cites. A predicate
+    that raises on a name is treated as a violation, never a crash; a missing / malformed ``file_state``
+    or no matching file scores a graceful ``0.0`` — the same offline ``track=False`` posture as the rest.
+    """
+
+    def __init__(
+        self,
+        suffix: str,
+        predicate: Callable[[str], bool],
+        *,
+        description: str,
+        name: str,
+    ) -> None:
+        super().__init__(name=name, track=False)
+        self.suffix = suffix
+        self.predicate = predicate
+        self.description = description
+
+    def score(self, file_state: Any = None, **ignored_kwargs: Any) -> ScoreResult:
+        if not isinstance(file_state, dict):
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"No file_state recorded (got {type(file_state).__name__}); cannot check {self.description}.",
+            )
+        matched = [
+            path for path in file_state if isinstance(path, str) and path.endswith(self.suffix)
+        ]
+        if not matched:
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"No file ending in {self.suffix!r} was created; cannot check {self.description}.",
+            )
+        offenders = [path for path in matched if not self._obeys(path)]
+        ok = not offenders
+        return ScoreResult(
+            name=self.name,
+            value=1.0 if ok else 0.0,
+            reason=(
+                f"All {len(matched)} {self.suffix!r} file(s) obey: {self.description}."
+                if ok
+                else f"{len(offenders)} {self.suffix!r} file(s) violate {self.description}: {offenders}."
+            ),
+        )
+
+    def _obeys(self, path: str) -> bool:
+        """Whether ``path``'s basename meets the predicate — a raising predicate counts as a violation."""
+        basename = path.rsplit("/", 1)[-1]
+        try:
+            return bool(self.predicate(basename))
+        except Exception:  # a malformed name must not abort scoring — grade it as a violation
+            return False
+
+
+class JsonSchemaMetric(BaseMetric):
+    """Score ``1.0`` when the run's ``output`` is JSON that validates against a pydantic ``schema``.
+
+    The JSON-output-contract probe asks the agent to answer ONLY as JSON matching a schema; grading it
+    needs BOTH that the text parses as JSON (Opik's ``IsJson`` built-in covers that) AND that the parsed
+    object satisfies the declared shape. This metric closes the second half: it ``json.loads`` the
+    ``output`` and calls ``schema.model_validate`` on the result. Any failure — non-string output, a
+    parse error, a validation error, or JSON that is not an object the model accepts — is a graceful
+    ``0.0`` with a reason, never a raise (the contract is strict on purpose: a ```` ```json ```` fence or
+    trailing prose breaks the parse, which is the point of an output-contract probe). ``track=False`` for
+    the same offline reason as the rest.
+    """
+
+    def __init__(self, schema: type[Any], *, name: str | None = None) -> None:
+        super().__init__(name=name or f"json_schema_{schema.__name__}", track=False)
+        self.schema = schema
+
+    def score(self, output: Any = None, **ignored_kwargs: Any) -> ScoreResult:
+        if not isinstance(output, str):
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"No output text recorded (got {type(output).__name__}); cannot validate JSON.",
+            )
+        try:
+            payload = json.loads(output)
+        except (json.JSONDecodeError, TypeError) as exc:
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"Output is not valid JSON ({exc}); the answer broke the JSON-only contract.",
+            )
+        try:
+            self.schema.model_validate(payload)
+        except Exception as exc:  # a pydantic ValidationError (or any validator raise) is a fail
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"Output JSON does not match {self.schema.__name__}: {exc}",
+            )
+        return ScoreResult(
+            name=self.name,
+            value=1.0,
+            reason=f"Output is JSON matching {self.schema.__name__}.",
+        )
+
+
 class OutputContainsMetric(BaseMetric):
     """Score ``1.0`` when ``needle`` appears in the run's final assistant ``output`` text.
 

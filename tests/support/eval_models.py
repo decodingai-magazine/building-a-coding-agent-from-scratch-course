@@ -286,6 +286,27 @@ def echo_line(text: str) -> FunctionModel:
     return FunctionModel(stream_function=stream_function)
 
 
+def constant_text(text: str) -> FunctionModel:
+    """A model that always answers ``text`` — on BOTH the streamed turn leg and a non-streamed call.
+
+    The compaction-survival probe uses one model for two roles: it answers the recall prompt (the turn
+    leg, which the eval driver STREAMS) and, when the driver wires compaction, it is also the summarizer
+    the LLM compaction tier invokes via ``agent.run()`` (a NON-streamed request). A stream-only
+    ``FunctionModel`` would trip the "must receive a `function`" assertion on that summarizer call, so
+    this provides both callbacks, each yielding the same ``text``.
+    """
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        yield text
+
+    def function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(content=text)])
+
+    return FunctionModel(function, stream_function=stream_function)
+
+
 def crashing_model(message: str = "scripted model boom") -> FunctionModel:
     """A model that raises on its first request — the Runner swallows it into an ``AgentError``.
 

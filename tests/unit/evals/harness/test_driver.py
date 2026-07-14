@@ -21,6 +21,7 @@ from support.eval_models import (
     write_then_finish,
 )
 
+from decode.config.settings import settings
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.rules import Rule, RuleSet
 from decode.permissions.types import PermissionMode
@@ -164,6 +165,54 @@ async def test_message_history_is_pre_filled(workspace, install_model):
     ]
     assert "earlier question" in prompts
     assert "follow up" in prompts
+
+
+async def test_enable_compaction_wires_the_cascade_and_records_the_firing(
+    workspace, install_model, monkeypatch
+):
+    """``enable_compaction`` wires the auto-compaction cascade end-to-end (ADR-0006; the probe-16 seam).
+
+    A scripted ``FunctionModel`` streams a stub ~50-token usage, so the real window (1M) never triggers;
+    the test forces a tiny window (threshold below the stub usage) so the trigger fires, proving the
+    driver wires the summarizer (the agent's own model) and captures the ``ContextCompacted`` event into
+    ``compaction_events``.
+    """
+    from support.eval_models import constant_text
+
+    from evals.regression.fixtures.conversation import near_limit_history
+
+    install_model(constant_text("The value is alpha-42."))
+    monkeypatch.setattr(settings, "compaction_context_window_tokens", 10)
+    monkeypatch.setattr(settings, "compaction_keep_recent_tokens", 50)
+    history = near_limit_history(target_tokens=1000)
+
+    record = await run_agent_once(
+        "recall the value",
+        cwd=workspace,
+        message_history=history,
+        enable_compaction=True,
+        max_requests=2,
+    )
+
+    assert record.compaction_events >= 1
+
+
+async def test_compaction_stays_off_without_the_flag(workspace, install_model, monkeypatch):
+    """Even with a tiny window, a run that does not opt in never compacts (the default posture)."""
+    from support.eval_models import constant_text
+
+    from evals.regression.fixtures.conversation import near_limit_history
+
+    install_model(constant_text("The value is alpha-42."))
+    monkeypatch.setattr(settings, "compaction_context_window_tokens", 10)
+    monkeypatch.setattr(settings, "compaction_keep_recent_tokens", 50)
+    history = near_limit_history(target_tokens=1000)
+
+    record = await run_agent_once(
+        "recall the value", cwd=workspace, message_history=history, max_requests=2
+    )
+
+    assert record.compaction_events == 0
 
 
 async def test_a_healthy_run_records_no_agent_error(workspace, install_model):

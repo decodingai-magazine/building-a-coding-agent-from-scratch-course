@@ -88,6 +88,26 @@ def test_near_limit_history_rejects_a_non_positive_target() -> None:
         near_limit_history(target_tokens=0)
 
 
+def test_near_limit_history_embeds_the_early_fact_in_the_first_turn() -> None:
+    from pydantic_ai.messages import UserPromptPart
+
+    fact = "The deploy token is deploy-zx9-4471."
+    history = near_limit_history(target_tokens=1000, early_fact=fact)
+
+    first = history[0]
+    assert isinstance(first, ModelRequest)
+    content = "".join(part.content for part in first.parts if isinstance(part, UserPromptPart))
+    assert fact in content
+    # The fact appears once, at the oldest end — the part full compaction summarizes away.
+    joined = "".join(
+        part.content
+        for message in history
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    )
+    assert joined.count(fact) == 1
+
+
 def test_estimate_tokens_uses_the_chars_per_token_divisor() -> None:
     from pydantic_ai.messages import UserPromptPart
 

@@ -190,6 +190,52 @@ def test_sandbox_mode_is_restored_after_the_run(install_model):
     assert settings.sandbox_mode == previous
 
 
+def test_settings_overrides_are_applied_during_and_restored_after_the_run(install_model):
+    """A probe's ``settings_overrides`` bite for the run and are rolled back after (the compaction knob)."""
+    seen: dict[str, int] = {}
+
+    def _record_fixture(_workspace: Path) -> None:
+        seen["window"] = settings.compaction_context_window_tokens
+
+    install_model(echo_line("done"))
+    previous = settings.compaction_context_window_tokens
+    probe = _read_probe(
+        id="override-probe",
+        fixture=_record_fixture,
+        settings_overrides={"compaction_context_window_tokens": 1234},
+    )
+
+    run_probe(probe)
+
+    assert seen["window"] == 1234  # the override was live during the run
+    assert settings.compaction_context_window_tokens == previous  # and rolled back after
+
+
+def test_unknown_settings_override_is_surfaced_as_infra_error(install_model):
+    """A typo'd override key fails loudly (as an ``infra_error``), never silently no-ops."""
+    install_model(echo_line("done"))
+    probe = _read_probe(
+        id="bad-override-probe",
+        fixture=lambda _w: None,
+        settings_overrides={"nonexistent_setting": 1},
+    )
+
+    payload = run_probe(probe)
+
+    assert payload["infra_error"] is not None
+    assert "nonexistent_setting" in payload["infra_error"]
+
+
+def test_compaction_events_are_surfaced_in_the_payload(install_model):
+    """The payload carries a ``compaction_events`` count (0 for a probe that does not enable it)."""
+    install_model(echo_line("done"))
+    probe = _read_probe(id="no-compaction-probe", fixture=lambda _w: None)
+
+    payload = run_probe(probe)
+
+    assert payload["compaction_events"] == 0
+
+
 def test_a_crashed_agent_run_is_surfaced_as_agent_error(install_model):
     """A crashed run grades as fail-with-reason (``agent_error`` set), never silently empty."""
     install_model(crashing_model("kaboom"))

@@ -24,7 +24,7 @@ CHARS_PER_TOKEN = 4
 
 
 def near_limit_history(
-    *, target_tokens: int = 4000, filler: str = "context "
+    *, target_tokens: int = 4000, filler: str = "context ", early_fact: str | None = None
 ) -> list[ModelMessage]:
     """Build alternating user/assistant turns padded to roughly ``target_tokens`` (ADR-0006).
 
@@ -32,6 +32,11 @@ def near_limit_history(
     coarse ``chars≈/4`` estimate of the whole history reaches ``target_tokens`` (it may slightly
     exceed, since a whole final round is never split). The turns are numbered so the transcript reads
     as a real growing session. ``target_tokens`` must be positive.
+
+    ``early_fact`` seeds ONE concrete fact into the FIRST user turn (the compaction-survival probe's
+    "early fact": the detail the agent is later asked to recall). It rides the padded first turn, so it
+    sits at the OLDEST end of the history — the part full compaction summarizes away — which is exactly
+    the recall-across-compaction behavior the probe grades.
     """
     if target_tokens <= 0:
         raise ValueError(f"target_tokens must be positive, got {target_tokens}")
@@ -41,9 +46,12 @@ def near_limit_history(
     while _estimate_tokens(messages) < target_tokens:
         turn += 1
         padding = filler * 40
-        messages.append(
-            ModelRequest(parts=[UserPromptPart(content=f"Turn {turn} question. {padding}")])
-        )
+        question = f"Turn {turn} question. {padding}"
+        if turn == 1 and early_fact:
+            question = (
+                f"Please remember this for later: {early_fact} Turn {turn} question. {padding}"
+            )
+        messages.append(ModelRequest(parts=[UserPromptPart(content=question)]))
         messages.append(ModelResponse(parts=[TextPart(content=f"Turn {turn} answer. {padding}")]))
     return messages
 

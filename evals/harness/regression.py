@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -106,23 +106,56 @@ def run_probe(probe: RegressionProbe) -> dict[str, Any]:
 
     Forces ``sandbox_mode`` to ``none`` (host-native — no docker) and resets the ``bash`` executor seam
     so the run is byte-identical to a plain host session, restoring both in the ``finally`` along with
-    removing the temp Workspace. A fixture / history-builder failure is caught into ``infra_error``; a
-    crashed agent run into ``agent_error`` (both inside :func:`_build_and_run`) — either way a payload
-    the metrics grade comes back, so one broken probe never aborts the experiment (task 106 lesson).
+    removing the temp Workspace. The probe's ``settings_overrides`` are applied over the same window and
+    rolled back in the same ``finally`` (the compaction probe shrinks the context window so its
+    near-limit history actually triggers). A fixture / history-builder failure is caught into
+    ``infra_error``; a crashed agent run into ``agent_error`` (both inside :func:`_build_and_run`) —
+    either way a payload the metrics grade comes back, so one broken probe never aborts the experiment
+    (task 106 lesson).
     """
     workspace = Path(tempfile.mkdtemp(prefix="decode-regression-")).resolve()
     previous_mode = settings.sandbox_mode
     settings.sandbox_mode = "none"
+    saved_settings: dict[str, Any] = {}
     reset_executor()
     try:
+        saved_settings = _apply_settings_overrides(probe.settings_overrides)
         return _build_and_run(probe, workspace)
-    except Exception as exc:  # a fixture / setup failure must not abort the whole experiment
+    except (
+        Exception
+    ) as exc:  # a fixture / setup / override failure must not abort the whole experiment
         logger.exception("[eval] regression probe setup failed for %s", probe.id)
         return _payload(None, file_state={}, probe=probe, agent_error=None, infra_error=str(exc))
     finally:
         settings.sandbox_mode = previous_mode
+        _restore_settings(saved_settings)
         reset_executor()
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+def _apply_settings_overrides(overrides: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply ``overrides`` to the global ``settings`` singleton, returning the prior values.
+
+    Same pattern the ``sandbox_mode`` swap uses above: a probe forces a handful of settings for the
+    duration of ONE run (the compaction probe shrinks the context window / keep-recent tail so its
+    near-limit history crosses the trigger), and :func:`_restore_settings` puts them back in the
+    ``finally``. Every key is validated BEFORE any is applied, so an unknown attribute fails loudly
+    (surfaced as ``infra_error``) without leaving a half-applied settings state behind.
+    """
+    for key in overrides:
+        if not hasattr(settings, key):
+            raise AttributeError(f"unknown settings override {key!r} on probe")
+    saved: dict[str, Any] = {}
+    for key, value in overrides.items():
+        saved[key] = getattr(settings, key)
+        setattr(settings, key, value)
+    return saved
+
+
+def _restore_settings(saved: Mapping[str, Any]) -> None:
+    """Restore the settings attributes :func:`_apply_settings_overrides` saved."""
+    for key, value in saved.items():
+        setattr(settings, key, value)
 
 
 def _build_and_run(probe: RegressionProbe, workspace: Path) -> dict[str, Any]:
@@ -154,6 +187,7 @@ def _build_and_run(probe: RegressionProbe, workspace: Path) -> dict[str, Any]:
                 resolve_user_question=probe.resolve_user_question,
                 message_history=history,
                 max_requests=probe.max_requests,
+                enable_compaction=probe.enable_compaction,
             )
         agent_error = record.agent_error
     except Exception as exc:  # a crashed agent still grades — fail-with-reason, not skipped
@@ -182,7 +216,9 @@ def _payload(
     ``tool_calls`` is de-dataclassed to plain ``{"name", "args"}`` dicts so the payload is
     JSON-serializable for Opik storage; ``file_state`` maps each Workspace-relative path to its text so
     a metric can assert a file was created / edited. ``max_steps`` mirrors the probe's request cap for
-    :class:`~evals.harness.metrics.MaxStepsMetric` (``None`` when the probe sets no cap). Two failure
+    :class:`~evals.harness.metrics.MaxStepsMetric` (``None`` when the probe sets no cap).
+    ``compaction_events`` reports how many times the auto-compaction cascade fired (the
+    compaction-survival probe reads it to prove firing). Two failure
     channels, both absorbed by the metrics' ``**ignored_kwargs``: ``agent_error`` names a crashed run
     (the tree was still snapshotted); ``infra_error`` names a fixture / setup failure. A ``None`` record
     degrades every run field to its empty default.
@@ -197,6 +233,7 @@ def _payload(
         "input_tokens": record.input_tokens if record else 0,
         "output_tokens": record.output_tokens if record else 0,
         "denied_tools": list(record.denied_tools) if record else [],
+        "compaction_events": record.compaction_events if record else 0,
         "file_state": file_state,
         "max_steps": probe.max_requests,
         "agent_error": agent_error,

@@ -11,7 +11,12 @@ driver (:mod:`evals.harness.driver`) can vary per run is reachable straight from
   near-limit history);
 * ``max_requests`` — the model-request cap so a runaway probe stops gracefully;
 * ``context`` — an optional context manager entered AROUND the run for a live resource the probe
-  needs alive during the run but not seeded as a file (the ``http.server`` web-fetch fixture).
+  needs alive during the run but not seeded as a file (the ``http.server`` web-fetch fixture);
+* ``settings_overrides`` — settings attributes forced for the duration of the run (the
+  compaction-survival probe shrinks ``compaction_context_window_tokens`` / ``compaction_keep_recent_tokens``
+  so its near-limit history actually crosses the trigger — the real 1M-token window never would);
+* ``enable_compaction`` — wire the auto-compaction cascade for this run (the driver leaves it off by
+  default, so only a probe that grades compaction pays for a summarizer call).
 
 This module imports no Opik: ``metrics`` are duck-typed Opik metric instances (built in task 104 /
 Opik built-ins / G-Eval judges), kept as ``Any`` so the probe contract stays light and the CLI can
@@ -20,7 +25,7 @@ import it without pulling the Opik harness (ADR-0017 §1).
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,6 +80,8 @@ class RegressionProbe:
     message_history: MessageHistoryBuilder | None = None
     context: FixtureContext | None = None
     max_requests: int | None = None
+    settings_overrides: Mapping[str, Any] = field(default_factory=dict)
+    enable_compaction: bool = False
     tags: list[str] = field(default_factory=list)
     skip_reason: str | None = None
 
