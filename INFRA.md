@@ -258,7 +258,10 @@ Hence the bucket-scoped `storage.admin` binding (`legacyBucketReader` is the tig
 
 **`/var/kitaru` must be chowned to UID 1000.** The container runs as UID 1000; the mounted host dir is
 created root-owned. The first boot therefore dies with `sqlite3.OperationalError: unable to open
-database file` and crash-loops forever, while the health check just hangs.
+database file` and crash-loops forever, while the health check just hangs. `up` **polls** for the
+directory — it does not exist until konlet starts the container, so any fixed sleep races it — and it
+re-checks on *every* `up`, not only when it creates the VM: a crash-looping server is exactly the state
+you re-run `up` to repair. An already-correct dir is left alone (no restart of a healthy server).
 
 **TLS is mandatory, not polish.** The Kitaru server sends `strict-transport-security: max-age=63072000`
 *while serving plain HTTP*. A browser obeys it, upgrades the next request to HTTPS, hits a port that

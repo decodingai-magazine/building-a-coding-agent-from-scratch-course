@@ -176,6 +176,48 @@ ensure_registry() {
 
 # ---------------------------------------------------------------------------- §3 server
 
+# The server container runs as UID 1000, but the mounted host dir /var/kitaru is created root-owned —
+# so the very first boot dies with `sqlite3.OperationalError: unable to open database file` and
+# crash-loops forever. The single highest-value repair in this whole script.
+#
+# Two things it must get right, both learned the hard way:
+#
+#   POLL, never a fixed sleep. /var/kitaru does not exist until konlet starts the container, and sshd
+#   is not up before that either — a `sleep 45` then `chown` raced both and printed `chown: cannot
+#   access '/var/kitaru'`. That miss was a mere warning, so `up` marched on and failed ten minutes
+#   later at the TLS health check, nowhere near the cause.
+#
+#   Run on EVERY `up`, not only when the VM is created. A crash-looping server is exactly the state
+#   you re-run `up` to repair, and the create-only version skipped the repair precisely then — the
+#   fix had to be applied by hand.
+#
+# Idempotent: already-1000 exits 0 and does NOT restart a healthy server. Exit 3 means the container
+# has not created the mount yet — keep polling.
+ensure_store_ownership() {
+  # The remote script speaks in exit codes, because that is all `gcloud compute ssh` carries back:
+  #   0  already UID 1000 — nothing to do, and NO restart of a healthy server
+  #   10 chowned + restarted
+  #   3  the container has not created the mount yet — poll again
+  local attempt status
+  for attempt in $(seq 1 20); do
+    status=0
+    gcloud compute ssh "${VM}" --zone="${ZONE}" --project="${PROJECT}" --quiet --command="\
+      test -d /var/kitaru || exit 3
+      [ \"\$(stat -c %u /var/kitaru 2>/dev/null || echo unknown)\" = 1000 ] && exit 0
+      sudo chown -R 1000:1000 /var/kitaru && \
+      sudo docker restart \$(sudo docker ps -aqf name=klt-${VM}) >/dev/null && exit 10" \
+      2>/dev/null || status=$?
+    case "${status}" in
+      0)  log "/var/kitaru already owned by UID 1000"; return 0 ;;
+      10) log "chowned /var/kitaru to UID 1000, restarted the server (attempt ${attempt})"; return 0 ;;
+    esac
+    sleep 15
+  done
+  die "could not chown /var/kitaru after 5 min — the server will crash-loop on
+    'sqlite3.OperationalError: unable to open database file'. Fix it by hand, then re-run \`up\`:
+      gcloud compute ssh ${VM} --zone=${ZONE} --command='sudo chown -R 1000:1000 /var/kitaru'"
+}
+
 ensure_server() {
   if ! have compute addresses describe "${IP_NAME}" --region="${REGION}" --project="${PROJECT}"; then
     log "reserving static IP"
@@ -199,31 +241,8 @@ ensure_server() {
       --container-image="${SERVER_IMAGE}" \
       --container-env=ZENML_SERVER_AUTO_ACTIVATE=1,ZENML_DEFAULT_USER_NAME=admin,ZENML_DEFAULT_USER_PASSWORD="$(cat "${ADMIN_PASSWORD_FILE}")" \
       --container-mount-host-path=host-path=/var/kitaru,mount-path=/zenml/.zenconfig/local_stores/default_zen_store
-
-    # The container runs as UID 1000 but the mounted host dir is created root-owned, so the very
-    # first boot dies with `sqlite3.OperationalError: unable to open database file` and crash-loops.
-    #
-    # POLL, never a fixed sleep: /var/kitaru does not exist until konlet starts the container, and
-    # sshd is not up before that either. A `sleep 45` raced both — `chown: cannot access
-    # '/var/kitaru'` — and the miss is silent (a warning), leaving a server that crash-loops forever
-    # while `up` marches on to TLS and fails there instead, far from the cause.
-    log "waiting for the container to create /var/kitaru, then fixing its ownership (UID 1000)"
-    local fixed=0 attempt
-    for attempt in $(seq 1 20); do
-      if gcloud compute ssh "${VM}" --zone="${ZONE}" --project="${PROJECT}" --quiet --command="\
-        test -d /var/kitaru && \
-        sudo chown -R 1000:1000 /var/kitaru && \
-        sudo docker restart \$(sudo docker ps -aqf name=klt-${VM}) >/dev/null" 2>/dev/null; then
-        fixed=1
-        log "fixed /var/kitaru ownership (attempt ${attempt})"
-        break
-      fi
-      sleep 15
-    done
-    [ "${fixed}" = 1 ] || die "could not chown /var/kitaru after 5 min — the server will crash-loop on
-    'sqlite3.OperationalError: unable to open database file'. Fix it by hand, then re-run \`up\`:
-      gcloud compute ssh ${VM} --zone=${ZONE} --command='sudo chown -R 1000:1000 /var/kitaru'"
   fi
+  ensure_store_ownership
 
   if have compute firewall-rules describe "${FIREWALL}" --project="${PROJECT}"; then
     log "firewall ${FIREWALL} exists"
