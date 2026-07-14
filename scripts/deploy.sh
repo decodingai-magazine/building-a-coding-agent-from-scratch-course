@@ -55,7 +55,7 @@ die()  { printf '\033[31mxx\033[0m  %s\n' "$*" >&2; exit 1; }
 have() { gcloud "$@" >/dev/null 2>&1; }
 
 server_ip() {
-  gcloud compute addresses describe "${IP_NAME}" --region="${REGION}" \
+  gcloud compute addresses describe "${IP_NAME}" --region="${REGION}" --project="${PROJECT}" \
     --format='value(address)' 2>/dev/null || true
 }
 
@@ -262,18 +262,28 @@ CADDY
 # to create — a chicken-and-egg for a script. The server's REST API breaks it: an OAuth2 password
 # grant with the admin password mints a JWT, which creates the decode-runner service account and
 # its key. Values never touch stdout.
+bootstrap_api_key() {
+  local url="$1"
+  log "bootstrapping the decode-runner service account + API key"
+  ADMIN_PASSWORD_FILE="${ADMIN_PASSWORD_FILE}" API_KEY_FILE="${API_KEY_FILE}" \
+    KITARU_URL="${url}" python3 "${REPO_ROOT}/scripts/kitaru_bootstrap_api_key.py"
+}
+
 ensure_login() {
   local url; url="$(kitaru_url)"
   [ -n "${url}" ] || die "no server IP — run: scripts/deploy.sh up"
 
-  if [ ! -f "${API_KEY_FILE}" ]; then
-    log "bootstrapping the decode-runner service account + API key"
-    ADMIN_PASSWORD_FILE="${ADMIN_PASSWORD_FILE}" API_KEY_FILE="${API_KEY_FILE}" \
-      KITARU_URL="${url}" python3 "${REPO_ROOT}/scripts/kitaru_bootstrap_api_key.py"
-  fi
+  [ -f "${API_KEY_FILE}" ] || bootstrap_api_key "${url}"
 
   log "logging in to ${url}"
-  ( cd "${REPO_ROOT}" && uv run kitaru login "${url}" --api-key "$(cat "${API_KEY_FILE}")" >/dev/null )
+  if ! ( cd "${REPO_ROOT}" && uv run kitaru login "${url}" --api-key "$(cat "${API_KEY_FILE}")" >/dev/null 2>&1 ); then
+    # A key from a previous server is worthless — the DB it lived in is gone. Mint a fresh one.
+    warn "the stored API key was rejected; minting a new one"
+    rm -f "${API_KEY_FILE}"
+    bootstrap_api_key "${url}"
+    ( cd "${REPO_ROOT}" && uv run kitaru login "${url}" --api-key "$(cat "${API_KEY_FILE}")" >/dev/null ) \
+      || die "kitaru login failed against ${url}"
+  fi
 }
 
 # `kitaru stack create --type` offers local/kubernetes/vertex/sagemaker/azureml — there is NO modal
@@ -368,6 +378,7 @@ EOF
 cmd_update() {
   preflight
   preflight_docker
+  ensure_tls        # re-applies the Caddyfile and restarts Caddy; the cert volume survives
   ensure_login
   ensure_stack
   ensure_secrets
@@ -390,7 +401,7 @@ cmd_down() {
   gcloud iam service-accounts delete "${SA}" --project="${PROJECT}" --quiet || true  # takes the key with it
 
   rm -f "${SA_KEY}" "${ADMIN_PASSWORD_FILE}" "${API_KEY_FILE}"
-  log "torn down. The local kitaru client still points at a dead server — run `kitaru login` when you rebuild."
+  log 'torn down. The local kitaru client still points at a dead server — log in again when you rebuild.'
 }
 
 cmd_status() {
@@ -404,9 +415,10 @@ cmd_status() {
     printf '  (unreachable)\n'
   fi
   printf 'bucket     %s\n' "$(have storage buckets describe "${BUCKET}" && echo "${BUCKET}" || echo '<none>')"
-  printf 'registry   %s\n' "$(have artifacts repositories describe "${AR_REPO}" --location="${REGION}" && echo "${REGISTRY}" || echo '<none>')"
-  printf 'vm         %s\n' "$(gcloud compute instances describe "${VM}" --zone="${ZONE}" --format='value(status)' 2>/dev/null || echo '<none>')"
-  printf 'firewall   %s\n' "$(have compute firewall-rules describe "${FIREWALL}" && echo "${FIREWALL} (tcp:80,443 → 0.0.0.0/0)" || echo '<none>')"
+  printf 'registry   %s\n' "$(have artifacts repositories describe "${AR_REPO}" --location="${REGION}" --project="${PROJECT}" && echo "${REGISTRY}" || echo '<none>')"
+  printf 'vm         %s\n' "$(gcloud compute instances describe "${VM}" --zone="${ZONE}" --project="${PROJECT}" --format='value(status)' 2>/dev/null || echo '<none>')"
+  printf 'firewall   %s\n' "$(have compute firewall-rules describe "${FIREWALL}" --project="${PROJECT}" && echo "${FIREWALL} (tcp:80,443 → 0.0.0.0/0)" || echo '<none>')"
+  printf 'legacy     %s\n' "$(have compute firewall-rules describe "${LEGACY_FIREWALL}" --project="${PROJECT}" && echo "${LEGACY_FIREWALL} (tcp:8080 → 0.0.0.0/0) — PLAINTEXT, delete it" || echo 'none (:8080 not exposed)')"
   printf 'tls        %s\n' "$(curl -sf -m 8 "${url}/health" >/dev/null 2>&1 && echo "Let's Encrypt, valid" || echo '<no cert>')"
   printf 'stack      %s\n' "$(cd "${REPO_ROOT}" && uv run kitaru stack current 2>/dev/null \
     | awk -F': ' '/Active stack:/ {print $2; exit}' || echo '<none>')"

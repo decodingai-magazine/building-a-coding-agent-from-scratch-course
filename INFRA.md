@@ -334,8 +334,14 @@ later submits reuse it. `SANDBOX_MODE` picks where the agent's `bash` lands:
 
 | `SANDBOX_MODE` | Where `bash` runs | `--repo` Workspace | Hand-back |
 |---|---|---|---|
-| `modal` (default for `run-remote`) | a **nested** Modal sandbox, `/workspace` | yes | yes (needs `SANDBOX_GIT_TOKEN` in the bucket) |
+| `modal` (default for `run-remote`) | a **nested** Modal sandbox, `/workspace` | yes | needs `SANDBOX_GIT_TOKEN` in the bucket — **not yet verified from a remote run** |
 | `none` | inside the flow container itself, `/app/code` | no (ADR-0012 §3) | no |
+
+Verified end to end on the remote stack: the flow container, Environment-Bucket hydration, the model
+call, the nested Modal `bash` sandbox, and the `--repo` clone (read-only, against a public repo).
+**Not** verified: Hand-back actually *pushing* a `decode/<session-id>` branch — that needs a repo you
+can write to. It fails soft ("headless sandbox hand-back failed; continuing"), so a run never loses
+its result over it.
 
 Operate a live run from anywhere the server is reachable:
 
