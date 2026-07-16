@@ -47,29 +47,55 @@ Implement the plan: edit, then run the suite inside the Workspace (`uv run pytes
 `make unit-tests`) until it is green. Keep the final green test output — it goes in the PR body.
 All of this happens on the sandboxed clone.
 
-## 4. Exit — Hand-back pushes the Session Branch (human step)
+## 4. Get the branch onto the remote
 
-Leave the REPL (exit, or `/ship` while idle). On exit, Hand-back secures the final Workspace onto
-a deterministic `decode/<session-id>` **Session Branch**, auto-commits any uncommitted model work,
-and `git push`es it back to the course repo using your ambient host git credentials — every git
-command runs host-side, so no credential ever enters the sandbox. The friendly exit line names the
-branch it pushed.
+The branch has to be on `origin` before a PR can point at it. There are two ways it gets there —
+know which one you are in:
+
+- **Sandbox run (the intended demo, `SANDBOX_MODE=docker`/`modal`):** just leave the REPL (exit,
+  or `/ship` while idle). On exit, **Hand-back** secures the final Workspace onto a deterministic
+  `decode/<session-id>` **Session Branch**, auto-commits any uncommitted model work, and
+  `git push`es it back to the course repo with your ambient host git credentials — every git
+  command runs host-side, so no credential ever enters the sandbox. The friendly exit line names
+  the branch it pushed. You do **not** push by hand in this path.
+
+- **No sandbox, or your own feature branch:** if decode is running straight on the host (no
+  `SANDBOX_MODE`), there is no Hand-back — commit your work on a feature branch and push it
+  yourself:
+
+  ```
+  git push -u origin <your-branch>
+  ```
+
+  **Give this push a generous timeout (≥ 180s) and do not kill it.** This repo installs a
+  **pre-push** hook that runs the full unit suite (`make unit-tests`, ~2 minutes) before the push
+  goes out — a short tool timeout will terminate it mid-run and look like a network hang. It is
+  the gate doing its job; you already ran the suite green in step 3, so just let it finish. Do
+  **not** reach for `git push --no-verify` to dodge it — that skips the format/lint/test gate the
+  push is supposed to enforce. Only fall back to `--no-verify` if the human explicitly tells you
+  to.
 
 ## 5. Open a draft PR against the course repo
 
-Turn the pushed branch into a draft PR with the `gh` CLI, from the branch Hand-back named:
+Turn the pushed branch into a draft PR with the `gh` CLI — `--head decode/<session-id>` for the
+Hand-back path, or `--head <your-branch>` for the manual path. Build the body with a heredoc so
+newlines and backticks land literally (never hand-escape `\n` into `--body`):
 
-```
-gh pr create --draft --repo decodingai-magazine/building-a-coding-agent-from-scratch-course \
-  --head decode/<session-id> --title "<feature>" \
-  --body "<what & why, 2-3 lines>
+~~~
+gh pr create --draft \
+  --repo decodingai-magazine/building-a-coding-agent-from-scratch-course \
+  --head <branch> --title "<feature>" \
+  --body "$(cat <<'EOF'
+<what & why, 2-3 lines>
 
 Test evidence:
-\`\`\`
+```
 <the green pytest summary line>
-\`\`\`
-
-Built end-to-end inside a decode sandbox Workspace (SANDBOX_MODE=docker) and shipped by Hand-back."
 ```
 
-Report the feature you built, the `decode/<session-id>` branch, and the draft-PR URL.
+Built end-to-end inside a decode sandbox Workspace (SANDBOX_MODE=docker) and shipped by Hand-back.
+EOF
+)"
+~~~
+
+Report the feature you built, the branch it landed on, and the draft-PR URL.
