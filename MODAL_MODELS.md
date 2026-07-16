@@ -14,11 +14,6 @@ For a ReAct coding-agent harness (LLM ⇄ tools loop, OpenAI-compatible serving)
 | **Dev default** | `Qwen/Qwen3.6-35B-A3B-FP8` | **1×H100** | Cheapest serve (MoE ~3B active); strong Qwen tool-calling; iterate without burning credits |
 | **Max capability** | `zai-org/GLM-5.2-FP8` | **8×B200** | Flagship agentic-coding tuning; expensive — reserve for hard tasks (`zai-org/GLM-4.7` is the cheaper fallback) |
 
-**Why tool-calling dominates the choice:** every turn is "emit a valid tool call against a schema →
-read the result → decide again." A model that codes brilliantly but is flaky at structured tool
-calls *breaks the loop*. The model whose native format **is** OpenAI function-calling has the fewest
-failure modes — that's GPT-OSS.
-
 **The rest of the catalog** (23 models: 12 Qwen, 4 Gemma, GPT-OSS, Nemotron, 2 DeepSeek, 2 GLM,
 Kimi) is browsable in the dashboard. Skip the small models (Qwen ≤9B, Gemma E2B/E4B — can't hold
 tool discipline) and the frontier giants (`Qwen3.5-397B-A17B-FP8`, `DeepSeek-V4-Pro`,
@@ -138,6 +133,3 @@ config error, not a silent 401.
 ## Caveats
 
 - **Estimates, not measurements** — validate with `modal endpoint benchmark` before budgeting.
-- **Cold starts** — a serverless endpoint scales to zero; for an interactive TUI set Min containers ≥ 1 (dashboard-only).
-- **Tool-call parser is the gate** — re-confirm the recipe enables it for your pick; it makes or breaks the loop.
-- **Catalog drift** — this is a 2026-06-26 snapshot; re-read the dashboard before long-lived decisions.

@@ -2,8 +2,8 @@
 
 Course material *about* the agent, not part of it — this `evals/` package never ships in the wheel
 (ADR-0017 §1). It carries four tracks (Demo Skills, Benchmark, Regression probes, and the online
-track) over the shared Opik harness. Full docs land with task 120; this README documents the
-**online eval** track (ADR-0017 §10, task 117).
+track) over the shared Opik harness. The four-track map is [`docs/evals.md`](../docs/evals.md); this
+README documents the **online eval** track (ADR-0017 §10, task 117).
 
 ## Online eval — scoring live REPL traffic
 

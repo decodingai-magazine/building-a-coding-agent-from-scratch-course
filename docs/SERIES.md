@@ -192,9 +192,6 @@ Proof: CI runs the whole suite one last time; glue stays thin enough not to need
 
 ## Standing rules
 
-- Opik tiers: ambient (all 8) → instrument (#4) → judge (#7)
-- Cross-link rule: secondary mention → sponsor's primary lesson
-- Proof thread: deterministic testing lives ONLY in per-lesson Proof sections + #7's intro recap — never a standalone lesson (zero sponsor surface)
 - Scoping self-tests: #7 — every paragraph answers "is the agent good?"; #8 — nothing new taught, only composed
 - #8 watch: deploy section drifts Modal-heavy — cap at one paragraph + cross-link; rungs/waits/forks/bucket keep ZenML-primary honest
 

@@ -26,14 +26,7 @@ The rest of this file is a manual e2e tutorial. Every case is an **A/B**: the sa
 flipped, and a different observable. Part 4 is an automated backstop that proves the same claims with no
 network, no PAT, and no Kitaru.
 
-> **Clean break — the Credential Proxy is gone ([ADR-0016](docs/adr/0016-drop-credential-proxy.md)).**
-> decode used to hide a tool credential from the docker Worker behind a mitmproxy sidecar that injected the
-> header *after* egress. It only ever worked in one of three sandbox modes (modal already direct-injected the
-> same token), and it bought a property — "the Worker holds no token" — that was therefore already false in
-> the mode where isolation matters most. `SANDBOX_CREDENTIAL_PROXY_ENABLED` and `SANDBOX_PROXY_IMAGE` are
-> **deleted**, no shim: a stale line in your `.env` is silently ignored (`extra="ignore"`). What replaces it
-> is [Part 2](#part-2--the-sandbox-git-token-sandbox_git_token) — one token, direct-injected, both backends,
-> and an honest warning that the model can read it.
+> **Clean break — the Credential Proxy is gone** (why: [ADR-0016](docs/adr/0016-drop-credential-proxy.md); stale-key behavior: Part 2c). What replaces it is [Part 2](#part-2--the-sandbox-git-token-sandbox_git_token) — one token, direct-injected, both backends, and an honest warning that the model can read it.
 
 ## Part 0 — prerequisites
 
@@ -54,7 +47,7 @@ uv run kitaru login     # or bring the local server + web dashboard back up on 1
 ```
 
 On macOS the local Kitaru server can also die mid-run with an ObjC fork-safety abort — the
-`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` fix is in the [README](README.md#headless-runtime-decode-run).
+`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` fix is in [INSTALL_AND_USAGE](INSTALL_AND_USAGE.md#headless-runtime-decode-run).
 
 ## Part 1 — the config surface (`DECODE_ENV`)
 

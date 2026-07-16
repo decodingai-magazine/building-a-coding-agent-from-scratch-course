@@ -16,9 +16,7 @@ own README goes deeper; this page links, it doesn't duplicate.
 | **Regression probes** | "does it work the *way we designed*?" | code metrics + a threshold gate | `make eval-regression` |
 | **Online eval** | "is *live* traffic still good?" | a judge over already-emitted traces | `python -m evals online` |
 
-Demos are for a person; the benchmark proves outcomes; the probes prove *behavior* (right tool,
-minimal diff, gate respected — the ADR-0002..0013 designs); online eval grades production traffic in
-place. The `evals/` package overview is [`evals/README.md`](../evals/README.md).
+The `evals/` package overview is [`evals/README.md`](../evals/README.md).
 
 > **Keys & cost.** The benchmark and regression tracks run the real agent and store an Opik
 > experiment, so they need `OPIK_API_KEY` **plus the active provider's key** (`gemini` →
@@ -130,20 +128,14 @@ way no single number captures". Neither replaces the other.
 The production-eval story: every other track *drives* the agent, but online eval grades the
 [Traces](glossary.md) decode **already emitted** from real REPL sessions and `decode run` invocations,
 scored **in place** in the live Opik project (never `EVAL_PROJECT_NAME` — grading real traffic where it
-lands is the whole point). Two complementary halves:
-
-1. an **Opik online rule** — an LLM-as-judge Opik runs automatically on each new trace (set up once in
-   the Opik UI);
-2. a **scripted thread-level pass** — one conversation judge over recent [Threads](glossary.md), run on
-   demand:
+lands is the whole point).
 
 ```bash
 python -m evals online                                          # score every thread in the live project
 python -m evals online --filter 'start_time > "2026-07-01T00:00:00Z"'   # scope to recent threads
 ```
 
-It needs `OPIK_API_KEY` + the active provider's key; without them it **skips friendly** (prints what to
-set, exits 0). The full walkthrough — writing the online rule's scoring prompt *qualitatively*, and why
+The full walkthrough — writing the online rule's scoring prompt *qualitatively*, and why
 this track inverts the "keep evals off the live project" rule — is the online section of
 [`evals/README.md`](../evals/README.md).
 
