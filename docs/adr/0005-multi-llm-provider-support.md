@@ -13,7 +13,7 @@ Gemini key. To let people run it **for free**, we add two more inference backend
 - **OpenRouter** — an OpenAI-compatible gateway with `:free` model options.
 - **Modal Auto Endpoints** — OpenAI-compatible `/v1` endpoints serving open-source models on Modal's
   $30 free credits. Model selection, GPU/serving trade-offs, and endpoint setup are documented in the
-  companion catalog [`MODAL_MODELS.md`](../../getting_started/MODAL_MODELS.md) (2026-06-26 snapshot) — this ADR records
+  companion catalog [`modal_models.md`](../../getting_started/modal_models.md) (2026-06-26 snapshot) — this ADR records
   the *wiring* decision and references that file for *which model* and *how to create the endpoint*.
 
 The seam was the only architecture ADR-0002 left open here; the loop, tools, permissions, memory, and
@@ -34,12 +34,12 @@ model list during grooming, so it is not re-litigated downstream.
    keys happen to be present: it is implicit, surprising, and ambiguous when several keys are set.
 
 2. **Per-provider config fields, on the one settings reader.** OpenRouter: `openrouter_api_key`
-   (`SecretStr`), `openrouter_model`. Modal **endpoint** (names per MODAL_MODELS.md §6):
+   (`SecretStr`), `openrouter_model`. Modal **endpoint** (names per modal_models.md §6):
    `modal_endpoint_url` (no default — per-user deploy output; used as `base_url = f"{...}/v1"`),
    `modal_endpoint_model`, `modal_proxy_token_id` (`SecretStr`, the `Modal-Key: wk-...` header) and
    `modal_proxy_token_secret` (`SecretStr`, the `Modal-Secret: ws-...` header). These Modal endpoint
    vars are **distinct** from the existing `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` **account** tokens
-   (`modal token set`, for the CLI/sandbox — MODAL_MODELS.md §5.1): overloading them would conflate two
+   (`modal token set`, for the CLI/sandbox — modal_models.md §5.1): overloading them would conflate two
    unrelated credential scopes. All new vars are mirrored in `.env.example`; nothing reads `os.environ`
    in call sites.
 
@@ -60,7 +60,7 @@ model list during grooming, so it is not re-litigated downstream.
 5. **Modal proxy-token auth is OPTIONAL — support `--unauthenticated` endpoints.** Modal Auto Endpoints
    require auth **by default**, via a **pair** of headers `Modal-Key` (wk-...) + `Modal-Secret` (ws-...)
    from `modal workspace proxy-tokens create` — not the OpenAI `Authorization: Bearer` scheme
-   (MODAL_MODELS.md §5.3, §6.3). But a dev endpoint created with `--unauthenticated` needs no headers.
+   (modal_models.md §5.3, §6.3). But a dev endpoint created with `--unauthenticated` needs no headers.
    So the modal branch always builds a **custom `AsyncOpenAI` client** (for the custom `base_url`) and:
    - **both** proxy tokens set → `AsyncOpenAI(base_url=f"{modal_endpoint_url}/v1",
      api_key=<modal_proxy_token_secret>, default_headers={"Modal-Key": <modal_proxy_token_id>,
@@ -81,7 +81,7 @@ model list during grooming, so it is not re-litigated downstream.
    **current** known-good free model that supports tool-calling + streaming (verified
    `qwen/qwen3-coder:free` against the live OpenRouter list on 2026-06-26; documented alternate
    `meta-llama/llama-3.3-70b-instruct:free`). `modal_endpoint_model` defaults to **`openai/gpt-oss-120b`**
-   — MODAL_MODELS.md's best-fit pick (native OpenAI tool-calling = the #1 harness criterion, single
+   — modal_models.md's best-fit pick (native OpenAI tool-calling = the #1 harness criterion, single
    B200); documented alternates `Qwen/Qwen3.6-35B-A3B-FP8` (cheap dev, 1×H100) and `zai-org/GLM-5.2-FP8`
    (max). The agent loop needs a **tool-calling + streaming** capable model; docs carry a "if you swap
    models, pick a tool-capable one" warning for both OpenRouter and Modal. **Non-goals (simplest thing
@@ -152,10 +152,10 @@ flowchart TB
   half-configured state that would otherwise 401 at the first request.
 - **Free OpenRouter model ids churn** — the shipped default is verified at grooming and re-verified at
   implementation; a stale id surfaces as a first-request error, not a silent failure (no fallback).
-  The Modal default `openai/gpt-oss-120b` is pinned to the catalog's best-fit; MODAL_MODELS.md is the
+  The Modal default `openai/gpt-oss-120b` is pinned to the catalog's best-fit; modal_models.md is the
   canonical place to pick an alternate.
 - **Two Modal credential scopes now coexist** (account tokens vs endpoint proxy tokens); `.env.example`,
-  the README, and MODAL_MODELS.md §6 must keep them clearly separated to avoid user confusion.
+  the README, and modal_models.md §6 must keep them clearly separated to avoid user confusion.
 - **No fallback is a deliberate simplicity choice** — a misconfigured provider fails fast (guard or
   first request) rather than masking the misconfiguration by switching backends; revisit if multi-model
   routing is wanted later.

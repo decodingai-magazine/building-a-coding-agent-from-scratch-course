@@ -12,7 +12,7 @@ part you type by hand.**
 
 | Piece | What | Why this and not more |
 |---|---|---|
-| **Kitaru/ZenML server** | one `zenmldocker/kitaru` container on one GCE VM, SQLite on the boot disk, Caddy in front for TLS | The durability core: executions, checkpoint metadata, replay, HITL waits, and the [Environment Bucket](CREDENTIALS.md). It must be reachable *from Modal*, so it cannot stay on the laptop. One VM + SQLite beats Cloud Run/GKE/MySQL for a single-user course. |
+| **Kitaru/ZenML server** | one `zenmldocker/kitaru` container on one GCE VM, SQLite on the boot disk, Caddy in front for TLS | The durability core: executions, checkpoint metadata, replay, HITL waits, and the [Environment Bucket](credentials.md). It must be reachable *from Modal*, so it cannot stay on the laptop. One VM + SQLite beats Cloud Run/GKE/MySQL for a single-user course. |
 | **Modal orchestrator stack** | ZenML's `modal` orchestrator + `modal` sandbox flavors | The flow container runs as a Modal Sandbox; decode's own bash sandboxes are spawned *from* it (nested). |
 | **GCS bucket** | artifact store (`gs://…`) | Checkpoint payloads, artifacts, uploaded code. Modal cannot read a local artifact store — remote is mandatory. |
 | **Artifact Registry repo** | container registry | The flow image is built locally at submit time and pushed here; Modal pulls it. Also mandatory-remote. |

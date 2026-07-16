@@ -128,8 +128,8 @@ Eight lessons, each pairing a written deep-dive with the code that implements it
 | 4 | Context engineering: the window is a budget | Context engineering without measurement is folklore. Five moves — memory, compaction, skills, LSP, truncation — each a measured before/after experiment. | `src/decode/context/`, `src/decode/memory/`, `src/decode/skills/`, `src/decode/services/lsp/` · [ADR-0006](docs/adr/0006-conversation-compaction.md), [ADR-0007](docs/adr/0007-lsp-integration.md) |
 | 5 | Containing the agent: permissions → sandbox | The trust ladder: the permission gate proper, then isolated Docker/Modal Workspaces with git hand-back — plus the credential proxy we built and then deleted, postmortem included. | `src/decode/permissions/`, `src/decode/sandbox/` · [ADR-0003](docs/adr/0003-milestone-2-permission-system-and-agents-catalog.md), [ADR-0012](docs/adr/0012-isolated-workspace.md), [ADR-0016](docs/adr/0016-drop-credential-proxy.md) |
 | 6 | Agents catalog, subagents & parallel fan-out | Build/Plan/Code-Reviewer agents and the read-only Explore subagent — parallel fan-out with budgets, report contracts, and no silent failures. | `src/decode/agents/` · [ADR-0013](docs/adr/0013-explore-subagents.md), [ADR-0017](docs/adr/0017-resilient-parallel-subagent-fanout.md) |
-| 7 | Is the agent good? The eval stack | The suite is green — 1,800+ tests — and it still can't tell you the agent got worse. Outcome benchmarks, regression probes, LLM-as-judge, and online evals over live traffic. | `evals/`, `src/decode/observability/` · [ADR-0014](docs/adr/0014-opik-observability.md), [ADR-0017](docs/adr/0017-decode-eval-suite.md), [docs/evals.md](docs/evals.md) |
-| 8 | Ship it to your team | Builder → operator: deployed runtime, environment-scoped secrets, a GitHub pipeline where labeling an issue returns a reviewed PR, and judged model-comparison cohorts. | [ADR-0015](docs/adr/0015-environment-bucket-secrets.md) · [CREDENTIALS.md](getting_started/CREDENTIALS.md), [INFRA.md](getting_started/INFRA.md) |
+| 7 | Is the agent good? The eval stack | The suite is green — 1,800+ tests — and it still can't tell you the agent got worse. Outcome benchmarks, regression probes, LLM-as-judge, and online evals over live traffic. | `evals/`, `src/decode/observability/` · [ADR-0014](docs/adr/0014-opik-observability.md), [ADR-0017](docs/adr/0017-decode-eval-suite.md), [getting_started/evals.md](getting_started/evals.md) |
+| 8 | Ship it to your team | Builder → operator: deployed runtime, environment-scoped secrets, a GitHub pipeline where labeling an issue returns a reviewed PR, and judged model-comparison cohorts. | [ADR-0015](docs/adr/0015-environment-bucket-secrets.md) · [credentials.md](getting_started/credentials.md), [infra.md](getting_started/infra.md) |
 
 ## 🏗️ Project Structure
 
@@ -166,12 +166,12 @@ Everything lives under [`getting_started/`](getting_started/) — one core guide
 
 | Guide | What's inside |
 |-------|---------------|
-| [INSTALL_AND_USAGE.md](getting_started/INSTALL_AND_USAGE.md) | The core path: requirements, install, LLM provider setup (Gemini / OpenRouter / Modal), the REPL, and the dev workflow — about 5 minutes to a running agent. |
-| [RUNTIME.md](getting_started/RUNTIME.md) | Headless runs (`decode run`), durable checkpoints, human-in-the-loop waits, and model-swapped replay. |
-| [SANDBOXING.md](getting_started/SANDBOXING.md) | Isolated Docker/Modal Workspaces, working on any repo with `--repo`, and the git hand-back. |
-| [CREDENTIALS.md](getting_started/CREDENTIALS.md) | Environments & secrets, walked end-to-end. |
-| [MODAL_MODELS.md](getting_started/MODAL_MODELS.md) | Picking and serving your own open model on Modal. |
-| [INFRA.md](getting_started/INFRA.md) | Deploying the remote runtime stack to the cloud. |
+| [install_and_usage.md](getting_started/install_and_usage.md) | The core path: requirements, install, LLM provider setup (Gemini / OpenRouter / Modal), the REPL, and the dev workflow — about 5 minutes to a running agent. |
+| [runtime.md](getting_started/runtime.md) | Headless runs (`decode run`), durable checkpoints, human-in-the-loop waits, and model-swapped replay. |
+| [sandboxing.md](getting_started/sandboxing.md) | Isolated Docker/Modal Workspaces, working on any repo with `--repo`, and the git hand-back. |
+| [credentials.md](getting_started/credentials.md) | Environments & secrets, walked end-to-end. |
+| [modal_models.md](getting_started/modal_models.md) | Picking and serving your own open model on Modal. |
+| [infra.md](getting_started/infra.md) | Deploying the remote runtime stack to the cloud. |
 
 **Pro tip:** Read the accompanying lessons first for a better understanding of the system you'll build.
 

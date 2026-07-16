@@ -25,9 +25,9 @@ Core setup needs two tools. Everything else is optional and only unlocks a side 
 |---|---|---|
 | **[uv](https://docs.astral.sh/uv/)** | everything — it also installs the pinned Python 3.12 for you | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | **git** | cloning the repo (and the sandbox hand-back later) | preinstalled on macOS/Linux |
-| Docker *(optional)* | only `SANDBOX_MODE=docker` — see [SANDBOXING.md](SANDBOXING.md) | [docker.com](https://www.docker.com/products/docker-desktop/) |
-| `modal` CLI *(optional)* | only the remote sandbox or serving your own model — see [MODAL_MODELS.md](MODAL_MODELS.md) | ships with `make install`; authenticate with `modal token set` |
-| `gcloud` *(optional)* | only the cloud runtime stack — see [INFRA.md](INFRA.md) | `brew install google-cloud-sdk` |
+| Docker *(optional)* | only `SANDBOX_MODE=docker` — see [sandboxing.md](sandboxing.md) | [docker.com](https://www.docker.com/products/docker-desktop/) |
+| `modal` CLI *(optional)* | only the remote sandbox or serving your own model — see [modal_models.md](modal_models.md) | ships with `make install`; authenticate with `modal token set` |
+| `gcloud` *(optional)* | only the cloud runtime stack — see [infra.md](infra.md) | `brew install google-cloud-sdk` |
 
 ## 2. Install
 
@@ -53,9 +53,9 @@ You need exactly **one** key to start — everything else is opt-in:
 |---|---|---|
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey) — free tier | **the default provider; the only key you need to start** |
 | `OPENROUTER_API_KEY` | [openrouter.ai](https://openrouter.ai) — `:free` models cost $0 | only `LLM_PROVIDER=openrouter` |
-| `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | [modal.com](https://modal.com) — $30 free credits | only the Modal sandbox or a self-served model ([MODAL_MODELS.md](MODAL_MODELS.md)) |
+| `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | [modal.com](https://modal.com) — $30 free credits | only the Modal sandbox or a self-served model ([modal_models.md](modal_models.md)) |
 | `OPIK_API_KEY` | [comet.com](https://www.comet.com/opik) — free tier | only tracing + evals; unset = silent no-op |
-| `SANDBOX_GIT_TOKEN` | a GitHub fine-grained, repo-scoped PAT | only to let the model itself push / open PRs from a sandbox ([SANDBOXING.md](SANDBOXING.md)) |
+| `SANDBOX_GIT_TOKEN` | a GitHub fine-grained, repo-scoped PAT | only to let the model itself push / open PRs from a sandbox ([sandboxing.md](sandboxing.md)) |
 
 Every variable decode reads — required and optional, with comments — is documented in [`.env.example`](../.env.example).
 
@@ -73,7 +73,7 @@ The agent loop runs on one selectable **LLM provider** — set `LLM_PROVIDER` pl
 |---|---|---|---|
 | `gemini` (default) | `GEMINI_MODEL` | `gemini-2.5-flash` | free credits on [Google AI Studio](https://aistudio.google.com/apikey) |
 | `openrouter` | `OPENROUTER_MODEL` | `openrouter/free` | the [Free Models Router](https://openrouter.ai/docs/guides/routing/routers/free-router) — auto-routes across free tool-capable models so one congested provider can't 429-block you. Adding $10 credits raises the free daily cap (~50 → ~1000 req/day); free models still cost $0. |
-| `modal` | `MODAL_ENDPOINT_MODEL` | `openai/gpt-oss-120b` | serve your own model — see [`MODAL_MODELS.md`](MODAL_MODELS.md) for picking a model and creating the endpoint. |
+| `modal` | `MODAL_ENDPOINT_MODEL` | `openai/gpt-oss-120b` | serve your own model — see [`modal_models.md`](modal_models.md) for picking a model and creating the endpoint. |
 
 **Pick a tool-capable model.** The loop needs tool-calling + streaming; the shipped defaults are known-good. Swap to a pinned model that lacks tool support and the loop breaks (the model narrates instead of calling tools). The wiring decision is [ADR-0005](../docs/adr/0005-multi-llm-provider-support.md).
 
@@ -115,17 +115,17 @@ The full feature map — each row is one line here and a deep dive one click awa
 | **Skills** | reusable playbooks triggered with `/<name>` (or by the agent itself), living in `.decode/skills/<name>/SKILL.md` — try `/demo-1-terminal-arcade`. | [ADR-0004](../docs/adr/0004-milestone-3-skills.md) |
 | **Memory** | loads `AGENTS.md` + `.decode/MEMORY.md` into context; appends a one-sentence session summary on exit. | [ADR-0002](../docs/adr/0002-milestone-1-vanilla-agent-architecture.md) |
 | **Sessions & resume** | every session is a replayable JSONL transcript; `decode --resume [<session-id>]` continues it. | [ADR-0002](../docs/adr/0002-milestone-1-vanilla-agent-architecture.md) |
-| **Multi-provider inference** | one seam, three providers: Gemini, OpenRouter, or a model you serve on Modal. | [ADR-0005](../docs/adr/0005-multi-llm-provider-support.md), [MODAL_MODELS.md](MODAL_MODELS.md) |
+| **Multi-provider inference** | one seam, three providers: Gemini, OpenRouter, or a model you serve on Modal. | [ADR-0005](../docs/adr/0005-multi-llm-provider-support.md), [modal_models.md](modal_models.md) |
 | **Context compaction** | automatic budget-keeping: cheap trim near ~60% of the window, one-LLM-call summary near ~80% (or `/compact`); footer gauge tracks it. | [ADR-0006](../docs/adr/0006-conversation-compaction.md) |
 | **LSP code intelligence** | `definition` / `references` / `hover` / `diagnostics` on demand, plus post-edit type-checking so the agent fixes its own mistakes. | [ADR-0007](../docs/adr/0007-lsp-integration.md) |
 | **Explore subagents** | read-only children fan out in parallel (up to 4) and hand back compressed reports instead of flooding the main context. | [ADR-0013](../docs/adr/0013-explore-subagents.md) |
-| **Sandboxing** | move all tools into an isolated Docker or Modal Workspace; work on any repo with `--repo`; get the work back as a git branch. | [SANDBOXING.md](SANDBOXING.md) |
-| **Headless runtime** | `decode run "<task>"` — unattended, durable (checkpoint per call, survives crashes), optional `--hitl` waits. | [RUNTIME.md](RUNTIME.md) |
-| **Replay & what-if** | re-run any recorded execution from any anchor with the model swapped. | [RUNTIME.md](RUNTIME.md) |
-| **Environments & secrets** | `DECODE_ENV` selects `.env` (local) vs the Environment Bucket (deployed); secrets never reach the model's context. | [CREDENTIALS.md](CREDENTIALS.md) |
+| **Sandboxing** | move all tools into an isolated Docker or Modal Workspace; work on any repo with `--repo`; get the work back as a git branch. | [sandboxing.md](sandboxing.md) |
+| **Headless runtime** | `decode run "<task>"` — unattended, durable (checkpoint per call, survives crashes), optional `--hitl` waits. | [runtime.md](runtime.md) |
+| **Replay & what-if** | re-run any recorded execution from any anchor with the model swapped. | [runtime.md](runtime.md) |
+| **Environments & secrets** | `DECODE_ENV` selects `.env` (local) vs the Environment Bucket (deployed); secrets never reach the model's context. | [credentials.md](credentials.md) |
 | **Observability** | one `OPIK_API_KEY` and every turn ships a full trace — every model/tool call as a span with tokens, latency, cost. | [ADR-0014](../docs/adr/0014-opik-observability.md) |
-| **Evals** | outcome benchmark, behavior regression probes, LLM judges, online evals (`make eval-benchmark` / `make eval-regression`). | [docs/evals.md](../docs/evals.md) |
-| **Cloud deployment** | the whole headless agent on Modal, checkpoints on a self-hosted Kitaru server. | [INFRA.md](INFRA.md) |
+| **Evals** | outcome benchmark, behavior regression probes, LLM judges, online evals (`make eval-benchmark` / `make eval-regression`). | [getting_started/evals.md](evals.md) |
+| **Cloud deployment** | the whole headless agent on Modal, checkpoints on a self-hosted Kitaru server. | [infra.md](infra.md) |
 
 ## Develop
 

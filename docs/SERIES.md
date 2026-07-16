@@ -47,7 +47,7 @@ Ambient trace: hero shot — full session tree. "By lesson 8 you read this fluen
 **Primary: Modal · Opik wired**
 
 - **Spine: one user turn end-to-end** — prompt → `agent.iter()` → tool call → approval → result → stream → render → log append
-- Full-size: core tools (`read`/`edit`/`bash`; one-liners `web`, `tasks`), Decision Channel, Priority Gate (steer/follow-up/abort demo), MODAL_MODELS.md thesis (tool-call reliability #1 criterion; vLLM parser disqualifier), presence-based `init_tracing()`
+- Full-size: core tools (`read`/`edit`/`bash`; one-liners `web`, `tasks`), Decision Channel, Priority Gate (steer/follow-up/abort demo), modal_models.md thesis (tool-call reliability #1 criterion; vLLM parser disqualifier), presence-based `init_tracing()`
 - Demoted: naive HITL gate ≤150 words → pointer #5 · session log one paragraph → pointer #4 · TUI internals → sidebar
 - **Endpoint deployed here stays warm through #6 and #8**
 

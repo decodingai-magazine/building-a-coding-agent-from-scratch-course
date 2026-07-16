@@ -78,7 +78,7 @@ MODAL_TOKEN_SECRET_NAME = "decode-modal"
 
 
 def _runtime_image() -> ImageSettings:
-    """The flow container for a remote stack (getting_started/INFRA.md §4) — ignored by the local stack, which never builds.
+    """The flow container for a remote stack (getting_started/infra.md §4) — ignored by the local stack, which never builds.
 
     ``DECODE_ENV`` and ``SANDBOX_MODE`` are propagated from the submitting process so a remote run
     keeps the config surface the operator chose: ``DECODE_ENV=prod`` makes the container's
@@ -89,7 +89,7 @@ def _runtime_image() -> ImageSettings:
     **No ``platform=``** — it is pinned in the Dockerfile's ``FROM`` instead. Passing it here gives
     ZenML's ``DockerSettings`` a ``build_config``, which its builder mutates mid-build; the reuse
     lookup hashes the settings before that mutation and the stored build after it, so no build is
-    ever reusable and every submit rebuilds the image (see docker/flow.Dockerfile, getting_started/INFRA.md §4).
+    ever reusable and every submit rebuilds the image (see docker/flow.Dockerfile, getting_started/infra.md §4).
     """
     return ImageSettings(
         dockerfile="docker/flow.Dockerfile",

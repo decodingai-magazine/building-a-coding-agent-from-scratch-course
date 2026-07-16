@@ -13,11 +13,11 @@
 # forbidden to open their own (see below) — a PR raised here is titled and numbered by attempt, which
 # is what makes N attempts reviewable side by side. Without it you get branches only.
 #
-# Two things it is careful about, both learned the hard way (getting_started/INFRA.md §3):
+# Two things it is careful about, both learned the hard way (getting_started/infra.md §3):
 #
 #   * It WARMS the flow image with one throwaway run before fanning out. A cold submit builds the
 #     image and pushes it to the `run_agent_task-orchestrator` tag — N cold submits would each build
-#     and race to push that same tag (and race on the code upload, getting_started/INFRA.md §4).
+#     and race to push that same tag (and race on the code upload, getting_started/infra.md §4).
 #   * It tells the model NOT to push and NOT to open a PR. A model that ships its own work names its
 #     own branch and sometimes forgets entirely, so the attempts stop being comparable; forbidding it
 #     makes the Hand-back (ADR-0012 §8) the only path, and every attempt lands identically as
@@ -166,7 +166,7 @@ for i in $(seq 1 "${ATTEMPTS}"); do
 done
 
 printf '\n'
-[ "${#shipped[@]}" -gt 0 ] || die "no attempt shipped a branch — getting_started/INFRA.md §3 'Verify the deploy', check 3"
+[ "${#shipped[@]}" -gt 0 ] || die "no attempt shipped a branch — getting_started/infra.md §3 'Verify the deploy', check 3"
 
 log "${#shipped[@]}/${ATTEMPTS} attempts shipped a branch."
 

@@ -45,7 +45,7 @@ sync-secrets:  ## Mirror .env into the Kitaru environment bucket decode-$(ENV). 
 	@[ -n "$(ENV)" ] || { echo "Usage: make sync-secrets ENV=dev|staging|prod   (one-way: .env -> the decode-<ENV> bucket)"; exit 1; }
 	uv run python scripts/sync_secrets.py --env $(ENV)
 
-deploy:  ## Provision (or re-apply) the remote runtime stack — see getting_started/INFRA.md. Usage: make deploy [ARGS=update|down|status]
+deploy:  ## Provision (or re-apply) the remote runtime stack — see getting_started/infra.md. Usage: make deploy [ARGS=update|down|status]
 	scripts/deploy.sh $(or $(ARGS),up)
 
 run-remote:  ## Run a headless agent on the Modal stack. Usage: make run-remote TASK="..." [REPO=<url>] [SANDBOX=modal|none]

@@ -1,7 +1,7 @@
 # Evaluating decode
 
-decode has tracing ([ADR-0014](adr/0014-opik-observability.md)) but tracing alone can't answer *"did
-this change make the agent better or worse?"*. The **eval suite** ([ADR-0017](adr/0017-decode-eval-suite.md))
+decode has tracing ([ADR-0014](../docs/adr/0014-opik-observability.md)) but tracing alone can't answer *"did
+this change make the agent better or worse?"*. The **eval suite** ([ADR-0017](../docs/adr/0017-decode-eval-suite.md))
 does, in four tracks over one shared Opik harness. It lives in top-level [`evals/`](../evals/) —
 course material *about* the agent, never shipped in the wheel — and reads its config off the same
 `Settings` surface as decode itself.
@@ -22,13 +22,13 @@ The `evals/` package overview is [`evals/README.md`](../evals/README.md).
 > experiment, so they need `OPIK_API_KEY` **plus the active provider's key** (`gemini` →
 > `GEMINI_API_KEY`, `openrouter` → `OPENROUTER_API_KEY`, `modal` → `MODAL_ENDPOINT_URL`). They cost
 > real money and are **never** part of `make ci` — the cadence is deliberately manual
-> ([ADR-0017 §9](adr/0017-decode-eval-suite.md)). Without the keys every target **skips friendly**:
+> ([ADR-0017 §9](../docs/adr/0017-decode-eval-suite.md)). Without the keys every target **skips friendly**:
 > one line naming what to set, exit 0, no traceback. Eval runs log under `EVAL_PROJECT_NAME`
 > (`decode-evals`) so they never pollute the live-REPL tracing project.
 
 ## 1. Demo Skills — the human-judged showcase
 
-Five [Skills](glossary.md) under `.decode/skills/demo-N-*/`, each a scripted showcase you trigger by
+Five [Skills](../docs/glossary.md) under `.decode/skills/demo-N-*/`, each a scripted showcase you trigger by
 name in the REPL (no Opik, no keys beyond your provider — a person is the judge):
 
 ```bash
@@ -41,8 +41,8 @@ decode                          # start the REPL in the repo root
 | `/demo-1-terminal-arcade` | a playable stdlib-`curses` Snake game in one file |
 | `/demo-2-bug-hunt` | hunt + fix two seeded bugs until the suite goes green |
 | `/demo-3-repo-pulse` | live GitHub API data → a single-file dashboard with charts |
-| `/demo-4-review-swarm` | fan out three parallel Explore [Subagents](glossary.md) into one verdict |
-| `/demo-5-sandbox-feature-pr` | the meta "decode improves decode" [Sandbox](glossary.md) + Hand-back → draft PR flow |
+| `/demo-4-review-swarm` | fan out three parallel Explore [Subagents](../docs/glossary.md) into one verdict |
+| `/demo-5-sandbox-feature-pr` | the meta "decode improves decode" [Sandbox](../docs/glossary.md) + Hand-back → draft PR flow |
 
 Each `SKILL.md` carries its own instructions; run one, watch the transcript, judge it yourself.
 
@@ -75,7 +75,7 @@ Flags reach `python -m evals benchmark` verbatim through `ARGS=`:
 run's results, **pass@1** (single-shot success), **pass@k** (succeeds at least once in k), **pass^k**
 (succeeds *every* one of k — the reliability bar), a **flakiness rate**, and **cost** figures
 (success-per-dollar from recorded token usage). They print as a Rich summary table and attach to the
-experiment row, tagged with the agent model, provider, and git sha ([ADR-0017 §8](adr/0017-decode-eval-suite.md)).
+experiment row, tagged with the agent model, provider, and git sha ([ADR-0017 §8](../docs/adr/0017-decode-eval-suite.md)).
 The task-folder format and the oracle-honesty harness are [`evals/benchmark/tasks/README.md`](../evals/benchmark/tasks/README.md).
 
 ## 3. Regression probes — `make eval-regression`
@@ -102,11 +102,11 @@ it. It runs the probe suite once and enforces two things: an **absolute per-metr
 gate (tool-discipline ≥ 0.8, judges ≥ 0.7 — any metric below fails the run) and a **baseline compare**
 as a *soft* signal (fetches the previous experiment by name and WARNs on per-metric regressions, never
 fails — usable on day one with no baseline). It's a normal pytest file, so **pointing CI at it later is
-a one-line workflow change** ([ADR-0017 §9](adr/0017-decode-eval-suite.md)); today it stays manual
+a one-line workflow change** ([ADR-0017 §9](../docs/adr/0017-decode-eval-suite.md)); today it stays manual
 because it costs money.
 
 **Two regression surfaces, on purpose.** The contrast *is* the teaching point
-([ADR-0017 §6](adr/0017-decode-eval-suite.md)):
+([ADR-0017 §6](../docs/adr/0017-decode-eval-suite.md)):
 
 - surface (a) — `python -m evals regression` — deterministic **code metrics** over a numeric threshold;
 - surface (b) — `python -m evals suite` — an **Opik 2.0 Test Suite** of natural-language assertions
@@ -124,7 +124,7 @@ way no single number captures". Neither replaces the other.
 ## 4. Online eval — `python -m evals online`
 
 The production-eval story: every other track *drives* the agent, but online eval grades the
-[Traces](glossary.md) decode **already emitted** from real REPL sessions and `decode run` invocations,
+[Traces](../docs/glossary.md) decode **already emitted** from real REPL sessions and `decode run` invocations,
 scored **in place** in the live Opik project (never `EVAL_PROJECT_NAME` — grading real traffic where it
 lands is the whole point).
 

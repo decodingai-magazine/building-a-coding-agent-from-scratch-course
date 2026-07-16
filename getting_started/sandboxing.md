@@ -35,6 +35,6 @@ decode used to hide this token from the docker Worker behind a mitmproxy sidecar
 
 ## Go further
 
-- The end-to-end credential walkthrough — token set, token unset, and every negative case: [CREDENTIALS.md](CREDENTIALS.md).
-- Run a sandboxed agent headless (`decode run --repo …`): [RUNTIME.md](RUNTIME.md).
-- Move the *whole agent* (not just its tools) to the cloud: [INFRA.md](INFRA.md).
+- The end-to-end credential walkthrough — token set, token unset, and every negative case: [credentials.md](credentials.md).
+- Run a sandboxed agent headless (`decode run --repo …`): [runtime.md](runtime.md).
+- Move the *whole agent* (not just its tools) to the cloud: [infra.md](infra.md).
