@@ -185,7 +185,7 @@ def test_dotenv_is_dropped_at_a_remote_env(tmp_path, monkeypatch):
 
     s = Settings(_env_file=str(env_file))
 
-    assert s.gemini_model == "gemini-2.5-flash"  # the field default, NOT the dotenv value
+    assert s.gemini_model == "gemini-3.5-flash"  # the field default, NOT the dotenv value
     assert s.gemini_api_key.get_secret_value() == "sk-from-the-bucket"
 
 
@@ -350,7 +350,7 @@ def test_the_bucket_source_is_never_built_at_local(monkeypatch):
     s = Settings(_env_file=None)
 
     assert requested == []  # get_secret was never called
-    assert s.gemini_model == "gemini-2.5-flash"
+    assert s.gemini_model == "gemini-3.5-flash"
 
 
 def test_the_source_is_inert_when_constructed_at_local(monkeypatch):

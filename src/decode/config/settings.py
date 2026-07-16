@@ -153,7 +153,7 @@ class Settings(BaseSettings):
 
     # gemini (default): google-genai API-key path.
     gemini_api_key: SecretStr = SecretStr("")
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.5-flash"
 
     # openrouter: the default ``openrouter/free`` router spreads across free models and auto-filters
     # for tool-calling, so one congested upstream cannot hard-block with 429s; pin a :free id for a

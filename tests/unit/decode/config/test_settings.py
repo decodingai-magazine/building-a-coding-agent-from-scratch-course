@@ -82,7 +82,7 @@ def test_defaults(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
     s = Settings(_env_file=None)
-    assert s.gemini_model == "gemini-2.5-flash"
+    assert s.gemini_model == "gemini-3.5-flash"
     assert s.max_output_lines == 2000
     assert s.max_output_bytes == 50_000
     assert s.memory_max_lines == 200
