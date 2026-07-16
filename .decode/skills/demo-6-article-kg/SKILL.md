@@ -58,7 +58,13 @@ Author `.decode/outputs/kg.html` by hand — **one file, zero external requests,
 library** (nothing loaded from a CDN: no external scripts, stylesheets, or fonts). Inline
 everything:
 
-- The graph data inlined as `const GRAPH = {...}` — the same nodes and edges as `graph.json`.
+- The graph data inlined as `const GRAPH = { ... };` — paste the **literal JSON** from
+  `graph.json` right there as the value (open brace, real `"nodes"` and `"edges"` arrays, close
+  brace). Do **NOT** leave a placeholder or template token — no `{{GRAPH}}`, no `<DATA>`, no
+  "insert graph here", nothing meant to be substituted in a later pass. There is no second pass:
+  the single write must already contain every node and edge, and the file must be openable and
+  fully working the instant it lands. If you built the page from a template string, expand it
+  before writing — never write the unexpanded template.
 - A hand-rolled **force simulation in vanilla JS** (~80 lines) drawing into an inline `<svg>`:
   pairwise repulsion, springs along edges, gentle centering; let it keep settling live after an
   initial burst of ticks.
@@ -76,9 +82,12 @@ everything:
 1. Validate the checkpoint:
    `uv run python -m json.tool .decode/outputs/graph.json > /dev/null` succeeds, and a one-liner
    confirms every edge endpoint is a node id and the node count sits in 20–35.
-2. The page is self-contained: `grep -c "const GRAPH" .decode/outputs/kg.html` prints 1 and
-   `grep -c 'src="http' .decode/outputs/kg.html` prints 0.
-3. Tell the human to open it: `open .decode/outputs/kg.html`.
+2. The page carries real data, not a template: `grep -c "const GRAPH" .decode/outputs/kg.html`
+   prints 1, and `grep -Ec '\{\{|\}\}|insert .*here|<DATA>' .decode/outputs/kg.html` prints 0 —
+   any leftover substitution token means the data was never inlined; fix it before reporting.
+3. The page is self-contained: `grep -c 'src="http' .decode/outputs/kg.html` prints 0. Confirm
+   the inlined node/edge counts match `graph.json` (e.g. count `"id":` occurrences in each).
+4. Tell the human to open it: `open .decode/outputs/kg.html`.
 
 Report the node count by type, the edge count, the three most-connected entities, one relation
 across articles that surprised you, and the one-line command to open the page.

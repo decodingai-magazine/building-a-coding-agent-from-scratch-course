@@ -196,6 +196,11 @@ def test_demo_6_pins_the_articles_and_the_kg_page_contract():
     # The interactions the demo promises.
     assert "drag" in body.lower()
     assert "hover" in body.lower()
+    # Anti-placeholder guard (observed bug): the body must forbid a substitution token like
+    # ``{{GRAPH}}`` and require pasting the literal JSON, and the verify step must catch a
+    # leftover ``{{`` so a never-substituted template can't pass as "self-contained".
+    assert "{{" in body, "body must call out the placeholder token to forbid it"
+    assert "placeholder" in body.lower()
 
 
 def test_demo_artifacts_land_in_the_outputs_dir():
