@@ -28,23 +28,21 @@ The `evals/` package overview is [`evals/README.md`](../evals/README.md).
 
 ## 1. Demo Skills — the human-judged showcase
 
-Seven [Skills](glossary.md) under `.decode/skills/demo-N-*/`, each a scripted showcase you trigger by
+Five [Skills](glossary.md) under `.decode/skills/demo-N-*/`, each a scripted showcase you trigger by
 name in the REPL (no Opik, no keys beyond your provider — a person is the judge):
 
 ```bash
 decode                          # start the REPL in the repo root
-/demo-1-implement-substack-summarizer   # then just type the skill name
+/demo-1-terminal-arcade         # then just type the skill name
 ```
 
 | Skill | What it shows off |
 |---|---|
-| `/demo-1-implement-substack-summarizer` | build a Substack summarizer end to end |
+| `/demo-1-terminal-arcade` | a playable stdlib-`curses` Snake game in one file |
 | `/demo-2-bug-hunt` | hunt + fix two seeded bugs until the suite goes green |
-| `/demo-3-terminal-arcade` | a playable stdlib-`curses` Snake game in one file |
-| `/demo-4-data-detective` | clean a messy CSV, analyse it, write a report with charts |
-| `/demo-5-review-swarm` | fan out three parallel Explore [Subagents](glossary.md) into one verdict |
-| `/demo-6-sandbox-feature-pr` | the meta "decode improves decode" [Sandbox](glossary.md) + Hand-back → draft PR flow |
-| `/demo-7-todoist-app` | a single-file vanilla-JS todo app, opened in the browser |
+| `/demo-3-repo-pulse` | live GitHub API data → a single-file dashboard with charts |
+| `/demo-4-review-swarm` | fan out three parallel Explore [Subagents](glossary.md) into one verdict |
+| `/demo-5-sandbox-feature-pr` | the meta "decode improves decode" [Sandbox](glossary.md) + Hand-back → draft PR flow |
 
 Each `SKILL.md` carries its own instructions; run one, watch the transcript, judge it yourself.
 
