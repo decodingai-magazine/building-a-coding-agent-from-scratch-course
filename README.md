@@ -73,7 +73,7 @@ Every lesson works concrete-first: you watch `decode` do something — gate a `b
 
 ## 💰 Cost Structure
 
-The course is open-source and free! Running the code can cost **$0** if you stick to free tiers:
+The course is open-source and free! Running the code costs **$0** if you stick to free tiers:
 
 | Service | Cost |
 |---------|------|
@@ -82,6 +82,9 @@ The course is open-source and free! Running the code can cost **$0** if you stic
 | Modal (self-served open models + remote sandbox) | $30 free credits |
 | Opik (tracing + evals) | free tier |
 | Kitaru (durable runtime) | free, runs locally offline |
+| GCP — deploy the agent to run remotely *(optional)* | ~$16/month while it's up — see [infra.md](getting_started/infra.md) |
+
+The **only** part that costs real money is the optional last step: deploying the agent to GCP so headless runs execute entirely in the cloud ([infra.md](getting_started/infra.md)). Everything else — including the whole lesson track — runs free and local, and the stack tears down with one command when you're done.
 
 **Reading-only? Everything's free!**
 
@@ -171,7 +174,7 @@ Everything lives under [`getting_started/`](getting_started/) — one core guide
 | [sandboxing.md](getting_started/sandboxing.md) | Isolated Docker/Modal Workspaces, working on any repo with `--repo`, and the git hand-back. |
 | [credentials.md](getting_started/credentials.md) | Environments & secrets, walked end-to-end. |
 | [modal_models.md](getting_started/modal_models.md) | Picking and serving your own open model on Modal. |
-| [infra.md](getting_started/infra.md) | Deploying the remote runtime stack to the cloud. |
+| [infra.md](getting_started/infra.md) | Deploying the remote runtime stack to the cloud. 💰 *The only part of the course that costs real money (~$16/month on GCP) — and it's entirely optional.* |
 
 **Pro tip:** Read the accompanying lessons first for a better understanding of the system you'll build.
 

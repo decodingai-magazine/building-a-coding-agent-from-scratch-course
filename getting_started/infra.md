@@ -4,6 +4,13 @@
 > self-hosted Kitaru server, it executes in a Modal container, spawns its own Modal bash sandbox, and
 > every checkpoint lands on the server — durable, replayable, resumable from any machine.
 
+> **💰 This is the only part of the course that costs real money — and it's entirely optional.**
+> Every other track (the lessons, the REPL, headless runs, sandboxing, evals) runs free and local.
+> Deploying this stack bills a GCP project ~$16/month while it's up (the VM + a static IP; exact
+> breakdown in [§5 Costs](#5-costs)) plus usage-based Modal compute. Skip it unless you specifically
+> want headless runs executing entirely in the cloud — and when you're done, `scripts/deploy.sh down`
+> deletes everything it created.
+
 decode already runs its *sandboxes* on Modal (`SANDBOX_MODE=modal`). This stack moves the **headless
 agent itself** there. [`scripts/deploy.sh`](../scripts/deploy.sh) provisions all of it; **§1 is the only
 part you type by hand.**
