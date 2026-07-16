@@ -1042,3 +1042,23 @@ def test_cli_no_repo_passes_none_to_run_app(mocker):
     run_app.assert_awaited_once()
     assert run_app.await_args.kwargs.get("repo") is None
     assert run_app.await_args.kwargs.get("local") is False
+
+
+# --version flag
+
+
+def test_cli_version_option_exists():
+    """`--version` is registered on the CLI group and exits cleanly."""
+    result = CliRunner().invoke(cli, ["--version"])
+    assert result.exit_code == 0
+    assert "decode" in result.output
+    assert "0.1.0" in result.output
+
+
+def test_version_option_does_not_trigger_startups():
+    """--version exits before any startup guards or env checks — pure metadata."""
+    # Even with no provider configured, --version must succeed (no real provider key needed).
+    result = CliRunner().invoke(cli, ["--version"])
+    assert result.exit_code == 0
+    assert "GEMINI_API_KEY" not in result.output
+    assert "Traceback" not in result.output
