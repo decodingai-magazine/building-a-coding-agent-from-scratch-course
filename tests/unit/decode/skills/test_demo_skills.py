@@ -6,11 +6,11 @@ fixtures their bodies reference stay honest: demo-2's seeded repo must genuinely
 tests as committed. Everything runs through decode's REAL skills loader
 (``decode.skills.loader``), mirroring ``test_loader.py``.
 
-The prompt-only demos — demo-1 (terminal-arcade), demo-3 (repo-pulse), demo-4 (review-swarm), and
-demo-5 (sandbox-feature-pr) — ship no fixtures, so they owe the loader-parse coverage plus a pin on
-the contract their body promises. demo-5 gets one extra guard: its documented invocation must match
-the REAL CLI (``--repo`` exists; sandbox mode is the ``SANDBOX_MODE`` env var, never an invented
-``--sandbox`` flag).
+The prompt-only demos — demo-1 (terminal-arcade), demo-3 (repo-pulse), demo-4 (review-swarm),
+demo-5 (sandbox-feature-pr), and demo-6 (article-kg) — ship no fixtures, so they owe the
+loader-parse coverage plus a pin on the contract their body promises. demo-5 gets one extra guard:
+its documented invocation must match the REAL CLI (``--repo`` exists; sandbox mode is the
+``SANDBOX_MODE`` env var, never an invented ``--sandbox`` flag).
 """
 
 from __future__ import annotations
@@ -36,9 +36,10 @@ DEMO_2 = "demo-2-bug-hunt"
 DEMO_3 = "demo-3-repo-pulse"
 DEMO_4 = "demo-4-review-swarm"
 DEMO_5 = "demo-5-sandbox-feature-pr"
+DEMO_6 = "demo-6-article-kg"
 # All but demo-2 are prompt-only (SKILL.md, no sibling resources).
-PROMPT_ONLY_DEMOS = [DEMO_1, DEMO_3, DEMO_4, DEMO_5]
-AUTHORED_DEMOS = [DEMO_1, DEMO_2, DEMO_3, DEMO_4, DEMO_5]
+PROMPT_ONLY_DEMOS = [DEMO_1, DEMO_3, DEMO_4, DEMO_5, DEMO_6]
+AUTHORED_DEMOS = [DEMO_1, DEMO_2, DEMO_3, DEMO_4, DEMO_5, DEMO_6]
 
 
 def _skill_text(dir_name: str) -> str:
@@ -107,7 +108,13 @@ def test_demo_3_pins_live_api_dashboard_contract():
 
     assert "api.github.com" in body
     assert "dashboard.html" in body
-    assert "matplotlib" in body
+    # A full year of weekly commit counts in ONE request — never paging /commits.
+    assert "stats/commit_activity" in body
+    assert "52" in body
+    # Charts are drawn directly in the HTML as inline SVG — no chart library, no image files.
+    assert "<svg" in body
+    assert "matplotlib" not in body.lower()
+    assert "base64" not in body.lower()
 
 
 # demo-4: the review-swarm body fans out three parallel read-only Explore subagents
@@ -161,6 +168,42 @@ def test_demo_5_targets_the_real_course_repo():
 
     # The invocation clones the actual course repo (matches ``git remote get-url origin``).
     assert "decodingai-magazine/building-a-coding-agent-from-scratch-course" in body
+
+
+# demo-6: the article-kg body pins the fetch → extract → self-contained interactive page contract
+
+
+def test_demo_6_pins_the_articles_and_the_kg_page_contract():
+    body = _skill_text(DEMO_6)
+
+    # The three live Decoding AI sources, fetched with decode's own web_fetch tool.
+    for slug in (
+        "keep-knowledge-graph-clean",
+        "understanding-neo4j-graph-agent-memory-system",
+        "ship-a-knowledge-graph-ontology-in-5-minutes",
+    ):
+        assert f"https://www.decodingai.com/p/{slug}" in body
+    assert "web_fetch" in body
+    # Two artifacts: the extraction checkpoint and the page embedding the same data.
+    assert "graph.json" in body
+    assert "kg.html" in body
+    assert "const GRAPH" in body
+    # The page is hand-rolled and self-contained: a vanilla-JS force sim, no graph library/CDN.
+    assert re.search(r"force", body, re.IGNORECASE)
+    assert "vanilla" in body.lower()
+    for library in ("d3", "cytoscape", "vis-network"):
+        assert not re.search(rf"\buse {library}\b", body, re.IGNORECASE)
+    # The interactions the demo promises.
+    assert "drag" in body.lower()
+    assert "hover" in body.lower()
+
+
+def test_demo_artifacts_land_in_the_outputs_dir():
+    # Demo work products default into `.decode/outputs/` (gitignored — `.decode/*` minus skills),
+    # so a demo run never litters the project tree. demo-5 is exempt: its work product is a
+    # Session Branch + draft PR, not files.
+    for demo in (DEMO_1, DEMO_2, DEMO_3, DEMO_4, DEMO_6):
+        assert ".decode/outputs/" in _skill_text(demo), f"{demo} must target .decode/outputs/"
 
 
 def test_no_demo_mentions_the_credential_proxy():

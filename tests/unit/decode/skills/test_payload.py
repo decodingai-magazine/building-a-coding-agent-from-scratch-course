@@ -1,10 +1,11 @@
 """Unit tests for the shared skill payload helper (``decode.skills.payload``) — ADR-0004 §1,5.
 
-``format_skill_payload`` returns the body unchanged when ``resource_dir`` is None, and body + a
-recursive cwd-relative resource manifest when set (the manifest replaced a directory-only
-trailer after a live failure: ``glob <dir>/*`` cannot see into subdirs, so the model guessed
-wrong paths). An empty walk degrades to the directory-only line. Both the ``skill`` dispatcher
-and the ``/<skill-name>`` TUI command ride this one helper.
+``format_skill_payload`` returns the body plus the standing outputs-default trailer (new skill
+work products land under ``.decode/outputs/`` unless the user named a destination), and — when
+``resource_dir`` is set — a recursive cwd-relative resource manifest in between (the manifest
+replaced a directory-only trailer after a live failure: ``glob <dir>/*`` cannot see into subdirs,
+so the model guessed wrong paths). An empty walk degrades to the directory-only line. Both the
+``skill`` dispatcher and the ``/<skill-name>`` TUI command ride this one helper.
 """
 
 from __future__ import annotations
@@ -27,17 +28,37 @@ def _skill(*, resource_dir: Path | None) -> SkillDef:
     )
 
 
-# resource_dir is None → body verbatim, no trailer
+# resource_dir is None → body + the outputs default only (no resource manifest)
 
 
-def test_payload_is_the_body_unchanged_when_no_resource_dir(tmp_path):
-    # A SKILL.md-only skill (built-in or resource-less project skill) gets NO trailer: the payload
-    # is byte-for-byte its body.
+def test_resourceless_payload_is_the_body_plus_the_outputs_default(tmp_path):
+    # A SKILL.md-only skill (built-in or resource-less project skill) gets NO resource manifest:
+    # the payload is its body followed only by the standing outputs-default trailer.
     skill = _skill(resource_dir=None)
 
     result = payload.format_skill_payload(skill, cwd=tmp_path)
 
-    assert result == skill.body
+    assert result.startswith(skill.body)
+    assert ".decode/outputs" in result
+    assert "Bundled files" not in result  # no phantom resource manifest
+
+
+def test_outputs_default_rides_every_payload_and_yields_to_the_user(tmp_path):
+    # The outputs default is a standing convention on BOTH payload shapes (resource-less and
+    # resource-shipping): new work products land under `.decode/outputs/` — and the trailer says
+    # in words that a user-named destination wins.
+    resource_dir = tmp_path / ".decode" / "skills" / "deploy"
+    (resource_dir / "references").mkdir(parents=True)
+    (resource_dir / "references" / "template.md").write_text("t", encoding="utf-8")
+
+    for skill in (_skill(resource_dir=None), _skill(resource_dir=resource_dir)):
+        result = payload.format_skill_payload(skill, cwd=tmp_path)
+        assert "`.decode/outputs/`" in result
+        assert "unless the user" in result.lower()
+
+    # On the resource-shipping payload the outputs default comes AFTER the bundled manifest.
+    with_resources = payload.format_skill_payload(_skill(resource_dir=resource_dir), cwd=tmp_path)
+    assert with_resources.index("Bundled files") < with_resources.index(".decode/outputs/")
 
 
 # resource_dir set → body + trailer

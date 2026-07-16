@@ -49,7 +49,7 @@ _CANCELLED_MESSAGE = (
 _APPROVE_ANSWERS: frozenset[str] = frozenset({"y", "yes"})
 
 
-async def enter_plan_mode(ctx: RunContext[AgentDeps]) -> str:
+async def enter_plan_mode(ctx: RunContext[AgentDeps], plan: str = "") -> str:
     """Switch the session to plan mode and acknowledge (ADR-0003 §8).
 
     Sets the gate to :attr:`~decode.permissions.types.PermissionMode.PLAN` so read-only tools
@@ -57,7 +57,15 @@ async def enter_plan_mode(ctx: RunContext[AgentDeps]) -> str:
     pointing the model at ``exit_plan_mode``. Ungated: never raises
     :class:`pydantic_ai.ApprovalRequired`, so it never reaches the permission gate and stays
     callable in any mode. Returns a short confirmation the model sees on its next leg.
+
+    ``plan`` is accepted but **ignored**: entering plan mode is for read-only exploration *before*
+    you have a plan — present it later via ``exit_plan_mode``. The parameter exists only so a model
+    primed by the tool name (``exit_plan_mode`` *does* take a ``plan``) that guesses a ``plan``
+    argument does not crash the turn on a ``extra_forbidden`` schema-validation error; the
+    confirmation redirects it to ``exit_plan_mode``.
     """
+    if plan:
+        logger.debug("enter_plan_mode: ignoring a premature plan argument (%d chars)", len(plan))
     ctx.deps.gate.set_mode(PermissionMode.PLAN)
     logger.debug("enter_plan_mode: gate switched to PLAN")
     return _ENTERED_PLAN_MESSAGE

@@ -15,10 +15,12 @@ from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
+from pydantic_ai import ApprovalRequired, ModelRetry, RunContext, UnexpectedModelBehavior
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -1336,3 +1338,158 @@ async def test_none_seam_disables_cascade_even_with_a_tiny_window(agent, tmp_pat
     head = handler.message_history[0]
     assert isinstance(head, ModelRequest)
     assert any(getattr(p, "content", None) == "first" for p in head.parts)
+
+
+# demo-2-bug-hunt regression: a leg that crashes (tool ModelRetry budget exhausted) must not
+# lose its messages, must not brick every later prompt, and must still reach the session log.
+
+
+def _register_flaky(agent, *, retries: int = 1) -> None:
+    """Register the TEST-ONLY gated ``flaky`` tool: it defers ONCE, then always ``ModelRetry``\\ s.
+
+    A stand-in for the demo-2-bug-hunt ``edit`` whose ``old_string`` never matches: the first
+    call is gated (pausing the leg, which puts the unprocessed call into the handler's history),
+    every later call runs inline — like a gate allow-rule written on approval — and fails, so the
+    budget is exhausted *within* the resume leg and the crash lands mid-leg.
+    """
+    deferred_once: list[str] = []
+
+    def flaky(ctx: RunContext[AgentDeps], text: str) -> str:
+        if not ctx.tool_call_approved and not deferred_once:
+            deferred_once.append(ctx.tool_call_id)
+            raise ApprovalRequired
+        raise ModelRetry("flaky failed; try again.")
+
+    agent.tool(flaky, retries=retries)
+
+
+def _flaky_forever() -> FunctionModel:
+    """A streaming model that (re-)issues a ``flaky`` call on the first leg and after every nag.
+
+    First leg (user prompt) → call ``flaky``; a ``RetryPromptPart`` nag → call it again; anything
+    else → text. With ``retries=1`` the second approved failure exceeds the budget and pydantic-ai
+    raises ``UnexpectedModelBehavior`` mid-leg.
+    """
+
+    async def stream_function(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator:
+        last_parts = messages[-1].parts
+        if any(isinstance(p, UserPromptPart | RetryPromptPart) for p in last_parts):
+            yield {0: DeltaToolCall(name="flaky", json_args='{"text": "x"}')}
+        else:
+            yield "gave up"
+
+    return FunctionModel(stream_function=stream_function)
+
+
+async def _allow_all(request: PermissionRequest) -> PermissionDecision:
+    return PermissionDecision.allow()
+
+
+async def _crash_flaky_turn(agent, handler: AgentTurnHandler, emitted: list[events.Event]) -> None:
+    """Drive one turn that crashes with ``exceeded max retries`` on the approved resume leg."""
+    with (
+        agent.override(model=_flaky_forever()),
+        pytest.raises(UnexpectedModelBehavior, match="exceeded max retries"),
+    ):
+        await _drive_collecting(handler, _ctx(0, "please flaky", emitted))()
+
+
+async def test_crashed_resume_leg_keeps_its_messages(agent):
+    """A leg that raises must still land its accumulated messages in ``message_history``.
+
+    Before the fix the crashed resume leg's messages (the tool return nag, the model's second
+    call) evaporated — the handler's history froze at the previous leg, hiding what happened
+    from persistence and forensics.
+    """
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append, resolve_permission=_allow_all))
+    _register_flaky(agent)
+
+    await _crash_flaky_turn(agent, handler, emitted)
+
+    # The crashed resume leg's RetryPromptPart nag survived into the handler's history.
+    nags = [
+        p
+        for m in handler.message_history
+        for p in m.parts
+        if isinstance(p, RetryPromptPart) and p.tool_name == "flaky"
+    ]
+    assert nags, "the crashed leg's messages must be captured, not lost"
+
+
+async def test_crashed_turn_does_not_brick_later_prompts(agent):
+    """THE demo-2-bug-hunt bricking: after a crashed resume leg every prompt died.
+
+    The crash left history ending in an unprocessed tool call; pydantic-ai then rejected every
+    new prompt with "Cannot provide a new user prompt when the message history contains
+    unprocessed tool calls." The handler must heal the dangling call so the next turn runs.
+    """
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append, resolve_permission=_allow_all))
+    _register_flaky(agent)
+
+    await _crash_flaky_turn(agent, handler, emitted)
+
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="recovered")):
+        await _drive_collecting(handler, _ctx(1, "are you alive?", emitted))()
+
+    text = "".join(e.text for e in emitted if isinstance(e, events.AssistantTextDelta))
+    assert "recovered" in text
+    # The dangling call was healed with a synthesized interrupted-tool return.
+    healed = [
+        p
+        for m in handler.message_history
+        for p in m.parts
+        if isinstance(p, ToolReturnPart)
+        and p.tool_name == "flaky"
+        and "interrupted" in str(p.content)
+    ]
+    assert healed, "the unprocessed tool call must be healed before the next prompt leg"
+
+
+async def test_crashed_turn_still_reaches_the_session_log(agent, tmp_path):
+    """A crashed turn must persist what it has — demo-2-bug-hunt left a header-only session file.
+
+    ``WOULD_STOP`` (the only persist point before the fix) is never reached when a leg raises,
+    so the whole turn vanished from the log: no ``--resume``, no forensics. The turn's captured
+    messages must land in the session file even when it crashes.
+    """
+    emitted: list[events.Event] = []
+    log = _fresh_log(tmp_path, "aa")
+    handler = AgentTurnHandler(
+        agent, deps=_deps(emitted.append, resolve_permission=_allow_all), session_log=log
+    )
+    _register_flaky(agent)
+
+    await _crash_flaky_turn(agent, handler, emitted)
+
+    replayed = session_log.load(log.path)
+    calls = [
+        p
+        for m in replayed
+        for p in m.parts
+        if isinstance(p, ToolCallPart) and p.tool_name == "flaky"
+    ]
+    assert calls, "the crashed turn's messages must be persisted for --resume and forensics"
+
+
+async def test_resumed_poisoned_history_is_healed_on_the_next_prompt(agent):
+    """A ``--resume`` of a crash-persisted log seeds history ending in an unprocessed call.
+
+    The heal must cover the seeded path too: a handler *constructed* with a poisoned history
+    (not just one poisoned mid-session) accepts the next prompt.
+    """
+    poisoned: list[ModelMessage] = [
+        _user_msg("fix the bug"),
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="edit", args='{"path": "x.py"}', tool_call_id="call-1")]
+        ),
+    ]
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append), message_history=poisoned)
+
+    with agent.override(model=TestModel(call_tools=[], custom_output_text="healed and running")):
+        await _drive_collecting(handler, _ctx(0, "hello again", emitted))()
+
+    text = "".join(e.text for e in emitted if isinstance(e, events.AssistantTextDelta))
+    assert "healed and running" in text

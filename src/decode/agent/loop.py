@@ -21,6 +21,7 @@ from pydantic_ai.messages import (
     FunctionToolResultEvent,
     ModelMessage,
     ModelRequest,
+    ModelResponse,
     PartDeltaEvent,
     PartStartEvent,
     RetryPromptPart,
@@ -123,43 +124,50 @@ class AgentTurnHandler:
         with observability.root_span(
             "chat_turn", thread_id=self._session_id, input=ctx.prompt
         ) as span:
-            while True:
-                # --- model-request boundary: drain steering, then make the request (§4) ---
-                steering = yield Boundary.MODEL_REQUEST
+            try:
+                while True:
+                    # --- model-request boundary: drain steering, then make the request (§4) ---
+                    steering = yield Boundary.MODEL_REQUEST
 
-                if pending_results is not None:
-                    # Deferred resume leg: no new prompt, so steering rides the history instead.
-                    self._append_steering(steering)
-                    output = await self._run_leg(ctx, deferred_results=pending_results)
-                    pending_results = None
-                else:
-                    prompt = self._compose_prompt(next_prompt, steering)
-                    next_prompt = None
-                    if prompt is None:
-                        # Nothing to ask the model: stop cleanly (drain follow-up below).
-                        output = ""
-                        self._persist_turn()
-                        follow_ups = yield Boundary.WOULD_STOP
-                        if not follow_ups:
-                            return
-                        next_prompt = "\n".join(follow_ups)
+                    if pending_results is not None:
+                        # Deferred resume leg: no new prompt, so steering rides the history instead.
+                        self._append_steering(steering)
+                        output = await self._run_leg(ctx, deferred_results=pending_results)
+                        pending_results = None
+                    else:
+                        prompt = self._compose_prompt(next_prompt, steering)
+                        next_prompt = None
+                        if prompt is None:
+                            # Nothing to ask the model: stop cleanly (drain follow-up below).
+                            output = ""
+                            self._persist_turn()
+                            follow_ups = yield Boundary.WOULD_STOP
+                            if not follow_ups:
+                                return
+                            next_prompt = "\n".join(follow_ups)
+                            continue
+                        self._heal_dangling_tool_calls()
+                        output = await self._run_leg(ctx, prompt=prompt)
+
+                    if isinstance(output, DeferredToolRequests):
+                        # A gated tool paused the run: resolve approvals and loop back to resume.
+                        pending_results = await self._resolve_deferred(ctx, output)
                         continue
-                    output = await self._run_leg(ctx, prompt=prompt)
 
-                if isinstance(output, DeferredToolRequests):
-                    # A gated tool paused the run: resolve approvals and loop back to resume.
-                    pending_results = await self._resolve_deferred(ctx, output)
-                    continue
-
-                # --- would-stop boundary: persist, run the compaction cascade, drain follow-up ---
+                    # --- would-stop boundary: persist, compaction cascade, drain follow-up ---
+                    self._persist_turn()
+                    await self._maybe_auto_compact()
+                    # Final assistant text = the root span's output; a follow-up leg overwrites it.
+                    observability.record_output(span, output)
+                    follow_ups = yield Boundary.WOULD_STOP
+                    if not follow_ups:
+                        return
+                    next_prompt = "\n".join(follow_ups)
+            finally:
+                # Crash/abort-safe (sync — a GeneratorExit context forbids awaits): a leg that
+                # raised out of the loop still lands its captured messages in the session log;
+                # a no-op after a normal would-stop already persisted them.
                 self._persist_turn()
-                await self._maybe_auto_compact()
-                # Final assistant text = the root span's output; a follow-up leg overwrites it.
-                observability.record_output(span, output)
-                follow_ups = yield Boundary.WOULD_STOP
-                if not follow_ups:
-                    return
-                next_prompt = "\n".join(follow_ups)
 
     @staticmethod
     def _compose_prompt(base: str | None, steering: list[str]) -> str | None:
@@ -170,6 +178,39 @@ class AgentTurnHandler:
         if not parts:
             return None
         return "\n".join(parts)
+
+    def _heal_dangling_tool_calls(self) -> None:
+        """Heal a history ending in unprocessed tool calls before a new-prompt leg.
+
+        A crashed leg (a tool's ``ModelRetry`` budget exhausted mid-resume) or an Esc-abort while
+        a permission prompt is pending leaves the history's last message a ``ModelResponse`` whose
+        tool calls never got results — pydantic-ai then rejects EVERY later prompt ("unprocessed
+        tool calls"), bricking the session. Synthesize one interrupted-tool return per dangling
+        call so the next leg is accepted; a deferred *resume* leg never comes through here (it
+        needs the dangling call for its ``DeferredToolResults``). Covers a ``--resume`` of a
+        crash-persisted log too — the seeded history heals on the first prompt.
+        """
+        if not self.message_history:
+            return
+        last = self.message_history[-1]
+        if not isinstance(last, ModelResponse) or not last.tool_calls:
+            return
+        logger.warning(
+            "healing %d unprocessed tool call(s) left by a crashed or aborted turn",
+            len(last.tool_calls),
+        )
+        returns = [
+            ToolReturnPart(
+                tool_name=call.tool_name,
+                tool_call_id=call.tool_call_id,
+                content=(
+                    "Tool call interrupted before completing (the turn crashed or was aborted); "
+                    "re-issue it if still needed."
+                ),
+            )
+            for call in last.tool_calls
+        ]
+        self.message_history.append(ModelRequest(parts=returns))
 
     def _append_steering(self, steering: list[str]) -> None:
         """Append steering to the history as a user message before a deferred resume.
@@ -307,16 +348,20 @@ class AgentTurnHandler:
             message_history=self.message_history,
             deferred_tool_results=deferred_results,
         ) as run:
-            async for node in run:
-                if Agent.is_model_request_node(node):
-                    await self._stream_model_node(ctx, node, run)
-                elif Agent.is_call_tools_node(node):
-                    await self._stream_tool_node(ctx, node, run)
-        # Carry the whole conversation (prior history + this leg) into the next turn.
-        self.message_history = run.all_messages()
-        # This leg's provider-reported input tokens: the compaction trigger + TUI gauge read.
-        # ``usage`` is a method on the run in pydantic-ai 1.x (ADR-0009).
-        self._last_input_tokens = run.usage().input_tokens
+            try:
+                async for node in run:
+                    if Agent.is_model_request_node(node):
+                        await self._stream_model_node(ctx, node, run)
+                    elif Agent.is_call_tools_node(node):
+                        await self._stream_tool_node(ctx, node, run)
+            finally:
+                # Carry the whole conversation (prior history + this leg) into the next turn —
+                # in a ``finally`` so a leg that raises (a tool's ModelRetry budget exhausted)
+                # keeps its accumulated messages instead of freezing history at the prior leg.
+                self.message_history = run.all_messages()
+                # This leg's provider-reported input tokens: the compaction trigger + TUI gauge
+                # read. ``usage`` is a method on the run in pydantic-ai 1.x (ADR-0009).
+                self._last_input_tokens = run.usage().input_tokens
         # pydantic-ai may coalesce adjacent same-role prior messages (notably the two ModelRequests
         # a full compaction leaves), shrinking the persisted prefix. Clamp the cursor to the count
         # preceding this leg's new messages so the next persist never drops a fresh message.

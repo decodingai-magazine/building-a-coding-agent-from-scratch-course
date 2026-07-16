@@ -13,7 +13,16 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import SecretStr
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai import ModelRetry, RunContext
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolCallPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -257,6 +266,41 @@ async def test_build_agent_retries_empty_model_responses_before_giving_up(tmp_pa
 
     assert result.output == "done"
     assert calls["n"] == 3  # two empty turns tolerated, the third returns text
+
+
+async def test_build_agent_gives_tools_a_modelretry_budget_beyond_one(tmp_path, mocker):
+    """build_agent() raises the per-tool ``ModelRetry`` budget so consecutive nags don't abort.
+
+    Tools coach the model with ``ModelRetry`` (``edit`` "old_string not found", ``grep`` "no
+    matches"); pydantic-ai's default per-tool budget of 1 turns the SECOND consecutive failure
+    into ``UnexpectedModelBehavior``, killing the whole turn (the demo-2-bug-hunt crash). Three
+    failures then a success must complete — which only holds because ``build_agent`` sets the
+    Agent-wide ``retries`` above the default 1.
+    """
+    mocker.patch(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+    )
+    attempts = {"n": 0}
+
+    def wobbly(ctx: RunContext[AgentDeps]) -> str:
+        attempts["n"] += 1
+        if attempts["n"] <= 3:
+            raise ModelRetry("not yet; call wobbly again.")
+        return "wobbly: ok"
+
+    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        last_parts = messages[-1].parts
+        if any(isinstance(p, UserPromptPart | RetryPromptPart) for p in last_parts):
+            return ModelResponse(parts=[ToolCallPart(tool_name="wobbly", args="{}")])
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent = build_agent()
+    agent.tool(wobbly)  # no per-tool override: inherits the Agent default — the value under test
+    with agent.override(model=FunctionModel(model_fn)):
+        result = await agent.run("hi", deps=_deps(tmp_path))
+
+    assert result.output == "done"
+    assert attempts["n"] == 4  # three ModelRetry nags tolerated, the fourth call succeeds
 
 
 def test_flow_mode_http_client_is_loop_safe_with_a_valid_deadline():

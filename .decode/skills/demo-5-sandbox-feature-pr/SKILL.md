@@ -28,9 +28,11 @@ To run the same demo on the remote rung instead, swap `SANDBOX_MODE=docker` for
 
 ## 2. Plan the feature — in plan mode
 
-If you are decode reading this inside the Workspace, start here. Enter **plan mode**
-(`enter_plan_mode`), explore the code read-only, and present a short plan before touching
-anything. Pick ONE feature — small, self-contained, provable in a single session:
+If you are decode reading this inside the Workspace, start here — step 1 is the human's launch
+command, already done; do NOT try to run `decode` yourself. Enter **plan mode** by calling
+`enter_plan_mode` with **no arguments** (it takes none — you present the plan later, to
+`exit_plan_mode`), explore the code read-only, then present a short plan before touching anything.
+Pick ONE feature — small, self-contained, provable in a single session:
 
 - A `decode --version` flag that prints the installed package version, plus its unit test.
 - One small pure helper (e.g. in `tools/` or `entities/`) with a focused unit test.

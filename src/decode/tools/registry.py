@@ -40,8 +40,8 @@ class ToolSpec:
     ``kind`` is the tool's permission classification (ADR-0003 §2): the gate evaluates it against
     the active mode to decide allow/ask/deny. ``func`` is the bare tool function (it takes ``ctx``
     as its first parameter) — Pydantic AI builds the model-facing schema from its signature and
-    docstring. ``retries`` is the per-tool ``ModelRetry`` budget: ``None`` = the Agent default (1),
-    raised only by a tool that *coaches* the model with ``ModelRetry`` (``agent``, ADR-0017 §3).
+    docstring. ``retries`` is the per-tool ``ModelRetry`` budget: ``None`` = the Agent default
+    (the factory sets 5); overridden only where a tool wants its own cap (``agent``, ADR-0017 §3).
     """
 
     name: str
@@ -111,8 +111,8 @@ TOOL_SPECS: list[ToolSpec] = [
     ),
     # Agent tool (ADR-0013, ADR-0017): ONE call fans out N read-only Explore subagents in-process.
     # READ_ONLY → runs inline, auto-allowed; explore itself omits it (recursion default-deny). Its
-    # structural guards nag via ``ModelRetry``, so it needs a budget above the default 1 — otherwise
-    # two consecutive nags abort the run with ``UnexpectedModelBehavior`` (ADR-0017 §3).
+    # structural guards nag via ``ModelRetry`` on a deliberate budget of its own (ADR-0017 §3) —
+    # exhausting it aborts the run with ``UnexpectedModelBehavior``.
     ToolSpec(
         name=agent_module.AGENT_TOOL_NAME,
         func=agent_module.agent,

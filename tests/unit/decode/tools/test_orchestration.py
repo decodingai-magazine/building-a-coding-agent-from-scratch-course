@@ -81,6 +81,18 @@ async def test_enter_plan_mode_is_callable_from_any_mode():
     assert gate.mode is PermissionMode.PLAN
 
 
+async def test_enter_plan_mode_tolerates_and_ignores_a_premature_plan_argument():
+    # The tool name primes a model to pass a ``plan`` (as exit_plan_mode wants); accepting-and-
+    # ignoring it flips to PLAN and returns the same confirmation, never a schema-validation crash.
+    gate = PermissionGate()
+    ctx = _ctx(gate=gate)
+
+    result = await orchestration.enter_plan_mode(ctx, plan="a whole plan the model jumped ahead to")
+
+    assert gate.mode is PermissionMode.PLAN
+    assert "exit_plan_mode" in result  # redirected: present the plan via exit_plan_mode instead
+
+
 # exit_plan_mode (direct)
 
 
@@ -292,6 +304,36 @@ async def test_enter_plan_mode_through_the_loop_denies_a_subsequent_write(agent,
     assert any("plan mode" in r.lower() for r in returns)
     # enter_plan_mode is ungated: it never produced a permission prompt.
     assert not [e for e in emitted if isinstance(e, events.PermissionRequested)]
+
+
+async def test_enter_plan_mode_with_a_plan_arg_does_not_crash_the_turn(agent, tmp_path):
+    """Regression (demo-5): a model that calls enter_plan_mode with a ``plan`` must not brick.
+
+    Before the fix ``enter_plan_mode`` took no args, so ``{"plan": ...}`` failed pydantic-ai arg
+    validation (``extra_forbidden``); the model re-guessed the same shape until the retry budget
+    was exhausted and the turn crashed with ``UnexpectedModelBehavior``. The call must now succeed,
+    land the gate in PLAN, and let the turn finish.
+    """
+    emitted: list[events.Event] = []
+    gate = PermissionGate()  # DEFAULT
+    deps = _loop_deps(emitted.append, gate=gate, cwd=tmp_path)
+    handler = AgentTurnHandler(agent, deps=deps)
+
+    steps = [
+        DeltaToolCall(
+            name="enter_plan_mode", json_args=json.dumps({"plan": "explore, then build"})
+        ),
+    ]
+    ctx = TurnContext(0, "plan a feature", emitted.append)
+    with agent.override(model=_scripted_model(steps)):
+        await _drive(handler, ctx)
+
+    assert gate.mode is PermissionMode.PLAN  # the call took effect instead of crashing
+    assert not [e for e in emitted if isinstance(e, events.AgentError)]
+    returns = _tool_return_strings(handler)
+    assert any(
+        "exit_plan_mode" in r for r in returns
+    )  # got the confirmation, not a validation error
 
 
 async def test_exit_plan_mode_approve_through_the_loop_allows_a_subsequent_write(agent, tmp_path):

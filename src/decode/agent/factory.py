@@ -60,6 +60,11 @@ def build_agent(
         # Gemini 2.5 sometimes returns empty/thinking-only turns after a tool call; the default
         # output-retry budget of 1 then aborts real multi-turn runs. Give it a few attempts.
         output_retries=3,
+        # Tools coach the model with ModelRetry (edit "old_string not found", grep "no matches");
+        # the default per-tool budget of 1 turns the SECOND consecutive nag into
+        # UnexpectedModelBehavior, killing the whole turn. The counter only resets when the tool
+        # *succeeds* — a re-read between two mis-aimed edits doesn't help — so give real headroom.
+        tool_retries=5,
     )
     register_tools(agent)
     _register_instructions(agent)

@@ -741,19 +741,20 @@ def test_handle_skill_command_returns_the_known_skill_body(tmp_path):
     lines: list[str] = []
     result = app._handle_skill_command("commit", "", cwd=tmp_path, emit=lines.append)
 
-    assert result == load_skills(tmp_path)["commit"].body
+    assert result.startswith(load_skills(tmp_path)["commit"].body)
     assert "Conventional Commits" in result  # the body, not the literal `/commit`
     assert not lines  # a match emits nothing — it returns the turn input
 
 
 def test_handle_skill_command_appends_trailing_text(tmp_path):
-    # Trailing text after the name is appended to the body separated by a blank line.
+    # Trailing text after the name is appended to the payload separated by a blank line.
     from decode.skills.loader import load_skills
 
     body = load_skills(tmp_path)["commit"].body
     result = app._handle_skill_command("commit", "ship it", cwd=tmp_path, emit=lambda _l: None)
 
-    assert result == f"{body}\n\nship it"
+    assert result.startswith(body)
+    assert result.endswith("\n\nship it")
 
 
 def test_handle_skill_command_unknown_emits_available_skills_and_returns_none(tmp_path):
@@ -1131,13 +1132,16 @@ def test_handle_skill_command_resource_bearing_skill_appends_trailing_after_trai
     assert result == f"{payload}\n\nto prod"
 
 
-def test_handle_skill_command_builtin_injects_body_without_a_trailer(tmp_path):
-    # A built-in (`commit`) is SKILL.md-only → body only, no trailer.
+def test_handle_skill_command_builtin_injects_body_without_a_resource_manifest(tmp_path):
+    # A built-in (`commit`) is SKILL.md-only → body + the outputs default only, never a phantom
+    # resource manifest.
     from decode.skills.loader import load_skills
 
     result = app._handle_skill_command("commit", "", cwd=tmp_path, emit=lambda _l: None)
 
-    assert result == load_skills(tmp_path)["commit"].body  # body verbatim, no trailer
+    assert result.startswith(load_skills(tmp_path)["commit"].body)
+    assert "Bundled files" not in result  # no resource manifest
+    assert ".decode/outputs/" in result  # the standing outputs default rides every payload
 
 
 async def test_dispatcher_and_tui_produce_identical_payloads_for_the_same_skill(tmp_path):

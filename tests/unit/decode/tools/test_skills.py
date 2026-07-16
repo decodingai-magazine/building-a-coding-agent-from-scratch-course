@@ -115,12 +115,13 @@ async def test_skill_dispatcher_reads_harness_home_not_the_workspace_cwd(tmp_pat
 
 
 async def test_skill_returns_the_builtin_commit_body(tmp_path):
-    # With no project skills present, ``skill("commit")`` returns the bundled built-in body verbatim.
+    # With no project skills present, ``skill("commit")`` returns the bundled built-in body first
+    # (only the standing outputs-default trailer follows it).
     expected = load_builtin_skills()["commit"].body
 
     result = await skills.skill(_ctx(tmp_path), "commit")
 
-    assert result == expected
+    assert result.startswith(expected)
     assert "git add" in result and "git commit" in result
 
 
@@ -142,7 +143,7 @@ async def test_skill_respects_a_project_override(tmp_path):
 
     result = await skills.skill(_ctx(tmp_path), "commit")
 
-    assert result == "Our team's commit ritual."
+    assert result.startswith("Our team's commit ritual.")
 
 
 async def test_skill_returns_a_project_only_skill(tmp_path):
@@ -151,7 +152,7 @@ async def test_skill_returns_a_project_only_skill(tmp_path):
 
     result = await skills.skill(_ctx(tmp_path), "deploy")
 
-    assert result == "Ship it to staging first."
+    assert result.startswith("Ship it to staging first.")
 
 
 # direct: the resource trailer
@@ -181,20 +182,25 @@ async def test_skill_with_a_bundled_resource_returns_body_plus_trailer(tmp_path)
     assert result != found.body  # a trailer was appended
 
 
-async def test_skill_builtin_returns_body_only_no_trailer(tmp_path):
-    # A built-in is SKILL.md-only (``resource_dir`` is None) → body only, no trailer.
+async def test_skill_builtin_returns_body_without_a_resource_manifest(tmp_path):
+    # A built-in is SKILL.md-only (``resource_dir`` is None) → body + the outputs default only,
+    # never a phantom resource manifest.
     result = await skills.skill(_ctx(tmp_path), "commit")
 
-    assert result == load_builtin_skills()["commit"].body  # no trailer appended
+    assert result.startswith(load_builtin_skills()["commit"].body)
+    assert "Bundled files" not in result  # no resource manifest
+    assert ".decode/outputs/" in result  # the standing outputs default rides every payload
 
 
-async def test_skill_resourceless_project_skill_returns_body_only(tmp_path):
-    # A project skill with only a SKILL.md (no siblings) ships no resources → body only, no trailer.
+async def test_skill_resourceless_project_skill_returns_body_without_a_resource_manifest(tmp_path):
+    # A project skill with only a SKILL.md (no siblings) ships no resources → no resource manifest.
     _write_project_skill(tmp_path, name="deploy", body="Ship it to staging first.")
 
     result = await skills.skill(_ctx(tmp_path), "deploy")
 
-    assert result == "Ship it to staging first."  # body verbatim, no trailer
+    assert result.startswith("Ship it to staging first.")
+    assert "Bundled files" not in result  # no resource manifest
+    assert ".decode/outputs/" in result
 
 
 # registry + agents wiring

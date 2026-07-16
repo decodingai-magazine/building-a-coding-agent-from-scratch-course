@@ -49,9 +49,10 @@ verbatim:
 
 ## Ship the artifact
 
-Write the merged verdict to `review-verdict.md` — this is the one file the swarm produces, and
-GitHub renders its Mermaid diagrams natively, so it doubles as a shareable review artifact.
+Write the merged verdict to `.decode/outputs/review-verdict.md` (unless the human named a
+different path) — this is the one file the swarm produces, and GitHub renders its Mermaid
+diagrams natively, so it doubles as a shareable review artifact.
 
 Reply with the scorecard, the count of findings per severity, and the closing judgement — and
-point the human at `review-verdict.md` for the full verdict. Note in one line that the whole
-review was read-only: the only file the run created is the verdict itself.
+point the human at `.decode/outputs/review-verdict.md` for the full verdict. Note in one line
+that the whole review was read-only: the only file the run created is the verdict itself.

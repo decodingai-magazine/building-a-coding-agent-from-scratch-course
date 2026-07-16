@@ -8,10 +8,10 @@ them until every test passes, and file a case report.
 
 ## Setup
 
-1. Copy the seeded project into a working directory you own:
-   `cp -r references/buggy_repo/ ./bug-hunt/`
+1. Copy the seeded project into a working directory you own (fresh — delete a stale one first):
+   `rm -rf .decode/outputs/bug-hunt && mkdir -p .decode/outputs && cp -r .decode/skills/demo-2-bug-hunt/references/buggy_repo .decode/outputs/bug-hunt`
 2. Change into it and run the suite to see the failures:
-   `cd ./bug-hunt/ && uv run pytest -q`
+   `cd .decode/outputs/bug-hunt/ && uv run pytest -q`
 3. **Save the crime scene**: keep the exact failing-test output — the failure names and the
    expected-vs-actual values — you will quote it in the case file at the end.
 
@@ -39,7 +39,7 @@ file) and tick items off as you close them.
 
 ## File the case report
 
-Write `bug-hunt/CASE_FILE.md` — short, punchy, detective-flavoured:
+Write `.decode/outputs/bug-hunt/CASE_FILE.md` — short, punchy, detective-flavoured:
 
 - **The symptoms** — the failing test names and the quoted expected-vs-actual output from setup
   step 3.

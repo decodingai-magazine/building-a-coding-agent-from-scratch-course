@@ -1,11 +1,13 @@
-"""The shared skill payload helper: body, plus a resource manifest when the skill ships files.
+"""The shared skill payload helper: body, resource manifest, and the outputs default.
 
 Both invocation paths — the model's ``skill(name)`` dispatcher and the user's ``/<skill-name>``
 TUI command — format their result here, so the two payloads can never diverge (ADR-0004 §1,§5).
-A skill with no bundled resources returns its ``body`` unchanged; one that ships resources gets
-a manifest enumerating every bundled file with its exact cwd-relative path — paths that resolve
-for the host-side ``read`` tool and, byte-identically, for ``bash`` inside a sandbox. The walk
-happens at dispatch time, only over the skill's own directory.
+A skill that ships resources gets a manifest enumerating every bundled file with its exact
+cwd-relative path — paths that resolve for the host-side ``read`` tool and, byte-identically,
+for ``bash`` inside a sandbox; the walk happens at dispatch time, only over the skill's own
+directory. Every payload ends with the standing **outputs default**: new work-product files land
+under ``.decode/outputs/`` (gitignored — ``.decode/*`` minus ``skills/``) unless the user named
+a destination, so a skill run never litters the project tree.
 """
 
 from __future__ import annotations
@@ -15,19 +17,31 @@ from pathlib import Path
 
 from decode.entities.skill_def import SkillDef
 
-__all__ = ["format_skill_payload"]
+__all__ = ["OUTPUTS_DIR", "format_skill_payload"]
+
+# The default home for files a skill produces, relative to the working directory. Inside
+# ``.decode/`` so it is gitignored alongside the other runtime state (only ``skills/`` is tracked).
+OUTPUTS_DIR = ".decode/outputs"
+
+# The standing convention appended to EVERY payload. "New files" on purpose: edits a skill makes
+# to existing project files stay in place — only fresh artifacts default into the outputs dir.
+_OUTPUTS_TRAILER = (
+    f"Output default: write NEW files this skill produces under `{OUTPUTS_DIR}/` (create the "
+    "directory if missing) — unless the user named a destination path, which always wins. "
+    "Edits to existing project files happen in place."
+)
 
 
 def format_skill_payload(skill: SkillDef, *, cwd: Path) -> str:
-    """Return ``skill.body``, plus a bundled-file manifest when the skill ships resources (§1,§5).
+    """Return ``skill.body`` + optional bundled-file manifest + the outputs default (§1,§5).
 
-    With ``skill.resource_dir is None`` the body is returned verbatim — no trailer. Otherwise
-    every bundled file (recursive, sorted, ``SKILL.md`` itself excluded) is listed with its
-    cwd-relative path after a blank-line separator; an empty walk falls back to the one-line
-    directory-only trailer.
+    When the skill ships resources, every bundled file (recursive, sorted, ``SKILL.md`` itself
+    excluded) is listed with its cwd-relative path after a blank-line separator; an empty walk
+    falls back to the one-line directory-only trailer. The outputs-default line closes every
+    payload, resource-shipping or not.
     """
     if skill.resource_dir is None:
-        return skill.body
+        return f"{skill.body}\n\n{_OUTPUTS_TRAILER}"
     rel_dir = os.path.relpath(skill.resource_dir, cwd)
     files = _bundled_files(skill.resource_dir)
     if files:
@@ -42,7 +56,7 @@ def format_skill_payload(skill: SkillDef, *, cwd: Path) -> str:
             f"Bundled files for this skill are under `{rel_dir}/` — "
             "read them with the `read` tool, run `scripts/` with `bash`."
         )
-    return f"{skill.body}\n\n{trailer}"
+    return f"{skill.body}\n\n{trailer}\n\n{_OUTPUTS_TRAILER}"
 
 
 def _bundled_files(resource_dir: Path) -> list[str]:
