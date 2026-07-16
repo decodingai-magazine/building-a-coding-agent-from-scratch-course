@@ -13,7 +13,7 @@ Gemini key. To let people run it **for free**, we add two more inference backend
 - **OpenRouter** — an OpenAI-compatible gateway with `:free` model options.
 - **Modal Auto Endpoints** — OpenAI-compatible `/v1` endpoints serving open-source models on Modal's
   $30 free credits. Model selection, GPU/serving trade-offs, and endpoint setup are documented in the
-  companion catalog [`MODAL_MODELS.md`](../../MODAL_MODELS.md) (2026-06-26 snapshot) — this ADR records
+  companion catalog [`MODAL_MODELS.md`](../../getting_started/MODAL_MODELS.md) (2026-06-26 snapshot) — this ADR records
   the *wiring* decision and references that file for *which model* and *how to create the endpoint*.
 
 The seam was the only architecture ADR-0002 left open here; the loop, tools, permissions, memory, and

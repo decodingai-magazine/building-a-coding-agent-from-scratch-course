@@ -24,7 +24,7 @@ Target tree. Create `src/` subpackages **at their step** — never pre-create em
     ├── cli.py                     # Click entrypoint → launches the TUI        [bootstrap]
     ├── config/settings.py         # pydantic-settings; module-level `settings` singleton
     ├── entities/                  # shared models: Message, Conversation, ToolCall, Task…
-    ├── tui/                       # input: prompt_toolkit · output: Rich (answers via SSE)
+    ├── tui/                       # input: prompt_toolkit · output: Rich (answers stream as in-process async events)
     ├── harness/                   # message Queue + Priority Gate around the loop
     ├── agent/                     # Pydantic-AI ReAct loop (LLM ⇄ Tools)
     ├── agents/                    # agents catalog: Build/Plan/Code-Reviewer (primary) + Explore (subagent, spawned via the agent tool)

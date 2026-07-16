@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The remote runtime stack (INFRA.md): a Kitaru/ZenML server on GCE, a Modal orchestrator stack,
+# The remote runtime stack (getting_started/INFRA.md): a Kitaru/ZenML server on GCE, a Modal orchestrator stack,
 # GCS artifacts, Artifact Registry images. One command per lifecycle verb:
 #
 #   scripts/deploy.sh up       provision everything (safe to re-run: every step checks first)
@@ -143,7 +143,7 @@ ensure_service_account() {
     #   gcloud resource-manager org-policies disable-enforce \
     #     iam.disableServiceAccountKeyCreation --project=${PROJECT}
     ( umask 077 && gcloud iam service-accounts keys create "${SA_KEY}" --iam-account="${SA}" ) \
-      || die "SA key creation failed — see the org-policy note in INFRA.md §1"
+      || die "SA key creation failed — see the org-policy note in getting_started/INFRA.md §1"
   fi
 }
 

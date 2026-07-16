@@ -5,7 +5,7 @@
 > every checkpoint lands on the server — durable, replayable, resumable from any machine.
 
 decode already runs its *sandboxes* on Modal (`SANDBOX_MODE=modal`). This stack moves the **headless
-agent itself** there. [`scripts/deploy.sh`](scripts/deploy.sh) provisions all of it; **§1 is the only
+agent itself** there. [`scripts/deploy.sh`](../scripts/deploy.sh) provisions all of it; **§1 is the only
 part you type by hand.**
 
 ## The shape (and why each piece exists)

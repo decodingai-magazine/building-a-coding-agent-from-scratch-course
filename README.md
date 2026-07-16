@@ -1,244 +1,274 @@
-# decode
+<div align="center">
+  <h1>Building a Coding Agent from Scratch</h1>
+  <h3>From agent user to agent builder — learn how coding agents like Claude Code actually work by building your own, step by step</h3>
+  <p class="tagline">Open-source course by <a href="https://www.decodingai.com">Decoding AI</a> in collaboration with <a href="https://modal.com">Modal</a>, <a href="https://www.comet.com/site/products/opik/">Opik</a> and <a href="https://www.zenml.io">ZenML</a>.</p>
+</div>
 
-**decode** is a terminal **coding agent** you run in your terminal — a [Pydantic AI](https://ai.pydantic.dev) ReAct loop on a selectable LLM provider (**Gemini**, **OpenRouter**, or a model you serve on **Modal**), driving file / bash / web / LSP tools and read-only subagents behind a `prompt_toolkit` + `Rich` TUI, with an ask-before-every-tool permission gate, project memory, replayable sessions, docker/modal sandboxing, a durable headless runtime (Kitaru), and Opik tracing.
+<p align="center">
+  <img src="docs/architecture.png" alt="decode architecture" width="700">
+</p>
 
-This repository is an **educational, open-source course** that builds `decode` from scratch, step by step. It is a single Python package (`decode`); each module under `src/decode/` maps to one part of the architecture, and every non-obvious design choice ships as an ADR in [`docs/adr/`](docs/adr/).
+## 📖 About This Course
 
-**What's built today:** the agent loop + TUI + gated tools + memory + session log ([ADR-0002](docs/adr/0002-milestone-1-vanilla-agent-architecture.md)) · permission modes & agents catalog ([ADR-0003](docs/adr/0003-milestone-2-permission-system-and-agents-catalog.md)) · skills ([ADR-0004](docs/adr/0004-milestone-3-skills.md)) · selectable LLM providers ([ADR-0005](docs/adr/0005-multi-llm-provider-support.md)) · context compaction ([ADR-0006](docs/adr/0006-conversation-compaction.md)) · LSP code intelligence ([ADR-0007](docs/adr/0007-lsp-integration.md)) · the Kitaru durable runtime + replay ([ADR-0008](docs/adr/0008-kitaru-durable-runtime.md), [ADR-0010](docs/adr/0010-runtime-replay.md)) · sandboxed isolated workspaces ([ADR-0011](docs/adr/0011-sandboxing-and-credential-proxy.md), [ADR-0012](docs/adr/0012-isolated-workspace.md), [ADR-0016](docs/adr/0016-drop-credential-proxy.md)) · Explore subagents ([ADR-0013](docs/adr/0013-explore-subagents.md)) · Opik observability ([ADR-0014](docs/adr/0014-opik-observability.md)) · environment-scoped secrets ([ADR-0015](docs/adr/0015-environment-bucket-secrets.md)) · the four-track eval suite ([ADR-0017](docs/adr/0017-decode-eval-suite.md)). MCP tools are a later milestone.
+You use a coding agent every day — Claude Code, Cursor, Codex — and you have no idea what happens between your prompt and its answer. Most engineers are fine with that. It costs more than they think.
 
-## Requirements
+In [one public test by LangChain](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness), changing only the *harness* around a coding agent — same model throughout — moved it from roughly 30th place into the top 5 on the Terminal-Bench benchmark. The harness decides what the model sees, what it's allowed to touch, and what happens when it's wrong — and it's the part nobody teaches.
 
-- **[uv](https://docs.astral.sh/uv/)** — the package/runtime manager (`curl -LsSf https://astral.sh/uv/install.sh | sh`). uv installs the pinned Python 3.12 for you.
-- **An API key for one LLM provider.** By default a **Gemini API key** ([Google AI Studio](https://aistudio.google.com/apikey) — free tier); or run for free on **OpenRouter** (`:free` models) or a model you serve on **Modal** ($30 free credits). See [LLM providers](#configure--llm-providers).
+This course teaches it the only way that sticks: you build one. Lesson by lesson, from an empty repo, you'll write **decode** — a terminal coding agent you can point at your own projects the same way you point Claude Code at them today:
 
-## Install
+- a [Pydantic AI](https://ai.pydantic.dev) **ReAct loop** on a selectable LLM provider — **Gemini**, **OpenRouter**, or an open model you serve yourself on **Modal**,
+- driving **file / bash / web / LSP tools** and parallel read-only **Explore subagents**,
+- behind a `prompt_toolkit` + `Rich` **TUI** that asks before every tool call and lets you steer, queue, or abort a running turn,
+- with **cross-session memory**, **context compaction**, **replayable sessions**, and **Docker/Modal sandboxes** that hand the agent's work back as a git branch,
+- a **durable headless runtime** (Kitaru) that survives `kill -9` and supports model-swapped replay,
+- **Opik tracing** and an **eval suite** that answers the question tests can't: *is the agent actually good?*
 
-```bash
-git clone git@github.com:decodingai-magazine/building-a-coding-agent-from-scratch-course.git
-cd building-a-coding-agent-from-scratch-course
-make install        # uv sync + wire git hooks   (or just: uv sync)
+By the end, nothing in your daily tools is magic anymore. You'll know why the agent asks before running `bash`, why it compacts your conversation near 80% of the context window, and why a secret must never get anywhere near the model's context — because you built the code that enforces all three.
+
+The codebase is finished and honest about how it got here: 18 Architecture Decision Records in [`docs/adr/`](docs/adr/) and 1,800+ tests that run without an API key. The dead ends are in there too — we built a credential proxy to hide the git token from the sandbox, then [deleted it](docs/adr/0016-drop-credential-proxy.md) when we proved it protected nothing. The postmortem is part of the course.
+
+## 🤖 What You'll Do
+
+- **Build one user turn end-to-end**: prompt in → model call → tool call → `y/n` approval → streamed answer → a session log you can replay tomorrow.
+- **Contain the agent, rung by rung**: an allow/ask/deny permission gate, then a local Docker Workspace, then a remote Modal sandbox where nothing executes on your machine.
+- **Treat the context window as a budget**: memory, compaction, skills, LSP code intelligence — each one a before/after experiment with a measured cost curve, not folklore.
+- **`kill -9` a run mid-task and resume it**: checkpointed headless execution that never re-pays for finished work, plus durable human-in-the-loop waits you resolve from another terminal.
+- **Replay history with the model swapped**: take a recorded run and ask "what would `gemini-2.5-pro` have done from this exact point?"
+- **Fan out subagents in parallel**: read-only Explore children with budgets, report contracts, and failure notes instead of silent holes.
+- **Evaluate the thing you built**: outcome benchmarks, behavior regression probes, and an LLM judge — because a green test suite can't tell you the agent got worse at its job.
+- **Ship it to a team**: a teammate labels a GitHub issue and receives a reviewed pull request; you compare 5 models on the same task and merge the winner.
+
+## 🎯 What You'll Learn
+
+Every lesson works concrete-first: you watch `decode` do something — gate a `bash` call, compact a conversation near 80% of the window, resume a killed run — and then pull out the principle that generalizes to any agentic system:
+
+- The anatomy of an agentic harness: harness vs loop vs model, and the seams between them.
+- ReAct agent loops with tool calling and streaming (Pydantic AI).
+- Human-in-the-loop design: approval gates, steering, follow-ups, aborts, durable waits.
+- Context engineering with measurement: memory, compaction tiers, skills, LSP, truncation.
+- Sandboxing and the trust ladder: permissions → Docker → remote Modal — with a credential story that is true as written.
+- Durable execution, crash recovery, and replay with checkpoints (Kitaru / ZenML).
+- Multi-provider inference, including serving your own open model on Modal.
+- Subagent architectures: catalogs, parallel fan-out, report contracts.
+- Observability and evaluation for agents: tracing, benchmarks, regression probes, LLM judges (Opik).
+- The engineering discipline that holds it together: ADRs, a glossary, deterministic tests with a scripted model, CI, `uv`/`ruff`/`pytest`.
+
+## 👥 Who Should Join?
+
+**This course is for people who learn by building.** You'll finish with your own working coding agent, a mental model of every layer inside the tools you already use, and a codebase full of patterns to steal for your own agentic applications. Frameworks churn every six months; the mental models you build here outlast them. Skip this layer and you're betting your work on tools you can't inspect.
+
+| Target Audience | Why Join? |
+|-----------------|-----------|
+| ML/AI Engineers | Build a complete agentic system — loop, tools, sandbox, evals — instead of another Notebook demo. |
+| Software Engineers | Stop treating the agent in your terminal as a black box; understand and extend it from the inside. |
+| AI/Platform Engineers | Learn the ops half nobody covers: sandboxing, durability, secrets, observability, shipping agents to a team. |
+
+## 🎓 Prerequisites
+
+| Category | Requirements |
+|----------|-------------|
+| **Skills** | - Python (Intermediate) <br/> - LLMs & agents (Beginner) |
+| **Hardware** | Modern laptop/PC. Docker optional (for the local sandbox); everything heavier runs in the cloud. |
+| **Level** | Intermediate (but with a little sweat and patience, anyone can do it) |
+
+## 💰 Cost Structure
+
+The course is open-source and free! Running the code can cost **$0** if you stick to free tiers:
+
+| Service | Cost |
+|---------|------|
+| Gemini API (default provider) | free tier ([Google AI Studio](https://aistudio.google.com/apikey)) |
+| OpenRouter (alternative provider) | $0 on `:free` models (optional $10 credit raises the daily cap) |
+| Modal (self-served open models + remote sandbox) | $30 free credits |
+| Opik (tracing + evals) | free tier |
+| Kitaru (durable runtime) | free, runs locally offline |
+
+**Reading-only? Everything's free!**
+
+## ⚙️ How It Works
+
+Self-paced, project-based, and open-source — no paywall, no certificate theater:
+
+1. **Read the lesson** on [Decoding AI](https://www.decodingai.com) — each one covers one layer of the agent.
+2. **Run the matching code** — every lesson maps to specific modules in this repo (see the [course outline](#-course-outline)).
+3. **Go one level deeper** when you want the *why* — every non-obvious decision has an ADR recording the alternatives we rejected.
+4. **Make it yours** — point `decode` at your own projects, swap the provider, break it, extend it. The 1,800+ tests will tell you when you've broken something real.
+
+<table style="border-collapse: collapse; border: none;">
+  <tr style="border: none;">
+    <td width="20%" style="border: none;">
+      <a href="https://www.decodingai.com/" aria-label="Decoding AI">
+        <img src="https://github.com/user-attachments/assets/f2f2f9c0-54b7-4ae3-bf8d-23a359c86982" alt="Decoding AI Logo" width="150"/>
+      </a>
+    </td>
+    <td width="80%" style="border: none;">
+      <div>
+        <h2>📬 Stay Updated</h2>
+        <p><b><a href="https://www.decodingai.com/">Join Decoding AI</a></b> for proven content on designing, coding, and deploying production-grade AI systems with software engineering and MLOps best practices to help you ship AI applications. Every week, straight to your inbox.</p>
+      </div>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <a href="https://www.decodingai.com/">
+    <img src="https://img.shields.io/static/v1?label&logo=substack&message=Subscribe%20Now&style=for-the-badge&color=black&scale=2" alt="Subscribe Now" height="40">
+  </a>
+</p>
+
+## 📚 Course Outline
+
+Eight lessons, each pairing a written deep-dive with the code that implements it. The full codebase is already here — lessons publish progressively on [Decoding AI](https://www.decodingai.com) and get linked below as they go live.
+
+| Lesson | Title | Description | Key code & docs |
+|--------|-------|-------------|-----------------|
+| 1 | What we're building + system design | Why the harness — not the model — decides how good your agent is. Anatomy of harness vs loop vs model, and the milestone map for the whole build. | [ADR index](docs/adr/) |
+| 2 | The agent loop & the human in it | One user turn, end-to-end: prompt → tool call → approval → streamed render → session log. Steer it mid-flight, queue follow-ups, abort — and pick a model that can actually call tools. | `src/decode/agent/`, `src/decode/tui/`, `src/decode/tools/` · [ADR-0002](docs/adr/0002-milestone-1-vanilla-agent-architecture.md), [ADR-0005](docs/adr/0005-multi-llm-provider-support.md) |
+| 3 | Durable execution, HITL & replay | `kill -9` a headless run and watch it resume from checkpoints. Durable human-in-the-loop waits, and what-if replay with the model swapped. | `src/decode/runtime/` · [ADR-0008](docs/adr/0008-kitaru-durable-runtime.md), [ADR-0010](docs/adr/0010-runtime-replay.md) |
+| 4 | Context engineering: the window is a budget | Context engineering without measurement is folklore. Five moves — memory, compaction, skills, LSP, truncation — each a measured before/after experiment. | `src/decode/context/`, `src/decode/memory/`, `src/decode/skills/`, `src/decode/services/lsp/` · [ADR-0006](docs/adr/0006-conversation-compaction.md), [ADR-0007](docs/adr/0007-lsp-integration.md) |
+| 5 | Containing the agent: permissions → sandbox | The trust ladder: the permission gate proper, then isolated Docker/Modal Workspaces with git hand-back — plus the credential proxy we built and then deleted, postmortem included. | `src/decode/permissions/`, `src/decode/sandbox/` · [ADR-0003](docs/adr/0003-milestone-2-permission-system-and-agents-catalog.md), [ADR-0012](docs/adr/0012-isolated-workspace.md), [ADR-0016](docs/adr/0016-drop-credential-proxy.md) |
+| 6 | Agents catalog, subagents & parallel fan-out | Build/Plan/Code-Reviewer agents and the read-only Explore subagent — parallel fan-out with budgets, report contracts, and no silent failures. | `src/decode/agents/` · [ADR-0013](docs/adr/0013-explore-subagents.md), [ADR-0017](docs/adr/0017-resilient-parallel-subagent-fanout.md) |
+| 7 | Is the agent good? The eval stack | The suite is green — 1,800+ tests — and it still can't tell you the agent got worse. Outcome benchmarks, regression probes, LLM-as-judge, and online evals over live traffic. | `evals/`, `src/decode/observability/` · [ADR-0014](docs/adr/0014-opik-observability.md), [ADR-0017](docs/adr/0017-decode-eval-suite.md), [docs/evals.md](docs/evals.md) |
+| 8 | Ship it to your team | Builder → operator: deployed runtime, environment-scoped secrets, a GitHub pipeline where labeling an issue returns a reviewed PR, and judged model-comparison cohorts. | [ADR-0015](docs/adr/0015-environment-bucket-secrets.md) · [CREDENTIALS.md](getting_started/CREDENTIALS.md), [INFRA.md](getting_started/INFRA.md) |
+
+## 🏗️ Project Structure
+
+One Python package; each module maps to one part of the architecture:
+
+```
+.
+├── docs/
+│   ├── adr/                  # Architecture Decision Records — the "why" of every choice
+│   ├── glossary.md           # one canonical name per concept
+│   └── evals.md              # the four-track eval suite, mapped
+├── evals/                    # benchmark + regression probes + demo skills
+├── tests/{unit,integration}/ # mirrors src/ 1:1; milestone capstones prove each milestone
+└── src/decode/
+    ├── cli.py                # Click entrypoint → launches the TUI
+    ├── tui/                  # input: prompt_toolkit · output: Rich
+    ├── harness/              # message queue + priority gate around the loop
+    ├── agent/                # the Pydantic-AI ReAct loop (LLM ⇄ tools)
+    ├── agents/               # agents catalog: Build / Plan / Code-Reviewer + Explore subagent
+    ├── tools/                # file I/O, bash, web, todo, skills dispatch, LSP, ask_user
+    ├── permissions/          # allow/ask/deny · modes · settings.json
+    ├── sandbox/              # bash + file tools seam: none (host) / docker / modal
+    ├── services/lsp/         # hand-rolled stdio LSP client (ty)
+    ├── runtime/              # Kitaru durable flow: decode run / replay / HITL
+    ├── context/              # compaction + conversation log (JSONL)
+    ├── memory/               # AGENTS.md / MEMORY.md loading + write-back
+    ├── observability/        # Opik tracing
+    └── config/, entities/    # settings singleton · shared models
 ```
 
-To type just **`decode`** from **any project directory**, put it on your PATH:
-
-```bash
-make install-cli    # uv tool install --editable .  — the command tracks your source
-```
-
-Then `cd` into any project and run it:
-
-```bash
-cd ~/my-project
-decode              # start a fresh session in this directory
-decode --resume     # continue the most recent session here
-```
-
-`decode` always operates on the directory you launch it from, and writes everything it produces under **`<cwd>/.decode/`** (gitignored): `sessions/*.jsonl` (replayable transcripts), `MEMORY.md` (cross-session memory), `logs/decode.log` (logs stay off the terminal).
-
-If `decode` isn't found afterward, run `uv tool update-shell` and restart your shell. Uninstall with `make uninstall-cli`.
-
-## Configure & LLM providers
-
-Config comes from environment variables, including a local `.env` (loaded via pydantic-settings). Precedence: **shell env var → `.env` → built-in default**. Every variable is documented in [`.env.example`](.env.example); missing required config prints a one-line hint and exits, never a traceback.
-
-```bash
-cp .env.example .env    # then set GEMINI_API_KEY=your-key-here
-```
-
-That `.env` is one of **two** ways values reach `Settings` — the other is the Environment Bucket, for a deployed environment; see [Environments & secrets](#environments--secrets).
-
-The agent loop runs on one selectable **LLM provider** — set `LLM_PROVIDER` plus that provider's secret(s); each provider has its own model variable (the others are ignored):
-
-| Provider (`LLM_PROVIDER`) | Model variable | Default | Notes |
-|---|---|---|---|
-| `gemini` (default) | `GEMINI_MODEL` | `gemini-2.5-flash` | free credits on [Google AI Studio](https://aistudio.google.com/apikey) |
-| `openrouter` | `OPENROUTER_MODEL` | `openrouter/free` | the [Free Models Router](https://openrouter.ai/docs/guides/routing/routers/free-router) — auto-routes across free tool-capable models so one congested provider can't 429-block you. Adding $10 credits raises the free daily cap (~50 → ~1000 req/day); free models still cost $0. |
-| `modal` | `MODAL_ENDPOINT_MODEL` | `openai/gpt-oss-120b` | serve your own model — set `MODAL_ENDPOINT_URL` (+ proxy tokens unless `--unauthenticated`). See [`MODAL_MODELS.md`](MODAL_MODELS.md) for picking a model and creating the endpoint. |
-
-**Pick a tool-capable model.** The loop needs tool-calling + streaming; the shipped defaults are known-good. Swap to a pinned model that lacks tool support and the loop breaks (the model narrates instead of calling tools). The wiring decision is [ADR-0005](docs/adr/0005-multi-llm-provider-support.md).
-
-## Use
-
-```bash
-decode             # after `make install-cli` (or `uv run decode`)
-```
-
-You get an interactive REPL: type a message, the agent streams a reply, and every tool use **asks for approval first**.
-
-| Action | Key |
-|---|---|
-| Send a message | `Enter` |
-| **Steer** a running turn (redirect it now) | `Enter` while it's working |
-| **Follow-up** (queue work for when it's done) | `Alt+Enter` while it's working |
-| **Abort** the current turn | `Esc` |
-| Approve / deny a tool | type `y` / `n` at the prompt |
-| Quit | `Ctrl-D` or `/quit` |
-
-**Tools the agent can call:** `read` · `glob` · `grep` · `lsp` (code intelligence) · `agent` (Explore subagents) · `write` · `edit` · `bash` · `todo_write` (a task checklist) · `web_fetch` (HTML→Markdown) · `ask_user`. Read-only tools auto-allow; everything else gates.
-
-**Skills** are reusable playbooks you trigger with `/<name>` (or that the agent invokes itself), living in `.decode/skills/<name>/SKILL.md`. Example — clone a repo, explore it, and write an `ARCHITECTURE.md` with Mermaid diagrams:
-
-```bash
-/repo-architecture https://github.com/iusztinpaul/designing-real-world-ai-agents-workshop
-```
-
-**Resume:** `decode --resume` (most recent session) or `decode --resume <session-id>`.
-
-**Memory.** `decode` loads `AGENTS.md` (walking upward from the working dir) and `.decode/MEMORY.md` into context, and on exit appends a one-sentence session summary to `.decode/MEMORY.md` so the next session has context.
-
-## Headless runtime (`decode run`)
-
-`decode run "<task>"` is the unattended counterpart to the REPL: it runs one task to completion with no human at the keyboard and prints the answer on stdout (pipe-clean). It builds the **same** agent but drives it through a [Kitaru](https://docs.zenml.io/) **durable flow** — every model/tool call is checkpointed, so an expensive run survives a crash and resumes instead of re-paying for finished work ([ADR-0008](docs/adr/0008-kitaru-durable-runtime.md)).
-
-```bash
-decode run "list the python files under src and summarize what the cli module does"
-```
-
-- **Bypass by default** — every tool runs with no approval prompt. `decode run --hitl` instead pauses the whole execution on a durable Kitaru wait for `write`/`edit`/`bash`/`ask_user`; resolve from another terminal with `kitaru executions input <exec_id> --wait <name> --value 'true'`.
-- **Offline local stack** — no Kitaru server or `kitaru init` needed. Inspect runs with `kitaru executions list` / `get <id>` / `logs <id>`; `kitaru login` starts the optional local web dashboard at `http://127.0.0.1:8383` (`kitaru logout` falls back to the server-less local database if the daemon hangs).
-- **Guards** — the same provider-key guard as the REPL; `RUNTIME_ENABLED=false` disables the subcommand with a friendly line.
-
-> **macOS: the local Kitaru server crashes mid-run.** A run starts fine, then floods with `RemoteDisconnected` followed by `Connection refused` on `127.0.0.1:8383`. The server *daemon* died — its log (`~/Library/Application Support/kitaru/zen_server/daemon/service.log`) ends with `objc[…]: +[NSCharacterSet initialize] may have been in progress in another thread when fork() was called … Crashing instead.` That is Apple's ObjC fork-safety abort: the daemon forks while the Apple runtime is initializing on another thread, and macOS kills the child rather than inherit a half-built runtime. Fix it either way:
->
-> ```bash
-> uv run kitaru logout                                          # simplest: no daemon, no crash
-> OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES uv run kitaru login   # or keep the dashboard
-> ```
->
-> Prefer `logout` unless you actually want the web dashboard — `decode run`, `kitaru executions`, and `kitaru secrets` all work against the server-less local database. Confirm with `kitaru info`: `Local server: registered but unavailable` means a stale registration is still pointing at the dead daemon.
-
-### Replay & what-if
-
-Every `decode run` records a checkpoint per model call and per tool call, so you can re-run any recorded execution from any anchor with the **model swapped** and see what would have happened ([ADR-0010](docs/adr/0010-runtime-replay.md)):
-
-```bash
-decode run "…"                                              # stderr prints exec_id + a replay hint
-kitaru executions get <ID>                                  # list the checkpoint anchors
-decode replay <ID> --from decode_runtime_model_request --model gemini-2.5-pro
-```
-
-Upstream of `--from` serves from the original run's cache; the anchor and downstream re-execute for real. The new fork's `exec_id` prints on stderr — compare fork vs original with `kitaru executions get`. `--from` is required; a trustworthy what-if does a **baseline rerun** first (no `--model`) and diffs the fork against that. `decode replay` is bypass-only (HITL replays re-ask every wait — use `kitaru executions replay`).
-
-## Environments & secrets
-
-`Settings` is the single source of truth for every credential decode holds — so the only question is how a value gets *into* it. **`DECODE_ENV`** answers it, and decides nothing else (not session dirs, not log paths) — [ADR-0015](docs/adr/0015-environment-bucket-secrets.md):
-
-| `DECODE_ENV` | Where `Settings` gets its values |
-|---|---|
-| `local` (default) | your `.env` file — Kitaru is never imported |
-| `dev` / `staging` / `prod` | the **Environment Bucket**: the derived Kitaru secret `decode-<env>` (no override knob). `.env` is **dropped from the chain**, so a key missing from the bucket fails loudly at startup instead of being backfilled from your file |
-
-```bash
-make sync-secrets ENV=staging     # mirror .env → the decode-staging bucket (one-way; the file is the truth)
-DECODE_ENV=staging decode         # …and both surfaces (TUI + `decode run`) hydrate from it, identically
-```
-
-The mirror pushes the config surface (the `Settings` fields) in **one** `kitaru secrets set` call — that command replaces the whole key set, so full-surface-or-nothing is the only safe write, and the bucket ends up an exact mirror of your file. It prints a key-**name** diff and asks before overwriting (`--yes` for CI); values are never echoed. `DECODE_ENV` itself is never pushed: the bucket is *named* by the environment. A missing or unreachable bucket is one friendly line naming the fix (`make sync-secrets ENV=<env>`), exit non-zero, no traceback — in the REPL and the headless pre-flight alike. Opik traces follow along: `OPIK_PROJECT_NAME` defaults to `decode-<env>`.
-
-Process env always wins; bucket values land in `Settings` only, never `os.environ` — so a model-chosen `bash` never inherits one. The **sandbox** gets exactly one value off this surface, and only if you ask for it: [`SANDBOX_GIT_TOKEN`](#the-sandbox-git-token-sandbox_git_token) below. Everything else stays in the harness process. [`CREDENTIALS.md`](CREDENTIALS.md) walks an end-to-end test of both.
-
-> **Coming from an older `.env`?** `RUNTIME_SECRET_NAME` / `RUNTIME_SECRET_STORE_CONFIG` / `RUNTIME_SECRET_STORE_MODEL_KEY` are **deleted** and a stale line is now **silently ignored** ([ADR-0015 §4](docs/adr/0015-environment-bucket-secrets.md)). The replacement is `make sync-secrets ENV=<env>` + `DECODE_ENV`.
-
-## Context compaction
-
-A long conversation grows toward the model's context window; `decode` keeps it in budget with a cheapest-first cascade that runs automatically at the end of each turn ([ADR-0006](docs/adr/0006-conversation-compaction.md)):
-
-| Tier | Fires at | What happens |
-|---|---|---|
-| **Microcompaction** (no LLM, in-memory) | ~60% of the window | old tool-output bodies are blanked for the next turn; not persisted (`--resume` replays the full transcript) |
-| **Full compaction** (one LLM call) | ~80%, or manual **`/compact`** | older turns collapse into a summary, recent turns stay verbatim; persisted (`--resume` continues the compacted conversation) |
-
-The footer's fill gauge (`○ ◔ ◑ ◕ ●` + %) tracks the same window — green/yellow/red at the same thresholds. On exit, `.decode/MEMORY.md` is compressed at its 200-line cap by one cheap LLM call (drop-oldest stays the fallback). Tune with `COMPACTION_CONTEXT_WINDOW_TOKENS`, `COMPACTION_RESERVE_FRACTION`, `MICROCOMPACTION_RESERVE_FRACTION`, `COMPACTION_ENABLED` — all optional, see [`.env.example`](.env.example).
-
-## LSP / code intelligence
-
-`decode` can see your Python as a semantic graph by talking to a Language Server over LSP — it ships **`ty`** (Astral's type-checker) by default ([ADR-0007](docs/adr/0007-lsp-integration.md)). Two channels:
-
-- **The `lsp` tool** — `definition` / `references` / `hover` / `diagnostics` on demand; read-only, so it auto-allows like `read`.
-- **Post-edit diagnostics** — after a successful `write`/`edit` of a `.py` file, its errors are appended to the tool result as an `LSP diagnostics (ty) — fix these:` block, so the agent fixes its own mistakes inline.
-
-Best-effort: an absent or slow server degrades silently — no turn ever breaks. Tune with `LSP_ENABLED`, `LSP_SERVER_COMMAND` / `LSP_SERVER_ARGS` (swap in `pylsp` or any stdio server), `LSP_DIAGNOSTICS_ON_EDIT`, `LSP_REQUEST_TIMEOUT_S`.
-
-## Explore subagents
-
-For a question that spans many files, the agent can spawn **Explore subagents** instead of pulling the whole codebase into its own context: each `agent(prompt)` call runs a **read-only** child (`read`/`glob`/`grep`/`lsp` only — never `write`/`edit`/`bash`/`web_fetch`) that hands back one compressed report ([ADR-0013](docs/adr/0013-explore-subagents.md)). The `agent` tool is itself read-only, so it auto-allows; several calls in one turn **fan out in parallel**; children are silent-until-done and their transcripts ephemeral (`--resume` keeps only the spawn + report). Tune with `SUBAGENT_MAX_PARALLEL` (default 4), `SUBAGENT_MAX_REQUESTS` (25), `SUBAGENT_RESULT_MAX_BYTES` (16000).
-
-## Sandboxing
-
-By default (`SANDBOX_MODE=none`) `bash` runs as a host subprocess and the file tools edit your working directory directly. Set a **Sandbox Mode** and the agent's *whole* tool scope — file tools **and** `bash` — moves into a fully **isolated Workspace**, while decode's own artifacts (sessions, memory, logs, permission file) stay in your launch directory ([ADR-0012](docs/adr/0012-isolated-workspace.md)):
-
-| `SANDBOX_MODE` | Where the tools run | The Workspace |
-|---|---|---|
-| `none` (default) | host subprocess + direct file tools | none — zero change, no Docker/Modal needed |
-| `docker` | one session-persistent **local** container | `/workspace` is a **live bind mount** of the host `.decode/sandbox/` |
-| `modal` | one session-persistent **remote** `modal.Sandbox` | nothing runs on your machine; `/workspace` is bootstrap-uploaded at launch and exported back on exit / `/ship` |
-
-Both modes are one unified executor with **fresh-exec** semantics: the filesystem persists across calls, but `cd`/`export` don't (chain them: `cd /workspace/app && …`). The sandbox starts eagerly at launch (a `sandbox:<mode>` banner segment), and `bash` stays gated exactly as before — the sandbox is defense-in-depth *beneath* the approval prompt.
-
-**Work on any repo, and get a branch back:**
-
-```bash
-SANDBOX_MODE=docker decode --repo git@github.com:you/project.git
-#   … the agent reads, edits, and runs bash entirely inside /workspace …
-/ship          # or just quit — decode pushes a `decode/<session-id>` branch back to the repo
-```
-
-- **`--repo <url-or-path>`** (or `SANDBOX_REPO`; add `--local` for a fast local clone) clones at committed `HEAD` using your ambient git credentials. A bad repo degrades to an empty Workspace with one friendly line; `--repo` without a sandbox mode is a friendly config error. Works headless too: `SANDBOX_MODE=docker decode run --repo <url> "<task>"`. **It clones only into an *empty* Workspace** — a populated `.decode/sandbox` is reused, never re-cloned (that would discard in-progress work), so `--repo` against a leftover Workspace is ignored and there is no `origin` to push to. `rm -rf .decode/sandbox` to force a fresh clone.
-- **Hand-back on exit or `/ship`** — decode commits any uncommitted model work (model commits are preserved, never rewritten), points a `decode/<session-id>` branch at the result, and pushes it. Every git command runs **host-side**, with your ambient git credentials — **hand-back puts no credential in the sandbox** (that holds whether or not you set [`SANDBOX_GIT_TOKEN`](#the-sandbox-git-token-sandbox_git_token)). A failed push still leaves the local branch in `.decode/sandbox` and names it; an unchanged Workspace is skipped.
-- **Startup guards** — a selected backend that isn't available fails with one friendly line (Docker daemon down, or missing `modal token set` credentials), in the REPL and the headless pre-flight alike.
-- **Isolation honesty** — docker is a boundary for *accidental* misbehavior (shared kernel on Linux; Docker Desktop's VM adds one on macOS); **modal** is the rung for genuinely untrusted code (nothing executes on your machine). gVisor/Kata are zero-code daemon-config upgrades; see [ADR-0011's isolation table](docs/adr/0011-sandboxing-and-credential-proxy.md#isolation-backends-compared--why-docker--modal).
-
-Tunables (all optional, documented in [`.env.example`](.env.example)): `SANDBOX_IMAGE` (default `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` — python + uv preinstalled; each backend adds **git + the `gh` CLI**, so a model can commit, push, *and* open the PR — docker installs them per session (~20s), modal bakes them into a cached image layer), `SANDBOX_TIMEOUT_S` (modal lifetime), `SANDBOX_GIT_USER_NAME`/`_EMAIL` (the in-Workspace commit identity), `SANDBOX_GIT_TOKEN` (below).
-
-### The sandbox git token (`SANDBOX_GIT_TOKEN`)
-
-Hand-back (above) needs **no** credential in the sandbox — it pushes host-side, with your ambient git creds. `SANDBOX_GIT_TOKEN` is the opt-in for the strictly larger ask: letting the **model itself** run `git push` / `gh pr create` from inside the Workspace. Set it and the token is **direct-injected into the Worker's env as `GITHUB_TOKEN` in both backends** — docker via a *value-less* `-e GITHUB_TOKEN` (the value rides the docker client's env, so the token never sits in a host-visible argv), modal via a `modal.Secret` — plus a git credential-helper (`x-access-token:$GITHUB_TOKEN`) so HTTPS pushes authenticate and `gh` reads it natively ([ADR-0016](docs/adr/0016-drop-credential-proxy.md)).
-
-> **A sandboxed process can read `$GITHUB_TOKEN`.** `docker exec <worker> env | grep GITHUB_TOKEN` prints it, and a prompt-injected agent can too. Use a **fine-grained, repo-scoped, revocable** PAT, and revoke it when you're done. Leave the variable **unset** and the sandbox holds no credential at all — hand-back still ships your branch.
-
-decode used to hide this token from the docker Worker behind a mitmproxy sidecar that injected the header after egress (the **Credential Proxy**). It is **deleted** ([ADR-0016](docs/adr/0016-drop-credential-proxy.md)): it only ever worked in one of the three sandbox modes — modal already direct-injected the same token — so the property it bought was already false in the mode where isolation matters most, egress was cooperative anyway (`curl --noproxy '*'` walked around it), and the machinery (a per-run network, a CA folded into the worker's trust store, a decoy token for `gh`) cost more than it protected. One mechanism now, both backends, and a security story that is *true as written*. [`CREDENTIALS.md`](CREDENTIALS.md) walks the end-to-end test, with the token set and unset.
-
-## Monitoring / Observability (Opik)
-
-Set one variable and `decode` sends a **Trace** of every turn to [Opik](https://www.comet.com/opik) — every model and tool call as a Span with inputs/outputs, latency, tokens, and (for priced models) cost ([ADR-0014](docs/adr/0014-opik-observability.md)):
-
-```bash
-OPIK_API_KEY=your-comet-key     # free at comet.com; optional: OPIK_WORKSPACE, OPIK_PROJECT_NAME
-```
-
-One Trace per REPL turn (a session's traces group into one Thread; the approve/resume leg of a gated tool stays in the same trace) and one Trace per `decode run` (Thread = the Kitaru exec id; stdout stays pipe-clean). Explore subagent children nest inside the parent turn's trace with visible token spend; memory write-back and compaction ride along too. **Unset** (the default) it's a silent no-op — no line, no spans, no network. Self-host by pointing `OPIK_URL_OVERRIDE` at your instance's OTLP base; export never touches global `OTEL_*` env vars.
-
-## Evaluating decode
-
-Beyond tracing, decode ships a **four-track eval suite** — human-judged demo skills, an outcome
-benchmark, harness-behavior regression probes, and an online pass over live traffic — over one Opik
-harness ([ADR-0017](docs/adr/0017-decode-eval-suite.md)):
-
-```bash
-make eval-benchmark      # outcome benchmark (pass@k / pass^k / cost); ARGS='--trials 3 --sandbox modal'
-make eval-regression     # per-branch behavior regression ritual + threshold gate
-```
-
-Both need `OPIK_API_KEY` + your provider's key, cost real money, and are **never** part of `make ci` —
-without keys they skip friendly. The full map of all four tracks (how to run each demo, every flag, the
-threshold gate, and the online-eval story) is [`docs/evals.md`](docs/evals.md).
-
-## Develop
-
-All verbs run at the repo root via the [`Makefile`](Makefile) (wrapping `uv`):
-
-```bash
-make test            # full test suite (unit + integration)
-make unit-tests      # unit only
-make lint-check      # ruff check        (lint-fix to auto-fix)
-make format-check    # ruff format check (format-fix to apply)
-make pre-commit      # format + lint + unit tests (the fast gate)
-make ci              # what CI runs: lockfile check + format + lint + full suite
-make help            # all targets
-```
-
-Tests mirror `src/` 1:1 under `tests/`; model calls use Pydantic AI's `TestModel`/`FunctionModel`, so the suite needs **no network and no API key**. Conventions and the development workflow live in [`AGENTS.md`](AGENTS.md); design decisions in [`docs/adr/`](docs/adr/); canonical terms in [`docs/glossary.md`](docs/glossary.md).
+## 🚀 Getting Started
+
+Everything lives under [`getting_started/`](getting_started/) — one core guide, plus one focused guide per side quest:
+
+| Guide | What's inside |
+|-------|---------------|
+| [INSTALL_AND_USAGE.md](getting_started/INSTALL_AND_USAGE.md) | The core path: requirements, install, LLM provider setup (Gemini / OpenRouter / Modal), the REPL, and the dev workflow — about 5 minutes to a running agent. |
+| [RUNTIME.md](getting_started/RUNTIME.md) | Headless runs (`decode run`), durable checkpoints, human-in-the-loop waits, and model-swapped replay. |
+| [SANDBOXING.md](getting_started/SANDBOXING.md) | Isolated Docker/Modal Workspaces, working on any repo with `--repo`, and the git hand-back. |
+| [CREDENTIALS.md](getting_started/CREDENTIALS.md) | Environments & secrets, walked end-to-end. |
+| [MODAL_MODELS.md](getting_started/MODAL_MODELS.md) | Picking and serving your own open model on Modal. |
+| [INFRA.md](getting_started/INFRA.md) | Deploying the remote runtime stack to the cloud. |
+
+**Pro tip:** Read the accompanying lessons first for a better understanding of the system you'll build.
+
+## 💡 Questions and Troubleshooting
+
+Have questions or running into issues? We're here to help!
+
+Open a [GitHub issue](https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues) for:
+- Questions about the course material
+- Technical troubleshooting (setup, providers, sandbox, runtime)
+- Clarification on concepts
+
+Known gotchas (macOS Kitaru daemon crash, non-tool-capable models, stale sandbox Workspaces) are documented inline in the [`getting_started/`](getting_started/) guides.
+
+## ❓ FAQ
+
+**Is the code complete, or does it grow with the lessons?**
+Complete. The full agent is in this repo today — lessons publish progressively and walk you through how it got here, decision by decision.
+
+**Do I need a paid API key?**
+No. The default Gemini provider has a free tier, OpenRouter routes across `:free` models, and Modal gives $30 in credits — see [Cost Structure](#-cost-structure).
+
+**How does this compare to the paid [Agent Engineering course](https://academy.towardsai.net/courses/agent-engineering?ref=b3ab31)?**
+They sit one layer apart. [Agent Engineering](https://academy.towardsai.net/courses/agent-engineering?ref=b3ab31) (with Towards AI) teaches you to design, evaluate, and deploy production multi-agent *applications* — research agents, writing workflows, MCP servers, CI/CD. This free course goes underneath: you build the *coding agent harness itself* — the loop, the permission gate, the sandbox, the durable runtime that tools like Claude Code are made of. If Agent Engineering teaches you to engineer agents, this course teaches you to build the tool that builds them. They pair well; neither requires the other.
+
+## 🥂 Contributing
+
+As an open-source course, we may not be able to fix all the bugs that arise.
+
+If you find any bugs and know how to fix them, support future readers by contributing to this course with your bug fix.
+
+You can always contribute by:
+- Forking the repository
+- Fixing the bug (run `make ci` — the suite needs no API key)
+- Creating a pull request
+
+We will deeply appreciate your support for the AI community and future readers 🤗
+
+## 👨‍🏫 Course Author
+
+<table style="border-collapse: collapse; border: none;">
+  <tr style="border: none;">
+    <td width="15%" style="border: none;">
+      <a href="https://github.com/iusztinpaul" target="_blank">
+        <img src="https://github.com/iusztinpaul.png" width="100" style="border-radius: 50%;" alt="Paul Iusztin"/>
+      </a>
+    </td>
+    <td width="85%" style="border: none;">
+      <b><a href="https://github.com/iusztinpaul" target="_blank">Paul Iusztin</a></b> — AI Engineer & Founder of <a href="https://www.decodingai.com">Decoding AI</a><br/>
+      After shipping 21 AI applications, Paul uses his best-selling <a href="https://www.amazon.com/LLM-Engineers-Handbook-engineering-production/dp/1836200072">LLM Engineer's Handbook</a>, Decoding AI Magazine, and courses like this one to lead 160,000+ AI engineers out of demo purgatory and into production-grade engineering.
+    </td>
+  </tr>
+</table>
+
+## Sponsors
+
+<div align="center">
+  <table style="border-collapse: collapse; border: none;">
+    <tr style="border: none;">
+      <td align="center" style="border: none; padding: 20px;">
+        <a href="https://modal.com" target="_blank"><b>Modal</b></a><br/>
+        inference & remote sandboxes
+      </td>
+      <td align="center" style="border: none; padding: 20px;">
+        <a href="https://www.comet.com/site/products/opik/" target="_blank"><b>Opik</b></a><br/>
+        tracing & evals
+      </td>
+      <td align="center" style="border: none; padding: 20px;">
+        <a href="https://www.zenml.io" target="_blank"><b>ZenML (Kitaru)</b></a><br/>
+        durable runtime
+      </td>
+    </tr>
+  </table>
+</div>
+
+<table style="border-collapse: collapse; border: none;">
+  <tr style="border: none;">
+    <td width="20%" style="border: none;">
+      <a href="https://www.decodingai.com/" aria-label="Decoding AI">
+        <img src="https://github.com/user-attachments/assets/f2f2f9c0-54b7-4ae3-bf8d-23a359c86982" alt="Decoding AI Logo" width="150"/>
+      </a>
+    </td>
+    <td width="80%" style="border: none;">
+      <div>
+        <h2>📬 Stay Updated</h2>
+        <p><b><a href="https://www.decodingai.com/">Join Decoding AI</a></b> for proven content on designing, coding, and deploying production-grade AI systems with software engineering and MLOps best practices to help you ship AI applications. Every week, straight to your inbox.</p>
+      </div>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <a href="https://www.decodingai.com/">
+    <img src="https://img.shields.io/static/v1?label&logo=substack&message=Subscribe%20Now&style=for-the-badge&color=black&scale=2" alt="Subscribe Now" height="40">
+  </a>
+</p>
 
 ## License
 
-[Apache-2.0](LICENSE).
+This course is an open-source project released under the [Apache-2.0 license](LICENSE). Thus, as long you distribute our LICENSE and acknowledge this repository, you can safely clone or fork this project and use it as a source of inspiration for your educational projects (e.g., university, college degree, personal projects, etc.).

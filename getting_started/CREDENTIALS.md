@@ -1,6 +1,6 @@
 # Credentials — one config surface
 
-`Settings` ([`config/settings.py`](src/decode/config/settings.py)) is the **single source of truth** for
+`Settings` ([`config/settings.py`](../src/decode/config/settings.py)) is the **single source of truth** for
 every credential decode holds. Nothing else reads one. So there is only ever one interesting question —
 **how does a value get *into* `Settings`?** — and `DECODE_ENV` is the whole answer:
 
@@ -9,7 +9,7 @@ every credential decode holds. Nothing else reads one. So there is only ever one
 | `local` (default) | process env → **`.env`** → defaults. Kitaru is never imported. |
 | `dev` / `staging` / `prod` | process env → **the Environment Bucket** (`decode-<env>`) → defaults. **`.env` is dropped from the chain entirely.** |
 
-One surface, two injection mechanisms, selected by one variable ([ADR-0015](docs/adr/0015-environment-bucket-secrets.md)).
+One surface, two injection mechanisms, selected by one variable ([ADR-0015](../docs/adr/0015-environment-bucket-secrets.md)).
 Values land in `Settings` **only** — never `os.environ` — so a model-chosen `bash` never inherits one.
 
 There is a **second, much smaller question**, and it is worth keeping separate: *which of those values does
@@ -18,7 +18,7 @@ Everything else in `Settings` stays in the harness process.
 
 **How much of this is Kitaru?** Exactly one line. The Environment Bucket **is** a Kitaru secret, and that
 settings source is **the only `get_secret` seam in the whole codebase**
-([ADR-0015 §6](docs/adr/0015-environment-bucket-secrets.md)). (`MODAL_PROXY_TOKEN_ID` / `_SECRET` are an
+([ADR-0015 §6](../docs/adr/0015-environment-bucket-secrets.md)). (`MODAL_PROXY_TOKEN_ID` / `_SECRET` are an
 unrelated third thing wearing the word "proxy": Modal's own endpoint-auth headers — see
 [`MODAL_MODELS.md`](MODAL_MODELS.md).)
 
@@ -26,7 +26,7 @@ The rest of this file is a manual e2e tutorial. Every case is an **A/B**: the sa
 flipped, and a different observable. Part 4 is an automated backstop that proves the same claims with no
 network, no PAT, and no Kitaru.
 
-> **Clean break — the Credential Proxy is gone** (why: [ADR-0016](docs/adr/0016-drop-credential-proxy.md); stale-key behavior: Part 2c). What replaces it is [Part 2](#part-2--the-sandbox-git-token-sandbox_git_token) — one token, direct-injected, both backends, and an honest warning that the model can read it.
+> **Clean break — the Credential Proxy is gone** (why: [ADR-0016](../docs/adr/0016-drop-credential-proxy.md); stale-key behavior: Part 2c). What replaces it is [Part 2](#part-2--the-sandbox-git-token-sandbox_git_token) — one token, direct-injected, both backends, and an honest warning that the model can read it.
 
 ## Part 0 — prerequisites
 
@@ -47,11 +47,11 @@ uv run kitaru login     # or bring the local server + web dashboard back up on 1
 ```
 
 On macOS the local Kitaru server can also die mid-run with an ObjC fork-safety abort — the
-`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` fix is in [INSTALL_AND_USAGE](INSTALL_AND_USAGE.md#headless-runtime-decode-run).
+`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` fix is in [RUNTIME.md](RUNTIME.md#macos-the-local-kitaru-server-crashes-mid-run).
 
 ## Part 1 — the config surface (`DECODE_ENV`)
 
-> **Coming from an older `.env` ([ADR-0015 §4](docs/adr/0015-environment-bucket-secrets.md))?**
+> **Coming from an older `.env` ([ADR-0015 §4](../docs/adr/0015-environment-bucket-secrets.md))?**
 > `RUNTIME_SECRET_NAME`, `RUNTIME_SECRET_STORE_CONFIG` and `RUNTIME_SECRET_STORE_MODEL_KEY` are **deleted** —
 > no shim, no deprecation warning, no fail-fast guard. Pydantic's `extra="ignore"` means a stale line in your
 > `.env` is now **silently ignored**: decode will start, read your `.env` like any other local run, and never
@@ -155,14 +155,14 @@ headless-only toggle).
 
 | Command | Working looks like |
 |---|---|
-| **Missing bucket** (or Kitaru local server down): `DECODE_ENV=prod uv run decode run "hi"` | ONE friendly stderr line, exit 1, **no traceback** — and it names the fix, not the missing key: *Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded (it is missing, or the Kitaru local server is down) — run `make sync-secrets ENV=prod` (see CREDENTIALS.md).* |
+| **Missing bucket** (or Kitaru local server down): `DECODE_ENV=prod uv run decode run "hi"` | ONE friendly stderr line, exit 1, **no traceback** — and it names the fix, not the missing key: *Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded (it is missing, or the Kitaru local server is down) — run `make sync-secrets ENV=prod` (see getting_started/CREDENTIALS.md).* |
 | Same, in the **TUI**: `DECODE_ENV=prod uv run decode` | The **same** line, exit 1 — the REPL is guarded before it starts. Both surfaces or it isn't a config surface. |
 | **No backfill**: delete `GEMINI_API_KEY` from the bucket (`make sync-secrets ENV=staging` after removing it from `.env`), put it back in `.env`, then `env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode run "hi"` | `Decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example).` — it fails **loudly** even though the key is sitting right there in `.env`. That file is not in the chain at a remote env. **This is the point of having environments at all**: a provisioning gap must not be masked by a developer's laptop. |
 | **Process env wins**: `GEMINI_API_KEY=<a-real-key> DECODE_ENV=staging uv run decode run "hi"` | It answers, using *your* key — precedence is always `process env > (.env \| bucket) > defaults`. Handy for a one-off override; also the escape hatch when a bucket key is stale. |
 
 ## Part 2 — the sandbox git token (`SANDBOX_GIT_TOKEN`)
 
-One knob, one mechanism, **both backends** ([ADR-0016 §2](docs/adr/0016-drop-credential-proxy.md)). Set it and
+One knob, one mechanism, **both backends** ([ADR-0016 §2](../docs/adr/0016-drop-credential-proxy.md)). Set it and
 the token enters the **Worker**'s env as `GITHUB_TOKEN`:
 
 | | how the value gets in | what it buys |
@@ -177,7 +177,7 @@ credential helper, and a `docker run` argv byte-identical to the no-token case**
 credential at all.
 
 > **⚠️ A sandboxed process CAN read `$GITHUB_TOKEN`.** That is the deliberate cost of deleting the Credential
-> Proxy, stated plainly ([ADR-0016](docs/adr/0016-drop-credential-proxy.md), *Consequences*). A prompt-injected
+> Proxy, stated plainly ([ADR-0016](../docs/adr/0016-drop-credential-proxy.md), *Consequences*). A prompt-injected
 > agent can `echo $GITHUB_TOKEN`. The mitigation is **policy, not code**: hand it a **fine-grained,
 > repo-scoped, revocable** PAT — never a broadly-scoped or organisation-wide one — and revoke it when you are
 > done. Want the stronger property? **Leave `SANDBOX_GIT_TOKEN` unset** and take host-side hand-back (2a).
@@ -189,7 +189,7 @@ the already-hydrated `Settings`, with no second lookup anywhere. Mirror it into 
 the token absent from your shell entirely.
 
 > **Where a tool call actually runs.** Only `bash` (and the file/search tools) run inside the Worker.
-> **`web_fetch` runs host-side** — a plain `httpx` call in the decode process ([`tools/web.py`](src/decode/tools/web.py)) —
+> **`web_fetch` runs host-side** — a plain `httpx` call in the decode process ([`tools/web.py`](../src/decode/tools/web.py)) —
 > so it sees the *host's* network and none of the sandbox's environment. Ask the model to "GET this URL" and it
 > will reach for `web_fetch`, never touching the Worker or its `GITHUB_TOKEN`. If you mean to exercise the
 > sandbox, say **"use the bash tool"** in the prompt and check the run log for `running tool: bash`.
@@ -206,8 +206,8 @@ env -u SANDBOX_GIT_TOKEN SANDBOX_MODE=docker \
 
 Working: the model commits inside `/workspace`, and on completion **hand-back** pushes a `decode/<session-id>`
 branch to your repo — with your **ambient host git credentials**, because every hand-back git command is a
-*host* subprocess against `.decode/sandbox` ([`sandbox/handback.py`](src/decode/sandbox/handback.py),
-[ADR-0012 §8](docs/adr/0012-isolated-workspace.md)). Prove the Worker is credential-free, during the run, from a
+*host* subprocess against `.decode/sandbox` ([`sandbox/handback.py`](../src/decode/sandbox/handback.py),
+[ADR-0012 §8](../docs/adr/0012-isolated-workspace.md)). Prove the Worker is credential-free, during the run, from a
 second terminal:
 
 ```bash
@@ -264,7 +264,7 @@ the remote sandbox's env).
 |---|---|
 | `SANDBOX_GIT_TOKEN= SANDBOX_MODE=docker uv run decode run "hi"` (explicit empty) | **nothing injected** — gated on the *value*, not on presence: no `GITHUB_TOKEN`, no credential helper, and an argv identical to the unset case |
 | `SANDBOX_GIT_TOKEN=<PAT> uv run decode run "hi"` (mode `none`) | no-op — `none` *is* the host; there is no Worker env to inject into |
-| A stale `SANDBOX_CREDENTIAL_PROXY_ENABLED=true` / `SANDBOX_PROXY_IMAGE=…` in your `.env` | **silently ignored** — both keys are deleted ([ADR-0016 §1](docs/adr/0016-drop-credential-proxy.md)); no proxy container exists to start. `docker ps` shows the Worker, alone. |
+| A stale `SANDBOX_CREDENTIAL_PROXY_ENABLED=true` / `SANDBOX_PROXY_IMAGE=…` in your `.env` | **silently ignored** — both keys are deleted ([ADR-0016 §1](../docs/adr/0016-drop-credential-proxy.md)); no proxy container exists to start. `docker ps` shows the Worker, alone. |
 | Docker daemon stopped, `SANDBOX_MODE=docker` | one friendly stderr line, exit non-zero, no flow built |
 
 ## Part 3 — cleanup
@@ -300,11 +300,11 @@ uv run pytest tests/unit/decode/sandbox/test_docker_backend.py \
 uv run pytest tests/integration/test_sandbox_capstone.py -k token -v
 ```
 
-[`test_sandbox_capstone.py`](tests/integration/test_sandbox_capstone.py) asserts exactly the manual claims of
+[`test_sandbox_capstone.py`](../tests/integration/test_sandbox_capstone.py) asserts exactly the manual claims of
 Part 2 — `test_the_git_token_is_direct_injected_in_both_backends` (one helper constant, one token gate, and
 the secret in **no** argv), `test_no_token_means_no_credential_machinery_anywhere` (2a's default), and, when a
 daemon or Modal credentials are actually present, `test_real_docker_injects_the_git_token_into_the_worker` /
 `test_real_modal_injects_the_git_token_into_the_sandbox` against a **live** sandbox with a dummy token (no
-GitHub call). [`test_env_example_drift.py`](tests/unit/decode/config/test_env_example_drift.py) is why
-[`.env.example`](.env.example) cannot lie: its `KEY=` lines and the `Settings` fields must match in **both**
+GitHub call). [`test_env_example_drift.py`](../tests/unit/decode/config/test_env_example_drift.py) is why
+[`.env.example`](../.env.example) cannot lie: its `KEY=` lines and the `Settings` fields must match in **both**
 directions, with no allowlist — which is also what guarantees the retired proxy keys are really gone.
