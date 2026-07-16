@@ -170,6 +170,22 @@ def test_demo_5_targets_the_real_course_repo():
     assert "decodingai-magazine/building-a-coding-agent-from-scratch-course" in body
 
 
+def test_demo_5_covers_pushing_the_branch_and_the_prepush_timeout():
+    # The wrap-up must be reliable even when the model pushes the branch itself (no sandbox / its
+    # own feature branch): the observed run flailed because ``git push`` fires this repo's pre-push
+    # hook (the full unit suite, ~2 min) and got killed by a short tool timeout, then bypassed the
+    # gate with ``--no-verify``. The body must name the pre-push suite, tell the model to give the
+    # push a generous timeout, and steer it away from ``--no-verify``.
+    body = _skill_text(DEMO_5)
+
+    assert "pre-push" in body
+    assert re.search(r"git push", body)
+    assert "timeout" in body.lower()
+    assert (
+        "--no-verify" in body
+    )  # named specifically to say "do not reach for it to dodge the gate"
+
+
 # demo-6: the article-kg body pins the fetch → extract → self-contained interactive page contract
 
 
