@@ -153,7 +153,6 @@ def _apply_settings_overrides(overrides: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _restore_settings(saved: Mapping[str, Any]) -> None:
-    """Restore the settings attributes :func:`_apply_settings_overrides` saved."""
     for key, value in saved.items():
         setattr(settings, key, value)
 

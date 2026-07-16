@@ -928,7 +928,6 @@ def _user_msg(text: str) -> ModelRequest:
 
 
 def _assistant_msg(text: str) -> ModelResponse:
-    """An assistant text response."""
     return ModelResponse(parts=[TextPart(content=text)])
 
 

@@ -217,9 +217,6 @@ def test_bypass_flow_raise_with_tracing_active_closes_decode_run_span_once(activ
 # tests/unit/decode/config/test_env_bucket.py.
 
 
-# helper
-
-
 def monkeypatch_seam(mocker, seam_name: str, durable: KitaruAgent) -> None:
     """Patch a runtime seam (``_build_runtime_agent`` / ``_build_hitl_runtime_agent``) to a scripted agent."""
     mocker.patch.object(flow_mod, seam_name, lambda model=None: durable)

@@ -168,7 +168,6 @@ def summarize_outcomes(
 def _aggregate_task(
     item_id: str, item_trials: Sequence[TrialOutcome], task_id: str | None
 ) -> TaskAggregate:
-    """Aggregate one dataset item's trials into a :class:`TaskAggregate`."""
     passes = [trial.passed for trial in item_trials]
     costs = [trial.cost_usd for trial in item_trials]
     have_costs = bool(costs) and all(cost is not None for cost in costs)
@@ -239,7 +238,6 @@ def _test_results(result: Any) -> list[Any]:
 
 
 def _outcome(test_result: Any, pass_metric: str) -> TrialOutcome:
-    """One trial's :class:`TrialOutcome` from a ``TestResult`` — pass signal + usage/cost."""
     passed = _scored_pass(getattr(test_result, "score_results", None), pass_metric)
     task_output = getattr(getattr(test_result, "test_case", None), "task_output", None) or {}
     return TrialOutcome(
@@ -277,7 +275,6 @@ def _cost(task_output: Mapping[str, Any]) -> float | None:
 
 
 def _task_id(test_case: Any) -> str | None:
-    """The dataset item's ``task_id`` from its content, if the item carries one."""
     content = getattr(test_case, "dataset_item_content", None)
     return content.get("task_id") if isinstance(content, Mapping) else None
 

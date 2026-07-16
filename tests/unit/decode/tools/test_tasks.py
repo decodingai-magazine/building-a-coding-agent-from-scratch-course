@@ -57,7 +57,6 @@ def test_todo_write_does_not_touch_the_store_when_unapproved():
     with pytest.raises(ApprovalRequired):
         tasks_module.todo_write(_ctx(deps, approved=False), tasks=[Task(id="2", content="new")])
 
-    # The store is untouched until the call is approved.
     assert deps.task_store == [Task(id="1", content="old")]
 
 

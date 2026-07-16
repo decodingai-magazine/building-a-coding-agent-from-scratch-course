@@ -203,9 +203,6 @@ def _tool_spans(spans: list[dict]) -> list[dict]:
     return [s for s in spans if s["name"] == "running tool"]
 
 
-# --- tests -------------------------------------------------------------------------------------
-
-
 async def test_single_turn_is_one_chat_turn_root_with_nested_model_and_tool_spans(
     active_tracing, tmp_path
 ):

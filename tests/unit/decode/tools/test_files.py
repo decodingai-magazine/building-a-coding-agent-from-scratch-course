@@ -201,7 +201,6 @@ def test_glob_rejects_absolute_pattern_outside_cwd(tmp_path: Path):
     project.mkdir()
     (project / "own.py").write_text("", encoding="utf-8")
 
-    # An absolute pattern targeting a file outside cwd must be refused.
     with pytest.raises(ModelRetry):
         files.glob(_ctx(project), pattern=str(secret_file))
 
@@ -298,7 +297,6 @@ def test_grep_rejects_absolute_glob_outside_cwd_and_does_not_leak(tmp_path: Path
     project.mkdir()
     (project / "own.env").write_text("API_KEY=in-tree-ok\n", encoding="utf-8")
 
-    # An absolute glob targeting a file outside cwd must be refused.
     with pytest.raises(ModelRetry):
         files.grep(_ctx(project), pattern="API_KEY", glob=str(secret_file))
 
@@ -469,7 +467,6 @@ def test_edit_empty_old_string_returns_model_retry(tmp_path: Path):
 
     with pytest.raises(ModelRetry, match="empty"):
         files.edit(_ctx(tmp_path), path="f.txt", old_string="", new_string="x")
-    # Untouched.
     assert target.read_bytes() == b"content\n"
 
 

@@ -198,9 +198,6 @@ def _tool_spans(spans: list[dict]) -> list[dict]:
     return [s for s in spans if s["name"] == "running tool"]
 
 
-# --- tests -------------------------------------------------------------------------------------
-
-
 def test_bypass_run_is_one_decode_run_root_with_nested_spans_and_usage(active_tracing, monkeypatch):
     """AC1 + AC5: one ``decode_run`` root (thread_id = exec_id); model/tool spans nest; usage rides.
 

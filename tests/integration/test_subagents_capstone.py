@@ -99,9 +99,6 @@ def _configured_gemini_key() -> str:
 _LIVE_GEMINI_KEY = _configured_gemini_key()
 
 
-# Fixtures
-
-
 @pytest.fixture
 def _fake_gemini_key(mocker):
     """Let ``build_agent`` construct the Gemini provider offline (the model is always overridden)."""

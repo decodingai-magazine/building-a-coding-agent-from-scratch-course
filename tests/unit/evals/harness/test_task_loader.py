@@ -30,7 +30,6 @@ _BASE_YAML: dict[str, object] = {
 
 
 def _write_task_yaml(task_dir: Path, **overrides: object) -> None:
-    """Overwrite ``task_dir/task.yaml`` with the base payload plus ``overrides``."""
     data = {**_BASE_YAML, **overrides}
     (task_dir / "task.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
 

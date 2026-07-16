@@ -80,7 +80,6 @@ def _user(text: str) -> ModelRequest:
 
 
 def _assistant(text: str) -> ModelResponse:
-    """An assistant text response."""
     return ModelResponse(parts=[TextPart(content=text)])
 
 

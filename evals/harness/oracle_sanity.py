@@ -93,7 +93,6 @@ def _inject_verify(task: BenchmarkTask, workspace: Path) -> None:
 
 
 def _run_verify(workspace: Path) -> OracleResult:
-    """Run ``bash verify.sh`` from the Workspace root and capture its verdict."""
     result = subprocess.run(
         ["bash", VERIFY_SCRIPT_NAME],
         cwd=workspace,

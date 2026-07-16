@@ -40,7 +40,6 @@ from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.types import PermissionMode
 
 if TYPE_CHECKING:
-    # Typing only — none of these is needed at runtime.
     from collections.abc import AsyncIterable
 
     from pydantic_ai import Agent
