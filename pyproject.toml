@@ -61,7 +61,7 @@ dev = [
     # ships a Rust bridge that needs rustc >=1.86 to build from sdist. 1.77.x is pure-python wheels,
     # so `uv sync` / `make ci` build everywhere without a Rust toolchain. Lift once opik 2.0 Test
     # Suites are needed (ADR-0017 §6) and the build env has rustc >=1.86.
-    "litellm<1.78",
+    "litellm<1.93",
 ]
 remote = [
     "gcsfs<=2024.12.0,!=2025.5.0,!=2025.5.0.post1",
