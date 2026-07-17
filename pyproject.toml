@@ -72,7 +72,7 @@ remote = [
     "google-cloud-logging>=3.8.0",
     "google-cloud-pipeline-components>=2.19.0",
     "google-cloud-run>=0.10.0",
-    "google-cloud-secret-manager>=2.29.0",
+    "google-cloud-secret-manager>=2.30.0",
     "google-cloud-storage>=2.9.0",
     "grpcio!=1.68.*,!=1.69.*,!=1.70.*",
     "kfp>=2.6.0",
