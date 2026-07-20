@@ -223,6 +223,13 @@ class Settings(BaseSettings):
     # The OTLP **base** URL: ``None`` → Comet cloud base; set to a self-hosted Opik base. The
     # exporter appends ``/v1/traces``.
     opik_url_override: str | None = None
+    # USD per MILLION tokens for the active model, used ONLY when nothing else can price a span:
+    # pydantic-ai prices what the genai-prices catalog knows (public Gemini/OpenRouter models), and
+    # these fill the gap it cannot — a self-hosted Modal endpoint has no public rate, and a catalog
+    # miss (e.g. ``openrouter/free``) otherwise reports no cost at all. Both 0.0 (the default) means
+    # "unknown": decode reports no cost rather than inventing one (ADR-0014 §8).
+    llm_cost_input_usd_per_mtok: float = Field(0.0, ge=0)
+    llm_cost_output_usd_per_mtok: float = Field(0.0, ge=0)
 
     # --- Tool execution / output truncation ---
     bash_timeout_s: float = 120.0

@@ -151,11 +151,29 @@ Sub-decisions (all recorded so they are not re-litigated):
 7. **Test isolation.** An autouse `_no_opik_tracing` fixture blanks `opik_api_key` so ordinary tests
    never configure real export (mirrors `_no_real_provider_key`); span-asserting tests opt in with a
    fake key + `logfire.testing`'s in-memory exporter; `reset_tracing()` clears the module flags.
-8. **Cost path.** Tokens are guaranteed on LLM spans via `gen_ai.usage.*`. Cost is Opik's server-side
-   estimate for priced models (Gemini via Google AI); OpenRouter/Modal open models may be tokens-only —
-   acceptable. **Escape hatch:** if the OTLP path proves to omit cost for our models, swapping to the
-   `opik` SDK (`additional_span_processors=[…, OpikSpanProcessor()]`) is a one-line change in
-   `tracing.py` — the sanctioned "only if necessary" trigger, recorded here so it is not a surprise.
+8. **Cost path — decode stamps the cost itself; the `opik` SDK escape hatch was NOT needed.**
+   The tokens-only outcome this section allowed as "acceptable" turned out to be the outcome for
+   *all three* providers, so it is now fixed in `observability/cost.py` +
+   `CostAnnotatingExporter` (`tracing.py`). What was verified:
+   * Opik's OTLP ingestion reads exactly **one** cost key — `gen_ai.usage.cost` — and an explicit
+     value **short-circuits** its server-side `(provider, model)` price lookup, so it works even for
+     a model Opik has never heard of. (Verified in opik's backend mapping rules, not its public
+     docs — a real but **undocumented** contract. If a future Opik release renames it, cost goes
+     quietly missing; the symptom to watch for is tokens present, cost blank.)
+   * pydantic-ai already prices anything the genai-prices catalog knows, but publishes it as
+     **`operation.cost`** — a key Opik does not read. That, not a missing price, was the Gemini gap.
+   * Opik's price table has **no `openrouter` row at all**, and a self-hosted Modal endpoint
+     (`Qwen/Qwen3.6-35B-A3B-FP8`) can never have one.
+
+   So the exporter forwards pydantic-ai's catalog price under the key Opik reads, and falls back to
+   `LLM_COST_{INPUT,OUTPUT}_USD_PER_MTOK` when the catalog had no row. Both rates unset (0.0) means
+   "unknown" and **no** cost attribute is written — a blank cost beats a fabricated one.
+   Two consequences worth naming: it is an **exporter** wrapper, not a span processor, because
+   `on_end` hands out an immutable span snapshot; and only spans carrying `gen_ai.request.model`
+   are priced, because pydantic-ai repeats the run's aggregated usage on the parent `agent run`
+   span and Opik SUMS span costs — pricing both would report every run at **double** its real spend.
+   **Escape hatch (still open, still unused):** if the attribute contract breaks, swapping to the
+   `opik` SDK (`additional_span_processors=[…, OpikSpanProcessor()]`) remains a one-line change.
 9. **M13 (later) adds** evals / experiments / online scoring on top of these traces — not now.
 
 ## Diagram
