@@ -12,7 +12,8 @@ Work the steps in order. Do not skip ahead to the HTML.
 ## Step 0 — paths and plan
 
 Both artifacts go in the output directory named in the **Output default** line at the very end of
-these instructions — unless the human named a destination, which wins. Call it `<OUT>`:
+these instructions — normally `.decode/outputs/`, but a destination the human named always wins.
+Resolve it once, call it `<OUT>`, and use `<OUT>` everywhere below:
 
 - `<OUT>/graph.json` — the extraction
 - `<OUT>/kg.html` — the page
@@ -91,7 +92,8 @@ The loop only updates coordinates and classes — it never creates or destroys e
 groups edges → edge labels → nodes so nodes sit on top. Radius is `6 + min(9, degree * 1.4)`; fill
 is the node's type color.
 
-**Simulation.** One `tick()` applying three forces, then integrating:
+**Simulation.** A hand-rolled force simulation in vanilla JS — no library, no framework. One
+`tick()` applying three forces, then integrating:
 
 - *Repulsion*, every node pair: magnitude `5000 / distanceSquared`, pushing apart along the line
   between them. Clamp `distanceSquared` to a minimum of 1 and jitter coincident nodes.
