@@ -3,42 +3,46 @@ name: demo-6-article-kg
 description: Demo skill that web-fetches three Decoding AI knowledge-graph articles, has the agent itself distill them into a typed entity/relation graph, and renders an interactive dark-themed force-directed KG into one self-contained kg.html — no graph library, no CDN.
 ---
 
-The hardcore one: turn three live articles into a knowledge graph you can play with in the
-browser. Fetch the articles, distill them into typed entities and labeled relations — **you are
-the extractor**, no NLP library — and render an interactive force-directed graph into one
-self-contained HTML page.
+The hardcore one: turn three live articles into a knowledge graph you can play with in the browser.
+You do all of it — you are the extractor (no NLP library) and you are the renderer (no graph
+library, no CDN, no framework). Two artifacts, one page that works the instant it lands.
 
-Two artifacts, both under `.decode/outputs/` (unless the human named a different path):
-`graph.json` (the extraction checkpoint) and `kg.html` (the visualization).
+Work the steps in order. Do not skip ahead to the HTML.
 
-## Plan first
+## Step 0 — paths and plan
 
-Lay out the pipeline with `todo_write` (fetch → clean → extract → render → verify) and tick
-items off as you go.
+Both artifacts go in the output directory named in the **Output default** line at the very end of
+these instructions — normally `.decode/outputs/`, but a destination the human named always wins.
+Resolve it once, call it `<OUT>`, and use `<OUT>` everywhere below:
 
-## 1. Fetch and clean the sources
+- `<OUT>/graph.json` — the extraction
+- `<OUT>/kg.html` — the page
 
-`web_fetch` each article (the tool returns Markdown):
+Put the pipeline in `todo_write` as five items (fetch, extract, render, verify, report) and write
+the real `<OUT>` path into the first one so you never re-derive it.
+
+## Step 1 — fetch the three sources
+
+One `web_fetch` per URL (the tool returns Markdown):
 
 - https://www.decodingai.com/p/keep-knowledge-graph-clean
 - https://www.decodingai.com/p/understanding-neo4j-graph-agent-memory-system
 - https://www.decodingai.com/p/ship-a-knowledge-graph-ontology-in-5-minutes
 
-Clean each one before extracting: keep the title and the body prose; drop navigation, subscribe
-buttons and CTAs, comment sections, footers, and trailing "read more" link lists. If a fetch
-fails or comes back truncated, say so plainly and work with what you have — never invent content
-you did not fetch.
+Keep the title and body prose. Ignore navigation, subscribe buttons, CTAs, comments, footers and
+trailing "read more" lists. If a fetch fails or comes back truncated, say so plainly and work with
+what you have — never invent content you did not fetch.
 
-## 2. Extract the graph — you are the extractor
+## Step 2 — extract one merged graph
 
-Read the cleaned articles and distill ONE merged graph across all three (an entity shared by two
-articles appears once). Write it to `.decode/outputs/graph.json`:
+Distill ONE graph across all three articles: an entity discussed in two articles is ONE node, not
+two. Write it to `<OUT>/graph.json`:
 
 ```json
 {
   "nodes": [
-    {"id": "Ontology", "type": "concept", "desc": "one-sentence synthesis in your own words"},
-    {"id": "Neo4j", "type": "tool", "desc": "..."}
+    {"id": "Ontology", "type": "concept", "desc": "one sentence in your own words"},
+    {"id": "Neo4j", "type": "tool", "desc": "one sentence in your own words"}
   ],
   "edges": [
     {"source": "Ontology", "target": "KG drift", "label": "prevents"}
@@ -46,48 +50,95 @@ articles appears once). Write it to `.decode/outputs/graph.json`:
 }
 ```
 
-- `type` is one of `concept` / `tool` / `pattern` / `problem` — pick the best fit.
-- Edges are **directed** and labeled with a short verb phrase (`prevents`, `stores`, `queries`).
-- **20–35 nodes total**: the key ideas, not every noun. No orphan nodes — everything connects;
-  every edge endpoint must be an existing node `id`.
-- `desc` is one sentence of YOUR synthesis, not a quote.
+- **20–35 nodes.** The key ideas, not every noun.
+- `type` is exactly one of `concept` / `tool` / `pattern` / `problem`.
+- `desc` is one sentence of your own synthesis, not a quote.
+- Edges are directed; `label` is a short verb phrase (`prevents`, `stores`, `queries`).
+- Every `source` and `target` matches a node `id` exactly — ids are case-sensitive.
+- No orphans: every node has at least one edge.
 
-## 3. Render — one self-contained interactive page
+Before moving on, re-read what you wrote and confirm the node count is in range, every edge endpoint
+exists, and no node is orphaned. Fixing it here is cheap; fixing it after the page is written is not.
 
-Author `.decode/outputs/kg.html` by hand — **one file, zero external requests, no graph
-library** (nothing loaded from a CDN: no external scripts, stylesheets, or fonts). Inline
-everything:
+## Step 3 — write the page
 
-- The graph data inlined as `const GRAPH = { ... };` — paste the **literal JSON** from
-  `graph.json` right there as the value (open brace, real `"nodes"` and `"edges"` arrays, close
-  brace). Do **NOT** leave a placeholder or template token — no `{{GRAPH}}`, no `<DATA>`, no
-  "insert graph here", nothing meant to be substituted in a later pass. There is no second pass:
-  the single write must already contain every node and edge, and the file must be openable and
-  fully working the instant it lands. If you built the page from a template string, expand it
-  before writing — never write the unexpanded template.
-- A hand-rolled **force simulation in vanilla JS** (~80 lines) drawing into an inline `<svg>`:
-  pairwise repulsion, springs along edges, gentle centering; let it keep settling live after an
-  initial burst of ticks.
-- **Drag**: pointer-grab any node and the layout re-settles around it.
-- **Hover**: highlight the node, its edges, and its neighbors; dim the rest; fill a side detail
-  card with the node's `desc` and its relations rendered as `prevents → KG drift` lines.
-- Node color by `type` (legend in the header), node radius by degree, edge labels as small
-  `<text>` along each line.
-- **Design — dark minimal, modern without a framework**: full-viewport canvas; sticky header
-  with a title, the three source articles as links, and the type legend; the hover detail card
-  as a fixed side panel; CSS variables, system font stack, subtle glow on nodes.
+**One `write` call produces a finished file.** There is no second pass. The data goes in as a
+literal — the actual `{ "nodes": [...], "edges": [...] }` you just wrote to `graph.json`, copied in
+full. Never emit `{{GRAPH}}`, `<DATA>`, `/* graph here */`, `...`, or any token you intend to
+substitute later, and never write an unexpanded template string. If you catch yourself planning to
+"fill in the data next", stop and write the whole file instead.
 
-## 4. Verify and report
+Author `<OUT>/kg.html` in this order — each section complete before the next:
 
-1. Validate the checkpoint:
-   `uv run python -m json.tool .decode/outputs/graph.json > /dev/null` succeeds, and a one-liner
-   confirms every edge endpoint is a node id and the node count sits in 20–35.
-2. The page carries real data, not a template: `grep -c "const GRAPH" .decode/outputs/kg.html`
-   prints 1, and `grep -Ec '\{\{|\}\}|insert .*here|<DATA>' .decode/outputs/kg.html` prints 0 —
-   any leftover substitution token means the data was never inlined; fix it before reporting.
-3. The page is self-contained: `grep -c 'src="http' .decode/outputs/kg.html` prints 0. Confirm
-   the inlined node/edge counts match `graph.json` (e.g. count `"id":` occurrences in each).
-4. Tell the human to open it: `open .decode/outputs/kg.html`.
+1. `<head>`: `<title>`, and one `<style>` block. No external stylesheet, script, or font.
+2. `<header>`: the page title, the three article URLs as links, and the type legend (a colored dot
+   plus the type name, four of them).
+3. An empty `<svg>` filling the viewport, and an empty detail card `<div>` positioned on the right.
+4. One `<script>` block, in this order: the data, the model, the drawing, the simulation, the
+   interactions, the start.
 
-Report the node count by type, the edge count, the three most-connected entities, one relation
-across articles that surprised you, and the one-line command to open the page.
+### What goes in the script, in order
+
+**Data.** `const GRAPH = ` followed by the literal object. This is the first statement in the block.
+
+**Model.** Map each node to an object carrying `x`, `y`, `vx`, `vy` and `degree`. Seed positions on
+a circle around the viewport center — never all at one point, or the repulsion divides by zero.
+Resolve every edge's `source`/`target` string to its node object once, up front, so the loop never
+searches by id. Count degree while you do it. Build a neighbor set per node id for the hover step.
+
+**Drawing.** Create the SVG elements once, before the loop starts: a `<line>` and a small `<text>`
+per edge, and a `<g>` per node holding a `<circle>` and a `<text>` label. Keep references to them.
+The loop only updates coordinates and classes — it never creates or destroys elements. Order the
+groups edges → edge labels → nodes so nodes sit on top. Radius is `6 + min(9, degree * 1.4)`; fill
+is the node's type color.
+
+**Simulation.** A hand-rolled force simulation in vanilla JS — no library, no framework. One
+`tick()` applying three forces, then integrating:
+
+- *Repulsion*, every node pair: magnitude `5000 / distanceSquared`, pushing apart along the line
+  between them. Clamp `distanceSquared` to a minimum of 1 and jitter coincident nodes.
+- *Springs*, along each edge: pull proportional to `(distance - 110) * 0.01`.
+- *Centering*: nudge each node toward the viewport center by `0.0015` of its offset.
+- Integrate: multiply velocity by `0.86` damping, add to position, clamp inside the viewport with a
+  margin so nothing hides under the header.
+
+Scale all forces by an `alpha` that starts at 1 and decays ~0.5% per tick toward a floor of about
+0.06 — that floor is what keeps the layout gently alive instead of frozen. Run ~250 ticks before the
+first paint so the page opens settled, then `requestAnimationFrame` a loop of tick + draw.
+
+**Interactions.**
+
+- *Drag*: `pointerdown` on a node pins it and captures the pointer; `pointermove` sets its position
+  and zeroes its velocity; `pointerup` unpins and releases. Bump `alpha` on grab so the graph
+  re-settles around it.
+- *Hover*: highlight the node and its edges, dim every non-neighbor, and fill the detail card with
+  the node's type, id, `desc`, and its relations — outgoing as `label → target`, incoming as
+  `source label →`. Clear it on leave, but not mid-drag.
+
+**Design.** Dark, minimal, no framework: CSS variables for the palette and the four type colors, a
+system font stack, full-viewport canvas, sticky translucent header, the detail card as a fixed
+rounded panel, a subtle glow on the hovered node, and dimming via opacity.
+
+## Step 4 — verify
+
+One `bash` call. All four must hold:
+
+```bash
+python3 -m json.tool <OUT>/graph.json > /dev/null && echo "json ok"
+grep -c 'src="http' <OUT>/kg.html                        # 0 — nothing loaded from the network
+grep -Ec '\{\{|<DATA>|graph here|\.\.\.' <OUT>/kg.html   # 0 — no leftover placeholder
+grep -c 'const GRAPH' <OUT>/kg.html                      # 1 — the data is inlined
+```
+
+Then confirm the page carries the whole graph: count `"id":` occurrences in `kg.html` and in
+`graph.json` and check they match. Any mismatch means the data was truncated — rewrite the file in
+full, do not patch it.
+
+## Step 5 — report
+
+Node count by type, edge count, the three most-connected entities, one cross-article relation that
+surprised you, and the command to open it:
+
+```bash
+open <OUT>/kg.html
+```

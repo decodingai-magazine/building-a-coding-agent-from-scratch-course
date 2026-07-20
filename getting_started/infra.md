@@ -15,6 +15,49 @@ decode already runs its *sandboxes* on Modal (`SANDBOX_MODE=modal`). This stack 
 agent itself** there. [`scripts/deploy.sh`](../scripts/deploy.sh) provisions all of it; **§1 is the only
 part you type by hand.**
 
+## Quickstart
+
+**Do [§1](#1-what-you-must-do-by-hand) first** — the toolchain, `gcloud auth login`, `modal token set`,
+the Docker containerd toggle, and `.env`. `deploy.sh` refuses to start without them. Then:
+
+**1. Deploy** (~10-15 min; it stops once to ask you to approve the 80/443 firewall rule):
+
+```bash
+scripts/deploy.sh up
+```
+
+**2. Read the URL** — it is derived from the server's IP, so it changes every rebuild:
+
+```bash
+scripts/deploy.sh status         # the `server` row, e.g. https://34.153.164.72.nip.io
+```
+
+That one URL is both the API the CLI talks to and the dashboard you open in a browser.
+
+**3. Get the dashboard password** — user is `admin`, password was generated during `up`:
+
+```bash
+pbcopy < ~/.config/decode/kitaru-admin-password    # copies it; do NOT echo or `cat` it
+```
+
+**4. Run something:**
+
+```bash
+make run-remote TASK="run bash 'uname -a && pwd' and tell me what you see"
+```
+
+Want a **Linux x86-64** kernel and `/workspace` — that proves the `bash` ran in the Modal sandbox and
+not on your laptop. The first submit builds and pushes the flow image (3-5 min); later ones reuse it
+(~90s). Watch it land with `uv run kitaru executions list`.
+
+**Done for the day?** The stack bills ~$16/month while it is up:
+
+```bash
+scripts/deploy.sh down <your-project>
+```
+
+Everything below is the detail behind these four steps.
+
 ## The shape (and why each piece exists)
 
 | Piece | What | Why this and not more |
@@ -153,7 +196,8 @@ Every step checks before it creates, so a re-run after a failure resumes instead
 7. **Login** — mints the `decode-runner` service account + API key over the REST API, then
    `kitaru login`.
 8. **Stack** — registers the GCP connector, GCS artifact store, AR registry, Modal orchestrator and
-   sandbox, assembles the `prod-modal` stack, activates it, and runs `kitaru init`.
+   sandbox, assembles the `prod-modal` stack, runs `kitaru init`, then activates it (that order
+   matters — §4).
 9. **Secrets** — writes the `decode-modal` secret (Modal tokens) and mirrors `.env` into the
    `decode-prod` Environment Bucket.
 
@@ -299,6 +343,33 @@ Your local `kitaru` client still points at the dead server; the next `up` logs i
 
 ## 3. Run a headless agent
 
+### How the CLI reaches the server
+
+No URL is passed on the command line — `decode run` reads it from the client config `kitaru login`
+wrote back in `up` step 7. Two files, neither under `~/.config/kitaru` (that path does not exist —
+looking there is a dead end):
+
+| Path | What |
+|---|---|
+| `~/Library/Application Support/kitaru/config.yaml` | `store.type: rest` + `store.url: https://<ip>.nip.io` — the switch from a local SQLite store to your server, plus `active_stack_id` / `active_project_id` |
+| `~/Library/Application Support/kitaru/credentials.yaml` | the API token, sent as a bearer on every REST call. **Secret — never `cat` it into a terminal an agent can read** |
+| `.kitaru/config.yaml` (repo-local) | `active_stack_id` / `active_project_id` for this checkout; also the source-root marker (§4) |
+
+The chain that put them there: `kitaru_bootstrap_api_key.py` password-grants a JWT with the admin
+password → creates the `decode-runner` service account → writes its key to
+`~/.config/decode/kitaru-api-key` → `kitaru login <url> --api-key …` exchanges it for the stored token.
+
+So a submit is: client REST-calls the server for the `prod-modal` stack definition → builds the flow
+image locally and pushes it to Artifact Registry → uploads the code archive to GCS → Modal pulls and
+runs it → checkpoints flow back over that same REST connection. **The Modal container reaches the
+server at the same public `nip.io` URL your laptop does** — which is why §1.5's firewall rule cannot be
+narrowed to your IP.
+
+Connection broken? `uv run kitaru stack list` is the cheapest probe — it either answers off the server
+or tells you the auth is dead. Re-run `scripts/deploy.sh update`, which re-mints and re-logs in.
+
+### Submit
+
 ```bash
 make run-remote TASK="explain what this repo does"
 make run-remote TASK="fix the failing test" REPO=https://github.com/you/your-repo.git
@@ -312,10 +383,23 @@ DOCKER_BUILDKIT=1 KITARU_STACK=prod-modal DECODE_ENV=prod SANDBOX_MODE=modal \
   uv run --group remote decode run "$TASK" --repo "$REPO"
 ```
 
-`KITARU_STACK` is the zero-code seam: decode's flows call `.run()` with no stack argument, so the
-ambient stack decides where they execute. A submit builds and pushes the flow image (3-5 min) only when
-the code, the deps or the Docker settings changed; otherwise it reuses the recorded build (`Reusing
-existing build …`, ~90s). `SANDBOX_MODE` picks where the agent's `bash` lands:
+`KITARU_STACK` is the zero-code seam: decode's flows call `.run()` with no stack argument, so an
+ambient value decides where they execute. Resolution order:
+
+```
+explicit  .run(stack=…)   >   KITARU_STACK env   >   the configured active stack
+```
+
+**`KITARU_STACK` and "the active stack" are different knobs, not two names for one.** Kitaru is
+explicit about it (`kitaru/_config/_active_context.py`): *"`KITARU_STACK` is an execution default and
+does not set ZenML's active stack."* So `make run-remote` lands on `prod-modal` because the Makefile
+exports it — regardless of what `kitaru stack current` reports. The active stack is what bare
+`uv run kitaru …` commands and the `stack` row of `deploy.sh status` read. Expect to see them disagree;
+only the `status` row is worth fixing (`uv run kitaru stack use prod-modal`).
+
+A submit builds and pushes the flow image (3-5 min) only when the code, the deps or the Docker settings
+changed; otherwise it reuses the recorded build (`Reusing existing build …`, ~90s). `SANDBOX_MODE` picks
+where the agent's `bash` lands:
 
 | `SANDBOX_MODE` | Where `bash` runs | `--repo` Workspace | Hand-back |
 |---|---|---|---|
@@ -397,9 +481,15 @@ password and every secret in the clear. The DENY rule at priority 100 beats it.
 azureml. Modal ships as a ZenML *integration*, so the stack is assembled with the `zenml` CLI — Kitaru
 reads the same stacks off the same server.
 
-**`kitaru init` is mandatory.** Without the `.kitaru` marker, ZenML infers the source root from the
-entrypoint script — for `uv run decode` that is `.venv/bin` — and the code archive uploads **empty**:
-`RuntimeError: The code archive to be uploaded does not contain any files.`
+**`kitaru init` is mandatory — and must run BEFORE `kitaru stack use`.** Without the `.kitaru` marker,
+ZenML infers the source root from the entrypoint script — for `uv run decode` that is `.venv/bin` — and
+the code archive uploads **empty**: `RuntimeError: The code archive to be uploaded does not contain any
+files.` But `init` also *writes* `.kitaru/config.yaml` with its own `active_stack_id: <default>`, so
+running it after `stack use` silently reverts the selection. That bug only bites a **fresh** deploy —
+later `up`s skip `init` because `.kitaru` already exists, so it hides on every re-run — and it is
+cosmetic for runs (`make run-remote` exports `KITARU_STACK`, §3), but it leaves `deploy.sh status`
+reporting `stack default` and the verify check below failing for no real reason. `ensure_stack` now
+orders them `init` → `use`.
 
 **The `remote` dependency group is all-or-nothing.** Submitting needs ZenML's *entire* `gcp`
 integration locally (`gcsfs`, `kfp`, `google-cloud-aiplatform`, `kubernetes`, …). Miss one package and
