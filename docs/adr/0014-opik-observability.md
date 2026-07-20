@@ -168,6 +168,17 @@ Sub-decisions (all recorded so they are not re-litigated):
    So the exporter forwards pydantic-ai's catalog price under the key Opik reads, and falls back to
    `LLM_COST_{INPUT,OUTPUT}_USD_PER_MTOK` when the catalog had no row. Both rates unset (0.0) means
    "unknown" and **no** cost attribute is written — a blank cost beats a fabricated one.
+   Per provider, what this actually buys:
+   * **Gemini** — fixed outright; the catalog prices it and the bridge delivers it.
+   * **OpenRouter** — fixed for the mainstream slugs the catalog knows (`anthropic/…`, `google/…`,
+     `openai/…`, `deepseek/…`, `meta-llama/…`). A catalog miss (e.g. `qwen/qwen3-235b-a22b`) needs
+     the manual rates. The default `openrouter/free` router is genuinely $0, so a blank cost is
+     correct there rather than missing. OpenRouter *does* return its exact charged cost via usage
+     accounting, but pydantic-ai drops that field — capturing it is a real plumbing job, not a knob,
+     and is deliberately not done here.
+   * **Modal — stays cost-free ON PURPOSE.** A self-hosted endpoint bills GPU-seconds, so no
+     per-token figure describes what is actually paid; the rates must not be used to manufacture
+     one. Modal traces carry tokens and latency, and the spend lives in Modal's own billing.
    Two consequences worth naming: it is an **exporter** wrapper, not a span processor, because
    `on_end` hands out an immutable span snapshot; and only spans carrying `gen_ai.request.model`
    are priced, because pydantic-ai repeats the run's aggregated usage on the parent `agent run`

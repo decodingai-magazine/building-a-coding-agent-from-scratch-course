@@ -11,6 +11,11 @@ and OpenRouter models), but publishes it as ``operation.cost``, a key Opik does 
 halves here are: forward that value under the key Opik DOES read, and, when the catalog had no row,
 fall back to the configured per-million-token rates. No rates configured → no cost attribute, because
 a wrong number in a cost dashboard is worse than a blank one.
+
+That fallback is for a PER-TOKEN model the catalog missed (an OpenRouter slug), not for the Modal
+endpoint: self-hosted serving bills GPU-seconds, so pricing its tokens would report a number nobody
+is charged. Left unconfigured — the default — a Modal trace carries tokens and no cost, which is the
+honest answer (ADR-0014 §8).
 """
 
 from __future__ import annotations

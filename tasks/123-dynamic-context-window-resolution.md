@@ -193,3 +193,168 @@ probe cache (one entry, one network hit): {('modal', 'acme/unlisted-model-v1'): 
   rather than touching the offending tests. Both deserve their own task.
 - Probe is sync (startup paths, and flow mode runs under Kitaru's per-call event loops) — reasoned in
   the module docstring.
+
+### [Tester] 2026-07-20 20:15 — QA
+
+**Test summary** (all numbers from an isolated `git worktree` pinned to `ccd9886` — the commit this
+task's diff landed as — because the shared working tree was being concurrently modified by other
+in-flight tasks during this review; see "Other issues found"):
+- Format / lint / pre-commit: PASS (`ruff format --check` 306 files already formatted; `ruff check`
+  all checks passed)
+- Unit tests: 2167 passed / 5 failed — the 5 are the pre-existing opik-drift failures
+  (`tests/unit/evals/harness/{test_aggregates,test_benchmark,test_test_suite}.py`), independently
+  confirmed identical (same 5 test ids) at the pre-task baseline `abf31e5` in a second worktree.
+- Integration tests: 114 passed / 4 failed / 3 skipped. The 4 failures are all in
+  `tests/integration/test_milestone3_skills_capstone.py` (a commit-skill body/content drift,
+  unrelated to compaction or context windows) — independently reproduced on a clean `abf31e5`
+  worktree with zero code from this task present, proving they pre-date it. The 3 skips are the
+  live-Gemini/Opik smokes, expected without API keys.
+- Warnings: 0 (`filterwarnings=["error"]`; no test emitted one).
+
+**E2E adversarial pass**
+- Happy path: `uv run decode --help` / `--version` → clean output, exit 0, ~1.1-1.4s (PASS).
+- Break path 1 (no-probe on no-inference paths, against a black-hole address so a real probe would
+  hang for `PROBE_TIMEOUT_S`): `timeout 15 env MODAL_ENDPOINT_URL="http://10.255.255.1:9999" uv run
+  decode --help` and `--version` → both exit 0 in ~1.2s (not ~10s+), proving no probe fires (PASS).
+  Contrast: the bare REPL (an inference path) against the *same* black-hole address took **11.6s**
+  (the probe's real timeout) before falling back and printing the assumed-window notice — the timing
+  delta is direct proof the probe is gated correctly by entry point, not merely by a stubbed test.
+- Break path 2 (memoisation, at the real network level, both success and failure): wrote a script
+  (`scratchpad/memo_e2e.py`) using a real local `http.server` — two `resolve_context_window_detail`
+  calls against it produced exactly 1 HTTP hit and both returned `source="probe"`/262144; a second
+  script against a genuinely closed port (`127.0.0.1:9`) called resolution twice in 3.7ms total
+  (i.e., no second connection attempt/timeout paid) and both returned `source="fallback"`, with
+  `_probe_cache[("modal", "acme/another-unlisted-model")] is None` confirmed cached (PASS).
+- Break path 3 (explicit wins, no probe at all): reproduced independently outside the unit suite —
+  `Settings(compaction_context_window_tokens=8192, modal_endpoint_url="http://127.0.0.1:9", …)` +
+  `mock.patch.object(cw, "_probe")` → resolved to 8192/`source="explicit"`, `probe.assert_not_called()`
+  passes (PASS).
+- Break path 4 (every probe failure mode, unit-suite): timeout / non-200 / malformed-not-a-mapping /
+  data-not-a-list / missing-field / null-field / string-field / zero / negative / empty-catalog /
+  raised exception — all 12 shapes parametrised in `test_context_window.py`, every one falls to table
+  then 200,000, never propagates (PASS, read not just run — `tests/unit/decode/agent/test_context_window.py:272-324`).
+
+**Acceptance criteria**
+- [x] PASS — `--model` resolves the override's window, not the configured model's, asserting the
+      value — `tests/unit/decode/runtime/test_flow.py::test_headless_deps_resolve_the_window_of_the_overridden_model`,
+      `tests/unit/decode/agent/test_context_window.py::test_model_override_resolves_the_overridden_models_window`.
+- [x] PASS — modal `max_model_len` — `test_context_window.py::test_modal_probe_reads_max_model_len`
+      (network boundary stubbed via `mocker.patch.object(cw.httpx, "get", …)`).
+- [x] PASS — gemini `input_token_limit` / openrouter `context_length`, both stubbed —
+      `test_gemini_probe_reads_input_token_limit`, `test_openrouter_probe_reads_context_length`.
+- [x] PASS — explicit setting wins, no probe, asserted on the stub not the value —
+      `test_explicit_setting_wins_and_never_probes` (`probe.assert_not_called()`); independently
+      reproduced e2e above.
+- [x] PASS — every probe failure mode falls to table then 200,000, never propagates — one test per
+      mode, `test_probe_exceptions_fall_through_to_the_table` (parametrised x3: timeout/connect/raised)
+      + `test_bad_payloads_fall_through_to_the_fallback` (parametrised x9: non-200 through
+      empty-catalog).
+- [x] PASS — memoised, one network hit for two resolutions of the same model id —
+      `test_probing_is_memoised_per_model_id`, `test_a_failed_probe_is_memoised_too`; independently
+      reproduced against a real socket above (success AND failure paths).
+- [x] PASS — `--help` / `--version` perform no network call, asserted on the stub —
+      `test_cli.py::test_help_performs_no_provider_probe`, `..._version_...`, `..._run_help_...`;
+      independently timed against a black-hole address above (no ~10s hang).
+- [x] PASS — static table + `UNKNOWN_MODEL_CONTEXT_WINDOW` survive unchanged as the offline
+      fallback; `test_settings.py`'s existing window tests pass unmodified (0 diff to that file in
+      this task's commit — confirmed via `git diff abf31e5 ccd9886 --stat -- tests/unit/decode/config/test_settings.py`
+      returning nothing).
+- [x] PASS — `make format-check lint-check unit-tests` clean; the 5 pre-existing opik-drift failures
+      confirmed still exactly 5, identical test ids, independently reproduced on a bare `abf31e5`
+      worktree — no new failure introduced by this task.
+- [x] PASS — `.env.example` and `getting_started/install_and_usage.md` both describe the
+      explicit > probe > table > 200k resolution order (`git show ccd9886 -- .env.example
+      getting_started/install_and_usage.md`).
+
+**Design judgment calls (asked to independently assess, not just accept)**
+- `_match_window`'s sole-entry fallback (a modal endpoint with one served, non-matching model id
+  reports its window anyway): judged **defensible, not a bug**. A modal/vLLM endpoint's `base_url`
+  IS the real inference target regardless of what string `--model` sends as the OpenAI `model`
+  field (`factory.py` sends `model or settings.modal_endpoint_model` verbatim; a lenient vLLM server
+  serves its one loaded model regardless of the label) — so the endpoint's actual `max_model_len` is
+  the real physical ceiling for whatever ends up running, and is the *safe* direction versus trusting
+  a table entry for a model string that may not even be what's served. The 2+-rows-no-match case
+  correctly declines to guess (`None`), which is the right asymmetry. Concur with the SWE's call.
+- The two disclosed pre-existing test-isolation leaks (litellm's `load_dotenv()`; the
+  `test_cases_grounding.py:203` direct singleton assignment): the `hermetic_settings()` /
+  `scrub_settings_env()` workaround is sound. Verified order-independence directly — ran
+  `tests/unit/evals/regression/test_cases_grounding.py`, `tests/unit/decode/agent/test_context_window.py`,
+  and `tests/unit/decode/test_cli.py` in three different orderings (grounding-first, cli-first,
+  context-window-first); all three orders: 148 passed, 0 failed. Also reproduced the full-suite leak
+  itself: this machine's real `.env` has `LLM_PROVIDER=modal` + a real `MODAL_ENDPOINT_URL`, and the
+  full `make unit-tests` run (2167 passed) still resolved the context-window tests correctly despite
+  that live leak actually being present (not hypothetical) — direct evidence the scrub works, not
+  just the theory.
+
+**Evidence**
+```
+$ git worktree add /tmp/decode-task123-check ccd9886 --detach && cd /tmp/decode-task123-check
+$ uv run ruff format --check   -> 306 files already formatted
+$ uv run ruff check             -> All checks passed!
+$ uv run pytest tests/unit -q
+5 failed, 2167 passed in 142.96s
+FAILED tests/unit/evals/harness/test_aggregates.py::test_summarize_groups_trials_by_dataset_item
+FAILED tests/unit/evals/harness/test_aggregates.py::test_summarize_treats_a_missing_verify_score_as_a_fail
+FAILED tests/unit/evals/harness/test_aggregates.py::test_attach_logs_derived_scores_onto_the_experiment_traces
+FAILED tests/unit/evals/harness/test_benchmark.py::test_run_benchmark_attaches_aggregates_to_the_experiment
+FAILED tests/unit/evals/harness/test_test_suite.py::test_run_test_suite_raises_a_clear_versioned_stop_when_unavailable
+
+$ uv run pytest tests/integration -q
+4 failed, 114 passed, 3 skipped in 332.10s
+FAILED tests/integration/test_milestone3_skills_capstone.py::test_model_dispatcher_returns_the_builtin_body_ungated
+FAILED tests/integration/test_milestone3_skills_capstone.py::test_tui_slash_command_submits_the_skill_body_not_the_literal_slash
+FAILED tests/integration/test_milestone3_skills_capstone.py::test_project_override_wins_for_both_entry_points_and_the_catalog
+FAILED tests/integration/test_milestone3_skills_capstone.py::test_builtin_skills_are_tier_2_only_with_no_resource_trailer
+
+# same 4 reproduced on a bare abf31e5 worktree (this task's parent commit, zero task-123 code):
+$ git worktree add /tmp/decode-baseline-check abf31e5 --detach
+$ uv run pytest tests/integration/test_milestone3_skills_capstone.py -q
+4 failed, 3 passed in 5.03s   # identical 4 test ids -> pre-existing, not introduced by this task
+
+# no-probe timing proof against a black-hole address (would hang ~10s if a probe fired):
+$ time timeout 15 env MODAL_ENDPOINT_URL="http://10.255.255.1:9999" uv run decode --help
+... 1.05s user 0.19s system 99% cpu 1.247 total
+$ time timeout 15 env MODAL_ENDPOINT_URL="http://10.255.255.1:9999" uv run decode --version
+... 1.03s user 0.18s system 99% cpu 1.218 total
+# contrast: the REPL (an inference path) against the same address:
+$ time timeout 20 env MODAL_ENDPOINT_URL="http://10.255.255.1:9999" MODAL_ENDPOINT_MODEL="acme/unlisted-model-v1" LLM_PROVIDER=modal bash -c 'echo "" | uv run decode'
+... 11.578 total   # pays the real PROBE_TIMEOUT_S, then degrades to the notice, no crash
+```
+
+**Other issues found**
+- **Process: this task's work was committed and pushed to `origin/feat/dynamic-context-window`
+  (commit `ccd9886`) partway through this QA session, before a Tester PASS was issued.** Per
+  AGENTS.md, "SWE... commits each task after Tester passes" — this happened out of order. Content is
+  unaffected (verified byte-identical between the staged diff I first reviewed and `ccd9886`), so it
+  does not change this task's verdict, but the sequencing should not recur.
+- **Scope leak: a second commit (`b5aaed1`, "fix(evals): follow opik 2.x in the harness unit
+  tests") landed on this same branch during the same window**, fixing exactly the item this task's
+  own "Out of scope" section names ("Fixing the 5 pre-existing opik `TestCase(scoring_inputs=…)` /
+  version-assert failures"). It is a clean, separate commit (not mixed into `ccd9886`'s diff) and,
+  spot-checked, it is correctly formatted and appears to genuinely fix the 3 `TestCase` call sites —
+  but it was never asked for by this task, and it landed on `feat/dynamic-context-window`, a branch
+  named for a different task, rather than its own branch. Recommend moving it to its own
+  branch/task/PR rather than letting it ride in on this one.
+- **A third, wholly unrelated commit (`6a67519`, "fix(observability): report LLM cost to Opik for
+  all three providers") landed on this same branch while this review was in progress**, alongside
+  live uncommitted WIP (`src/decode/observability/cost.py`, modified `settings.py` / `tracing.py`)
+  that was actively changing on disk during my test runs — this is what produced the two extra unit
+  failures (`test_env_example_drift`, `test_tracing`) visible in an un-isolated `pytest tests/unit`
+  run partway through this session; they are 100% unrelated to task 123 and vanish once isolated to
+  `ccd9886` in a clean worktree (see evidence above). Flagging because the shared working tree was
+  not a stable snapshot during QA — I had to use detached `git worktree` checkouts to get
+  reproducible numbers, and future reviews of this branch should expect the same until tasks land on
+  their own branches.
+- `.gitignore`'s `.DS_Store` addition and `runtime/flow.py`'s unrelated `_source_digest` ZenML
+  build-reuse change are pre-flagged by the SWE as out of scope for this task's verdict — confirmed
+  they do not break anything (`_source_digest` is exercised incidentally by `test_flow.py`'s existing
+  image-settings tests, which pass).
+
+**VERDICT: PASS**
+
+Task 123's own commit (`ccd9886`) meets all 10 acceptance criteria with independent e2e evidence
+beyond the unit suite, introduces zero new unit/integration failures (both pre-existing failure sets
+independently reproduced on the pre-task baseline), and the e2e adversarial pass is green on every
+break path attempted, including two that went beyond the unit suite's mocks to a real socket. Handing
+off to PA for acceptance review — flagging the process items above for the orchestrator's attention
+separately from this task's own correctness.

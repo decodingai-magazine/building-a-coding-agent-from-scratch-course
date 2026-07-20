@@ -37,8 +37,10 @@ def rates(monkeypatch):
 def _model_span_attributes(**overrides) -> dict:
     """The attributes pydantic-ai puts on a model (``chat``) span, before any cost bridging."""
     return {
-        "gen_ai.request.model": "Qwen/Qwen3.6-35B-A3B-FP8",
-        "gen_ai.system": "openai",
+        # An OpenRouter slug the genai-prices catalog does not know — the case the manual rates
+        # exist for. (Modal's self-hosted endpoint is NOT that case: it bills GPU-seconds.)
+        "gen_ai.request.model": "qwen/qwen3-235b-a22b",
+        "gen_ai.system": "openrouter",
         "gen_ai.usage.input_tokens": 1_000_000,
         "gen_ai.usage.output_tokens": 500_000,
         **overrides,
@@ -78,7 +80,7 @@ def test_catalog_cost_from_pydantic_ai_wins_over_configured_rates(rates):
 
 
 def test_configured_rates_price_a_model_no_catalog_knows(rates):
-    """The Modal/self-hosted case: no catalog row, so the configured per-Mtok rates supply the cost."""
+    """An OpenRouter slug with no catalog row: the configured per-Mtok rates supply the cost."""
     # 1M input at $1 + 0.5M output at $2 = $2.00.
     assert span_cost_usd(_model_span_attributes()) == pytest.approx(2.0)
 
@@ -123,7 +125,7 @@ def test_exporter_stamps_the_attribute_opik_reads(rates):
     downstream = _RecordingExporter()
 
     result = CostAnnotatingExporter(downstream).export(
-        [_span("chat qwen", _model_span_attributes())]
+        [_span("chat qwen3", _model_span_attributes())]
     )
 
     assert result is SpanExportResult.SUCCESS
@@ -131,13 +133,13 @@ def test_exporter_stamps_the_attribute_opik_reads(rates):
     assert exported.attributes[OPIK_COST_ATTRIBUTE] == pytest.approx(2.0)
     # The original attributes ride along untouched — the span is annotated, not replaced.
     assert exported.attributes["gen_ai.usage.input_tokens"] == 1_000_000
-    assert exported.name == "chat qwen"
+    assert exported.name == "chat qwen3"
 
 
 def test_exporter_forwards_an_unpriceable_span_unchanged():
     """No rates, no catalog price: the span goes out as the very same object, with no cost key."""
     downstream = _RecordingExporter()
-    span = _span("chat qwen", _model_span_attributes())
+    span = _span("chat qwen3", _model_span_attributes())
 
     CostAnnotatingExporter(downstream).export([span])
 
@@ -150,7 +152,7 @@ def test_exporter_never_overwrites_a_cost_someone_else_set(rates):
     downstream = _RecordingExporter()
     attributes = _model_span_attributes(**{OPIK_COST_ATTRIBUTE: 0.99})
 
-    CostAnnotatingExporter(downstream).export([_span("chat qwen", attributes)])
+    CostAnnotatingExporter(downstream).export([_span("chat qwen3", attributes)])
 
     (exported,) = downstream.spans
     assert exported.attributes[OPIK_COST_ATTRIBUTE] == 0.99
