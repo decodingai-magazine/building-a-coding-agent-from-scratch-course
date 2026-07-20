@@ -211,9 +211,15 @@ def test_provider_secrets_not_in_repr():
 def test_compaction_defaults(monkeypatch):
     for var in _COMPACTION_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
+    # The window DERIVES from the active model, so this test must pin the provider too — otherwise it
+    # reads whatever leaked into ``os.environ``. It does leak: ``import litellm`` (pulled in by the
+    # evals tests) calls ``load_dotenv()``, so a developer's real ``.env`` lands in the process env
+    # and this file's result depends on test ORDER. Passes in CI either way — there is no .env there.
+    for var in ("LLM_PROVIDER", "GEMINI_MODEL", "OPENROUTER_MODEL", "MODAL_ENDPOINT_MODEL"):
+        monkeypatch.delenv(var, raising=False)
     s = Settings(_env_file=None)
     assert s.compaction_enabled is True
-    assert s.compaction_context_window_tokens == 1_048_576
+    assert s.compaction_context_window_tokens == 1_048_576  # derived: gemini-3.5-flash
     assert s.compaction_reserve_fraction == 0.20
     assert s.microcompaction_reserve_fraction == 0.40
     assert s.compaction_keep_recent_tokens == 20_000
@@ -676,3 +682,111 @@ def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):
 # The DECODE_ENV gate + the Environment Bucket settings source (ADR-0015) have their own file:
 # tests/unit/decode/config/test_env_bucket.py — including the restated "at DECODE_ENV=local, decode
 # never imports kitaru" invariant (a fresh-subprocess import check).
+
+
+# --- Compaction context window: derived from the active model (task: auto-size the window) ---
+#
+# A window that is too LARGE is the dangerous direction: both compaction tiers fire at
+# ``window * (1 - reserve)``, so an over-estimate puts BOTH above the endpoint's hard ceiling and the
+# request is truncated or rejected before compaction ever runs. That is what a 1M Gemini default did
+# in front of a 262k Qwen endpoint.
+
+_MODEL_ENV_VARS = (
+    "LLM_PROVIDER",
+    "GEMINI_MODEL",
+    "OPENROUTER_MODEL",
+    "MODAL_ENDPOINT_MODEL",
+    "COMPACTION_CONTEXT_WINDOW_TOKENS",
+)
+
+
+def _clear_model_env(monkeypatch):
+    for var in _MODEL_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_context_window_is_derived_from_the_gemini_model(monkeypatch):
+    _clear_model_env(monkeypatch)
+
+    s = Settings(_env_file=None)
+
+    assert s.llm_provider == "gemini"
+    assert s.active_model == "gemini-3.5-flash"
+    assert s.compaction_context_window_tokens == 1_048_576
+    assert s.context_window_is_assumed is False
+    # Derived, not explicit — the mark must not be forged (same contract as opik_project_name).
+    assert "compaction_context_window_tokens" not in s.model_fields_set
+
+
+def test_context_window_is_derived_from_the_modal_qwen_model(monkeypatch):
+    """262144 is READ from the served endpoint's ``max_model_len``, not guessed."""
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "modal")
+    monkeypatch.setenv("MODAL_ENDPOINT_MODEL", "Qwen/Qwen3.6-35B-A3B-FP8")
+
+    s = Settings(_env_file=None)
+
+    assert s.compaction_context_window_tokens == 262_144
+    assert s.context_window_is_assumed is False
+
+
+def test_model_id_matching_is_case_insensitive_and_ignores_vendor_and_quant_suffixes(monkeypatch):
+    """The window does not depend on the vendor prefix or the quantization suffix."""
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "modal")
+    monkeypatch.setenv("MODAL_ENDPOINT_MODEL", "some-vendor/QWEN3.6-35B-A3B-AWQ")
+
+    assert Settings(_env_file=None).compaction_context_window_tokens == 262_144
+
+
+def test_unknown_model_falls_back_conservatively_and_says_so(monkeypatch):
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "modal")
+    monkeypatch.setenv("MODAL_ENDPOINT_MODEL", "meta-llama/Llama-3-70B-Instruct")
+
+    s = Settings(_env_file=None)
+
+    assert s.compaction_context_window_tokens == 200_000
+    # The operator must be TOLD: an assumption nobody sees is how a 4x-wrong window survives.
+    assert s.context_window_is_assumed is True
+
+
+def test_an_explicit_context_window_always_wins_and_silences_the_notice(monkeypatch):
+    """An operator who knows their endpoint overrides the table — and is not warned about it."""
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "modal")
+    monkeypatch.setenv("MODAL_ENDPOINT_MODEL", "meta-llama/Llama-3-70B-Instruct")
+    monkeypatch.setenv("COMPACTION_CONTEXT_WINDOW_TOKENS", "8192")
+
+    s = Settings(_env_file=None)
+
+    assert s.compaction_context_window_tokens == 8192
+    assert s.context_window_is_assumed is False
+    assert "compaction_context_window_tokens" in s.model_fields_set
+
+
+def test_an_explicit_window_equal_to_the_derived_value_is_still_explicit(monkeypatch):
+    """Anti-sentinel: a value comparison cannot tell this from "nobody set it"; fields_set can."""
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("COMPACTION_CONTEXT_WINDOW_TOKENS", "1048576")
+
+    s = Settings(_env_file=None)
+
+    assert s.compaction_context_window_tokens == 1_048_576
+    assert "compaction_context_window_tokens" in s.model_fields_set
+    assert s.context_window_is_assumed is False
+
+
+def test_active_model_follows_the_provider(monkeypatch):
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_MODEL", "some/router-model")
+    monkeypatch.setenv("MODAL_ENDPOINT_MODEL", "some/modal-model")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash")
+
+    for provider, expected in (
+        ("gemini", "gemini-3.5-flash"),
+        ("openrouter", "some/router-model"),
+        ("modal", "some/modal-model"),
+    ):
+        monkeypatch.setenv("LLM_PROVIDER", provider)
+        assert Settings(_env_file=None).active_model == expected

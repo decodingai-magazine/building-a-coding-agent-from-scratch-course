@@ -126,6 +126,24 @@ def _provider_config_error() -> str | None:
     return None  # defensive: the settings ``Literal`` blocks any other value upstream.
 
 
+def _context_window_notice() -> str | None:
+    """One stderr line when the compaction window is an ASSUMPTION, else ``None``.
+
+    Non-blocking, unlike the guards around it: an unknown model is a perfectly runnable
+    configuration, just one whose window decode had to guess. Silence here is what let a 1M
+    Gemini default sit in front of a 262k endpoint — both compaction tiers then fire above the
+    endpoint's ceiling, so the request is truncated before compaction ever runs.
+    """
+    if not settings.context_window_is_assumed:
+        return None
+    return (
+        f"Decode: no known context window for model {settings.active_model!r}; assuming "
+        f"{settings.compaction_context_window_tokens:,} tokens for compaction. Set "
+        "COMPACTION_CONTEXT_WINDOW_TOKENS to the model's real max input window if that is wrong "
+        "(an OpenAI-compatible endpoint reports it as max_model_len on GET /v1/models)."
+    )
+
+
 def _docker_daemon_reachable() -> bool:
     """True if the local Docker daemon answers a fast ``docker info`` probe (ADR-0011 §1).
 
@@ -333,6 +351,13 @@ def cli(
         click.echo(config_error, err=True)
         raise click.exceptions.Exit(1)
 
+    # Context-window notice: NOT a guard — it warns and continues. The window is derived from the
+    # active model when unset; an unrecognised model gets a conservative assumption the operator
+    # should see rather than discover as truncated requests.
+    window_notice = _context_window_notice()
+    if window_notice is not None:
+        click.echo(window_notice, err=True)
+
     # Sandbox backend startup guard (ADR-0011 §1): refuse an unavailable backend now, not on the
     # first ``bash`` call.
     sandbox_error = _sandbox_config_error()
@@ -447,6 +472,12 @@ def run(task: str, hitl: bool, model: str | None, repo: str | None, local: bool)
     if config_error is not None:
         click.echo(config_error, err=True)
         raise click.exceptions.Exit(1)
+
+    # Same non-blocking window notice the REPL emits — a headless run is exactly where an assumed
+    # window goes unnoticed, since nobody is watching a status bar.
+    window_notice = _context_window_notice()
+    if window_notice is not None:
+        click.echo(window_notice, err=True)
 
     # Resolve the Workspace source once and thread it into the flow (ADR-0012 §3); guaranteed
     # ``None`` in ``none`` mode by the guard above.
