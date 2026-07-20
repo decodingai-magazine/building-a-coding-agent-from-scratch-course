@@ -172,7 +172,26 @@ def test_exporter_delegates_shutdown_and_flush_to_the_wrapped_exporter():
 # --- against REAL pydantic-ai spans, not hand-built attribute dicts ---
 
 
-async def test_a_real_agent_run_prices_the_model_span_and_only_the_model_span(rates, capfire):  # noqa: F811
+@pytest.fixture
+def _restore_instrumentation():
+    """Save/restore ``Agent._instrument_default`` so global instrumentation never leaks to later tests.
+
+    ``logfire.instrument_pydantic_ai()`` mutates the process-global ``Agent._instrument_default``;
+    without this restore every later test's agents would stay instrumented and start emitting spans
+    (mirrors the isolation fixture in ``test_flow_tracing.py`` / ``test_observability_capstone.py``).
+    """
+    prior_instrument = Agent._instrument_default
+    try:
+        yield
+    finally:
+        Agent.instrument_all(prior_instrument)
+
+
+async def test_a_real_agent_run_prices_the_model_span_and_only_the_model_span(
+    rates,
+    capfire,  # noqa: F811
+    _restore_instrumentation,
+):
     """The guard that matters, pinned to what pydantic-ai actually emits (no network, scripted model).
 
     A run produces both a ``chat`` span and an aggregating ``agent run`` span carrying the SAME token
