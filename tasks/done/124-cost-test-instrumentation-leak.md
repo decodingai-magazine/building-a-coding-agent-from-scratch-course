@@ -1,7 +1,7 @@
 ---
 id: 124
 feature: observability
-status: in-progress
+status: done
 ---
 
 # Fix global pydantic-ai instrumentation leak in the cost-annotation test
@@ -103,4 +103,20 @@ already-fixed-on-this-branch reasons (opik 2.x `TestCase.scoring_inputs`, hardco
 string) plus the same pre-existing skills-capstone failures — so this branch's CI cannot reach fully
 green without also touching that pre-existing, out-of-scope bug. Filing that separately rather than
 fixing it here.
+
+### [On-Call] 2026-07-20 21:50 — CI Resolution (partial)
+
+Pushed `631e29e` to `feat/dynamic-context-window`. New run `29768437431`:
+`4 failed, 2283 passed, 19 skipped in 507.88s` — the 4 failures are exactly
+`tests/integration/test_milestone3_skills_capstone.py::{test_model_dispatcher_returns_the_builtin_body_ungated,
+test_tui_slash_command_submits_the_skill_body_not_the_literal_slash,
+test_project_override_wins_for_both_entry_points_and_the_catalog,
+test_builtin_skills_are_tier_2_only_with_no_resource_trailer}` — the same 4 test ids present on `main`
+and independently reproduced by the task-123 Tester on a bare `abf31e5` worktree. The span-isolation
+regression this task targets is confirmed fixed: none of the 4 previously-new failures
+(`test_observability_capstone`, `test_opik_headless_trace` x2, `test_opik_repl_trace`) reappear.
+
+This task's fix is complete and verified; closing it as `done`. The remaining 4 failures are a
+separate, pre-existing, out-of-scope bug (commit-skill body drift, unrelated to context windows or
+observability) that predates this branch and is also red on `main` — needs its own on-call cycle.
 </content>
