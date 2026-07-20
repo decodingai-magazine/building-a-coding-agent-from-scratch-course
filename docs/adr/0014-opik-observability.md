@@ -157,9 +157,14 @@ Sub-decisions (all recorded so they are not re-litigated):
    `CostAnnotatingExporter` (`tracing.py`). What was verified:
    * Opik's OTLP ingestion reads exactly **one** cost key — `gen_ai.usage.cost` — and an explicit
      value **short-circuits** its server-side `(provider, model)` price lookup, so it works even for
-     a model Opik has never heard of. (Verified in opik's backend mapping rules, not its public
-     docs — a real but **undocumented** contract. If a future Opik release renames it, cost goes
-     quietly missing; the symptom to watch for is tokens present, cost blank.)
+     a model Opik has never heard of. Found in opik's backend mapping rules and absent from its
+     public docs — a real but **undocumented** contract, so it was confirmed against live Opik
+     rather than trusted: a traced OpenRouter turn (`deepseek/deepseek-chat`) came back with
+     `total_estimated_cost = 0.00467553` on the `llm` span, matching genai-prices to the last digit.
+     Opik has **no** openrouter price row, so that number can only be the attribute being read. The
+     same run showed `agent run` at `cost=None`, confirming the double-count guard on live data.
+     If a future Opik release renames the key, cost goes quietly missing; the symptom to watch for
+     is tokens present, cost blank.
    * pydantic-ai already prices anything the genai-prices catalog knows, but publishes it as
      **`operation.cost`** — a key Opik does not read. That, not a missing price, was the Gemini gap.
    * Opik's price table has **no `openrouter` row at all**, and a self-hosted Modal endpoint
