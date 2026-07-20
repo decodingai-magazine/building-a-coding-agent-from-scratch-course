@@ -41,7 +41,7 @@ from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.harness.runner import Runner
 from decode.permissions.gate import PermissionGate
 from decode.skills.loader import load_builtin_skills, load_skills
-from decode.skills.payload import format_skill_payload
+from decode.skills.payload import OUTPUTS_DIR, format_skill_payload
 from decode.tui.app import InputIntent, _handle_skill_command, parse_skill_command
 
 # --- markers, so the assertions read as a transcript ----------------------------------------
@@ -54,6 +54,18 @@ _PROJECT_COMMIT_BODY = "PROJECT COMMIT RITUAL: squash to one commit, sign off, p
 # The trailer the shared payload helper appends only when a skill ships bundled resources (ADR-0004
 # §5). Built-ins are SKILL.md-only, so this marker must be ABSENT from a built-in's payload.
 _TRAILER_MARKER = "Bundled files for this skill"
+
+
+def _assert_payload_delivers(payload: str, body: str) -> None:
+    """Assert ``payload`` is ``body`` plus the standing outputs default, and nothing else.
+
+    Every payload ends with the outputs trailer (``.decode/outputs/`` — see ``skills/payload.py``),
+    so a body is delivered as a PREFIX rather than byte-for-byte equality. Asserting the prefix
+    still catches a truncated or reordered body, which is what these tests are really about.
+    """
+    assert payload.startswith(body), "the payload must open with the skill body, unmodified"
+    assert OUTPUTS_DIR in payload[len(body) :], "the payload must close with the outputs default"
+
 
 # The tier-3 project skill (task 034) — a resource-bearing skill that lives ONLY in this test
 # (a ``tmp_path`` fixture; nothing checked in under ``src/``). Its body references a bundled file by
@@ -308,9 +320,9 @@ async def test_model_dispatcher_returns_the_builtin_body_ungated(tmp_path):
 
     expected_body = load_builtin_skills()["commit"].body
     returns = _tool_returns(handler)
-    assert any(r == expected_body for r in returns), (
-        "the dispatcher must return the full commit body"
-    )
+    delivered = [r for r in returns if r.startswith(expected_body)]
+    assert delivered, "the dispatcher must return the full commit body"
+    _assert_payload_delivers(delivered[0], expected_body)
     assert any("Conventional Commits" in r for r in returns)
     # Ungated: the dispatcher never reached the permission gate, so nothing was asked.
     assert not _permission_requests(events_seen), (
@@ -347,9 +359,9 @@ async def test_tui_slash_command_submits_the_skill_body_not_the_literal_slash(tm
     with agent.override(model=_model(captured, steps=[])):
         await _run_turn(runner, turn_input)
 
-    # The body that the dispatcher would return is exactly what the TUI submitted (same loader).
+    # The body that the dispatcher would return is what the TUI submitted (same loader, same payload).
     expected_body = load_builtin_skills()["commit"].body
-    assert turn_input == expected_body, "the TUI must resolve /commit to the built-in commit body"
+    _assert_payload_delivers(turn_input, expected_body)
     prompts = _user_prompts(captured)
     assert any("Conventional Commits" in p for p in prompts), (
         "the body reached the model as the input"
@@ -393,7 +405,7 @@ async def test_project_override_wins_for_both_entry_points_and_the_catalog(tmp_p
     runner_b, handler_b = _make_runner(agent, cwd=tmp_path, events_seen=events_b)
     with agent.override(model=_model(captured_b, steps=[_skill_call("commit")])):
         await _run_turn(runner_b, "load the commit skill")
-    assert any(r == _PROJECT_COMMIT_BODY for r in _tool_returns(handler_b)), (
+    assert any(r.startswith(_PROJECT_COMMIT_BODY) for r in _tool_returns(handler_b)), (
         "skill('commit') must return the project override body"
     )
 
@@ -402,7 +414,7 @@ async def test_project_override_wins_for_both_entry_points_and_the_catalog(tmp_p
     assert parsed is not None
     name, trailing = parsed
     turn_input = _handle_skill_command(name, trailing, cwd=tmp_path, emit=lambda _line: None)
-    assert turn_input == _PROJECT_COMMIT_BODY, "/commit must submit the project override body"
+    _assert_payload_delivers(turn_input, _PROJECT_COMMIT_BODY)
 
 
 # --- 5. unknown skill (ModelRetry, not a crash) ---------------------------------------------
@@ -443,9 +455,10 @@ async def test_builtin_skills_are_tier_2_only_with_no_resource_trailer(tmp_path)
     """``skill("commit")`` and ``/commit`` return the built-in body with **no** resource trailer.
 
     A built-in ships only a ``SKILL.md`` (``resource_dir is None`` — ADR-0004 §3), so the shared
-    payload helper appends nothing: progressive disclosure stops at tier 2 for it. Both entry points
-    must return the body **byte-for-byte**, with the tier-3 trailer marker absent — the trailer is the
-    project-skill-only bridge to bundled resources (task 034).
+    payload helper appends no RESOURCE manifest: progressive disclosure stops at tier 2 for it. Both
+    entry points must return the body unmodified with the tier-3 trailer marker absent — that trailer
+    is the project-skill-only bridge to bundled resources (task 034). The standing outputs default
+    rides every payload, built-in included, so the body is a prefix rather than the whole string.
     """
     commit_body = load_builtin_skills()["commit"].body
 
@@ -458,14 +471,16 @@ async def test_builtin_skills_are_tier_2_only_with_no_resource_trailer(tmp_path)
         await _run_turn(runner, "load the commit skill")
 
     returns = _tool_returns(handler)
-    assert commit_body in returns, "the dispatcher must return the built-in body byte-for-byte"
+    delivered = [r for r in returns if r.startswith(commit_body)]
+    assert delivered, "the dispatcher must return the built-in body unmodified"
+    _assert_payload_delivers(delivered[0], commit_body)
     assert not any(_TRAILER_MARKER in r for r in returns), (
         "a built-in is SKILL.md-only — it must carry no resource trailer"
     )
 
-    # (b) the TUI /commit path returns the same bare body — no trailer either.
+    # (b) the TUI /commit path returns the same body — the outputs default, no RESOURCE trailer.
     turn_input = _handle_skill_command("commit", "", cwd=tmp_path, emit=lambda _line: None)
-    assert turn_input == commit_body, "/commit must resolve to the built-in body, no trailer"
+    _assert_payload_delivers(turn_input, commit_body)
     assert _TRAILER_MARKER not in turn_input
 
 
