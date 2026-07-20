@@ -481,6 +481,9 @@ async def _run_attempt(ctx: RunContext[AgentDeps], prompt: str, *, index: int) -
         resolve_permission=_deny_permission_resolver,
         resolve_user_question=deny_user_question_resolver,
         active_agent=explore,
+        # Inherited, never re-resolved: the child reuses the parent's Agent and therefore its model
+        # (ADR-0013 §6), so its window is the parent's — and re-resolving would risk a second probe.
+        context_window_tokens=ctx.deps.context_window_tokens,
         # ``task_store`` omitted: the default_factory gives each child a fresh empty list.
     )
 

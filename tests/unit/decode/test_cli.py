@@ -9,8 +9,10 @@ the settings the factory reads.
 import pytest
 from click.testing import CliRunner
 from pydantic import SecretStr
+from support.settings_env import hermetic_settings
 
 from decode import cli as cli_mod
+from decode.agent import context_window
 from decode.cli import cli
 from decode.permissions.types import PermissionMode
 from decode.tui import app as app_mod
@@ -1062,3 +1064,105 @@ def test_version_option_does_not_trigger_startups():
     assert result.exit_code == 0
     assert "GEMINI_API_KEY" not in result.output
     assert "Traceback" not in result.output
+
+
+# Context-window notice + the no-inference paths (task 123)
+
+
+def test_help_performs_no_provider_probe(mocker):
+    """``decode --help`` must never cold-start a GPU to print usage text."""
+    probe = mocker.patch.object(context_window, "_probe")
+
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    probe.assert_not_called()
+
+
+def test_version_performs_no_provider_probe(mocker):
+    """Same for ``--version`` — pure metadata, no inference, no network."""
+    probe = mocker.patch.object(context_window, "_probe")
+
+    result = CliRunner().invoke(cli, ["--version"])
+
+    assert result.exit_code == 0
+    probe.assert_not_called()
+
+
+def test_run_help_performs_no_provider_probe(mocker):
+    """The ``run`` subcommand's own help is a no-inference path too."""
+    probe = mocker.patch.object(context_window, "_probe")
+
+    result = CliRunner().invoke(cli, ["run", "--help"])
+
+    assert result.exit_code == 0
+    probe.assert_not_called()
+
+
+@pytest.fixture
+def notice_settings(monkeypatch, mocker):
+    """Point BOTH the resolver and the cli at a purpose-built Settings for the notice tests.
+
+    Not the shared singleton: by the time the whole suite has run, another test has assigned to it
+    directly and permanently marked ``compaction_context_window_tokens`` as explicitly set, which
+    is precisely the signal the notice branches on (see ``support.settings_env``).
+    """
+
+    def _use(**overrides):
+        config = hermetic_settings(monkeypatch, **overrides)
+        mocker.patch.object(context_window, "settings", config)
+        mocker.patch.object(cli_mod, "settings", config)
+        return config
+
+    return _use
+
+
+def test_context_window_notice_warns_only_when_nothing_could_resolve_it(notice_settings, mocker):
+    """An unresolvable model gets the one assumed-window line, naming the fallback."""
+    mocker.patch.object(context_window, "_probe", return_value=None)
+    notice_settings(llm_provider="gemini", gemini_model="acme/unlisted-model-v1")
+
+    notice = cli_mod._context_window_notice()
+
+    assert notice is not None
+    assert "acme/unlisted-model-v1" in notice
+    assert "200,000" in notice
+
+
+def test_context_window_notice_is_silent_after_a_successful_probe(notice_settings, mocker):
+    """A probed window is KNOWN — claiming "assuming" would be a lie the operator learns to skip."""
+    mocker.patch.object(context_window, "_probe", return_value=262_144)
+    notice_settings(llm_provider="gemini", gemini_model="acme/unlisted-model-v1")
+
+    assert cli_mod._context_window_notice() is None
+
+
+def test_context_window_notice_is_silent_for_a_table_model(notice_settings, mocker):
+    mocker.patch.object(context_window, "_probe", return_value=None)
+    notice_settings(llm_provider="gemini", gemini_model="gemini-3.5-flash")
+
+    assert cli_mod._context_window_notice() is None
+
+
+def test_context_window_notice_is_silent_when_the_operator_set_the_window(notice_settings, mocker):
+    """An explicit setting is owned by the operator — never warned about, and never probed."""
+    probe = mocker.patch.object(context_window, "_probe")
+    notice_settings(
+        llm_provider="gemini",
+        gemini_model="acme/unlisted-model-v1",
+        compaction_context_window_tokens=8192,
+    )
+
+    assert cli_mod._context_window_notice() is None
+    probe.assert_not_called()
+
+
+def test_context_window_notice_describes_the_model_override(notice_settings, mocker):
+    """``decode run --model <unknown>`` warns about the OVERRIDE, not the configured model."""
+    mocker.patch.object(context_window, "_probe", return_value=None)
+    notice_settings(llm_provider="gemini", gemini_model="gemini-3.5-flash")
+
+    notice = cli_mod._context_window_notice("acme/unlisted-model-v1")
+
+    assert notice is not None
+    assert "acme/unlisted-model-v1" in notice

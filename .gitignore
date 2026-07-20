@@ -222,6 +222,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# MacOs
+.DS_Store
+
 # kitaru source-root marker (per-checkout; `kitaru init` recreates it)
 .kitaru/
 

@@ -116,7 +116,7 @@ The full feature map — each row is one line here and a deep dive one click awa
 | **Memory** | loads `AGENTS.md` + `.decode/MEMORY.md` into context; appends a one-sentence session summary on exit. | [ADR-0002](../docs/adr/0002-milestone-1-vanilla-agent-architecture.md) |
 | **Sessions & resume** | every session is a replayable JSONL transcript; `decode --resume [<session-id>]` continues it. | [ADR-0002](../docs/adr/0002-milestone-1-vanilla-agent-architecture.md) |
 | **Multi-provider inference** | one seam, three providers: Gemini, OpenRouter, or a model you serve on Modal. | [ADR-0005](../docs/adr/0005-multi-llm-provider-support.md), [modal_models.md](modal_models.md) |
-| **Context compaction** | automatic budget-keeping: cheap trim near ~60% of the window, one-LLM-call summary near ~80% (or `/compact`); footer gauge tracks it. | [ADR-0006](../docs/adr/0006-conversation-compaction.md) |
+| **Context compaction** | automatic budget-keeping: cheap trim near ~60% of the window, one-LLM-call summary near ~80% (or `/compact`); footer gauge tracks it. The window is resolved per run for the model that run actually uses — see [Context window resolution](#context-window-resolution). | [ADR-0006](../docs/adr/0006-conversation-compaction.md) |
 | **LSP code intelligence** | `definition` / `references` / `hover` / `diagnostics` on demand, plus post-edit type-checking so the agent fixes its own mistakes. | [ADR-0007](../docs/adr/0007-lsp-integration.md) |
 | **Explore subagents** | read-only children fan out in parallel (up to 4) and hand back compressed reports instead of flooding the main context. | [ADR-0013](../docs/adr/0013-explore-subagents.md) |
 | **Sandboxing** | move all tools into an isolated Docker or Modal Workspace; work on any repo with `--repo`; get the work back as a git branch. | [sandboxing.md](sandboxing.md) |
@@ -126,6 +126,28 @@ The full feature map — each row is one line here and a deep dive one click awa
 | **Observability** | one `OPIK_API_KEY` and every turn ships a full trace — every model/tool call as a span with tokens, latency, cost. | [ADR-0014](../docs/adr/0014-opik-observability.md) |
 | **Evals** | outcome benchmark, behavior regression probes, LLM judges, online evals (`make eval-benchmark` / `make eval-regression`). | [getting_started/evals.md](evals.md) |
 | **Cloud deployment** | the whole headless agent on Modal, checkpoints on a self-hosted Kitaru server. | [infra.md](infra.md) |
+
+### Context window resolution
+
+Compaction and the footer gauge both need one number: your model's max **input** window. Decode
+resolves it per run, for the model that run actually uses — so `decode run "…" --model <id>` uses
+`<id>`'s window, not the one in your `.env`. First hit wins:
+
+| # | Source | Notes |
+|---|---|---|
+| 1 | `COMPACTION_CONTEXT_WINDOW_TOKENS` | If you set it, it wins outright and **no probe runs** — you own the number. |
+| 2 | A provider probe | modal / any OpenAI-compatible endpoint: `GET {url}/v1/models` → `max_model_len`. Gemini: `models.get(model=…)` → `input_token_limit`. OpenRouter: `GET /api/v1/models` → `context_length`. |
+| 3 | A small static table | Gemini 2.5/3.5 → 1,048,576; Qwen3.6-35B-A3B → 262,144. |
+| 4 | `200000` | The conservative assumption. Decode says so once on stderr at startup. |
+
+The probe is strictly best effort. It runs **at most once per model per process**, never on
+`decode --help` / `--version`, is bounded by a short timeout, and any failure — offline, 401, DNS,
+a changed payload — falls silently through to the table and then the fallback. It is never fatal
+and never prints a traceback. Which source won is in the debug log
+(`context window for '<model>': <n> tokens (source=…)`).
+
+Set `COMPACTION_CONTEXT_WINDOW_TOKENS` explicitly if your endpoint cold-starts slowly (an idle
+Modal GPU can take a while to answer `/v1/models`) or reports a window you do not trust.
 
 ## Develop
 

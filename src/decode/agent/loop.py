@@ -250,15 +250,18 @@ class AgentTurnHandler:
         if self._compaction_model_or_settings is None:
             return
         usage = RunUsage(input_tokens=self._last_input_tokens)
+        # The window of the model THIS run is actually using (``--model`` included, task 123);
+        # ``None`` on the deps means no entrypoint resolved one, so use the configured default.
+        window = self._deps.context_window_tokens or settings.compaction_context_window_tokens
         full = should_compact(
             usage,
-            window=settings.compaction_context_window_tokens,
+            window=window,
             reserve=settings.compaction_reserve_fraction,
             enabled=settings.compaction_enabled,
         )
         micro = should_compact(
             usage,
-            window=settings.compaction_context_window_tokens,
+            window=window,
             reserve=settings.microcompaction_reserve_fraction,
             enabled=settings.compaction_enabled,
         )

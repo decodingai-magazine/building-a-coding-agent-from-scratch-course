@@ -1493,3 +1493,60 @@ async def test_resumed_poisoned_history_is_healed_on_the_next_prompt(agent):
 
     text = "".join(e.text for e in emitted if isinstance(e, events.AssistantTextDelta))
     assert "healed and running" in text
+
+
+# The compaction trigger reads THIS run's window, not the configured one (task 123)
+
+
+async def test_compaction_fires_on_the_runs_resolved_window_not_the_configured_one(
+    agent, tmp_path, mocker
+):
+    """``deps.context_window_tokens`` wins over ``settings`` — that is the point of the seam.
+
+    Settings claims a huge window (nothing would ever compact); the run's actual model resolved a
+    tiny one. This is the ``decode run --model <smaller-window-id>`` case: compaction MUST fire.
+    """
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 10_000_000)
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    log = _fresh_log(tmp_path, "a1")
+
+    emitted: list[events.Event] = []
+    deps = _deps(emitted.append)
+    deps.context_window_tokens = 60  # the resolved window for the run's real model: full band
+    handler = AgentTurnHandler(
+        agent,
+        deps=deps,
+        session_log=log,
+        message_history=[_user_msg("first"), _assistant_msg("first answer")],
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+
+    with agent.override(model=_text_model("ok")):
+        await _drive_collecting(handler, _ctx(0, _HUGE_PROMPT, emitted))()
+
+    assert [e for e in emitted if isinstance(e, events.ContextCompacted)]
+
+
+async def test_an_unresolved_window_still_falls_back_to_the_configured_setting(
+    agent, tmp_path, mocker
+):
+    """``context_window_tokens=None`` (any deps built without the seam) keeps the old behaviour."""
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 60)  # full band
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    log = _fresh_log(tmp_path, "a2")
+
+    emitted: list[events.Event] = []
+    deps = _deps(emitted.append)
+    assert deps.context_window_tokens is None  # the default: nothing resolved it
+    handler = AgentTurnHandler(
+        agent,
+        deps=deps,
+        session_log=log,
+        message_history=[_user_msg("first"), _assistant_msg("first answer")],
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+
+    with agent.override(model=_text_model("ok")):
+        await _drive_collecting(handler, _ctx(0, _HUGE_PROMPT, emitted))()
+
+    assert [e for e in emitted if isinstance(e, events.ContextCompacted)]

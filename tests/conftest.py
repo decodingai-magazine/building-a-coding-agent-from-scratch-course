@@ -76,6 +76,33 @@ def _no_real_provider_key(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_context_window_probe(monkeypatch):
+    """Hermeticity guard — no test may probe a real provider for a context window (task 123).
+
+    :func:`decode.agent.context_window.resolve_context_window` asks the active provider for the
+    model's real window before falling back to the static table, and it is wired into the cli
+    startup notice and every ``AgentDeps`` the entrypoints build. Any test that drives the real
+    ``run_app`` / headless flow would therefore issue a live ``GET /v1/models`` or a google-genai
+    ``models.get`` — and a Modal endpoint answers that by cold-starting an H100. Exactly the leak
+    :func:`_no_real_provider_key` guards against, one API surface over.
+
+    Stubbing ``_probe`` (not the HTTP client) is deliberate: it is the single choke point all three
+    provider branches pass through, so this cannot be bypassed by a future fourth provider that
+    reaches for a different client. Resolution still runs for real — table, fallback and the
+    explicit-setting short-circuit are all unaffected, so the tests keep asserting real behaviour.
+
+    Tests that exercise probing install their own ``_probe`` / client stub (which runs after this
+    fixture, so it wins); ``test_context_window.py`` restores the real function outright.
+    """
+    from decode.agent import context_window
+
+    monkeypatch.setattr(context_window, "_probe", lambda *args, **kwargs: None)
+    context_window.reset_probe_cache()
+    yield
+    context_window.reset_probe_cache()
+
+
+@pytest.fixture(autouse=True)
 def _no_opik_tracing(monkeypatch):
     """Hermeticity guard — no test may configure real Opik export (ADR-0014 §7, task 091).
 

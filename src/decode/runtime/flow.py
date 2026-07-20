@@ -29,6 +29,7 @@ from kitaru.adapters.pydantic_ai._toolset import _ToolApprovalDenied
 from pydantic_ai import DeferredToolRequests
 
 from decode import observability
+from decode.agent.context_window import resolve_context_window
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
 from decode.config.settings import settings
@@ -77,6 +78,30 @@ _HITL_DENIED_MESSAGE = (
 MODAL_TOKEN_SECRET_NAME = "decode-modal"
 
 
+# The source tree the flow image bakes in (docker/flow.Dockerfile ``COPY src``), relative to the
+# submit cwd — the same convention ``dockerfile``/``build_context_root`` below already use.
+_IMAGE_SOURCE_ROOT = Path("src")
+
+
+def _source_digest() -> str | None:
+    """A content digest of the packaged source, or ``None`` when ``src/`` is not next to the submit cwd.
+
+    ZenML's build-reuse checksum hashes the Docker settings, the requirements files and the
+    Dockerfile — **not** the build context. The image installs ``decode`` into site-packages and the
+    uploaded code root exposes ``src/decode``, not ``decode``, so the container always imports the
+    baked copy: without this, editing ``src/`` reuses a stale image and the run dies on the first
+    import of a new module. Feeding the digest through ``ImageSettings.environment`` puts it inside
+    the hashed settings, so a source edit invalidates the build and only a source edit does.
+    """
+    if not _IMAGE_SOURCE_ROOT.is_dir():
+        return None
+    hash_ = hashlib.sha256()
+    for path in sorted(_IMAGE_SOURCE_ROOT.rglob("*.py")):
+        hash_.update(str(path).encode())
+        hash_.update(path.read_bytes())
+    return hash_.hexdigest()[:16]
+
+
 def _runtime_image() -> ImageSettings:
     """The flow container for a remote stack (getting_started/infra.md §4) — ignored by the local stack, which never builds.
 
@@ -91,13 +116,17 @@ def _runtime_image() -> ImageSettings:
     lookup hashes the settings before that mutation and the stored build after it, so no build is
     ever reusable and every submit rebuilds the image (see docker/flow.Dockerfile, getting_started/infra.md §4).
     """
+    environment = {
+        "DECODE_ENV": settings.decode_env,
+        "SANDBOX_MODE": settings.sandbox_mode,
+    }
+    digest = _source_digest()
+    if digest is not None:
+        environment["DECODE_SOURCE_DIGEST"] = digest
     return ImageSettings(
         dockerfile="docker/flow.Dockerfile",
         build_context_root=".",
-        environment={
-            "DECODE_ENV": settings.decode_env,
-            "SANDBOX_MODE": settings.sandbox_mode,
-        },
+        environment=environment,
         secret_environment_from=(
             [MODAL_TOKEN_SECRET_NAME] if settings.sandbox_mode == "modal" else None
         ),
@@ -263,13 +292,15 @@ def _build_runtime_agent(
     )
 
 
-def _build_headless_deps(cwd: Path | None = None) -> AgentDeps:
+def _build_headless_deps(cwd: Path | None = None, model: str | None = None) -> AgentDeps:
     """Construct the headless BYPASS :class:`~decode.agent.deps.AgentDeps` (ADR-0008 §2; ADR-0012 §6).
 
     ``cwd`` is the tool scope (the Workspace in a sandbox mode, else the launch cwd);
     ``harness_home`` always stays the launch cwd. The gate is BYPASS so every gated tool runs inline
     (no ``ApprovalRequired`` → no Kitaru wait), and both decision resolvers are the headless deny
     defaults so ``ask_user`` / ``exit_plan_mode`` map to a ``ModelRetry`` instead of hanging.
+    ``model`` is the Model Override (ADR-0010 §2), threaded in only to resolve THIS run's compaction
+    window (task 123): ``decode run --model <smaller-window-id>`` must compact against that id.
     """
     home = Path.cwd()
     return AgentDeps(
@@ -279,6 +310,7 @@ def _build_headless_deps(cwd: Path | None = None) -> AgentDeps:
         gate=PermissionGate(mode=PermissionMode.BYPASS),
         resolve_permission=_deny_permission_resolver,
         resolve_user_question=deny_user_question_resolver,
+        context_window_tokens=resolve_context_window(model),
     )
 
 
@@ -317,7 +349,7 @@ def run_agent_task(
         observability.init_tracing()
         tool_scope = _prepare_headless_tool_scope(repo, local)
         durable_agent = _build_runtime_agent(model)
-        deps = _build_headless_deps(tool_scope)
+        deps = _build_headless_deps(tool_scope, model)
         # One root span per run, keyed on the Kitaru exec_id (a nullcontext when tracing is off).
         with observability.root_span(
             "decode_run", thread_id=current_execution_id(), input=task
@@ -394,7 +426,7 @@ def _build_hitl_runtime_agent(
     return _to_hitl_durable_agent(build_agent(flow_mode=True, model=model))
 
 
-def _build_hitl_deps(cwd: Path | None = None) -> AgentDeps:
+def _build_hitl_deps(cwd: Path | None = None, model: str | None = None) -> AgentDeps:
     """Construct the headless **gating** deps for the HITL flow (ADR-0008 §3; ADR-0012 §6).
 
     The gate runs in ``DEFAULT`` with ``headless_durable_waits=True``: read-only tools run inline
@@ -412,6 +444,7 @@ def _build_hitl_deps(cwd: Path | None = None) -> AgentDeps:
         resolve_permission=_deny_permission_resolver,
         resolve_user_question=flow_resolve_user_question,
         headless_durable_waits=True,
+        context_window_tokens=resolve_context_window(model),
     )
 
 
@@ -435,7 +468,7 @@ def run_agent_task_hitl(
         observability.init_tracing()
         tool_scope = _prepare_headless_tool_scope(repo, local)
         durable_agent = _build_hitl_runtime_agent(model)
-        deps = _build_hitl_deps(tool_scope)
+        deps = _build_hitl_deps(tool_scope, model)
         # The durable sleeper spans only ``run_sync`` and resets on exit, so a later in-process
         # interactive ``sleep`` still uses :func:`asyncio.sleep` (no leakage).
         with _durable_sleeper():
