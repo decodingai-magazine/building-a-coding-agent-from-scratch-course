@@ -94,7 +94,8 @@ def test_empty_decode_log_file_disables_file_logging(monkeypatch, _fresh_logger,
 
 
 def test_default_log_path_is_under_cwd_decode_logs(monkeypatch, _fresh_logger, tmp_path):
-    # With no DECODE_LOG_FILE override, the default is <cwd>/.decode/logs/decode.log.
+    # With no DECODE_LOG_FILE override and no ancestor .decode, the default is
+    # <cwd>/.decode/logs/decode.log — the first run in a fresh project creates it.
     monkeypatch.delenv("DECODE_LOG_FILE", raising=False)
     monkeypatch.chdir(tmp_path)
     dlog.init_logger("INFO")
@@ -104,3 +105,41 @@ def test_default_log_path_is_under_cwd_decode_logs(monkeypatch, _fresh_logger, t
     default_file = tmp_path / ".decode" / "logs" / "decode.log"
     assert default_file.is_file()
     assert "default-path-line" in default_file.read_text(encoding="utf-8")
+
+
+def test_log_path_anchors_to_the_nearest_ancestor_decode_dir(monkeypatch, _fresh_logger, tmp_path):
+    """A process started BELOW the project root logs to the project's ``.decode``, not a new one.
+
+    The regression: the skill outputs default sends work-product to ``.decode/outputs/``, so a
+    script run from there resolved the relative default against its own cwd and created
+    ``.decode/outputs/.decode/logs/decode.log`` — a second log nobody reads.
+    """
+    monkeypatch.delenv("DECODE_LOG_FILE", raising=False)
+    outputs = tmp_path / ".decode" / "outputs"
+    outputs.mkdir(parents=True)
+    monkeypatch.chdir(outputs)
+
+    dlog.init_logger("INFO")
+    logging.getLogger("decode.test").info("nested-cwd-line")
+
+    project_log = tmp_path / ".decode" / "logs" / "decode.log"
+    assert project_log.is_file()
+    assert "nested-cwd-line" in project_log.read_text(encoding="utf-8")
+    assert not (outputs / ".decode").exists()
+
+
+def test_log_path_walks_up_from_a_plain_subdirectory(monkeypatch, _fresh_logger, tmp_path):
+    """The same anchoring from any working directory inside the project, not just ``.decode/``."""
+    monkeypatch.delenv("DECODE_LOG_FILE", raising=False)
+    (tmp_path / ".decode").mkdir()
+    nested = tmp_path / "src" / "deep"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+
+    dlog.init_logger("INFO")
+    logging.getLogger("decode.test").info("subdir-line")
+
+    assert "subdir-line" in (tmp_path / ".decode" / "logs" / "decode.log").read_text(
+        encoding="utf-8"
+    )
+    assert not (nested / ".decode").exists()
