@@ -384,10 +384,14 @@ ensure_stack() {
       -o modal-orch -a gcs-kitaru -c ar-kitaru -sb modal-sandbox >/dev/null
   fi
 
-  uv run kitaru stack use "${STACK}" >/dev/null
-  # Pins the source root. Without it ZenML infers it from the entrypoint script — for `uv run
+  # `init` BEFORE `use`, and the order is load-bearing. `kitaru init` writes .kitaru/config.yaml with
+  # its own `active_stack_id: <default>`, so running it after `stack use` silently reverts the
+  # selection — on a FRESH deploy only (later `up`s skip init, so the bug hides on every re-run).
+  #
+  # Pins the source root too. Without it ZenML infers it from the entrypoint script — for `uv run
   # decode` that is .venv/bin, and the code archive uploads empty.
   [ -d "${REPO_ROOT}/.kitaru" ] || uv run kitaru init >/dev/null
+  uv run kitaru stack use "${STACK}" >/dev/null
   log "stack ${STACK} active"
 }
 
