@@ -6,31 +6,103 @@
 </div>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/type-open--source_course-8a2be2" alt="Open-source course">
+  <img src="https://img.shields.io/badge/cost_to_run-%240-2ea44f" alt="$0 to run">
+  <img src="https://img.shields.io/badge/articles-8-4c8eda" alt="8 articles">
+  <img src="https://img.shields.io/badge/videos-4-ff0000" alt="4 videos">
+  <img src="https://img.shields.io/badge/code-from_scratch-orange" alt="Code from scratch">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-lightgrey" alt="Apache-2.0 license">
+</p>
+
+<p align="center">
   <img src="assets/demo-frames.gif" alt="decode in the terminal" width="800">
 </p>
 
+> **Try the finished agent first — 5 minutes, $0:**
+>
+> ```bash
+> # install uv first if you don't have it:  curl -LsSf https://astral.sh/uv/install.sh | sh
+> git clone https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course.git
+> cd building-a-coding-agent-from-scratch-course
+> make install
+> cp .env.example .env   # set GEMINI_API_KEY — free at https://aistudio.google.com/apikey
+> uv run decode
+> ```
+>
+> Then type `/demo-` and pick a demo — see [what they do](#-see-it-work) below. Full guide: [install_and_usage.md](getting_started/install_and_usage.md).
+
 ## 📖 About This Course
 
-You use a coding agent every day — Claude Code, Cursor, Codex — and you have no idea what happens between your prompt and its answer. Most engineers are fine with that. It costs more than they think.
+You use a coding agent every day — Claude Code, Cursor, Codex — with no idea what happens between your prompt and its answer. That gap has a price: in [one public test by LangChain](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness), changing only the *harness* — same model throughout — moved a coding agent from roughly 30th into the top 5 on Terminal-Bench. The harness decides what the model sees, what it touches, and what happens when it's wrong — and it's the part nobody teaches.
 
-In [one public test by LangChain](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness), changing only the *harness* around a coding agent — same model throughout — moved it from roughly 30th place into the top 5 on the Terminal-Bench benchmark. The harness decides what the model sees, what it's allowed to touch, and what happens when it's wrong — and it's the part nobody teaches.
+So we spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), and turned what we found into the only kind of course that sticks: across 8 lessons, from an empty repo, you build **decode** — a terminal coding agent you point at your own projects the same way you point Claude Code at them today:
 
-This course teaches it the only way that sticks: you build one. Lesson by lesson, from an empty repo, you'll write **decode** — a terminal coding agent you can point at your own projects the same way you point Claude Code at them today:
-
-- a [Pydantic AI](https://ai.pydantic.dev) **ReAct loop** on a selectable LLM provider — **Gemini**, **OpenRouter**, or an open model you serve yourself on **Modal**,
-- driving **file / bash / web / LSP tools** and parallel read-only **Explore subagents**,
-- behind a `prompt_toolkit` + `Rich` **TUI** that asks before every tool call and lets you steer, queue, or abort a running turn,
-- with **cross-session memory**, **context compaction**, **replayable sessions**, and **Docker/Modal sandboxes** that hand the agent's work back as a git branch,
-- a **durable headless runtime** (Kitaru) that survives `kill -9` and supports model-swapped replay,
+- a [Pydantic AI](https://ai.pydantic.dev) **ReAct loop** on **Gemini**, **OpenRouter**, or an open model you serve yourself on **Modal**,
+- **file / bash / web / LSP tools** plus parallel read-only **Explore subagents**,
+- a **TUI** that asks before every tool call and lets you steer, queue, or abort a running turn,
+- **memory**, **compaction**, **replayable sessions**, and **Docker/Modal sandboxes** that hand work back as a git branch,
+- a **durable headless runtime** (Kitaru) that survives `kill -9` and replays with the model swapped,
 - **Opik tracing** and an **eval suite** that answers the question tests can't: *is the agent actually good?*
 
-By the end, nothing in your daily tools is magic anymore. You'll know why the agent asks before running `bash`, why it compacts your conversation near 80% of the context window, and why a secret must never get anywhere near the model's context — because you built the code that enforces all three.
+By lesson 2 you type a prompt and watch your own agent ask permission before running `bash`. By lesson 8 a teammate labels a GitHub issue and gets back a reviewed pull request. After that, nothing in your daily tools is magic anymore — you built the code underneath. Skip this layer and you're betting your work on tools you can't inspect.
 
-The codebase is finished and honest about how it got here: 18 Architecture Decision Records in [`docs/adr/`](docs/adr/) and 1,800+ tests that run without an API key. The dead ends are in there too — we built a credential proxy to hide the git token from the sandbox, then [deleted it](docs/adr/0016-drop-credential-proxy.md) when we proved it protected nothing. The postmortem is part of the course.
+The codebase is finished and honest: 18 [Architecture Decision Records](docs/adr/), 1,800+ tests that run without an API key, and the dead ends kept in — we built a credential proxy to hide the git token from the sandbox, then [deleted it](docs/adr/0016-drop-credential-proxy.md) when we proved it protected nothing. The postmortem is part of the course.
 
 <p align="center">
   <img src="assets/architecture.png" alt="decode architecture" width="620">
 </p>
+
+## 🎮 See It Work
+
+The finished agent ships with demo skills under [`.decode/skills/`](.decode/skills/) — open the TUI, type `/demo-`, pick one, and watch the harness you're about to build do real work:
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="assets/demo-skills.png" alt="The demo skills listed inside the TUI"/>
+      <p align="center"><i>Six demos, one keystroke away</i></p>
+    </td>
+    <td width="50%">
+      <img src="assets/demo-snake-game.png" alt="A playable Snake game built by decode"/>
+      <p align="center"><i><code>/demo-1-terminal-arcade</code> — one prompt, a playable Snake game</i></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/demo-repo-pulse.png" alt="Live GitHub repo data rendered as a web dashboard"/>
+      <p align="center"><i><code>/demo-3-repo-pulse</code> — live GitHub API data rendered as a dashboard</i></p>
+    </td>
+    <td width="50%">
+      <img src="assets/demo-knowledge-graph.png" alt="An interactive knowledge graph scraped from web articles"/>
+      <p align="center"><i><code>/demo-6-article-kg</code> — web articles scraped into an interactive knowledge graph</i></p>
+    </td>
+  </tr>
+</table>
+
+And the machinery underneath is real infrastructure you'll stand up yourself, not a diagram:
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="assets/kitaru-replay.png" alt="A durable run recorded step by step in Kitaru"/>
+      <p align="center"><i>Every run recorded step by step in Kitaru — kill it, resume it, replay it with the model swapped</i></p>
+    </td>
+    <td width="50%">
+      <img src="assets/modal-sandboxes.png" alt="Live Modal sandboxes executing the agent's tools"/>
+      <p align="center"><i>The agent's <code>bash</code> runs in disposable Modal sandboxes — six live here, ~1.3s cold start</i></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/modal-open-model.png" alt="A self-served open model endpoint on Modal"/>
+      <p align="center"><i>Your own Qwen3.6-35B served on an H200 — same harness, your model</i></p>
+    </td>
+    <td width="50%">
+      <img src="assets/opik-threads.png" alt="Sessions traced in Opik with secrets scrubbed"/>
+      <p align="center"><i>Every session traced in Opik — note the secrets scrubbed before they reach a log</i></p>
+    </td>
+  </tr>
+</table>
 
 ## 🤖 What You'll Do
 
@@ -43,24 +115,11 @@ The codebase is finished and honest about how it got here: 18 Architecture Decis
 - **Evaluate the thing you built**: outcome benchmarks, behavior regression probes, and an LLM judge — because a green test suite can't tell you the agent got worse at its job.
 - **Ship it to a team**: a teammate labels a GitHub issue and receives a reviewed pull request; you compare 5 models on the same task and merge the winner.
 
-## 🎯 What You'll Learn
-
-Every lesson works concrete-first: you watch `decode` do something — gate a `bash` call, compact a conversation near 80% of the window, resume a killed run — and then pull out the principle that generalizes to any agentic system:
-
-- The anatomy of an agentic harness: harness vs loop vs model, and the seams between them.
-- ReAct agent loops with tool calling and streaming (Pydantic AI).
-- Human-in-the-loop design: approval gates, steering, follow-ups, aborts, durable waits.
-- Context engineering with measurement: memory, compaction tiers, skills, LSP, truncation.
-- Sandboxing and the trust ladder: permissions → Docker → remote Modal — with a credential story that is true as written.
-- Durable execution, crash recovery, and replay with checkpoints (Kitaru / ZenML).
-- Multi-provider inference, including serving your own open model on Modal.
-- Subagent architectures: catalogs, parallel fan-out, report contracts.
-- Observability and evaluation for agents: tracing, benchmarks, regression probes, LLM judges (Opik).
-- The engineering discipline that holds it together: ADRs, a glossary, deterministic tests with a scripted model, CI, `uv`/`ruff`/`pytest`.
+Every step works concrete-first: watch `decode` do it — gate a `bash` call, compact near 80% of the window, resume a killed run — then pull out the principle that generalizes to any agentic system: context engineering, the trust ladder, durable execution, subagent design, agent evals. The [course outline](#-course-outline) maps each lesson to its code modules and ADRs.
 
 ## 👥 Who Should Join?
 
-**This course is for people who learn by building.** You'll finish with your own working coding agent, a mental model of every layer inside the tools you already use, and a codebase full of patterns to steal for your own agentic applications. Frameworks churn every six months; the mental models you build here outlast them. Skip this layer and you're betting your work on tools you can't inspect.
+**For: engineers who learn by building.** You'll finish with your own working coding agent, a mental model of every layer in the tools you already use, and patterns to steal for your own agentic applications. Frameworks churn every six months; these mental models outlast them.
 
 | Target Audience | Why Join? |
 |-----------------|-----------|
@@ -237,6 +296,12 @@ We will deeply appreciate your support for the AI community and future readers �
 <a href="https://www.decodingai.com/" target="_blank">
   <img src="assets/decodingai.jpg" alt="Decoding AI Magazine" width="100%"/>
 </a>
+
+## ⭐ One More Thing
+
+If this course removes one layer of magic from the tools you use every day, [star the repo](https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course) — stars are how other engineers find it.
+
+And tell us: **which part of your daily coding agent is still a black box to you — the loop, the sandbox, the memory, something else?** [Open an issue](https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues) and say so. We read every one.
 
 ## License
 
