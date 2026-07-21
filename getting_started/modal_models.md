@@ -1,8 +1,8 @@
 # Modal Model Catalog — Picking & Serving a Model for the `decode` Harness
 
 > **Snapshot:** 2026-06-26, read from Modal's **Auto Endpoints** "Create Endpoint" flow. Benchmark
-> figures are Modal's own **estimates** — treat them as relative, not absolute. Catalogs drift;
-> re-check the dashboard before committing GPU budget.
+> figures are Modal's own **estimates** — treat them as relative, and validate with
+> `modal endpoint benchmark`. Catalogs drift; re-check the dashboard before committing GPU budget.
 
 ## TL;DR
 
@@ -129,7 +129,3 @@ Auth nuance: Modal's proxy uses custom `Modal-Key` / `Modal-Secret` headers, not
 Bearer`. Both proxy tokens set → sent as default headers; neither set → no headers and a placeholder
 `api_key="EMPTY"`. The startup guard enforces both-or-neither, so a half-set pair is a friendly
 config error, not a silent 401.
-
-## Caveats
-
-- **Estimates, not measurements** — validate with `modal endpoint benchmark` before budgeting.

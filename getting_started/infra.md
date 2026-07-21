@@ -50,7 +50,7 @@ Want a **Linux x86-64** kernel and `/workspace` — that proves the `bash` ran i
 not on your laptop. The first submit builds and pushes the flow image (3-5 min); later ones reuse it
 (~90s). Watch it land with `uv run kitaru executions list`.
 
-**Done for the day?** The stack bills ~$16/month while it is up:
+**Done for the day?** Tear it down (it bills while up):
 
 ```bash
 scripts/deploy.sh down <your-project>

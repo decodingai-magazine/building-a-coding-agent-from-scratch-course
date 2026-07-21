@@ -30,7 +30,7 @@ Upstream of `--from` serves from the original run's cache; the anchor and downst
 
 ### macOS: the local Kitaru server crashes mid-run
 
-A run starts fine, then floods with `RemoteDisconnected` followed by `Connection refused` on `127.0.0.1:8383`. The server *daemon* died — its log (`~/Library/Application Support/kitaru/zen_server/daemon/service.log`) ends with `objc[…]: +[NSCharacterSet initialize] may have been in progress in another thread when fork() was called … Crashing instead.` That is Apple's ObjC fork-safety abort: the daemon forks while the Apple runtime is initializing on another thread, and macOS kills the child rather than inherit a half-built runtime. Fix it either way:
+A run starts fine, then floods with `RemoteDisconnected` / `Connection refused` on `127.0.0.1:8383`: the server daemon died to Apple's ObjC fork-safety abort — its log (`~/Library/Application Support/kitaru/zen_server/daemon/service.log`) ends with `objc[…]: … fork() was called … Crashing instead.` Fix either way:
 
 ```bash
 uv run kitaru logout                                          # simplest: no daemon, no crash

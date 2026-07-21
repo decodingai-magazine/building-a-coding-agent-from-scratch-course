@@ -6,9 +6,6 @@ does, in four tracks over one shared Opik harness. It lives in top-level [`evals
 course material *about* the agent, never shipped in the wheel — and reads its config off the same
 `Settings` surface as decode itself.
 
-This page is the one-stop map: what each track answers, and the exact command to run it. Each track's
-own README goes deeper; this page links, it doesn't duplicate.
-
 | Track | Answers | How it's graded | Run it with |
 |---|---|---|---|
 | **Demo Skills** | "does it *impress*?" | a human watching | `/demo-N-...` in the REPL |
@@ -28,7 +25,7 @@ The `evals/` package overview is [`evals/README.md`](../evals/README.md).
 
 ## 1. Demo Skills — the human-judged showcase
 
-Five [Skills](../docs/glossary.md) under `.decode/skills/demo-N-*/`, each a scripted showcase you trigger by
+Six [Skills](../docs/glossary.md) under `.decode/skills/demo-N-*/`, each a scripted showcase you trigger by
 name in the REPL (no Opik, no keys beyond your provider — a person is the judge):
 
 ```bash
@@ -43,6 +40,7 @@ decode                          # start the REPL in the repo root
 | `/demo-3-repo-pulse` | live GitHub API data → a single-file dashboard with charts |
 | `/demo-4-review-swarm` | fan out three parallel Explore [Subagents](../docs/glossary.md) into one verdict |
 | `/demo-5-sandbox-feature-pr` | the meta "decode improves decode" [Sandbox](../docs/glossary.md) + Hand-back → draft PR flow |
+| `/demo-6-article-kg` | web articles fetched and rendered into an interactive knowledge graph |
 
 Each `SKILL.md` carries its own instructions; run one, watch the transcript, judge it yourself.
 

@@ -12,19 +12,16 @@ every credential decode holds. Nothing else reads one. So there is only ever one
 One surface, two injection mechanisms, selected by one variable ([ADR-0015](../docs/adr/0015-environment-bucket-secrets.md)).
 Values land in `Settings` **only** — never `os.environ` — so a model-chosen `bash` never inherits one.
 
-There is a **second, much smaller question**, and it is worth keeping separate: *which of those values does
-the **sandbox** get?* Exactly one, and only if you ask for it — `SANDBOX_GIT_TOKEN` ([Part 2](#part-2--the-sandbox-git-token-sandbox_git_token)).
-Everything else in `Settings` stays in the harness process.
+A second, smaller question, kept separate: *which of those values does the **sandbox** get?* Exactly one,
+opt-in — `SANDBOX_GIT_TOKEN` ([Part 2](#part-2--the-sandbox-git-token-sandbox_git_token)). Everything else
+stays in the harness process.
 
-**How much of this is Kitaru?** Exactly one line. The Environment Bucket **is** a Kitaru secret, and that
-settings source is **the only `get_secret` seam in the whole codebase**
-([ADR-0015 §6](../docs/adr/0015-environment-bucket-secrets.md)). (`MODAL_PROXY_TOKEN_ID` / `_SECRET` are an
-unrelated third thing wearing the word "proxy": Modal's own endpoint-auth headers — see
-[`modal_models.md`](modal_models.md).)
+Kitaru's footprint is one line: the Environment Bucket **is** a Kitaru secret — the only `get_secret` seam
+in the codebase ([ADR-0015 §6](../docs/adr/0015-environment-bucket-secrets.md)). (`MODAL_PROXY_TOKEN_ID` /
+`_SECRET` are unrelated: Modal's own endpoint-auth headers — see [`modal_models.md`](modal_models.md).)
 
-The rest of this file is a manual e2e tutorial. Every case is an **A/B**: the same command with one thing
-flipped, and a different observable. Part 4 is an automated backstop that proves the same claims with no
-network, no PAT, and no Kitaru.
+The rest is a manual e2e tutorial. Every case is an **A/B**: the same command with one thing flipped, and a
+different observable. Part 4 is the automated backstop — same claims, no network, no PAT, no Kitaru.
 
 > **Clean break — the Credential Proxy is gone** (why: [ADR-0016](../docs/adr/0016-drop-credential-proxy.md); stale-key behavior: Part 2c). What replaces it is [Part 2](#part-2--the-sandbox-git-token-sandbox_git_token) — one token, direct-injected, both backends, and an honest warning that the model can read it.
 
@@ -52,12 +49,10 @@ On macOS the local Kitaru server can also die mid-run with an ObjC fork-safety a
 ## Part 1 — the config surface (`DECODE_ENV`)
 
 > **Coming from an older `.env` ([ADR-0015 §4](../docs/adr/0015-environment-bucket-secrets.md))?**
-> `RUNTIME_SECRET_NAME`, `RUNTIME_SECRET_STORE_CONFIG` and `RUNTIME_SECRET_STORE_MODEL_KEY` are **deleted** —
-> no shim, no deprecation warning, no fail-fast guard. Pydantic's `extra="ignore"` means a stale line in your
-> `.env` is now **silently ignored**: decode will start, read your `.env` like any other local run, and never
-> tell you the knob did nothing. *This paragraph is the only thing standing between you and that silent no-op.*
-> The migration is two commands — `make sync-secrets ENV=<env>` once, then `DECODE_ENV=<env>` on every run.
-> Per-credential secrets from the old world (a `decode-llm-creds`, a lone `github-token`) are now dead weight:
+> `RUNTIME_SECRET_NAME`, `RUNTIME_SECRET_STORE_CONFIG` and `RUNTIME_SECRET_STORE_MODEL_KEY` are **deleted**,
+> and pydantic's `extra="ignore"` means a stale line in your `.env` is **silently ignored** — decode starts
+> and never tells you the knob did nothing. Migrate: `make sync-secrets ENV=<env>` once, then
+> `DECODE_ENV=<env>` on every run. Old per-credential secrets are dead weight:
 > `uv run kitaru secrets delete <name>`.
 
 `DECODE_ENV` decides **where `Settings` gets its values, and nothing else** — not session dirs, not log paths,
@@ -118,19 +113,16 @@ This REPLACES the entire contents of decode-staging with these 2 key(s) — `kit
 Proceed? [y/N]:
 ```
 
-Read that output — every line of it is a design decision:
+Every line of that output is a design decision:
 
-- **Key names only, never values** — in the diff (`+` added, `-` removed, `~` changed, `=` unchanged), in the
-  confirmation, and even in a kitaru error (its stderr echoes the argv, so it is redacted before printing).
-- **REPLACES.** `kitaru secrets set` overwrites the *whole* key set — a partial update destroys the other keys.
-  So the push is one full-surface call, which is what makes the bucket an exact **mirror** of your file rather
-  than a pile of merged history. A key you delete from `.env` is gone from the bucket on the next sync.
-- **Skipped** keys are the ones that are not `Settings` fields (`MODAL_TOKEN_ID`, `DECODE_LOG_FILE`, …). They
-  are read from `os.environ`, so the bucket could never feed them anyway — mirroring one would just add an
-  unreadable secret to the store.
-- **One-way.** `.env` → Kitaru, never back. There is deliberately no pull: dumping a prod bucket into a
-  developer's working tree is the failure this whole design exists to prevent. Add `--yes` (CI) to skip the
-  prompt.
+- **Key names only, never values** — in the diff, the confirmation, even a kitaru error (its stderr is
+  redacted before printing).
+- **REPLACES** — `kitaru secrets set` overwrites the *whole* key set, so the bucket is an exact **mirror**
+  of your file; a key you delete from `.env` is gone on the next sync.
+- **Skipped** keys are not `Settings` fields (`MODAL_TOKEN_ID`, …) — read from `os.environ`, the bucket
+  could never feed them.
+- **One-way** — `.env` → Kitaru, never back: dumping a prod bucket into a developer's working tree is the
+  failure this design exists to prevent. `--yes` skips the prompt (CI).
 
 Confirm it landed (names only — `--show-values` exists, and you do not need it):
 
@@ -182,11 +174,10 @@ credential at all.
 > repo-scoped, revocable** PAT — never a broadly-scoped or organisation-wide one — and revoke it when you are
 > done. Want the stronger property? **Leave `SANDBOX_GIT_TOKEN` unset** and take host-side hand-back (2a).
 
-**Where does the token itself come from?** The one config surface — this is not a separate mechanism. Your
-`.env` at `DECODE_ENV=local`, the Environment Bucket at a remote env; `sandbox_git_token()` is a plain read of
-the already-hydrated `Settings`, with no second lookup anywhere. Mirror it into a bucket like any other key
-(`make sync-secrets ENV=staging`) and `DECODE_ENV=staging SANDBOX_MODE=docker decode run --repo …` works with
-the token absent from your shell entirely.
+**Where does the token itself come from?** The one config surface: `.env` at `local`, the bucket at a remote
+env — `sandbox_git_token()` reads the already-hydrated `Settings`, no second lookup. Mirror it like any other
+key and `DECODE_ENV=staging SANDBOX_MODE=docker decode run --repo …` works with the token absent from your
+shell entirely.
 
 > **Where a tool call actually runs.** Only `bash` (and the file/search tools) run inside the Worker.
 > **`web_fetch` runs host-side** — a plain `httpx` call in the decode process ([`tools/web.py`](../src/decode/tools/web.py)) —
@@ -221,12 +212,10 @@ larger ask: letting the **model itself** push and open the PR.
 
 > ### `rm -rf .decode/sandbox` before *any* `--repo` run — not optional
 >
-> `--repo` clones **only into an empty Workspace**. A populated `.decode/sandbox` is **reused, never
-> re-cloned** (re-cloning would discard in-progress work), so `--repo` is **silently ignored** — there is no
-> `origin`, and the push dies with a baffling `'origin' does not appear to be a git repository`. Any earlier
-> run without `--repo` leaves exactly such a tree behind (an empty scratch dir the model `git init`'d).
-> Confirm before you blame the token: `git -C .decode/sandbox remote -v` — a clone has an `origin`, a leftover
-> scratch tree has none.
+> `--repo` clones **only into an empty Workspace** ([sandboxing.md](sandboxing.md)); a populated
+> `.decode/sandbox` is reused and `--repo` **silently ignored** — no `origin`, and the push dies with a
+> baffling `'origin' does not appear to be a git repository`. Confirm before you blame the token:
+> `git -C .decode/sandbox remote -v` — a clone has an `origin`, a leftover scratch tree has none.
 
 ### 2b. ON — the model pushes the branch and opens the PR itself
 
@@ -300,11 +289,9 @@ uv run pytest tests/unit/decode/sandbox/test_docker_backend.py \
 uv run pytest tests/integration/test_sandbox_capstone.py -k token -v
 ```
 
-[`test_sandbox_capstone.py`](../tests/integration/test_sandbox_capstone.py) asserts exactly the manual claims of
-Part 2 — `test_the_git_token_is_direct_injected_in_both_backends` (one helper constant, one token gate, and
-the secret in **no** argv), `test_no_token_means_no_credential_machinery_anywhere` (2a's default), and, when a
-daemon or Modal credentials are actually present, `test_real_docker_injects_the_git_token_into_the_worker` /
-`test_real_modal_injects_the_git_token_into_the_sandbox` against a **live** sandbox with a dummy token (no
-GitHub call). [`test_env_example_drift.py`](../tests/unit/decode/config/test_env_example_drift.py) is why
+[`test_sandbox_capstone.py`](../tests/integration/test_sandbox_capstone.py) asserts Part 2's manual claims:
+one helper constant, one token gate, the secret in **no** argv; unset → no credential machinery; and, when a
+docker daemon or Modal credentials exist, live injection with a dummy token (no GitHub call).
+[`test_env_example_drift.py`](../tests/unit/decode/config/test_env_example_drift.py) is why
 [`.env.example`](../.env.example) cannot lie: its `KEY=` lines and the `Settings` fields must match in **both**
-directions, with no allowlist — which is also what guarantees the retired proxy keys are really gone.
+directions — which also guarantees the retired proxy keys are really gone.

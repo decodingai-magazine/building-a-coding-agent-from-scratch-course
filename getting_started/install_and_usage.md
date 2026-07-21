@@ -13,9 +13,7 @@ cp .env.example .env      # then set GEMINI_API_KEY (free: https://aistudio.goog
 uv run decode
 ```
 
-The rest of this guide is the same path, one numbered step at a time — then a map of everything decode can do.
-
-> **Pro tip:** Read the accompanying lessons first for a better understanding of the system you'll build (see the [course outline](../README.md#-course-outline)).
+The rest is the same path, one step at a time, then a map of everything decode can do. For the *why* behind each piece, read the lessons ([course outline](../README.md#-course-outline)).
 
 ## 1. Prerequisites
 
@@ -98,7 +96,7 @@ You get an interactive REPL: type a message, the agent streams a reply, and ever
 
 Everything decode produces lands under **`<cwd>/.decode/`** (gitignored): `sessions/*.jsonl` (replayable transcripts), `MEMORY.md` (cross-session memory), `logs/decode.log` (logs stay off the terminal).
 
-**Try a skill.** Skills are reusable playbooks in `.decode/skills/<name>/SKILL.md`, triggered with `/<name>` (or invoked by the agent itself). This repo ships a set of demo skills — try the arcade one and watch the agent build a colorful, playable Snake game in a single stdlib-`curses` Python file:
+**Try a skill.** Skills are reusable playbooks in `.decode/skills/<name>/SKILL.md`, triggered with `/<name>` (or invoked by the agent itself). Try a demo — the agent builds a playable Snake game:
 
 ```bash
 /demo-1-terminal-arcade
@@ -112,7 +110,7 @@ The full feature map — each row is one line here and a deep dive one click awa
 |---|---|---|
 | **Gated tools** | `read` · `glob` · `grep` · `lsp` · `agent` · `write` · `edit` · `bash` · `todo_write` · `web_fetch` · `ask_user`. Read-only tools auto-allow; everything else asks `y/n` first. | [ADR-0002](../docs/adr/0002-milestone-1-vanilla-agent-architecture.md) |
 | **Permission modes & agents** | allow/ask/deny rules, modes (default/plan/edit/bypass), and a Build/Plan/Code-Reviewer agents catalog. | [ADR-0003](../docs/adr/0003-milestone-2-permission-system-and-agents-catalog.md) |
-| **Skills** | reusable playbooks triggered with `/<name>` (or by the agent itself), living in `.decode/skills/<name>/SKILL.md` — try `/demo-1-terminal-arcade`. | [ADR-0004](../docs/adr/0004-milestone-3-skills.md) |
+| **Skills** | reusable playbooks triggered with `/<name>` — see [Try a skill](#5-run) above. | [ADR-0004](../docs/adr/0004-milestone-3-skills.md) |
 | **Memory** | loads `AGENTS.md` + `.decode/MEMORY.md` into context; appends a one-sentence session summary on exit. | [ADR-0002](../docs/adr/0002-milestone-1-vanilla-agent-architecture.md) |
 | **Sessions & resume** | every session is a replayable JSONL transcript; `decode --resume [<session-id>]` continues it. | [ADR-0002](../docs/adr/0002-milestone-1-vanilla-agent-architecture.md) |
 | **Multi-provider inference** | one seam, three providers: Gemini, OpenRouter, or a model you serve on Modal. | [ADR-0005](../docs/adr/0005-multi-llm-provider-support.md), [modal_models.md](modal_models.md) |
@@ -140,14 +138,7 @@ resolves it per run, for the model that run actually uses — so `decode run "�
 | 3 | A small static table | Gemini 2.5/3.5 → 1,048,576; Qwen3.6-35B-A3B → 262,144. |
 | 4 | `200000` | The conservative assumption. Decode says so once on stderr at startup. |
 
-The probe is strictly best effort. It runs **at most once per model per process**, never on
-`decode --help` / `--version`, is bounded by a short timeout, and any failure — offline, 401, DNS,
-a changed payload — falls silently through to the table and then the fallback. It is never fatal
-and never prints a traceback. Which source won is in the debug log
-(`context window for '<model>': <n> tokens (source=…)`).
-
-Set `COMPACTION_CONTEXT_WINDOW_TOKENS` explicitly if your endpoint cold-starts slowly (an idle
-Modal GPU can take a while to answer `/v1/models`) or reports a window you do not trust.
+The probe is best effort: at most once per model per process, short timeout, never on `--help`/`--version`, never fatal — any failure falls silently through to the table, then the fallback. The winning source lands in the debug log. Set `COMPACTION_CONTEXT_WINDOW_TOKENS` if your endpoint cold-starts slowly (an idle Modal GPU can take a while to answer `/v1/models`) or reports a window you don't trust.
 
 ## Develop
 
