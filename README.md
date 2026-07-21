@@ -101,7 +101,7 @@ Self-paced, project-based, and open-source â€” no paywall, no certificate theate
   <tr style="border: none;">
     <td width="20%" style="border: none;">
       <a href="https://www.decodingai.com/" aria-label="Decoding AI">
-        <img src="https://github.com/user-attachments/assets/f2f2f9c0-54b7-4ae3-bf8d-23a359c86982" alt="Decoding AI Logo" width="150"/>
+        <img src="docs/decoding-ai-logo.png" alt="Decoding AI Logo" width="150"/>
       </a>
     </td>
     <td width="80%" style="border: none;">
@@ -254,7 +254,7 @@ We will deeply appreciate your support for the AI community and future readers ð
   <tr style="border: none;">
     <td width="20%" style="border: none;">
       <a href="https://www.decodingai.com/" aria-label="Decoding AI">
-        <img src="https://github.com/user-attachments/assets/f2f2f9c0-54b7-4ae3-bf8d-23a359c86982" alt="Decoding AI Logo" width="150"/>
+        <img src="docs/decoding-ai-logo.png" alt="Decoding AI Logo" width="150"/>
       </a>
     </td>
     <td width="80%" style="border: none;">
