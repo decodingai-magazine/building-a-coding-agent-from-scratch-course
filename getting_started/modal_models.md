@@ -49,9 +49,9 @@ GPT-OSS-on-one-B200 wins on cost-per-token; GLM is the premium option.
 
 ## Setting up an endpoint via the Modal CLI (Auto Endpoints)
 
-Docs: [endpoints guide](https://modal.com/docs/guide/endpoints) ·
-[metrics](https://modal.com/docs/guide/endpoint-metrics) ·
-[benchmarks](https://modal.com/docs/guide/endpoint-benchmarks). If a flag has drifted, `modal
+Docs: [endpoints guide](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng) ·
+[metrics](https://modal.com/docs/guide/endpoint-metrics?source=decodingai&campaign=harnesseng) ·
+[benchmarks](https://modal.com/docs/guide/endpoint-benchmarks?source=decodingai&campaign=harnesseng). If a flag has drifted, `modal
 endpoint create --help` is the source of truth.
 
 ### Authenticate the CLI

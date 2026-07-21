@@ -53,8 +53,8 @@ You need exactly **one** key to start — everything else is opt-in:
 |---|---|---|
 | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey) — free tier | **the default provider; the only key you need to start** |
 | `OPENROUTER_API_KEY` | [openrouter.ai](https://openrouter.ai) — `:free` models cost $0 | only `LLM_PROVIDER=openrouter` |
-| `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | [modal.com](https://modal.com) — $30 free credits | only the Modal sandbox or a self-served model ([modal_models.md](modal_models.md)) |
-| `OPIK_API_KEY` | [comet.com](https://www.comet.com/opik) — free tier | only tracing + evals; unset = silent no-op |
+| `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` | [modal.com](https://modal.com?source=decodingai&campaign=harnesseng) — $30 free credits | only the Modal sandbox or a self-served model ([modal_models.md](modal_models.md)) |
+| `OPIK_API_KEY` | [comet.com](https://www.comet.com/signup?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) — free tier | only tracing + evals; unset = silent no-op |
 | `SANDBOX_GIT_TOKEN` | a GitHub fine-grained, repo-scoped PAT | only to let the model itself push / open PRs from a sandbox ([sandboxing.md](sandboxing.md)) |
 
 Every variable decode reads — required and optional, with comments — is documented in [`.env.example`](../.env.example).

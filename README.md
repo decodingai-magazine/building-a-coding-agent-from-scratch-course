@@ -2,7 +2,7 @@
   <img src="assets/coding-agent-logo.png" alt="decode logo" width="140">
   <h1>Building a Coding Agent from Scratch</h1>
   <h3>From agent user to agent builder — learn how coding agents like Claude Code actually work by building your own, step by step</h3>
-  <p class="tagline">Open-source course by <a href="https://www.decodingai.com">Decoding AI</a> in collaboration with <a href="https://modal.com">Modal</a>, <a href="https://www.comet.com/site/products/opik/">Opik</a> and <a href="https://www.zenml.io">ZenML</a>.</p>
+  <p class="tagline">Open-source course by <a href="https://www.decodingai.com">Decoding AI</a> in collaboration with <a href="https://modal.com?source=decodingai&campaign=harnesseng">Modal</a>, <a href="https://www.comet.com/site/?utm_source=newsletter&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik</a> and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">ZenML</a>.</p>
 </div>
 
 <p align="center">
@@ -35,16 +35,9 @@
 
 You use a coding agent every day — Claude Code, Cursor, Codex — with no idea what happens between your prompt and its answer. That gap has a price: in [one public test by LangChain](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness), changing only the *harness* — same model throughout — moved a coding agent from roughly 30th into the top 5 on Terminal-Bench. The harness decides what the model sees, what it touches, and what happens when it's wrong — and it's the part nobody teaches.
 
-So we spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), and turned what we found into the only kind of course that sticks: across 8 lessons, from an empty repo, you build **decode** — a terminal coding agent you point at your own projects the same way you point Claude Code at them today:
+So we spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), and turned what we found into the only kind of course that sticks: across 8 lessons, from an empty repo, you build **decode** — a terminal coding agent you point at your own projects the same way you point Claude Code at them today. Under the hood: a [Pydantic AI](https://ai.pydantic.dev) **ReAct loop** on Gemini, OpenRouter, or an open model you serve on [Modal](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng); **file / bash / web / LSP tools** and parallel **Explore subagents**; Docker/[Modal](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng) **sandboxes**; a durable [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) **runtime**; [Opik](https://www.comet.com/site/?utm_source=newsletter&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) **tracing and evals**.
 
-- a [Pydantic AI](https://ai.pydantic.dev) **ReAct loop** on **Gemini**, **OpenRouter**, or an open model you serve yourself on **Modal**,
-- **file / bash / web / LSP tools** plus parallel read-only **Explore subagents**,
-- a **TUI** that asks before every tool call and lets you steer, queue, or abort a running turn,
-- **memory**, **compaction**, **replayable sessions**, and **Docker/Modal sandboxes** that hand work back as a git branch,
-- a **durable headless runtime** (Kitaru) that survives `kill -9` and replays with the model swapped,
-- **Opik tracing** and an **eval suite** that answers the question tests can't: *is the agent actually good?*
-
-By lesson 2 you type a prompt and watch your own agent ask permission before running `bash`. By lesson 8 a teammate labels a GitHub issue and gets back a reviewed pull request. After that, nothing in your daily tools is magic anymore — you built the code underneath. Skip this layer and you're betting your work on tools you can't inspect.
+By lesson 2 you type a prompt and watch your own agent ask permission before running `bash`. After that, nothing in your daily tools is magic anymore — you built the code underneath. Skip this layer and you're betting your work on tools you can't inspect.
 
 The codebase is finished and honest: 18 [Architecture Decision Records](docs/adr/), 1,800+ tests that run without an API key, and the dead ends kept in — we built a credential proxy to hide the git token from the sandbox, then [deleted it](docs/adr/0016-drop-credential-proxy.md) when we proved it protected nothing. The postmortem is part of the course.
 
@@ -85,21 +78,21 @@ And the machinery underneath is real infrastructure you'll stand up yourself, no
   <tr>
     <td width="50%">
       <img src="assets/kitaru-replay.png" alt="A durable run recorded step by step in Kitaru"/>
-      <p align="center"><i>Every run recorded step by step in Kitaru — kill it, resume it, replay it with the model swapped</i></p>
+      <p align="center"><i>Every run recorded step by step in <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru</a> — kill it, resume it, replay it with the model swapped</i></p>
     </td>
     <td width="50%">
       <img src="assets/modal-sandboxes.png" alt="Live Modal sandboxes executing the agent's tools"/>
-      <p align="center"><i>The agent's <code>bash</code> runs in disposable Modal sandboxes — six live here, ~1.3s cold start</i></p>
+      <p align="center"><i>The agent's <code>bash</code> runs in disposable <a href="https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng">Modal sandboxes</a> — six live here, ~1.3s cold start</i></p>
     </td>
   </tr>
   <tr>
     <td width="50%">
       <img src="assets/modal-open-model.png" alt="A self-served open model endpoint on Modal"/>
-      <p align="center"><i>Your own Qwen3.6-35B served on an H200 — same harness, your model</i></p>
+      <p align="center"><i>Your own Qwen3.6-35B served on an H200 via a <a href="https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng">Modal endpoint</a> — same harness, your model</i></p>
     </td>
     <td width="50%">
       <img src="assets/opik-threads.png" alt="Sessions traced in Opik with secrets scrubbed"/>
-      <p align="center"><i>Every session traced in Opik — note the secrets scrubbed before they reach a log</i></p>
+      <p align="center"><i>Every session traced in <a href="https://www.comet.com/site/?utm_source=newsletter&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik</a> — note the secrets scrubbed before they reach a log</i></p>
     </td>
   </tr>
 </table>
@@ -119,7 +112,7 @@ Every step works concrete-first: watch `decode` do it — gate a `bash` call, co
 
 ## 👥 Who Should Join?
 
-**For: engineers who learn by building.** You'll finish with your own working coding agent, a mental model of every layer in the tools you already use, and patterns to steal for your own agentic applications. Frameworks churn every six months; these mental models outlast them.
+**For: engineers who learn by building.** You'll finish with your own working coding agent, a mental model of every layer in the tools you already use, and patterns to steal for your own agentic applications.
 
 | Target Audience | Why Join? |
 |-----------------|-----------|
@@ -137,29 +130,22 @@ Every step works concrete-first: watch `decode` do it — gate a `bash` call, co
 
 ## 💰 Cost Structure
 
-The course is open-source and free! Running the code costs **$0** if you stick to free tiers:
+Running the code costs **$0** if you stick to free tiers:
 
 | Service | Cost |
 |---------|------|
 | Gemini API (default provider) | free tier ([Google AI Studio](https://aistudio.google.com/apikey)) |
 | OpenRouter (alternative provider) | $0 on `:free` models (optional $10 credit raises the daily cap) |
-| Modal (self-served open models + remote sandbox) | $30 free credits |
-| Opik (tracing + evals) | free tier |
-| Kitaru (durable runtime) | free, runs locally offline |
+| [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (self-served open models + remote sandbox) | $30 free credits |
+| [Opik](https://www.comet.com/site/?utm_source=newsletter&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals) | free tier |
+| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (durable runtime) | free, runs locally offline |
 | GCP — deploy the agent to run remotely *(optional)* | ~$16/month while it's up — see [infra.md](getting_started/infra.md) |
-
-The **only** part that costs real money is the optional last step: deploying the agent to GCP so headless runs execute entirely in the cloud ([infra.md](getting_started/infra.md)). Everything else — including the whole lesson track — runs free and local, and the stack tears down with one command when you're done.
 
 **Reading-only? Everything's free!**
 
 ## ⚙️ How It Works
 
-Self-paced, project-based, and open-source — no paywall, no certificate theater:
-
-1. **Read the lesson** on [Decoding AI](https://www.decodingai.com) — each one covers one layer of the agent.
-2. **Run the matching code** — every lesson maps to specific modules in this repo (see the [course outline](#-course-outline)).
-3. **Go one level deeper** when you want the *why* — every non-obvious decision has an ADR recording the alternatives we rejected.
-4. **Make it yours** — point `decode` at your own projects, swap the provider, break it, extend it. The 1,800+ tests will tell you when you've broken something real.
+Self-paced and project-based — no paywall, no certificate theater: read the lesson on [Decoding AI](https://www.decodingai.com), run the matching code, go one level deeper via the ADRs — then point `decode` at your own projects and break it.
 
 ## 📬 Learn How to Build Coding Agents From Scratch
 
@@ -226,8 +212,6 @@ Everything lives under [`getting_started/`](getting_started/) — one core guide
 | [modal_models.md](getting_started/modal_models.md) | Picking and serving your own open model on Modal. |
 | [infra.md](getting_started/infra.md) | Deploying the remote runtime stack to the cloud. 💰 *The only part of the course that costs real money (~$16/month on GCP) — and it's entirely optional.* |
 
-**Pro tip:** Read the accompanying lessons first for a better understanding of the system you'll build.
-
 ## 🤝 Sponsors
 
 <p align="center">
@@ -235,43 +219,28 @@ Everything lives under [`getting_started/`](getting_started/) — one core guide
 </p>
 
 <p align="center">
-  Special thanks to <a href="https://modal.com" target="_blank"><b>Modal</b></a>, <a href="https://www.comet.com/site/products/opik/" target="_blank"><b>Opik</b></a> (by Comet), and <a href="https://www.zenml.io" target="_blank"><b>Kitaru</b></a> (by ZenML) for sponsoring this open-source course and keeping it free!
+  Special thanks to <a href="https://modal.com?source=decodingai&campaign=harnesseng" target="_blank"><b>Modal</b></a>, <a href="https://www.comet.com/site/?utm_source=newsletter&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course" target="_blank"><b>Opik</b></a> (by Comet), and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand" target="_blank"><b>Kitaru</b></a> (by ZenML) for sponsoring this open-source course and keeping it free!
+</p>
+
+<p align="center">
+  Opik and Kitaru are open source, too — star them: <a href="https://github.com/comet-ml/opik" target="_blank">Opik on GitHub</a> · <a href="https://github.com/zenml-io/kitaru" target="_blank">Kitaru on GitHub</a>.
 </p>
 
 ## 💡 Questions and Troubleshooting
 
-Have questions or running into issues? We're here to help!
-
-Open a [GitHub issue](https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues) for:
-- Questions about the course material
-- Technical troubleshooting (setup, providers, sandbox, runtime)
-- Clarification on concepts
-
-Known gotchas (macOS Kitaru daemon crash, non-tool-capable models, stale sandbox Workspaces) are documented inline in the [`getting_started/`](getting_started/) guides.
+Open a [GitHub issue](https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues) for course questions, setup trouble, or concept clarifications. Known gotchas (macOS Kitaru daemon crash, non-tool-capable models, stale sandbox Workspaces) are documented inline in the [`getting_started/`](getting_started/) guides.
 
 ## ❓ FAQ
 
-**Is the code complete, or does it grow with the lessons?**
-Complete. The full agent is in this repo today — lessons publish progressively and walk you through how it got here, decision by decision.
-
 **Do I need a paid API key?**
-No. The default Gemini provider has a free tier, OpenRouter routes across `:free` models, and Modal gives $30 in credits — see [Cost Structure](#-cost-structure).
+No. The default Gemini provider has a free tier, OpenRouter routes across `:free` models, and [Modal](https://modal.com?source=decodingai&campaign=harnesseng) gives $30 in credits — see [Cost Structure](#-cost-structure).
 
 **How does this compare to the paid [Agent Engineering course](https://academy.towardsai.net/courses/agent-engineering?ref=b3ab31)?**
-They sit one layer apart. [Agent Engineering](https://academy.towardsai.net/courses/agent-engineering?ref=b3ab31) (with Towards AI) teaches you to design, evaluate, and deploy production multi-agent *applications* — research agents, writing workflows, MCP servers, CI/CD. This free course goes underneath: you build the *coding agent harness itself* — the loop, the permission gate, the sandbox, the durable runtime that tools like Claude Code are made of. If Agent Engineering teaches you to engineer agents, this course teaches you to build the tool that builds them. They pair well; neither requires the other.
+They sit one layer apart. [Agent Engineering](https://academy.towardsai.net/courses/agent-engineering?ref=b3ab31) (with Towards AI) teaches you to design, evaluate, and deploy production multi-agent *applications*. This free course goes underneath: you build the *coding agent harness itself* — the loop, the permission gate, the sandbox, the durable runtime that tools like Claude Code are made of. If Agent Engineering teaches you to engineer agents, this course teaches you to build the tool that builds them.
 
 ## 🥂 Contributing
 
-As an open-source course, we may not be able to fix all the bugs that arise.
-
-If you find any bugs and know how to fix them, support future readers by contributing to this course with your bug fix.
-
-You can always contribute by:
-- Forking the repository
-- Fixing the bug (run `make ci` — the suite needs no API key)
-- Creating a pull request
-
-We will deeply appreciate your support for the AI community and future readers 🤗
+Found a bug and know the fix? Fork, fix, run `make ci` (no API key needed), and open a pull request. Future readers thank you 🤗
 
 ## 👨‍🏫 Course Author
 
@@ -305,4 +274,4 @@ And tell us: **which part of your daily coding agent is still a black box to you
 
 ## License
 
-This course is an open-source project released under the [Apache-2.0 license](LICENSE). Thus, as long you distribute our LICENSE and acknowledge this repository, you can safely clone or fork this project and use it as a source of inspiration for your educational projects (e.g., university, college degree, personal projects, etc.).
+Released under [Apache-2.0](LICENSE) — clone, fork, and build on it; keep the LICENSE and credit this repo.

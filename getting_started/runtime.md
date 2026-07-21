@@ -1,6 +1,6 @@
 # Headless Runtime — `decode run`, durability & replay
 
-The REPL needs you at the keyboard. `decode run` doesn't: it runs one task to completion unattended and prints the answer on stdout (pipe-clean). Same agent, different driver — a [Kitaru](https://docs.zenml.io/) **durable flow** checkpoints every model and tool call, so an expensive run survives a crash and resumes instead of re-paying for finished work ([ADR-0008](../docs/adr/0008-kitaru-durable-runtime.md)).
+The REPL needs you at the keyboard. `decode run` doesn't: it runs one task to completion unattended and prints the answer on stdout (pipe-clean). Same agent, different driver — a [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs) **durable flow** checkpoints every model and tool call, so an expensive run survives a crash and resumes instead of re-paying for finished work ([ADR-0008](../docs/adr/0008-kitaru-durable-runtime.md)).
 
 Prerequisite: the core setup from [install_and_usage.md](install_and_usage.md). Nothing else — the local Kitaru stack runs offline, no server needed.
 
