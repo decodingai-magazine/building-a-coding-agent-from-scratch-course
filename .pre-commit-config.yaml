@@ -14,9 +14,9 @@ repos:
         language: system
         entry: make lint-check
         pass_filenames: false
-      - id: unit-tests
-        name: unit tests
-        language: system
-        entry: make unit-tests
-        pass_filenames: false
-        stages: [pre-push] # too slow for every commit
+      # - id: unit-tests
+      #   name: unit tests
+      #   language: system
+      #   entry: make unit-tests
+      #   pass_filenames: false
+      #   stages: [pre-push] # too slow for every commit

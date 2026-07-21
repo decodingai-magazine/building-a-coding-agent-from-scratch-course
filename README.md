@@ -102,27 +102,13 @@ Self-paced, project-based, and open-source — no paywall, no certificate theate
 3. **Go one level deeper** when you want the *why* — every non-obvious decision has an ADR recording the alternatives we rejected.
 4. **Make it yours** — point `decode` at your own projects, swap the provider, break it, extend it. The 1,800+ tests will tell you when you've broken something real.
 
-<table style="border-collapse: collapse; border: none;">
-  <tr style="border: none;">
-    <td width="20%" style="border: none;">
-      <a href="https://www.decodingai.com/" aria-label="Decoding AI">
-        <img src="assets/decoding-ai-logo.png" alt="Decoding AI Logo" width="150"/>
-      </a>
-    </td>
-    <td width="80%" style="border: none;">
-      <div>
-        <h2>📬 Stay Updated</h2>
-        <p><b><a href="https://www.decodingai.com/">Join Decoding AI</a></b> for proven content on designing, coding, and deploying production-grade AI systems with software engineering and MLOps best practices to help you ship AI applications. Every week, straight to your inbox.</p>
-      </div>
-    </td>
-  </tr>
-</table>
+## 📬 Learn How to Build Coding Agents From Scratch
 
-<p align="center">
-  <a href="https://www.decodingai.com/">
-    <img src="https://img.shields.io/static/v1?label&logo=substack&message=Subscribe%20Now&style=for-the-badge&color=black&scale=2" alt="Subscribe Now" height="40">
-  </a>
-</p>
+> Join 40k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) — and learn to build coding agents from scratch.
+
+<a href="https://www.decodingai.com/" target="_blank">
+  <img src="assets/decodingai.jpg" alt="Decoding AI Magazine" width="100%"/>
+</a>
 
 ## 📚 Course Outline
 
@@ -244,27 +230,13 @@ We will deeply appreciate your support for the AI community and future readers �
   </tr>
 </table>
 
-<table style="border-collapse: collapse; border: none;">
-  <tr style="border: none;">
-    <td width="20%" style="border: none;">
-      <a href="https://www.decodingai.com/" aria-label="Decoding AI">
-        <img src="assets/decoding-ai-logo.png" alt="Decoding AI Logo" width="150"/>
-      </a>
-    </td>
-    <td width="80%" style="border: none;">
-      <div>
-        <h2>📬 Stay Updated</h2>
-        <p><b><a href="https://www.decodingai.com/">Join Decoding AI</a></b> for proven content on designing, coding, and deploying production-grade AI systems with software engineering and MLOps best practices to help you ship AI applications. Every week, straight to your inbox.</p>
-      </div>
-    </td>
-  </tr>
-</table>
+## 📬 Learn How to Build Coding Agents From Scratch
 
-<p align="center">
-  <a href="https://www.decodingai.com/">
-    <img src="https://img.shields.io/static/v1?label&logo=substack&message=Subscribe%20Now&style=for-the-badge&color=black&scale=2" alt="Subscribe Now" height="40">
-  </a>
-</p>
+> Join 40k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) — and learn to build coding agents from scratch.
+
+<a href="https://www.decodingai.com/" target="_blank">
+  <img src="assets/decodingai.jpg" alt="Decoding AI Magazine" width="100%"/>
+</a>
 
 ## License
 
