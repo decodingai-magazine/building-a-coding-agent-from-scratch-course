@@ -53,7 +53,6 @@ def _test_result(
         test_case=OpikTestCase(
             trace_id=f"trace-{item_id}-{trial_id}",
             dataset_item_id=item_id,
-            scoring_inputs={},
             task_output=task_output or {},
             dataset_item_content={"task_id": task_id},
         ),
@@ -222,9 +221,7 @@ def test_summarize_groups_trials_by_dataset_item():
 
 def test_summarize_treats_a_missing_verify_score_as_a_fail():
     tr = OpikTestResult(
-        test_case=OpikTestCase(
-            trace_id="t", dataset_item_id="x", scoring_inputs={}, task_output={}
-        ),
+        test_case=OpikTestCase(trace_id="t", dataset_item_id="x", task_output={}),
         score_results=[ScoreResult(name="some_judge", value=1.0)],  # no verify_oracle
         trial_id=0,
     )

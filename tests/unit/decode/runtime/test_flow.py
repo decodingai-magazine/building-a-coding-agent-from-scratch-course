@@ -12,12 +12,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 from kitaru.adapters.pydantic_ai import KitaruAgent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from support.runtime_agents import make_scripted_agent
 
 import decode.runtime.flow as flow_mod
+from decode.agent import context_window
+from decode.config.settings import Settings
 from decode.runtime import run_agent_task
 
 # Running the real flow boots the Kitaru/ZenML stack, which emits two third-party deprecation
@@ -235,6 +238,48 @@ def test_build_headless_deps_splits_the_workspace_from_harness_home(tmp_path):
 
     assert deps.cwd == workspace  # file/search tools + bash operate here
     assert deps.harness_home == Path.cwd()  # harness artifacts (memory, skills) anchor here
+
+
+# Compaction window resolved for the run's ACTUAL model, --model included (task 123)
+
+
+def test_headless_deps_resolve_the_window_of_the_overridden_model(mocker):
+    """``decode run --model <id>`` compacts against <id>'s window, not the configured model's.
+
+    Asserts the resolved VALUE, not merely that the seam was called: the whole bug was a plausible
+    number that belonged to a different model.
+    """
+    # Offline: the table decides, which keeps the assertion on two known, differing windows.
+    mocker.patch.object(context_window.httpx, "get", side_effect=httpx.ConnectError("offline"))
+    context_window.reset_probe_cache()
+    mocker.patch.object(
+        context_window,
+        "settings",
+        Settings(_env_file=None, llm_provider="gemini", gemini_model="gemini-3.5-flash"),
+    )
+
+    configured = flow_mod._build_headless_deps()
+    overridden = flow_mod._build_headless_deps(model="Qwen/Qwen3.6-35B-A3B-FP8")
+
+    assert configured.context_window_tokens == 1_048_576  # the configured Gemini model
+    assert overridden.context_window_tokens == 262_144  # the --model override wins
+    context_window.reset_probe_cache()
+
+
+def test_hitl_deps_resolve_the_window_of_the_overridden_model(mocker):
+    """The HITL flow threads ``--model`` on the same terms as the bypass flow."""
+    mocker.patch.object(context_window.httpx, "get", side_effect=httpx.ConnectError("offline"))
+    context_window.reset_probe_cache()
+    mocker.patch.object(
+        context_window,
+        "settings",
+        Settings(_env_file=None, llm_provider="gemini", gemini_model="gemini-3.5-flash"),
+    )
+
+    deps = flow_mod._build_hitl_deps(model="Qwen/Qwen3.6-35B-A3B-FP8")
+
+    assert deps.context_window_tokens == 262_144
+    context_window.reset_probe_cache()
 
 
 # the hand-back runs INSIDE the flow, after the executor reap (ADR-0012 §8)

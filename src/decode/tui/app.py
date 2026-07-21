@@ -30,6 +30,7 @@ from rich.console import Console
 from rich.text import Text
 
 from decode import observability
+from decode.agent.context_window import resolve_context_window
 from decode.agent.deps import AgentDeps, PermissionResolver, UserQuestionResolver
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
@@ -570,11 +571,12 @@ def _bottom_toolbar(
     switch. The spinner shows only while the turn is ACTIVELY working — hidden when idle and when
     the turn is paused on the DecisionChannel awaiting a human (else it would read "working…"
     while the user is the one being asked to type). The gauge (ADR-0006 §9) reads the handler's
-    public ``last_input_tokens`` over ``compaction_context_window_tokens``; ``warn_at`` /
-    ``danger_at`` are the fill lines derived from the same reserve fractions the compaction
-    cascade fires on.
+    public ``last_input_tokens`` over the run's resolved window (``deps.context_window_tokens``,
+    task 123 — falling back to the configured one when nothing resolved it), so the gauge and the
+    compaction trigger can never disagree about the denominator; ``warn_at`` / ``danger_at`` are the
+    fill lines derived from the same reserve fractions the compaction cascade fires on.
     """
-    window = settings.compaction_context_window_tokens
+    window = deps.context_window_tokens or settings.compaction_context_window_tokens
     fraction = handler.last_input_tokens / window if window > 0 else 0.0
     warn_at = 1 - settings.microcompaction_reserve_fraction
     danger_at = 1 - settings.compaction_reserve_fraction
@@ -799,6 +801,9 @@ async def run_app(
             decisions, console, gate=gate, permissions_file=permissions_file
         ),
         resolve_user_question=_make_user_question_resolver(decisions, console),
+        # The REPL has no ``--model`` flag, so this is the configured active model; the probe it may
+        # run was already paid for (and memoised) by the cli's startup notice.
+        context_window_tokens=resolve_context_window(),
     )
     # Startup persona (ADR-0003 §7,9): sets ``deps.active_agent``, resets the gate to the agent's
     # default mode, loads its catalog rules. The CLI validated the name already.

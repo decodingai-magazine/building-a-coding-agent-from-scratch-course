@@ -12,6 +12,7 @@ as ``ctx.deps``. Field meaning, one line each:
 * ``task_store`` — the per-run TodoWrite list the ``todo_write`` tool rewrites in place.
 * ``active_agent`` — the selected persona (prompt + tool allowlist), reassigned by ``/agent`` and read fresh per turn.
 * ``headless_durable_waits`` — headless HITL flag (ADR-0008 §3): mutating tools raise ``ApprovalRequired`` → a durable wait.
+* ``context_window_tokens`` — the compaction window resolved for this run's actual model; ``None`` falls back to the configured one.
 * ``verbose`` — the live Verbose Mode flag (Ctrl+O): mutable, flipped by the TUI keybind mid-turn, read at emit time by the ``agent`` tool's child sink.
 
 Plain callable fields (not methods) let tools and the loop share one event channel and one
@@ -89,6 +90,12 @@ class AgentDeps:
     verbose: VerboseFlag = field(default_factory=VerboseFlag)
     # Harness-Home artifact root (ADR-0012 §6); ``None`` defaults to ``cwd`` in __post_init__.
     harness_home: Path | None = None
+    # The compaction window resolved for THIS run's model (task 123) — the Model Override included,
+    # which process-scoped ``Settings`` structurally cannot see. ``None`` means "not resolved here";
+    # readers fall back to ``settings.compaction_context_window_tokens``. Deliberately NOT resolved
+    # in ``__post_init__``: that would fire a provider probe on every ``AgentDeps()`` ever built,
+    # tests included. The entrypoints that know the run's model resolve it and pass it in.
+    context_window_tokens: int | None = None
 
     def __post_init__(self) -> None:
         """Default ``harness_home`` to ``cwd`` when unset — the back-compat equal-roots case (§6)."""

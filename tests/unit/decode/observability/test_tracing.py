@@ -21,6 +21,7 @@ from pydantic import SecretStr
 from decode.config.settings import Settings, settings
 from decode.observability import tracing
 from decode.observability.tracing import (
+    CostAnnotatingExporter,
     init_tracing,
     is_tracing_active,
     record_output,
@@ -134,8 +135,11 @@ def test_init_tracing_builds_cloud_exporter_with_settings_headers(monkeypatch, m
         endpoint=_CLOUD_ENDPOINT,
         headers={"Authorization": "k-123", "Comet-Workspace": "ws-A", "projectName": "proj-B"},
     )
-    # The exporter is wrapped in a BatchSpanProcessor handed to logfire.configure.
-    mock_logfire.bsp_cls.assert_called_once_with(mock_logfire.exporter_cls.return_value)
+    # The OTLP exporter goes through the cost wrapper, then a BatchSpanProcessor handed to
+    # logfire.configure — the chain that puts ``gen_ai.usage.cost`` on model spans (ADR-0014 §8).
+    (wrapper,) = mock_logfire.bsp_cls.call_args.args
+    assert isinstance(wrapper, CostAnnotatingExporter)
+    assert wrapper._wrapped is mock_logfire.exporter_cls.return_value
 
 
 def test_init_tracing_header_carries_the_derived_per_env_project_name(monkeypatch, mock_logfire):

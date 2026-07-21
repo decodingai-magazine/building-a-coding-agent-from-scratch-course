@@ -201,7 +201,6 @@ def test_run_benchmark_attaches_aggregates_to_the_experiment(mocker, greeting_ta
             test_case=TestCase(
                 trace_id="trace-1",
                 dataset_item_id="item-1",
-                scoring_inputs={},
                 task_output={},
                 dataset_item_content={"task_id": task.id},
             ),

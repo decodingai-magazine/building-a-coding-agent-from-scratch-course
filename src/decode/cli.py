@@ -18,6 +18,7 @@ from pathlib import Path  # noqa: E402
 
 import click  # noqa: E402
 
+from decode.agent.context_window import resolve_context_window_detail  # noqa: E402
 from decode.agents.loader import load_primary_agent  # noqa: E402
 from decode.config.settings import (  # noqa: E402
     bucket_load_error,
@@ -124,6 +125,34 @@ def _provider_config_error() -> str | None:
             return _MODAL_PROXY_TOKENS_MESSAGE
         return None
     return None  # defensive: the settings ``Literal`` blocks any other value upstream.
+
+
+def _context_window_notice(model: str | None = None) -> str | None:
+    """One stderr line when the compaction window is an ASSUMPTION, else ``None``.
+
+    Non-blocking, unlike the guards around it: an unknown model is a perfectly runnable
+    configuration, just one whose window decode had to guess. Silence here is what let a 1M
+    Gemini default sit in front of a 262k endpoint — both compaction tiers then fire above the
+    endpoint's ceiling, so the request is truncated before compaction ever runs.
+
+    Resolution runs through the task-123 seam, so the notice only claims "assumed" when NEITHER the
+    provider probe NOR the static table produced a number — warning after a successful probe would
+    train the operator to ignore the line. ``model`` is the ``--model`` override, so a headless run
+    warns about the model it will actually use.
+
+    This is an inference path (a REPL or a ``decode run`` is starting), which is exactly where a
+    probe is allowed; the memo makes the resolution the agent build does moments later free.
+    ``--help`` / ``--version`` never reach here.
+    """
+    resolved = resolve_context_window_detail(model)
+    if not resolved.is_assumed:
+        return None
+    return (
+        f"Decode: no known context window for model {model or settings.active_model!r}; assuming "
+        f"{resolved.tokens:,} tokens for compaction. Set "
+        "COMPACTION_CONTEXT_WINDOW_TOKENS to the model's real max input window if that is wrong "
+        "(an OpenAI-compatible endpoint reports it as max_model_len on GET /v1/models)."
+    )
 
 
 def _docker_daemon_reachable() -> bool:
@@ -333,6 +362,13 @@ def cli(
         click.echo(config_error, err=True)
         raise click.exceptions.Exit(1)
 
+    # Context-window notice: NOT a guard — it warns and continues. The window is derived from the
+    # active model when unset; an unrecognised model gets a conservative assumption the operator
+    # should see rather than discover as truncated requests.
+    window_notice = _context_window_notice()
+    if window_notice is not None:
+        click.echo(window_notice, err=True)
+
     # Sandbox backend startup guard (ADR-0011 §1): refuse an unavailable backend now, not on the
     # first ``bash`` call.
     sandbox_error = _sandbox_config_error()
@@ -447,6 +483,13 @@ def run(task: str, hitl: bool, model: str | None, repo: str | None, local: bool)
     if config_error is not None:
         click.echo(config_error, err=True)
         raise click.exceptions.Exit(1)
+
+    # Same non-blocking window notice the REPL emits — a headless run is exactly where an assumed
+    # window goes unnoticed, since nobody is watching a status bar. ``model`` rides along so the
+    # notice describes the model ``--model`` actually selected.
+    window_notice = _context_window_notice(model)
+    if window_notice is not None:
+        click.echo(window_notice, err=True)
 
     # Resolve the Workspace source once and thread it into the flow (ADR-0012 §3); guaranteed
     # ``None`` in ``none`` mode by the guard above.

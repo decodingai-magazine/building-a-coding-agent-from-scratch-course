@@ -10,14 +10,17 @@ OpenTelemetry SDK, so polluting the global env could redirect its telemetry too.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 import logfire
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
 
 from decode.config.settings import settings
+from decode.observability.cost import OPIK_COST_ATTRIBUTE, span_cost_usd
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,60 @@ _CLOUD_OTLP_BASE = "https://www.comet.com/opik/api/v1/private/otel"
 # Idempotency flag: ``logfire.configure`` installs a PROCESS-GLOBAL TracerProvider, so a second
 # configure would stack a second exporter. Cleared by :func:`reset_tracing` (test hermeticity).
 _active = False
+
+
+class CostAnnotatingExporter(SpanExporter):
+    """Stamps ``gen_ai.usage.cost`` onto model spans on the way out (ADR-0014 §8).
+
+    An EXPORTER wrapper, not a span processor, because a processor's ``on_end`` receives an immutable
+    snapshot — the SDK builds a fresh :class:`ReadableSpan` at ``Span.end()``, so there is nothing
+    left to mutate by then. Sitting in front of the OTLP exporter also means every model span is
+    covered whatever produced it — streamed or not, main agent or subagent, REPL or headless flow —
+    rather than only the call sites decode remembers to annotate.
+
+    Rewriting is skipped unless there is a cost to add, so a non-model span (a tool call, the root
+    span) is forwarded as the very same object.
+    """
+
+    def __init__(self, wrapped: SpanExporter) -> None:
+        self._wrapped = wrapped
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        return self._wrapped.export([_with_cost(span) for span in spans])
+
+    def shutdown(self) -> None:
+        self._wrapped.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:
+        return self._wrapped.force_flush(timeout_millis)
+
+
+def _with_cost(span: ReadableSpan) -> ReadableSpan:
+    """``span`` plus a cost attribute, or ``span`` itself when it cannot be priced.
+
+    A span already carrying :data:`OPIK_COST_ATTRIBUTE` is left alone — whoever set it upstream is
+    closer to the provider's own numbers than a rate table is.
+    """
+    attributes = span.attributes or {}
+    if OPIK_COST_ATTRIBUTE in attributes:
+        return span
+    cost = span_cost_usd(attributes)
+    if cost is None:
+        return span
+    return ReadableSpan(
+        name=span.name,
+        context=span.get_span_context(),
+        parent=span.parent,
+        resource=span.resource,
+        attributes={**attributes, OPIK_COST_ATTRIBUTE: cost},
+        events=span.events,
+        links=span.links,
+        kind=span.kind,
+        status=span.status,
+        start_time=span.start_time,
+        end_time=span.end_time,
+        instrumentation_scope=span.instrumentation_scope,
+    )
 
 
 def init_tracing() -> bool:
@@ -65,7 +122,9 @@ def init_tracing() -> bool:
         # entirely. ``send_to_logfire=False`` only disables CLOUD egress; it does not touch this.
         # Opik export is unaffected — it rides ``additional_span_processors`` below.
         console=False,
-        additional_span_processors=[BatchSpanProcessor(exporter)],
+        # The cost wrapper sits between the batcher and the OTLP exporter, so every span Opik
+        # receives carries a cost whenever decode can price it (ADR-0014 §8).
+        additional_span_processors=[BatchSpanProcessor(CostAnnotatingExporter(exporter))],
     )
     logfire.instrument_pydantic_ai()
     _active = True

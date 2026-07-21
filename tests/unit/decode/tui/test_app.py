@@ -1203,3 +1203,24 @@ def test_slash_completer_suggests_commands_and_skills(tmp_path):
     # No menu for normal prose, or once the command has an argument (the space after it).
     assert _completions(completer, "hello world") == []
     assert _completions(completer, "/agent build") == []
+
+
+def test_bottom_toolbar_gauge_reads_the_runs_resolved_window(mocker):
+    """The gauge divides by THIS run's window (task 123), never by the configured default.
+
+    If it read ``settings`` while the compaction trigger read the resolved window, the bar and the
+    thing it is supposed to predict would disagree — the gauge would read 9% right up to the moment
+    compaction fired.
+    """
+    mocker.patch.object(app.settings, "compaction_context_window_tokens", 1_000_000)
+    gate = PermissionGate()
+    deps = _deps(gate)
+    deps.active_agent = load_agent("build")
+    deps.context_window_tokens = 100_000  # the run's real model, 10x smaller
+    handler = mocker.Mock()
+    handler.last_input_tokens = 90_000  # 90% of the RESOLVED window, 9% of the configured one
+
+    value = app._bottom_toolbar(deps, gate, handler, _runner(), _decisions()).value
+
+    assert "● 90%" in value
+    assert 'fg="red"' in value

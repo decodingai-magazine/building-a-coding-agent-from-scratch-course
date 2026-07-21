@@ -151,11 +151,45 @@ Sub-decisions (all recorded so they are not re-litigated):
 7. **Test isolation.** An autouse `_no_opik_tracing` fixture blanks `opik_api_key` so ordinary tests
    never configure real export (mirrors `_no_real_provider_key`); span-asserting tests opt in with a
    fake key + `logfire.testing`'s in-memory exporter; `reset_tracing()` clears the module flags.
-8. **Cost path.** Tokens are guaranteed on LLM spans via `gen_ai.usage.*`. Cost is Opik's server-side
-   estimate for priced models (Gemini via Google AI); OpenRouter/Modal open models may be tokens-only —
-   acceptable. **Escape hatch:** if the OTLP path proves to omit cost for our models, swapping to the
-   `opik` SDK (`additional_span_processors=[…, OpikSpanProcessor()]`) is a one-line change in
-   `tracing.py` — the sanctioned "only if necessary" trigger, recorded here so it is not a surprise.
+8. **Cost path — decode stamps the cost itself; the `opik` SDK escape hatch was NOT needed.**
+   The tokens-only outcome this section allowed as "acceptable" turned out to be the outcome for
+   *all three* providers, so it is now fixed in `observability/cost.py` +
+   `CostAnnotatingExporter` (`tracing.py`). What was verified:
+   * Opik's OTLP ingestion reads exactly **one** cost key — `gen_ai.usage.cost` — and an explicit
+     value **short-circuits** its server-side `(provider, model)` price lookup, so it works even for
+     a model Opik has never heard of. Found in opik's backend mapping rules and absent from its
+     public docs — a real but **undocumented** contract, so it was confirmed against live Opik
+     rather than trusted: a traced OpenRouter turn (`deepseek/deepseek-chat`) came back with
+     `total_estimated_cost = 0.00467553` on the `llm` span, matching genai-prices to the last digit.
+     Opik has **no** openrouter price row, so that number can only be the attribute being read. The
+     same run showed `agent run` at `cost=None`, confirming the double-count guard on live data.
+     If a future Opik release renames the key, cost goes quietly missing; the symptom to watch for
+     is tokens present, cost blank.
+   * pydantic-ai already prices anything the genai-prices catalog knows, but publishes it as
+     **`operation.cost`** — a key Opik does not read. That, not a missing price, was the Gemini gap.
+   * Opik's price table has **no `openrouter` row at all**, and a self-hosted Modal endpoint
+     (`Qwen/Qwen3.6-35B-A3B-FP8`) can never have one.
+
+   So the exporter forwards pydantic-ai's catalog price under the key Opik reads, and falls back to
+   `LLM_COST_{INPUT,OUTPUT}_USD_PER_MTOK` when the catalog had no row. Both rates unset (0.0) means
+   "unknown" and **no** cost attribute is written — a blank cost beats a fabricated one.
+   Per provider, what this actually buys:
+   * **Gemini** — fixed outright; the catalog prices it and the bridge delivers it.
+   * **OpenRouter** — fixed for the mainstream slugs the catalog knows (`anthropic/…`, `google/…`,
+     `openai/…`, `deepseek/…`, `meta-llama/…`). A catalog miss (e.g. `qwen/qwen3-235b-a22b`) needs
+     the manual rates. The default `openrouter/free` router is genuinely $0, so a blank cost is
+     correct there rather than missing. OpenRouter *does* return its exact charged cost via usage
+     accounting, but pydantic-ai drops that field — capturing it is a real plumbing job, not a knob,
+     and is deliberately not done here.
+   * **Modal — stays cost-free ON PURPOSE.** A self-hosted endpoint bills GPU-seconds, so no
+     per-token figure describes what is actually paid; the rates must not be used to manufacture
+     one. Modal traces carry tokens and latency, and the spend lives in Modal's own billing.
+   Two consequences worth naming: it is an **exporter** wrapper, not a span processor, because
+   `on_end` hands out an immutable span snapshot; and only spans carrying `gen_ai.request.model`
+   are priced, because pydantic-ai repeats the run's aggregated usage on the parent `agent run`
+   span and Opik SUMS span costs — pricing both would report every run at **double** its real spend.
+   **Escape hatch (still open, still unused):** if the attribute contract breaks, swapping to the
+   `opik` SDK (`additional_span_processors=[…, OpikSpanProcessor()]`) remains a one-line change.
 9. **M13 (later) adds** evals / experiments / online scoring on top of these traces — not now.
 
 ## Diagram

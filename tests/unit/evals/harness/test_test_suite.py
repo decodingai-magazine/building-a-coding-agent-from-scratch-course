@@ -8,6 +8,7 @@ never leaks an expected answer into ``input``), the suite wiring, and the pass-r
 
 from __future__ import annotations
 
+import opik
 import pytest
 
 from evals.harness.test_suite import (
@@ -66,7 +67,9 @@ def test_run_test_suite_raises_a_clear_versioned_stop_when_unavailable(mocker):
 
     message = str(excinfo.value)
     assert "opik>=2" in message
-    assert "1.9.8" in message  # the INSTALLED version, read live
+    # The INSTALLED version, read live — asserted against opik itself so a dependency bump
+    # (1.9.8 → 2.x) keeps testing the behavior instead of failing on a stale literal.
+    assert opik.__version__ in message
     assert "rustc" in message
     assert "116" in message  # points the reader at the task log
 

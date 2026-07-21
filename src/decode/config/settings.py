@@ -30,6 +30,42 @@ _REMOTE_ENVS = frozenset({"dev", "staging", "prod"})
 
 _DECODE_ENV_VAR = "DECODE_ENV"
 
+# Known MAX INPUT windows in tokens, matched case-insensitively as a SUBSTRING of the active
+# provider's model id, most-specific first. Substring (not equality) because ids carry vendor
+# prefixes and quantization suffixes the window does not depend on:
+# ``Qwen/Qwen3.6-35B-A3B-FP8`` and a future ``…-AWQ`` share one window.
+#
+# Provenance matters — a guessed number reintroduces exactly the bug this table fixes:
+#   * qwen3.6-35b-a3b — 262144, READ from the served endpoint (``GET /v1/models`` → max_model_len).
+#   * gemini-3.5 / gemini-2.5 — 1048576, the published 1M input window for those Flash/Pro lines.
+# Anything absent falls back to :data:`UNKNOWN_MODEL_CONTEXT_WINDOW` with a startup warning; add a
+# row here (with its source) rather than widening a pattern on a hunch.
+MODEL_CONTEXT_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("qwen3.6-35b-a3b", 262_144),
+    ("gemini-3.5", 1_048_576),
+    ("gemini-2.5", 1_048_576),
+)
+
+# The window assumed for a model absent from the table. Deliberately CONSERVATIVE: under-estimating
+# only makes compaction fire early (a cheaper turn), while over-estimating silently overruns the
+# endpoint. 200k clears every model in the course catalog's documented ">=128k long-context" tier
+# without assuming a 1M frontier window.
+UNKNOWN_MODEL_CONTEXT_WINDOW = 200_000
+
+
+def context_window_for(model_id: str) -> int | None:
+    """The known input window for ``model_id``, or ``None`` when no table row matches.
+
+    ``None`` (rather than the fallback) is the signal the caller needs to warn — the fallback is a
+    guess, and a guess the operator never sees is how a 4x-wrong window survives for months.
+    """
+    lowered = model_id.lower()
+    for pattern, window in MODEL_CONTEXT_WINDOWS:
+        if pattern in lowered:
+            return window
+    return None
+
+
 # The last Environment-Bucket load failure, or None. The ``settings`` singleton is built at IMPORT
 # time, so the source must never raise: a missing bucket (or a downed Kitaru local server) is
 # recorded here and rendered by the cli startup guards as ONE friendly line (ADR-0015 §5).
@@ -187,6 +223,13 @@ class Settings(BaseSettings):
     # The OTLP **base** URL: ``None`` → Comet cloud base; set to a self-hosted Opik base. The
     # exporter appends ``/v1/traces``.
     opik_url_override: str | None = None
+    # USD per MILLION tokens, for a PER-TOKEN model the genai-prices catalog does not know — an
+    # OpenRouter slug missing from it is the case these exist for. Deliberately NOT the answer for
+    # ``modal``: a self-hosted endpoint bills GPU-seconds, so a per-token rate there would report a
+    # number nobody is charged. Both 0.0 (the default) means "unknown", and decode reports no cost
+    # rather than inventing one (ADR-0014 §8).
+    llm_cost_input_usd_per_mtok: float = Field(0.0, ge=0)
+    llm_cost_output_usd_per_mtok: float = Field(0.0, ge=0)
 
     # --- Tool execution / output truncation ---
     bash_timeout_s: float = 120.0
@@ -217,7 +260,11 @@ class Settings(BaseSettings):
     # ``compaction_enabled`` gates ONLY the automatic cascade; manual ``/compact`` ignores it.
     compaction_enabled: bool = True
     # The active model's MAX *input* window, in tokens — the single source of truth (pydantic-ai
-    # exposes no model window, so this number is the contract). Default = Gemini 2.5 Flash.
+    # exposes no model window, so this number is the contract). DERIVED from the active provider's
+    # model id via :data:`MODEL_CONTEXT_WINDOWS` unless explicitly set; the declared default below is
+    # cosmetic, :meth:`_derive_compaction_context_window` supplies the real one. A wrong value here is
+    # not cosmetic: too LARGE and both compaction tiers fire above the endpoint's hard ceiling, so the
+    # request is truncated or rejected before compaction ever runs.
     compaction_context_window_tokens: int = Field(1_048_576, gt=0)
     # A tier fires when input_tokens >= window * (1 - reserve). INVARIANT: micro reserves more than
     # full so it fires first — ``microcompaction_reserve_fraction > compaction_reserve_fraction``.
@@ -329,6 +376,58 @@ class Settings(BaseSettings):
         """
         if "opik_project_name" not in self.model_fields_set:
             object.__setattr__(self, "opik_project_name", f"decode-{self.decode_env}")
+        return self
+
+    @property
+    def active_model(self) -> str:
+        """The model id of the ACTIVE provider — the one :func:`decode.agent.factory` will build.
+
+        Note this is the configured model, not necessarily the model a given run uses: ``--model``
+        overrides the id per run (ADR-0010 §2) while ``Settings`` is process-scoped, so a run that
+        overrides to a differently-sized model keeps the window derived from configuration here.
+        """
+        if self.llm_provider == "openrouter":
+            return self.openrouter_model
+        if self.llm_provider == "modal":
+            return self.modal_endpoint_model
+        return self.gemini_model
+
+    @property
+    def context_window_is_assumed(self) -> bool:
+        """True when the window was FILLED IN from the fallback rather than known or set.
+
+        The cli reads this to warn once at startup. False when the operator set the value
+        explicitly (they own the number) or the model matched a table row (it is known).
+        """
+        return (
+            "compaction_context_window_tokens" not in self.model_fields_set
+            and context_window_for(self.active_model) is None
+        )
+
+    @model_validator(mode="after")
+    def _derive_compaction_context_window(self) -> Settings:
+        """Default the compaction window to the active model's, or the conservative fallback.
+
+        Same "explicit wins" gate as :meth:`_derive_opik_project_name`: any settings source that
+        supplied ``COMPACTION_CONTEXT_WINDOW_TOKENS`` marks the field in ``model_fields_set`` and is
+        left untouched, so an operator who knows their endpoint can always override the table.
+
+        Runs after the provider fields are populated (``mode="after"``), so ``active_model`` reads
+        the resolved id. The fallback is logged at DEBUG here rather than WARNING — the cli emits the
+        one user-facing line via :attr:`context_window_is_assumed`, and library code that warns on
+        every import makes the tests noisy under ``filterwarnings=["error"]``.
+        """
+        if "compaction_context_window_tokens" in self.model_fields_set:
+            return self
+        known = context_window_for(self.active_model)
+        window = known if known is not None else UNKNOWN_MODEL_CONTEXT_WINDOW
+        if known is None:
+            logger.debug(
+                "no known context window for model %r; assuming %d tokens",
+                self.active_model,
+                window,
+            )
+        object.__setattr__(self, "compaction_context_window_tokens", window)
         return self
 
     @classmethod
