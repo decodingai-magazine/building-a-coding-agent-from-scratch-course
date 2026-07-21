@@ -104,7 +104,7 @@ Self-paced, project-based, and open-source — no paywall, no certificate theate
 
 ## 📬 Learn How to Build Coding Agents From Scratch
 
-> Join 40k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) — and learn to build coding agents from scratch.
+> Join 40k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) to learn to build coding agents from scratch.
 
 <a href="https://www.decodingai.com/" target="_blank">
   <img src="assets/decodingai.jpg" alt="Decoding AI Magazine" width="100%"/>
@@ -232,7 +232,7 @@ We will deeply appreciate your support for the AI community and future readers �
 
 ## 📬 Learn How to Build Coding Agents From Scratch
 
-> Join 40k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) — and learn to build coding agents from scratch.
+> Join 40k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) to learn to build coding agents from scratch.
 
 <a href="https://www.decodingai.com/" target="_blank">
   <img src="assets/decodingai.jpg" alt="Decoding AI Magazine" width="100%"/>
