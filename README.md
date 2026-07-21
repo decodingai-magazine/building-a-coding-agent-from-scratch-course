@@ -1,11 +1,12 @@
 <div align="center">
+  <img src="assets/coding-agent-logo.png" alt="decode logo" width="140">
   <h1>Building a Coding Agent from Scratch</h1>
   <h3>From agent user to agent builder — learn how coding agents like Claude Code actually work by building your own, step by step</h3>
   <p class="tagline">Open-source course by <a href="https://www.decodingai.com">Decoding AI</a> in collaboration with <a href="https://modal.com">Modal</a>, <a href="https://www.comet.com/site/products/opik/">Opik</a> and <a href="https://www.zenml.io">ZenML</a>.</p>
 </div>
 
 <p align="center">
-  <img src="docs/architecture.png" alt="decode architecture" width="700">
+  <img src="assets/demo-frames.gif" alt="decode in the terminal" width="800">
 </p>
 
 ## 📖 About This Course
@@ -26,6 +27,10 @@ This course teaches it the only way that sticks: you build one. Lesson by lesson
 By the end, nothing in your daily tools is magic anymore. You'll know why the agent asks before running `bash`, why it compacts your conversation near 80% of the context window, and why a secret must never get anywhere near the model's context — because you built the code that enforces all three.
 
 The codebase is finished and honest about how it got here: 18 Architecture Decision Records in [`docs/adr/`](docs/adr/) and 1,800+ tests that run without an API key. The dead ends are in there too — we built a credential proxy to hide the git token from the sandbox, then [deleted it](docs/adr/0016-drop-credential-proxy.md) when we proved it protected nothing. The postmortem is part of the course.
+
+<p align="center">
+  <img src="assets/architecture.png" alt="decode architecture" width="620">
+</p>
 
 ## 🤖 What You'll Do
 
@@ -101,7 +106,7 @@ Self-paced, project-based, and open-source — no paywall, no certificate theate
   <tr style="border: none;">
     <td width="20%" style="border: none;">
       <a href="https://www.decodingai.com/" aria-label="Decoding AI">
-        <img src="docs/decoding-ai-logo.png" alt="Decoding AI Logo" width="150"/>
+        <img src="assets/decoding-ai-logo.png" alt="Decoding AI Logo" width="150"/>
       </a>
     </td>
     <td width="80%" style="border: none;">
@@ -178,6 +183,16 @@ Everything lives under [`getting_started/`](getting_started/) — one core guide
 
 **Pro tip:** Read the accompanying lessons first for a better understanding of the system you'll build.
 
+## 🤝 Sponsors
+
+<p align="center">
+  <img src="assets/github-repo-banner-dark.png" alt="Sponsored by Modal, Opik and Kitaru" width="760">
+</p>
+
+<p align="center">
+  Special thanks to <a href="https://modal.com" target="_blank"><b>Modal</b></a>, <a href="https://www.comet.com/site/products/opik/" target="_blank"><b>Opik</b></a> (by Comet), and <a href="https://www.zenml.io" target="_blank"><b>Kitaru</b></a> (by ZenML) for sponsoring this open-source course and keeping it free!
+</p>
+
 ## 💡 Questions and Troubleshooting
 
 Have questions or running into issues? We're here to help!
@@ -229,32 +244,11 @@ We will deeply appreciate your support for the AI community and future readers �
   </tr>
 </table>
 
-## Sponsors
-
-<div align="center">
-  <table style="border-collapse: collapse; border: none;">
-    <tr style="border: none;">
-      <td align="center" style="border: none; padding: 20px;">
-        <a href="https://modal.com" target="_blank"><b>Modal</b></a><br/>
-        inference & remote sandboxes
-      </td>
-      <td align="center" style="border: none; padding: 20px;">
-        <a href="https://www.comet.com/site/products/opik/" target="_blank"><b>Opik</b></a><br/>
-        tracing & evals
-      </td>
-      <td align="center" style="border: none; padding: 20px;">
-        <a href="https://www.zenml.io" target="_blank"><b>ZenML (Kitaru)</b></a><br/>
-        durable runtime
-      </td>
-    </tr>
-  </table>
-</div>
-
 <table style="border-collapse: collapse; border: none;">
   <tr style="border: none;">
     <td width="20%" style="border: none;">
       <a href="https://www.decodingai.com/" aria-label="Decoding AI">
-        <img src="docs/decoding-ai-logo.png" alt="Decoding AI Logo" width="150"/>
+        <img src="assets/decoding-ai-logo.png" alt="Decoding AI Logo" width="150"/>
       </a>
     </td>
     <td width="80%" style="border: none;">
