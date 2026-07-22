@@ -73,8 +73,6 @@ Skip this layer and you're betting your work on tools you can't inspect.
 
 The whole repo is free: clone it, read it, ship it. But anyone can read an agent loop. The lessons cover what code can't — why steering input waits for the next model call instead of injecting mid-tool, why compaction fires at ~80% of the window instead of at the limit, why the sandbox may hold a git token while the model's context never does, why subagent fan-out caps at 6. Every component earns its place, and every lesson walks the reasoning.
 
-The codebase is finished and honest: 1,800+ tests that run without an API key, and the dead ends kept in. We built a credential proxy to hide the git token from the sandbox, then deleted it when we proved it protected nothing. The postmortem is part of the course.
-
 <p align="center">
   <img src="assets/architecture.png" alt="decode architecture" width="620">
 </p>
