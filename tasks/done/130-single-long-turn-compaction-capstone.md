@@ -1,0 +1,244 @@
+---
+id: 130
+feature: fix-compaction
+status: done
+---
+
+# Capstone regression: the original single-long-turn session shape compacts end to end
+
+The bug was discovered on a real session (1 user prompt + 63 tool messages in ONE turn, no
+compaction record ever). Each fix task proved its slice in isolation; this capstone proves
+the composed behavior through the real `AgentTurnHandler` at the session shape that exposed
+the bug — so the bug class cannot silently return.
+
+Depends on: 125, 126, 127, 128. (129 not required — the capstone uses the Model-instance
+seam, no network.)
+
+## Scope
+
+Extend `tests/integration/test_compaction_capstone.py` (or add a sibling test in it) driving
+`AgentTurnHandler` with a `FunctionModel`/`TestModel` that reproduces the shape: one turn,
+one user prompt, ~15+ tool call/return rounds with fat tool outputs, per-response populated
+usage, and a small configured window (monkeypatched settings), summarizer = stub Model.
+Three composed assertions:
+
+1. **Auto full compaction fires on one long turn** (root cause 1+2 together): at would-stop
+   the cascade triggers off the LAST response's usage, `split_tail` cuts at a
+   `ModelResponse` boundary inside the turn, history becomes `[summary, *tail]` with every
+   tool pair intact, a `compaction` line is persisted, `ContextCompacted` is emitted.
+2. **Gauge lifecycle**: during the turn `last_input_tokens` equals the last response's
+   `input_tokens + cache_read_tokens` (not the cumulative sum); immediately post-compaction
+   it equals the chars≈/4 estimate of the kept history; a follow-up leg overwrites it with
+   the provider number.
+3. **Micro tier on the same shape**: with usage tuned between the micro and full levels,
+   `ContextMicrocompacted` fires with `elided > 0` and the JSONL log keeps full fidelity
+   (no compaction line, cursor unmoved).
+
+## Acceptance criteria
+
+- [x] The capstone test fails when any ONE of the four fixes (125/126/127/128) is reverted
+      (spot-verified by the SWE during development — e.g. `git stash` the split_tail hunk and
+      watch it go red; note the check in the task log).
+- [x] Assertion set 1-3 above implemented as described, through the public handler surface
+      (no reaching into pydantic-ai internals beyond message construction).
+- [x] Runs offline in `make integration-tests` / `make ci` (Model-instance seam only, no
+      keys), consistent with the existing capstone's conventions.
+- [x] `make ci` green.
+
+## User stories
+
+### Story: The original failing session, replayed green
+1. Developer runs `make integration-tests`.
+2. The capstone reconstructs the 2026-07-22 session shape (one turn, dozens of tool
+   messages) and asserts a compaction record NOW appears where the real log had none.
+
+### Story: A future refactor cannot silently regress compaction
+1. A future task refactors `split_tail` or the usage plumbing subtly wrong.
+2. `make ci` fails on this capstone with a named assertion (boundary / gauge / tier),
+   pointing at the exact regressed slice.
+
+## Out of scope
+
+- Manual-QA playbook updates (skill `manual-e2e-qa`) — separate docs surface.
+- Any new production code: this task ships tests only (plus trivial test helpers).
+
+## Log
+
+### [SWE] 2026-07-23 09:45 — Implementation
+
+**Files modified**
+- `tests/integration/test_compaction_capstone.py` — added the single-long-turn capstone: a
+  `_LongTurnModel` (FunctionModel forcing per-response usage, one prompt → 16 inline `sleep`
+  rounds in ONE leg), a `_synthetic_long_turn_history` builder, and three tests pinning the
+  composed ADR-0018 fix on the original bug shape. Trivial test helpers only; no production code.
+
+**Tests** (offline, Model-instance seam only — no keys, no network, no skipif)
+- `test_single_long_turn_primitives_on_the_original_shape` — synthetic one-turn history (no run):
+  `split_tail` cuts at a `ModelResponse` boundary inside the turn (125); `_leg_input_tokens` is the
+  LAST response's `input + cache_read`, not the cumulative sum nor the first response (126);
+  `compact()` → `CompactOutcome.COMPACTED` then `NOTHING_TO_COMPACT` (127); post-compaction gauge ==
+  `estimate_history_tokens([summary, *tail])` (128).
+- `test_single_long_turn_auto_full_compaction` — real `AgentTurnHandler` + `Runner` + FunctionModel
+  driving ONE long turn: at would-stop the cascade triggers off the last response's usage (125==95+30,
+  `before_tokens < mid*N`), history becomes `[summary, *tail]` opening on a `ModelResponse` with every
+  pair intact + no orphan, one `compaction` line persisted, `ContextCompacted` emitted; gauge drops to
+  the kept-history estimate then a follow-up leg overwrites it with the provider number (128); resume
+  replays the compacted history.
+- `test_single_long_turn_microcompaction` — same shape, usage tuned between micro (90) and full (120):
+  one `ContextMicrocompacted` with `elided > 0`, `before_tokens == 95` (last-response, not cumulative),
+  no full compaction, no `compaction` line on disk, cursor unmoved, placeholder in memory only.
+- Integration: 108 passed, 16 skipped (docker-only) — `make integration-tests`.
+- Full suite: 2327 passed, 16 skipped — `make ci` (CI_EXIT=0).
+
+**Acceptance criteria**
+- [x] Capstone goes RED when any ONE of the four fixes is reverted — spot-verified (see Evidence).
+- [x] Assertion sets 1-3 implemented through the public handler surface (message construction only).
+- [x] Runs offline in `make integration-tests` / `make ci`.
+- [x] `make ci` green.
+
+**Evidence — RED spot-checks** (revert one fix's hunk, run `-k single_long_turn`, restore)
+- **125** (`_is_compaction_boundary` → user-turn-only snap): all 3 RED. First failure
+  `test_..._primitives ... assert 0 < split < len(history)` (split collapses to 0); micro fails
+  `assert len(micro_events) == 1` (elided 0).
+- **126** (`_leg_input_tokens` → cumulative sum): all 3 RED. `assert _leg_input_tokens(history) ==
+  125` got `1085`; auto `before_tokens == 125` got `1085`; micro `len(micro_events) == 1` got 0
+  (cumulative pushes past the full line).
+- **127** (`compact()` → bool return): primitives RED — `assert outcome is CompactOutcome.COMPACTED`
+  got `True`. (Auto path behaves identically on the happy path, so only the enum assertion catches it.)
+- **128** (drop the post-compaction `_last_input_tokens = estimate_history_tokens(...)` line):
+  primitives + auto-full RED — `assert handler.last_input_tokens == estimate_history_tokens(compacted)`
+  got `125 != 76` (gauge stuck on the pre-compaction provider number).
+- After each check the file was restored; final `git diff src/` is empty (tests-only) and all 4
+  capstone tests pass.
+
+**Evidence — green**
+```
+$ uv run pytest tests/integration/test_compaction_capstone.py -v -k single_long_turn
+test_single_long_turn_primitives_on_the_original_shape PASSED
+test_single_long_turn_auto_full_compaction PASSED
+test_single_long_turn_microcompaction PASSED
+3 passed, 1 deselected
+
+$ make ci  →  CI_EXIT=0  →  2327 passed, 16 skipped in 463.00s
+```
+
+**Notes**
+- Distinct value vs the existing `test_compaction_capstone_micro_full_persist_resume` (multi-turn):
+  this reproduces the SINGLE-long-turn shape (one prompt, 16 tool rounds in one leg) that has exactly
+  one user-turn boundary at index 0 — the shape the original bug silently no-op'd on.
+- `NOTHING_TO_COMPACT` is pinned on a trivial fully-fitting history: a second `compact()` on the
+  freshly-compacted `[summary, *tail]` still re-compacts here (the tiny keep-recent budget doesn't
+  fit summary+tail), so it is not a reliable no-op signal.
+- The during-turn "gauge == last-response, not cumulative" assertion is observed in the MICRO real
+  run (micro never reseeds the gauge) and in the synthetic `_leg_input_tokens` check; the auto-FULL
+  run reseeds to the estimate, so it cannot show the raw last-response number post-turn.
+
+### [Tester] 2026-07-23 00:05 — QA
+
+**Test summary**
+- Format / lint / pre-commit: PASS (`ruff format --check` 308 files formatted; `ruff check` all
+  passed; `make pre-commit` → 2219 unit tests passed)
+- Unit tests: 2219 passed / 0 failed
+- Integration tests: 108 passed / 16 skipped (docker daemon unreachable, expected) / 0 failed
+- Full suite (`uv run pytest`, equivalent to `make ci`'s test step; also ran `uv lock --check`
+  separately, resolved clean): 2327 passed / 16 skipped / 0 failed, 478.83s
+- Warnings: 0 (pytest configured `filterwarnings=["error"]`; a warning would surface as a failure —
+  none did)
+- `git diff --stat -- src/` empty throughout (confirmed before and after every revert experiment) —
+  tests-only, as scoped.
+- code-review plugin: enabled in `.claude/settings.json`, but its command (`commands/code-review.md`)
+  operates on a GitHub PR via `gh pr view/diff/comment` — this is a file-mode task with no PR yet
+  (uncommitted work), so the plugin has nothing to attach to. Performed the equivalent manual
+  diff/comment/history review myself in its place (see below).
+
+**E2E adversarial pass**
+- Happy path: `uv run pytest tests/integration/test_compaction_capstone.py -v` → all 4 tests PASS
+  (the pre-existing multi-turn capstone + the 3 new single-long-turn tests) (PASS)
+- Break path 1 (revert ADR-0018 fix 125 — `_is_compaction_boundary` restored to the OLD
+  user-turn-only predicate): edited `src/decode/context/compaction.py` to
+  `isinstance(message, ModelRequest) and any(isinstance(part, UserPromptPart) ...)`, ran
+  `-k single_long_turn` → all 3 new tests RED. First failure reproduced verbatim:
+  `assert 0 < split < len(history)` → `assert 0 < 0` (split collapses to 0), exactly the failure
+  line the SWE's log claims. Restored file byte-identical (`git diff --stat -- src/` empty), reran
+  → 3 passed. (PASS — regression correctly caught)
+- Break path 2 (revert ADR-0018 fix 126 — `_leg_input_tokens` restored to a cumulative-sum walk
+  instead of last-populated-response): edited `src/decode/agent/loop.py`, ran `-k single_long_turn`
+  → all 3 RED, `assert full_events[0].before_tokens == _FULL_LAST_INPUT + _FULL_LAST_CACHE` →
+  `assert 1085 == 125`, matching the SWE's claimed `1085` exactly. Restored byte-identical, reran →
+  3 passed. (PASS — regression correctly caught)
+- Break path 3 (revert ADR-0018 fix 128 — dropped the post-compaction
+  `_last_input_tokens = estimate_history_tokens(...)` line in `compact()`): primitives + auto-full
+  went RED (`assert handler.last_input_tokens == estimate_history_tokens(compacted)` →
+  `125 == 78`, same failure shape as the SWE's claimed `125 != 76`; exact number differs slightly
+  run-to-run due to non-deterministic tool_call_id/timestamp string lengths feeding the chars≈/4
+  estimate, immaterial to the assertion), microcompaction test correctly stayed green (128 doesn't
+  touch the micro path, matching the SWE's note). Restored byte-identical, reran → 4/4 passed.
+  (PASS — regression correctly caught; 3 of the 4 claimed spot-checks independently reproduced,
+  exceeding the required minimum of 2)
+- Offline / no-keys check: `env -i PATH="$PATH" HOME="$HOME" uv run pytest
+  tests/integration/test_compaction_capstone.py -k single_long_turn` (no GEMINI/OPENROUTER/MODAL/
+  OPIK keys in env at all) → 3 passed, 1 deselected. (PASS — no hidden key dependence)
+- Determinism check: ran the 3 single-long-turn tests twice back to back → `3 passed` both times,
+  identical outcome. (PASS)
+- No `skipif` markers found in the file (`grep -n "skipif" tests/integration/test_compaction_capstone.py`
+  → no matches); module docstring states "Fully offline — no network, no API key, no skipif."
+  (PASS)
+
+**Acceptance criteria**
+- [x] PASS — The capstone test fails when any ONE of the four fixes (125/126/127/128) is reverted —
+      Independently reproduced 3/4 (125, 126, 128) with matching or equivalent failure signatures
+      (see Break paths 1-3 above); the 4th (127, `compact()` bool-vs-enum) is a straightforward enum
+      identity assertion (`outcome is CompactOutcome.COMPACTED`) that trivially fails against a bare
+      `True`/`False` return, read and confirmed by inspection at
+      `tests/integration/test_compaction_capstone.py:711`.
+- [x] PASS — Assertion sets 1-3 implemented through the public handler surface — `handler.compact()`
+      (public method, `src/decode/agent/loop.py:314`) and `handler.last_input_tokens` (public
+      property) are the only handler entry points touched; `session_log.load()` (module function,
+      reads `path.read_text()` from disk) is used for the resume assertion, not handler internals.
+      The one non-message-construction touch is `response._usage = usage` inside
+      `_LongTurnModel.request_stream` (`tests/integration/test_compaction_capstone.py:543`) — a
+      private `StreamedResponse` attribute set to force per-response usage; this is the SAME
+      technique the pre-existing (already-accepted) multi-turn capstone's `_ScriptedModel` uses
+      (line 192), so it is an established, not new, seam — noted, not blocking.
+- [x] PASS — Runs offline in `make integration-tests` / `make ci` — ran with `env -i` (no keys at
+      all) above; `make integration-tests` → 108 passed, 16 skipped (docker-only); full
+      `uv run pytest` → 2327 passed, 16 skipped, 0 warnings.
+- [x] PASS — `make ci` green — ran `uv lock --check` (resolved clean) + `format-check` + `lint-check`
+      + full `uv run pytest` (the three steps `make ci` chains) independently; all green, matching
+      the SWE's claimed `2327 passed, 16 skipped`.
+
+**Evidence**
+```
+$ uv run pytest tests/integration/test_compaction_capstone.py -v -p no:cacheprovider
+test_compaction_capstone_micro_full_persist_resume PASSED
+test_single_long_turn_primitives_on_the_original_shape PASSED
+test_single_long_turn_auto_full_compaction PASSED
+test_single_long_turn_microcompaction PASSED
+4 passed in 1.01s
+
+$ make integration-tests
+108 passed, 16 skipped in 344.78s (0:05:44)
+
+$ uv run pytest -q   (full suite, equivalent to make ci's test step)
+2327 passed, 16 skipped in 478.83s (0:07:58)
+
+$ uv lock --check
+Resolved 210 packages in 3ms
+
+$ git diff --stat -- src/
+(empty — confirmed before and after every revert experiment)
+```
+
+**Other issues found**
+- `_LongTurnModel.request_stream` / `_ScriptedModel.request_stream` write to the private
+  `StreamedResponse._usage` attribute to force per-response usage numbers. Not a new issue (the
+  established pattern from the prior task's capstone), and there is no public FunctionModel API to
+  set arbitrary usage on a streamed response, so this is a reasonable, precedented test seam — flagged
+  for visibility only, not a blocker.
+- Minor: the exact RED-spot-check numbers for fix 128 (`125 != 76` in the SWE's log vs `125 == 78`
+  reproduced here) differ slightly because the estimate is sensitive to non-deterministic
+  tool_call_id / timestamp string lengths baked into the synthetic/real messages; the assertion
+  shape and root cause are identical either way. Worth a one-line note in the log if this file is
+  revisited, but not a functional problem.
+
+**VERDICT: PASS**
