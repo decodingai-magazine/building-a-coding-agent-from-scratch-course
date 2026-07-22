@@ -57,6 +57,12 @@ async with agent.iter(prompt, message_history=history) as run:
 
 That's the *entire* tool-calling agent — the thing people call "the agent" ends here. Everything else in this repo — the permission gate, the sandbox, compaction, the steering queue, the durable runtime, the subagent fan-out, the evals — is the harness. That's what you're here to build.
 
+<p align="center">
+  <img src="assets/tui-session-start.png" alt="A fresh decode session: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer" width="90%"/>
+  <br/>
+  <i>A fresh session — Opik tracing, a Modal-served Qwen, steering keys in the footer. All harness; none of it in those 20 lines.</i>
+</p>
+
 We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), then distilled it into 8 lessons where, from an empty repo, you build **decode**, your own terminal coding agent. By lesson 2 it asks permission before running `bash`; by lesson 8 it's deployed to the cloud, building the same feature 5–10× in parallel and handing you back reviewed pull requests. One headless core, two ways to drive it: an interactive TUI wired to a live session, and a remote runtime running N copies in parallel.
 
 **Under the hood:** a [Pydantic AI](https://ai.pydantic.dev) ReAct loop on Gemini, OpenRouter, or an open model you serve on [Modal](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng); file / bash / web / LSP tools and parallel Explore subagents; Docker/[Modal](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng) sandboxes; a durable [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) runtime; [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) tracing and evals.
@@ -83,9 +89,9 @@ The whole repo is free: clone it, read it, ship it. But anyone can read an agent
 The finished agent ships with demo skills under [`.decode/skills/`](.decode/skills/). Open the TUI, type `/demo-`, pick one, and watch the harness you're about to build do real work:
 
 <p align="center">
-  <img src="assets/tui-session-start.png" alt="A fresh decode session: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer" width="90%"/>
+  <img src="assets/demo-skills.png" alt="The demo skills listed inside the decode TUI after typing /demo-" width="90%"/>
   <br/>
-  <i>A fresh session — Opik tracing on, a Modal-served Qwen, steering keys in the footer</i>
+  <i>Type <code>/demo-</code> and the six demos are one keystroke away.</i>
 </p>
 
 <table>
