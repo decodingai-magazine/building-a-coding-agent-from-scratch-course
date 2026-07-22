@@ -215,7 +215,7 @@ def test_compaction_survival_compact_actually_collapses_the_history(
             agent,
             deps=deps,
             message_history=list(history),
-            compaction_model_or_settings=agent.model,
+            compaction_model=agent.model,
         )
         before = len(handler.message_history)
 

@@ -1145,7 +1145,7 @@ async def test_all_unpopulated_usage_leg_gauges_zero_and_never_compacts(agent, m
     handler = AgentTurnHandler(
         agent,
         deps=_deps(emitted.append),
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
     run = _StubRun(messages, cumulative_input=100)  # cumulative is non-zero; per-response is 0
     mocker.patch.object(handler._agent, "iter", return_value=_StubIterCM(run))
@@ -1170,7 +1170,7 @@ async def test_full_tier_compacts_through_the_turn(agent, tmp_path, mocker):
         deps=_deps(emitted.append),
         session_log=log,
         message_history=[_user_msg("first"), _assistant_msg("first answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     with agent.override(model=_text_model("ok")):
@@ -1212,7 +1212,7 @@ async def test_middle_tier_microcompacts_through_the_turn(agent, tmp_path, mocke
         deps=_deps(emitted.append),
         session_log=log,
         message_history=list(seed),
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
     count_before = len(seed) + 2  # the driven turn adds a user prompt + an assistant response
 
@@ -1254,7 +1254,7 @@ async def test_microcompaction_keeps_full_fidelity_on_disk(agent, tmp_path, mock
         resolve_user_question=_no_user_resolver,
     )
     handler = AgentTurnHandler(
-        agent, deps=deps, session_log=log, compaction_model_or_settings=_skeleton_summarizer()
+        agent, deps=deps, session_log=log, compaction_model=_skeleton_summarizer()
     )
 
     # Turn 1: a read-tool turn persists the FULL tool output to the log (recent → micro no-op).
@@ -1296,7 +1296,7 @@ async def test_no_repersist_after_full_compaction(agent, tmp_path, mocker):
             _user_msg(_HUGE_PROMPT),
             _assistant_msg("recent answer"),
         ],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     assert await handler.compact() is compaction.CompactOutcome.COMPACTED
@@ -1371,7 +1371,7 @@ async def test_below_both_tiers_is_a_no_op(agent, tmp_path, mocker):
         agent,
         deps=_deps(emitted.append),
         message_history=list(seed),
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     with agent.override(model=_text_model("ok")):
@@ -1394,7 +1394,7 @@ async def test_disabled_flag_skips_the_cascade(agent, mocker):
         agent,
         deps=_deps(emitted.append),
         message_history=[_user_msg("first"), _assistant_msg("answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     with agent.override(model=_text_model("ok")):
@@ -1414,7 +1414,7 @@ async def test_zero_tokens_never_compacts(agent, mocker):
         agent,
         deps=_deps(emitted.append),
         message_history=[_user_msg("first"), _assistant_msg("answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     # No leg has run, so last_input_tokens is 0; the cascade must not fire on a bogus zero.
@@ -1433,7 +1433,7 @@ async def test_compact_returns_nothing_to_compact_on_trivial_history(agent):
         agent,
         deps=_deps(emitted.append),
         message_history=[_user_msg("just one short turn"), _assistant_msg("ok")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     assert await handler.compact() is compaction.CompactOutcome.NOTHING_TO_COMPACT
@@ -1465,7 +1465,7 @@ async def test_compaction_seeds_the_gauge_with_the_kept_history_estimate(agent, 
         agent,
         deps=_deps(emitted.append),
         message_history=_compactable_history(),
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
     handler._last_input_tokens = 999_999  # a prior leg's provider number: the ~85%-full footer
 
@@ -1487,7 +1487,7 @@ async def test_next_leg_overwrites_the_post_compaction_estimate(agent, mocker):
         agent,
         deps=_deps(emitted.append),
         message_history=_compactable_history(),
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     assert await handler.compact() is compaction.CompactOutcome.COMPACTED
@@ -1515,7 +1515,7 @@ async def test_nothing_to_compact_leaves_the_gauge_untouched(agent):
         agent,
         deps=_deps(emitted.append),
         message_history=[_user_msg("just one short turn"), _assistant_msg("ok")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
     handler._last_input_tokens = 777
 
@@ -1531,7 +1531,7 @@ async def test_summarizer_failed_leaves_the_gauge_untouched(agent, mocker):
         agent,
         deps=_deps(emitted.append),
         message_history=_compactable_history(),
-        compaction_model_or_settings=_raising_summarizer(),
+        compaction_model=_raising_summarizer(),
     )
     handler._last_input_tokens = 555
 
@@ -1554,7 +1554,7 @@ async def test_compact_returns_summarizer_failed_when_summary_is_blank(agent, mo
         agent,
         deps=_deps(emitted.append),
         message_history=list(history),
-        compaction_model_or_settings=TestModel(custom_output_text="   "),  # blank → None summary
+        compaction_model=TestModel(custom_output_text="   "),  # blank → None summary
     )
 
     assert await handler.compact() is compaction.CompactOutcome.SUMMARIZER_FAILED
@@ -1577,7 +1577,7 @@ async def test_compact_returns_summarizer_failed_when_the_call_raises(agent, moc
         agent,
         deps=_deps(emitted.append),
         message_history=list(history),
-        compaction_model_or_settings=_raising_summarizer(),
+        compaction_model=_raising_summarizer(),
     )
 
     assert await handler.compact() is compaction.CompactOutcome.SUMMARIZER_FAILED
@@ -1600,7 +1600,7 @@ async def test_auto_full_trigger_fired_but_failed_logs_one_info_line(agent, mock
             _user_msg(_HUGE_PROMPT),
             _assistant_msg("recent"),
         ],
-        compaction_model_or_settings=_raising_summarizer(),
+        compaction_model=_raising_summarizer(),
     )
     handler._last_input_tokens = 90  # in the full band → full trigger fires
 
@@ -1623,7 +1623,7 @@ async def test_auto_micro_trigger_fired_but_zero_elided_logs_one_info_line(agent
         deps=_deps(emitted.append),
         # No tool output anywhere → microcompact elides nothing even when it fires.
         message_history=[_user_msg("first"), _assistant_msg("answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
     handler._last_input_tokens = 70  # micro band (>= 60, < 80) → micro fires, full does not
 
@@ -1636,7 +1636,7 @@ async def test_auto_micro_trigger_fired_but_zero_elided_logs_one_info_line(agent
 
 
 async def test_none_seam_disables_cascade_even_with_a_tiny_window(agent, tmp_path, mocker):
-    """AC (hard regression): compaction_model_or_settings=None disables the whole cascade.
+    """AC (hard regression): compaction_model=None disables the whole cascade.
 
     Even with the window patched so a wired handler would fully compact, the unwired handler must
     behave exactly as before: history grows normally, the turn persists, and no compaction event
@@ -1647,7 +1647,7 @@ async def test_none_seam_disables_cascade_even_with_a_tiny_window(agent, tmp_pat
     log = _fresh_log(tmp_path, "05")
 
     emitted: list[events.Event] = []
-    handler = AgentTurnHandler(  # no compaction_model_or_settings → None (the default)
+    handler = AgentTurnHandler(  # no compaction_model → None (the default)
         agent,
         deps=_deps(emitted.append),
         session_log=log,
@@ -1846,7 +1846,7 @@ async def test_compaction_fires_on_the_runs_resolved_window_not_the_configured_o
         deps=deps,
         session_log=log,
         message_history=[_user_msg("first"), _assistant_msg("first answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     with agent.override(model=_text_model("ok")):
@@ -1871,7 +1871,7 @@ async def test_an_unresolved_window_still_falls_back_to_the_configured_setting(
         deps=deps,
         session_log=log,
         message_history=[_user_msg("first"), _assistant_msg("first answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     with agent.override(model=_text_model("ok")):

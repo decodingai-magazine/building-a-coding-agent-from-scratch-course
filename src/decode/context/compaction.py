@@ -11,6 +11,12 @@ The coarse ``chars≈/4`` estimate (:func:`estimate_history_tokens`) sizes the t
 post-compaction gauge; it never INFLATES the trigger — the trigger reads provider-authoritative
 usage, and post-compaction the estimate can only understate, briefly, until the next leg reports
 (ADR-0018 §4 softens ADR-0006's stronger "the estimate never drives the trigger").
+
+The summarizer rides the existing Provider Seam (ADR-0018 §5): :func:`summarize_for_compaction`
+takes a built :class:`~pydantic_ai.models.Model` — the ACTIVE provider's model, wired in at
+``tui/app.py`` — so compaction works on gemini, openrouter, AND modal. This module builds no
+provider model itself (the old ``Settings → GoogleModel`` branch is deleted); it stays network-free
+and provider-agnostic, and the Model-instance argument doubles as the tests' no-network seam.
 """
 
 from __future__ import annotations
@@ -30,10 +36,6 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models.google import GoogleModel
-from pydantic_ai.providers.google import GoogleProvider
-
-from decode.config.settings import Settings
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -109,22 +111,19 @@ def should_compact(usage: RunUsage, *, window: int, reserve: float, enabled: boo
     return usage.input_tokens >= reserve_threshold(window, reserve)
 
 
-async def summarize_for_compaction(
-    messages: list[ModelMessage], *, model_or_settings: Model | Settings
-) -> str | None:
+async def summarize_for_compaction(messages: list[ModelMessage], *, model: Model) -> str | None:
     """Summarize older history into the fixed skeleton with one cheap LLM call (ADR-0006 §4).
 
     Returns the filled skeleton, or ``None`` on an empty/trivial transcript (no call made), a
     blank result, or a failed call (logged at warning, never raised — degrades to "no
-    compaction this turn"). ``model_or_settings``: a concrete
-    :class:`~pydantic_ai.models.Model` (tests — no network) or
-    :class:`~decode.config.settings.Settings` (production Gemini).
+    compaction this turn"). ``model`` is a built :class:`~pydantic_ai.models.Model` — in production
+    the ACTIVE provider's model wired in at the call site so compaction rides the Provider Seam
+    (ADR-0018 §5), in tests a ``FunctionModel`` / ``TestModel`` (no network).
     """
     transcript = _render_transcript(messages)
     if not transcript:
         return None
 
-    model = _resolve_model(model_or_settings)
     agent: Agent[None, str] = Agent(model, instructions=_COMPACTION_INSTRUCTIONS)
     try:
         result = await agent.run(transcript)
@@ -231,14 +230,6 @@ def microcompact(
     if elided == 0:
         return messages, 0
     return new_messages, elided
-
-
-def _resolve_model(model_or_settings: Model | Settings) -> Model | GoogleModel:
-    """Pass a ``Model`` through, or build the config-driven Gemini model from ``Settings``."""
-    if isinstance(model_or_settings, Settings):
-        provider = GoogleProvider(api_key=model_or_settings.gemini_api_key.get_secret_value())
-        return GoogleModel(model_or_settings.gemini_model, provider=provider)
-    return model_or_settings
 
 
 def _render_transcript(messages: list[ModelMessage]) -> str:

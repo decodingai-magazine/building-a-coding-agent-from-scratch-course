@@ -323,7 +323,7 @@ async def test_compaction_capstone_micro_full_persist_resume(tmp_path, monkeypat
         agent,
         deps=deps,
         session_log=log,
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
     runner = Runner(handler, on_event=on_event)
 

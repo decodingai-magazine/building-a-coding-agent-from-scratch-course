@@ -38,7 +38,7 @@ from pydantic_ai.usage import RunUsage
 
 from decode import observability
 from decode.agent.deps import AgentDeps
-from decode.config.settings import Settings, settings
+from decode.config.settings import settings
 from decode.context.compaction import (
     CompactOutcome,
     build_summary_message,
@@ -85,10 +85,11 @@ class AgentTurnHandler:
     One instance per REPL session: it owns the cross-turn ``message_history``; calling it with
     a :class:`~decode.harness.runner.TurnContext` returns the async generator the runner drives.
     Three optional seams, each ``None``-off so a headless/test run is unchanged: ``session_log=``
-    appends each turn's new messages as JSONL for ``--resume`` (ADR-0002 §9); ``compaction_model_
-    or_settings=`` enables the two-tier compaction cascade at would-stop (ADR-0006 §3-7; :meth:`compact`
-    is also the body of ``/compact``); ``session_id=`` makes each turn one Opik ``chat_turn`` root
-    span grouped into a per-session Thread (ADR-0014 §4).
+    appends each turn's new messages as JSONL for ``--resume`` (ADR-0002 §9); ``compaction_model=``
+    enables the two-tier compaction cascade at would-stop (ADR-0006 §3-7; :meth:`compact` is also
+    the body of ``/compact``) — it is the ACTIVE provider's built model so the summarizer rides the
+    Provider Seam (ADR-0018 §5), and ``None`` disables the cascade; ``session_id=`` makes each turn
+    one Opik ``chat_turn`` root span grouped into a per-session Thread (ADR-0014 §4).
     """
 
     def __init__(
@@ -99,7 +100,7 @@ class AgentTurnHandler:
         session_log: SessionLog | None = None,
         session_id: str | None = None,
         message_history: list[ModelMessage] | None = None,
-        compaction_model_or_settings: Model | Settings | None = None,
+        compaction_model: Model | None = None,
     ) -> None:
         self._agent = agent
         self._deps = deps
@@ -111,8 +112,9 @@ class AgentTurnHandler:
         self._session_log = session_log
         # Persisted-count cursor: the seeded prefix counts as persisted so resume never re-writes it.
         self._persisted_count = len(self.message_history)
-        # Compaction summarizer source (Model or Settings, ADR-0006 §4); ``None`` disables the cascade.
-        self._compaction_model_or_settings = compaction_model_or_settings
+        # Compaction summarizer: the ACTIVE provider's built model (ADR-0006 §4, ADR-0018 §5);
+        # ``None`` disables the cascade.
+        self._compaction_model = compaction_model
         # Input-token occupancy driving the compaction trigger + TUI gauge: the most recent leg's
         # provider-reported number, or — the instant a compaction lands — the chars≈/4 estimate of
         # the kept history, which the next leg's provider number overwrites (ADR-0018 §2, §4).
@@ -275,7 +277,7 @@ class AgentTurnHandler:
         Full (LLM) is checked first because its trigger level sits above micro's — the larger micro
         reserve fires earlier; the cheapest applicable tier runs.
         """
-        if self._compaction_model_or_settings is None:
+        if self._compaction_model is None:
             return
         usage = RunUsage(input_tokens=self._last_input_tokens)
         # The window of the model THIS run is actually using (``--model`` included, task 123);
@@ -326,7 +328,7 @@ class AgentTurnHandler:
         if split == 0:
             return CompactOutcome.NOTHING_TO_COMPACT
         skeleton = await summarize_for_compaction(
-            self.message_history, model_or_settings=self._compaction_model_or_settings
+            self.message_history, model=self._compaction_model
         )
         if skeleton is None:
             return CompactOutcome.SUMMARIZER_FAILED

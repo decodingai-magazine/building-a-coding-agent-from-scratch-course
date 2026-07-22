@@ -852,8 +852,10 @@ async def run_app(
     session_log = SessionLog.create(settings.sessions_dir, cwd=harness_home)
 
     # The handler owns the cross-turn ``message_history`` the on-exit write-back summarizes; one
-    # per session (§1). ``compaction_model_or_settings=settings`` arms the two-tier compaction
-    # cascade (ADR-0006 §3-7).
+    # per session (§1). ``compaction_model=agent.model`` arms the two-tier compaction cascade
+    # (ADR-0006 §3-7) on the ACTIVE provider's own built model, so the summarizer rides the Provider
+    # Seam and works on gemini/openrouter/modal alike — zero extra construction, guaranteed same
+    # provider (ADR-0018 §5).
     handler = AgentTurnHandler(
         agent,
         deps=deps,
@@ -861,7 +863,7 @@ async def run_app(
         # Also the Opik Thread id grouping the session's per-turn traces (ADR-0014 §4).
         session_id=session_log.session_id,
         message_history=resumed_history,
-        compaction_model_or_settings=settings,
+        compaction_model=agent.model,
     )
     runner = Runner(handler, on_event=_on_event)
 

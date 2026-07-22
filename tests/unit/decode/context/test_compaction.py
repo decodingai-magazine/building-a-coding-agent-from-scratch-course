@@ -173,7 +173,7 @@ async def test_summarize_for_compaction_returns_the_filled_skeleton():
     async def fill(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         return ModelResponse(parts=[TextPart(content=_SKELETON)])
 
-    summary = await summarize_for_compaction(messages, model_or_settings=FunctionModel(fill))
+    summary = await summarize_for_compaction(messages, model=FunctionModel(fill))
 
     assert summary is not None
     for heading in _SKELETON_HEADINGS:
@@ -202,7 +202,7 @@ async def test_summarize_for_compaction_feeds_a_transcript_with_tool_activity():
         _tool_return("read_file", "c1", "name = decode"),
         _assistant("the project is named decode"),
     ]
-    await summarize_for_compaction(messages, model_or_settings=FunctionModel(capture))
+    await summarize_for_compaction(messages, model=FunctionModel(capture))
 
     transcript = "\n".join(seen)
     assert "read the config file" in transcript
@@ -219,7 +219,7 @@ async def test_summarize_for_compaction_returns_none_on_empty_conversation():
         called = True
         return ModelResponse(parts=[TextPart(content=_SKELETON)])
 
-    summary = await summarize_for_compaction([], model_or_settings=FunctionModel(must_not_run))
+    summary = await summarize_for_compaction([], model=FunctionModel(must_not_run))
 
     assert summary is None
     assert called is False
@@ -233,7 +233,7 @@ async def test_summarize_for_compaction_returns_none_when_the_call_raises():
 
     messages: list[ModelMessage] = [_user("do the thing"), _assistant("did the thing")]
 
-    summary = await summarize_for_compaction(messages, model_or_settings=FunctionModel(boom))
+    summary = await summarize_for_compaction(messages, model=FunctionModel(boom))
 
     assert summary is None
 
@@ -246,7 +246,7 @@ async def test_summarize_for_compaction_logs_a_warning_when_the_call_raises(mock
         raise RuntimeError("model exploded")
 
     messages: list[ModelMessage] = [_user("do the thing"), _assistant("did the thing")]
-    await summarize_for_compaction(messages, model_or_settings=FunctionModel(boom))
+    await summarize_for_compaction(messages, model=FunctionModel(boom))
 
     warn.assert_called_once()
 
@@ -256,9 +256,39 @@ async def test_summarize_for_compaction_returns_none_when_the_model_returns_blan
     messages: list[ModelMessage] = [_user("do the thing"), _assistant("did the thing")]
     model = TestModel(custom_output_text="   ")
 
-    summary = await summarize_for_compaction(messages, model_or_settings=model)
+    summary = await summarize_for_compaction(messages, model=model)
 
     assert summary is None
+
+
+async def test_summarize_for_compaction_builds_no_provider_model(mocker):
+    # ADR-0018 §5: compaction rides the Provider Seam — the module accepts a built Model and never
+    # constructs a provider model of its own. The old ``Settings → GoogleModel`` branch is gone, so
+    # a summarize call must not build a GoogleModel/GoogleProvider anywhere (an openrouter/modal
+    # user without GEMINI_API_KEY used to hit exactly that hardcode).
+    import pydantic_ai.models.google as google_module
+    import pydantic_ai.providers.google as google_provider_module
+
+    google_model = mocker.spy(google_module, "GoogleModel")
+    google_provider = mocker.spy(google_provider_module, "GoogleProvider")
+
+    async def fill(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(content=_SKELETON)])
+
+    messages: list[ModelMessage] = [_user("do the thing"), _assistant("did the thing")]
+    await summarize_for_compaction(messages, model=FunctionModel(fill))
+
+    google_model.assert_not_called()
+    google_provider.assert_not_called()
+
+
+def test_compaction_module_imports_no_google_or_settings_for_model_construction():
+    # AC (regression): the module drops its Google + Settings-for-model imports so no import cycle
+    # and no provider hardcode can sneak back in (ADR-0018 §5).
+    assert not hasattr(compaction, "GoogleModel")
+    assert not hasattr(compaction, "GoogleProvider")
+    assert not hasattr(compaction, "Settings")
+    assert not hasattr(compaction, "_resolve_model")
 
 
 # build_summary_message
