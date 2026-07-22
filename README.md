@@ -39,7 +39,7 @@ This course teaches it by making you build it. We spent months under the hood of
 
 Finish the build and you walk away with two things. The skill behind that leaderboard jump — engineering custom harnesses for your own AI products. And x-ray vision into the tools you already pay for: nothing Claude Code or Codex does is magic once you've built the code underneath, which is what turns you from user into power user. Skip this layer and you're betting your work on tools you can't inspect.
 
-The codebase is finished and honest: 18 [Architecture Decision Records](docs/adr/), 1,800+ tests that run without an API key, and the dead ends kept in — we built a credential proxy to hide the git token from the sandbox, then [deleted it](docs/adr/0016-drop-credential-proxy.md) when we proved it protected nothing. The postmortem is part of the course.
+The codebase is finished and honest: 1,800+ tests that run without an API key, and the dead ends kept in — we built a credential proxy to hide the git token from the sandbox, then deleted it when we proved it protected nothing. The postmortem is part of the course.
 
 <p align="center">
   <img src="assets/architecture.png" alt="decode architecture" width="620">
@@ -108,7 +108,7 @@ And the machinery underneath is real infrastructure you'll stand up yourself, no
 - **Evaluate the thing you built**: outcome benchmarks, behavior regression probes, and an LLM judge — because a green test suite can't tell you the agent got worse at its job.
 - **Ship it to a team**: a teammate labels a GitHub issue and receives a reviewed pull request; you compare 5 models on the same task and merge the winner.
 
-Every step works concrete-first: watch `decode` do it — gate a `bash` call, compact near 80% of the window, resume a killed run — then pull out the principle that generalizes to any agentic system: context engineering, the trust ladder, durable execution, subagent design, agent evals. The [course outline](#-course-outline) maps each lesson to its code modules and ADRs.
+Every step works concrete-first: watch `decode` do it — gate a `bash` call, compact near 80% of the window, resume a killed run — then pull out the principle that generalizes to any agentic system: context engineering, the trust ladder, durable execution, subagent design, agent evals. The [course outline](#-course-outline) maps each lesson to its code modules.
 
 ## 👥 Who Should Join?
 
@@ -145,7 +145,7 @@ Running the code costs **$0** if you stick to free tiers:
 
 ## ⚙️ How It Works
 
-Self-paced and project-based — no paywall, no certificate theater: read the lesson on [Decoding AI](https://www.decodingai.com), run the matching code, go one level deeper via the ADRs — then point `decode` at your own projects and break it.
+Self-paced and project-based — no paywall, no certificate theater: read the lesson on [Decoding AI](https://www.decodingai.com), run the matching code — then point `decode` at your own projects and break it.
 
 ## 📬 Learn How to Build Coding Agents From Scratch
 
@@ -161,14 +161,14 @@ Eight lessons, each pairing a written deep-dive with the code that implements it
 
 | Lesson | Title | Description | Key code & docs |
 |--------|-------|-------------|-----------------|
-| 1 | What we're building + system design | Why the harness — not the model — decides how good your agent is. Anatomy of harness vs loop vs model, and the milestone map for the whole build. | [ADR index](docs/adr/) |
-| 2 | The agent loop & the human in it | One user turn, end-to-end: prompt → tool call → approval → streamed render → session log. Steer it mid-flight, queue follow-ups, abort — and pick a model that can actually call tools. | `src/decode/agent/`, `src/decode/tui/`, `src/decode/tools/` · [ADR-0002](docs/adr/0002-milestone-1-vanilla-agent-architecture.md), [ADR-0005](docs/adr/0005-multi-llm-provider-support.md) |
-| 3 | Durable execution, HITL & replay | `kill -9` a headless run and watch it resume from checkpoints. Durable human-in-the-loop waits, and what-if replay with the model swapped. | `src/decode/runtime/` · [ADR-0008](docs/adr/0008-kitaru-durable-runtime.md), [ADR-0010](docs/adr/0010-runtime-replay.md) |
-| 4 | Context engineering: the window is a budget | Context engineering without measurement is folklore. Five moves — memory, compaction, skills, LSP, truncation — each a measured before/after experiment. | `src/decode/context/`, `src/decode/memory/`, `src/decode/skills/`, `src/decode/services/lsp/` · [ADR-0006](docs/adr/0006-conversation-compaction.md), [ADR-0007](docs/adr/0007-lsp-integration.md) |
-| 5 | Containing the agent: permissions → sandbox | The trust ladder: the permission gate proper, then isolated Docker/Modal Workspaces with git hand-back — plus the credential proxy we built and then deleted, postmortem included. | `src/decode/permissions/`, `src/decode/sandbox/` · [ADR-0003](docs/adr/0003-milestone-2-permission-system-and-agents-catalog.md), [ADR-0012](docs/adr/0012-isolated-workspace.md), [ADR-0016](docs/adr/0016-drop-credential-proxy.md) |
-| 6 | Agents catalog, subagents & parallel fan-out | Build/Plan/Code-Reviewer agents and the read-only Explore subagent — parallel fan-out with budgets, report contracts, and no silent failures. | `src/decode/agents/` · [ADR-0013](docs/adr/0013-explore-subagents.md), [ADR-0017](docs/adr/0017-resilient-parallel-subagent-fanout.md) |
-| 7 | Is the agent good? The eval stack | The suite is green — 1,800+ tests — and it still can't tell you the agent got worse. Outcome benchmarks, regression probes, LLM-as-judge, and online evals over live traffic. | `evals/`, `src/decode/observability/` · [ADR-0014](docs/adr/0014-opik-observability.md), [ADR-0017](docs/adr/0017-decode-eval-suite.md), [getting_started/evals.md](getting_started/evals.md) |
-| 8 | Ship it to your team | Builder → operator: deployed runtime, environment-scoped secrets, a GitHub pipeline where labeling an issue returns a reviewed PR, and judged model-comparison cohorts. | [ADR-0015](docs/adr/0015-environment-bucket-secrets.md) · [credentials.md](getting_started/credentials.md), [infra.md](getting_started/infra.md) |
+| 1 | What we're building + system design | Why the harness — not the model — decides how good your agent is. Anatomy of harness vs loop vs model, and the milestone map for the whole build. | [install_and_usage.md](getting_started/install_and_usage.md) |
+| 2 | The agent loop & the human in it | One user turn, end-to-end: prompt → tool call → approval → streamed render → session log. Steer it mid-flight, queue follow-ups, abort — and pick a model that can actually call tools. | `src/decode/agent/`, `src/decode/tui/`, `src/decode/tools/` |
+| 3 | Durable execution, HITL & replay | `kill -9` a headless run and watch it resume from checkpoints. Durable human-in-the-loop waits, and what-if replay with the model swapped. | `src/decode/runtime/` · [runtime.md](getting_started/runtime.md) |
+| 4 | Context engineering: the window is a budget | Context engineering without measurement is folklore. Five moves — memory, compaction, skills, LSP, truncation — each a measured before/after experiment. | `src/decode/context/`, `src/decode/memory/`, `src/decode/skills/`, `src/decode/services/lsp/` |
+| 5 | Containing the agent: permissions → sandbox | The trust ladder: the permission gate proper, then isolated Docker/Modal Workspaces with git hand-back — plus the credential proxy we built and then deleted, postmortem included. | `src/decode/permissions/`, `src/decode/sandbox/` · [sandboxing.md](getting_started/sandboxing.md) |
+| 6 | Agents catalog, subagents & parallel fan-out | Build/Plan/Code-Reviewer agents and the read-only Explore subagent — parallel fan-out with budgets, report contracts, and no silent failures. | `src/decode/agents/` |
+| 7 | Is the agent good? The eval stack | The suite is green — 1,800+ tests — and it still can't tell you the agent got worse. Outcome benchmarks, regression probes, LLM-as-judge, and online evals over live traffic. | `evals/`, `src/decode/observability/` · [evals.md](getting_started/evals.md) |
+| 8 | Ship it to your team | Builder → operator: deployed runtime, environment-scoped secrets, a GitHub pipeline where labeling an issue returns a reviewed PR, and judged model-comparison cohorts. | [credentials.md](getting_started/credentials.md), [infra.md](getting_started/infra.md) |
 
 ## 🏗️ Project Structure
 
@@ -234,9 +234,6 @@ Open a [GitHub issue](https://github.com/decodingai-magazine/building-a-coding-a
 
 **Do I need a paid API key?**
 No. The default Gemini provider has a free tier, OpenRouter routes across `:free` models, and [Modal](https://modal.com?source=decodingai&campaign=harnesseng) gives $30 in credits — see [Cost Structure](#-cost-structure).
-
-**How does this compare to the paid [Agent Engineering course](https://academy.towardsai.net/courses/agent-engineering?ref=b3ab31)?**
-They sit one layer apart. [Agent Engineering](https://academy.towardsai.net/courses/agent-engineering?ref=b3ab31) (with Towards AI) teaches you to design, evaluate, and deploy production multi-agent *applications*. This free course goes underneath: you build the *coding agent harness itself* — the loop, the permission gate, the sandbox, the durable runtime that tools like Claude Code are made of. If Agent Engineering teaches you to engineer agents, this course teaches you to build the tool that builds them.
 
 ## 🥂 Contributing
 
