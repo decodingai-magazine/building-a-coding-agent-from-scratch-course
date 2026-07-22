@@ -50,7 +50,7 @@ from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
 from decode.context import session_log
-from decode.context.compaction import _MICRO_PLACEHOLDER
+from decode.context.compaction import _MICRO_PLACEHOLDER, estimate_history_tokens
 from decode.context.session_log import SessionLog
 from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
@@ -342,14 +342,20 @@ async def test_compaction_capstone_micro_full_persist_resume(tmp_path, monkeypat
         # prove micro persisted nothing per-turn rather than inferring it from the end-state total.
         compaction_lines_after_micro = _log_line_types(log).count("compaction")
 
-        # 3. full: two inline sleeps — usage 150, >= 120 → full compaction.
+        # 3. full: two inline sleeps — usage 150, >= 120 → full compaction. The moment it lands the
+        # gauge drops off the provider's pre-compaction 150 to the chars≈/4 estimate of the kept
+        # [summary, *tail] (ADR-0018 §4) — the footer falls without waiting for the next leg.
         await _run_turn(runner, f"{_TAG_FULL} sleep twice {_HUGE}")
-        assert handler.last_input_tokens == _USAGE_FULL
         compacted_history = list(handler.message_history)
+        assert handler.last_input_tokens == estimate_history_tokens(compacted_history)
+        assert (
+            handler.last_input_tokens != _USAGE_FULL
+        )  # no longer the pre-compaction provider number
         persisted_count_after_full = handler._persisted_count  # the cursor right after compaction
         compacted_on_disk = session_log.load(log.path)  # [summary, *tail] from the checkpoint
 
-        # 4. wrap-up: plain text — usage 50, no tier; lands after the checkpoint.
+        # 4. wrap-up: plain text — usage 50, no tier; lands after the checkpoint. The next leg's
+        # provider number overwrites the post-compaction estimate (ADR-0018 §4: no compaction loop).
         await _run_turn(runner, "wrap up and summarize what is left")
         assert handler.last_input_tokens == _USAGE_PER_LEG
 

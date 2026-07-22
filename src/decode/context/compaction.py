@@ -7,8 +7,10 @@ The tail cut snaps back to a Compaction Boundary — a ``ModelResponse`` or a to
 ``ModelRequest`` — so a tool-call/result pair is never split, and a single long agentic turn
 still finds a cut (ADR-0018 §1 amends ADR-0006 §5).
 Microcompaction is in-memory only — the JSONL log keeps full fidelity (ADR-0006 §3a).
-The coarse ``chars≈/4`` estimate sizes the tail ONLY — never the trigger, which reads
-provider-authoritative usage.
+The coarse ``chars≈/4`` estimate (:func:`estimate_history_tokens`) sizes the tail AND seeds the
+post-compaction gauge; it never INFLATES the trigger — the trigger reads provider-authoritative
+usage, and post-compaction the estimate can only understate, briefly, until the next leg reports
+(ADR-0018 §4 softens ADR-0006's stronger "the estimate never drives the trigger").
 """
 
 from __future__ import annotations
@@ -59,7 +61,8 @@ class CompactOutcome(enum.Enum):
 # Microcompaction placeholder: blanks content only — the part stays real, never orphaned.
 _MICRO_PLACEHOLDER = "[tool output elided by microcompaction]"
 
-# Coarse chars→tokens divisor — tail sizing ONLY, never the trigger (ADR-0006 §Consequences).
+# Coarse chars→tokens divisor — tail sizing + the post-compaction gauge seed; never INFLATES the
+# trigger, which reads provider-authoritative usage (ADR-0018 §4 softens ADR-0006 §Consequences).
 _CHARS_PER_TOKEN = 4
 
 # Full-tier summarizer instruction: fills the fixed skeleton (ADR-0006 §4).
@@ -157,8 +160,9 @@ def split_tail(messages: list[ModelMessage], *, keep_recent_tokens: int) -> int:
     + dozens of tool rounds) now finds a cut instead of collapsing to 0.
 
     Returns ``0`` when everything fits (or the nearest valid boundary genuinely is 0) and
-    ``len(messages)`` when nothing fits. The ``chars≈/4`` estimate is tail sizing only, never
-    the trigger.
+    ``len(messages)`` when nothing fits. The ``chars≈/4`` estimate sizes the tail (and seeds the
+    post-compaction gauge, :func:`estimate_history_tokens`); it never INFLATES the trigger
+    (ADR-0018 §4).
     """
     if not messages:
         return 0
@@ -263,8 +267,23 @@ def _render_transcript(messages: list[ModelMessage]) -> str:
     return "\n".join(lines)
 
 
+def estimate_history_tokens(messages: list[ModelMessage]) -> int:
+    """Coarse ``chars≈/4`` token estimate of a whole history — the sum over messages of the same
+    per-message :func:`_estimate_tokens` that :func:`split_tail` sizes the tail with (ONE divisor,
+    no second estimator). Empty → ``0``.
+
+    Used both to size the recent tail and to seed the post-compaction gauge, so the footer drops to
+    the same currency the cut is made in the instant a compaction lands (ADR-0018 §4). This is why
+    the estimate now touches the gauge at all: post-compaction it can only understate real occupancy
+    (the divisor is coarse and the next leg's provider number overwrites it), so it never INFLATES
+    the trigger — ADR-0018 §4 softens ADR-0006's stronger "the estimate never drives the trigger".
+    """
+    return sum(_estimate_tokens(message) for message in messages)
+
+
 def _estimate_tokens(message: ModelMessage) -> int:
-    """Coarse ``chars≈/4`` token estimate for one message (tail sizing ONLY, never the trigger)."""
+    """Coarse ``chars≈/4`` token estimate for one message (tail sizing + the post-compaction gauge
+    seed via :func:`estimate_history_tokens`; never INFLATES the trigger — ADR-0018 §4)."""
     chars = sum(_part_chars(part) for part in message.parts)
     return chars // _CHARS_PER_TOKEN
 

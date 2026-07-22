@@ -42,6 +42,7 @@ from decode.config.settings import Settings, settings
 from decode.context.compaction import (
     CompactOutcome,
     build_summary_message,
+    estimate_history_tokens,
     microcompact,
     should_compact,
     split_tail,
@@ -112,7 +113,9 @@ class AgentTurnHandler:
         self._persisted_count = len(self.message_history)
         # Compaction summarizer source (Model or Settings, ADR-0006 §4); ``None`` disables the cascade.
         self._compaction_model_or_settings = compaction_model_or_settings
-        # Provider-reported input tokens of the most recent leg (compaction trigger + TUI gauge).
+        # Input-token occupancy driving the compaction trigger + TUI gauge: the most recent leg's
+        # provider-reported number, or — the instant a compaction lands — the chars≈/4 estimate of
+        # the kept history, which the next leg's provider number overwrites (ADR-0018 §2, §4).
         self._last_input_tokens = 0
         # tool_call_ids that already emitted ToolCallStarted: a gated call streams on both the
         # pause and resume legs, so announce each call only once.
@@ -120,13 +123,16 @@ class AgentTurnHandler:
 
     @property
     def last_input_tokens(self) -> int:
-        """The last response's provider-reported request usage for the most recent leg (ADR-0018 §2).
+        """Input-token occupancy of the most recent leg — the TUI footer gauge + compaction trigger
+        read this single number (ADR-0018 §2, §4).
 
-        Not the leg's cumulative usage: it is the last populated ``ModelResponse.usage``
-        (``input_tokens + cache_read_tokens``), so it tracks real context occupancy instead of
-        overcounting ~Nx across N tool rounds. ``0`` before any leg (and when no response reported
-        usage). The public read the TUI footer fill gauge uses; the compaction trigger reads the
-        same number.
+        Normally the last populated ``ModelResponse.usage`` of the leg (``input_tokens +
+        cache_read_tokens``), NOT the leg's cumulative usage: it tracks real context occupancy
+        instead of overcounting ~Nx across N tool rounds. The one exception is the instant a full
+        compaction lands: the gauge is reseeded with the chars≈/4 estimate of the kept
+        ``[summary, *tail]`` so the footer drops immediately (understating, never inflating), and
+        the next leg's provider number overwrites it (ADR-0018 §4). ``0`` before any leg (and when
+        no response reported usage).
         """
         return self._last_input_tokens
 
@@ -333,6 +339,12 @@ class AgentTurnHandler:
             except OSError:
                 logger.warning("failed to persist compaction checkpoint", exc_info=True)
         self.message_history = [summary_message, *tail]
+        # Drop the footer gauge to the chars≈/4 estimate of the kept history the instant compaction
+        # lands, instead of leaving it stuck on the pre-compaction provider number until the next
+        # leg reports. This softens ADR-0006's "the estimate never drives the trigger" to "never
+        # INFLATES it": post-compaction the estimate can only understate, and the next leg's
+        # provider-authoritative number overwrites it — so it can start no compaction loop (ADR-0018 §4).
+        self._last_input_tokens = estimate_history_tokens(self.message_history)
         self._persisted_count = len(self.message_history)
         self._deps.emit(
             events.ContextCompacted(before_tokens=before_tokens, kept_messages=len(tail))

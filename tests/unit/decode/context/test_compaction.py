@@ -28,6 +28,7 @@ from decode.context import compaction
 from decode.context.compaction import (
     _MICRO_PLACEHOLDER,
     build_summary_message,
+    estimate_history_tokens,
     microcompact,
     reserve_threshold,
     should_compact,
@@ -417,6 +418,37 @@ def test_split_tail_still_snaps_to_a_user_turn_boundary_when_that_is_nearest():
     head = messages[boundary]
     assert isinstance(head, ModelRequest)
     assert any(isinstance(part, UserPromptPart) for part in head.parts)
+
+
+# estimate_history_tokens (ADR-0018 §4): the public chars≈/4 sum that sizes the tail AND seeds the
+# post-compaction gauge — one divisor, no second estimator.
+
+
+def test_estimate_history_tokens_empty_is_zero():
+    # No messages → nothing to occupy the window → 0 (the seed a just-cleared history would read).
+    assert estimate_history_tokens([]) == 0
+
+
+def test_estimate_history_tokens_sums_chars_over_four():
+    # Known content → the per-message floor(chars / 4) summed: 40//4 + 24//4 == 10 + 6 == 16.
+    messages: list[ModelMessage] = [_user("x" * 40), _assistant("y" * 24)]
+
+    assert estimate_history_tokens(messages) == 16
+
+
+def test_estimate_history_tokens_shares_the_tail_estimator():
+    # Single source of truth: the public sum is exactly the per-message _estimate_tokens split_tail
+    # sizes the tail with (one divisor, _CHARS_PER_TOKEN) — never a second, divergent estimator.
+    messages: list[ModelMessage] = [
+        _user("hello world"),
+        _tool_call("read", "c0"),
+        _tool_return("read", "c0", "some tool output body"),
+        _assistant("a longer assistant reply here"),
+    ]
+
+    assert estimate_history_tokens(messages) == sum(
+        compaction._estimate_tokens(message) for message in messages
+    )
 
 
 # microcompact

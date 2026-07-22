@@ -1440,6 +1440,105 @@ async def test_compact_returns_nothing_to_compact_on_trivial_history(agent):
     assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
 
 
+# task 128 (ADR-0018 §4): a successful compaction drops the gauge IMMEDIATELY to the chars≈/4
+# estimate of the kept [summary, *tail]; the next leg's provider number overwrites it, and the
+# non-COMPACTED outcomes never touch the gauge.
+
+
+def _compactable_history() -> list[ModelMessage]:
+    """A history with a droppable old prefix and a recent tail (compaction lands, tail is small)."""
+    return [
+        _user_msg("first"),
+        _assistant_msg("answer"),
+        _user_msg(_HUGE_PROMPT),
+        _assistant_msg("recent"),
+    ]
+
+
+async def test_compaction_seeds_the_gauge_with_the_kept_history_estimate(agent, mocker):
+    """Regression (ADR-0018 §4): a successful compact() drops the gauge to the chars≈/4 estimate of
+    the new [summary, *tail], strictly below the pre-compaction provider number — red before the
+    seed line, which left the gauge reading the stale pre-compaction value until the next leg."""
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=_compactable_history(),
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+    handler._last_input_tokens = 999_999  # a prior leg's provider number: the ~85%-full footer
+
+    assert await handler.compact() is compaction.CompactOutcome.COMPACTED
+
+    # The gauge now reads the estimate of exactly the kept history — the single-source-of-truth
+    # helper, not a second estimator.
+    assert handler.last_input_tokens == compaction.estimate_history_tokens(handler.message_history)
+    # ...and it dropped: the footer falls the instant /compact lands (understates, never inflates).
+    assert handler.last_input_tokens < 999_999
+
+
+async def test_next_leg_overwrites_the_post_compaction_estimate(agent, mocker):
+    """The estimate is transient: the next leg's provider-authoritative number overwrites it, so a
+    compact→trigger→compact loop can never start from the estimate (rides task 126's stub seam)."""
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=_compactable_history(),
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+
+    assert await handler.compact() is compaction.CompactOutcome.COMPACTED
+    seeded = handler.last_input_tokens
+    assert seeded == compaction.estimate_history_tokens(handler.message_history)
+
+    # The next leg reports its own per-request usage; _run_leg overwrites the estimate with it.
+    messages: list[ModelMessage] = [
+        _user_msg("go"),
+        ModelResponse(parts=[TextPart(content="a")], usage=RequestUsage(input_tokens=4242)),
+    ]
+    run = _StubRun(messages, cumulative_input=4242)
+    mocker.patch.object(handler._agent, "iter", return_value=_StubIterCM(run))
+
+    await handler._run_leg(_ctx(0, "go", emitted), prompt="go")
+
+    assert handler.last_input_tokens == 4242
+    assert handler.last_input_tokens != seeded
+
+
+async def test_nothing_to_compact_leaves_the_gauge_untouched(agent):
+    """A NOTHING_TO_COMPACT no-op must not seed the gauge — history is untouched, so is the footer."""
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=[_user_msg("just one short turn"), _assistant_msg("ok")],
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+    handler._last_input_tokens = 777
+
+    assert await handler.compact() is compaction.CompactOutcome.NOTHING_TO_COMPACT
+    assert handler.last_input_tokens == 777
+
+
+async def test_summarizer_failed_leaves_the_gauge_untouched(agent, mocker):
+    """A SUMMARIZER_FAILED degrade must not seed the gauge — history is untouched, so is the footer."""
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=_compactable_history(),
+        compaction_model_or_settings=_raising_summarizer(),
+    )
+    handler._last_input_tokens = 555
+
+    assert await handler.compact() is compaction.CompactOutcome.SUMMARIZER_FAILED
+    assert handler.last_input_tokens == 555
+
+
 async def test_compact_returns_summarizer_failed_when_summary_is_blank(agent, mocker):
     # split > 0 implies a non-trivial transcript, so a blank summary is a summarizer failure,
     # NOT "nothing to compact" (ADR-0018 §3).
