@@ -31,6 +31,11 @@
 >
 > Then type `/demo-` and pick a demo — see [what they do](#-see-it-work) below. Full guide: [install_and_usage.md](running_the_code/install_and_usage.md).
 
+<p align="center">
+  <img src="assets/tui-session-start.png" alt="The decode TUI right after launch: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer" width="800">
+</p>
+<p align="center"><i>What opens: Opik tracing on, a Qwen you serve on Modal, skills one keystroke away, steering keys in the footer.</i></p>
+
 ## 📖 About This Course
 
 In [one public experiment by LangChain](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness), changing only the *harness* — same model throughout — moved a coding agent from roughly 30th place into the top 5 on Terminal-Bench. The harness decides what the model sees, what it touches, and what happens when it's wrong. It's also the part nobody teaches.
@@ -135,6 +140,11 @@ And the machinery underneath is real infrastructure you'll stand up yourself, no
 - **Run swarms of remote agents** — a teammate labels a GitHub issue and receives a reviewed pull request.
 
 Every lesson runs the same way: watch `decode` do it, then pull out the principle.
+
+<p align="center">
+  <img src="assets/tui-plan-mode-todo.png" alt="decode in plan mode breaking the Snake demo into a task list with the todo tool" width="800">
+</p>
+<p align="center"><i>Plan mode, live: the agent breaks the Snake demo into a task list with the <code>todo</code> tool — <code>[x]</code> done, <code>[~]</code> in progress.</i></p>
 
 ## 📚 Course Outline
 
