@@ -233,3 +233,18 @@ $ git stash pop   # restored, re-ran same -k selection → 3 passed
 
 **VERDICT: PASS**
 
+
+### [PA] 2026-07-23 — Acceptance Review (feature fix-compaction, PR #50)
+
+**VERDICT: ACCEPT**
+
+Walked the whole feature from the user's perspective against the Tasks Plan (tasks 125-130,
+ADR-0018): the original single-long-turn session shape now auto-compacts (capstone 4/4 green,
+re-run); the Context Gauge reads the last response's usage and drops to the kept-history
+estimate the instant compaction lands (footer reads `handler.last_input_tokens`, app.py:587);
+`/compact` gives three honest distinct lines (failure copy names `.decode/logs/decode.log`,
+no enum jargon leaked); all three providers summarize via `compaction_model=agent.model`
+(wiring test gemini/openrouter/modal green, re-run); glossary terms (Compaction Boundary /
+Compaction Outcome / Context Gauge) and ADR-0018 land verbatim-consistent with code.
+Non-blocking nit noted for a future cleanup: stale "user-turn boundary, ADR-0006 §5" comment
+at tests/integration/test_compaction_capstone.py:413. Hand off to the PR Reviewer.

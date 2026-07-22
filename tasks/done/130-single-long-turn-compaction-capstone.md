@@ -242,3 +242,39 @@ $ git diff --stat -- src/
   revisited, but not a functional problem.
 
 **VERDICT: PASS**
+
+### [PA] 2026-07-23 — Acceptance Review (feature fix-compaction, PR #50)
+
+**VERDICT: ACCEPT**
+
+Walked the whole feature from the user's perspective against the Tasks Plan (tasks 125-130,
+ADR-0018): the original single-long-turn session shape now auto-compacts (capstone 4/4 green,
+re-run); the Context Gauge reads the last response's usage and drops to the kept-history
+estimate the instant compaction lands (footer reads `handler.last_input_tokens`, app.py:587);
+`/compact` gives three honest distinct lines (failure copy names `.decode/logs/decode.log`,
+no enum jargon leaked); all three providers summarize via `compaction_model=agent.model`
+(wiring test gemini/openrouter/modal green, re-run); glossary terms (Compaction Boundary /
+Compaction Outcome / Context Gauge) and ADR-0018 land verbatim-consistent with code.
+Non-blocking nit noted for a future cleanup: stale "user-turn boundary, ADR-0006 §5" comment
+at tests/integration/test_compaction_capstone.py:413. Hand off to the PR Reviewer.
+
+### [PR Reviewer] 2026-07-23 — Review (PR #50, branch feat/fix-compaction)
+
+**VERDICT: NO BLOCKERS**
+
+Reviewed 21 files, ~3092 insertions (commits f348ea2..3284e93) across all dimensions
+(performance, clean code, tests, standards, doc discipline, simplicity). Findings:
+- Blockers: 0
+- Nits: 2 (appended to the PR description; also posted as caveman-review comments)
+
+**Nits**
+1. [Clean code] tests/unit/decode/context/test_compaction.py:375 — assert subsumed by the
+   next line (`_has_tool_return` is already False for a ModelResponse); drop it.
+2. [Documentation discipline] tests/integration/test_compaction_capstone.py:412-413 — stale
+   comment "snaps to a user-turn boundary, ADR-0006 §5"; should read Compaction Boundary,
+   ADR-0006 §5 as amended by ADR-0018 §1 (matches PA's noted candidate).
+
+QA spot-check: format-check + lint-check clean; touched suites green (237 unit + 64
+capstone/e2e/grounding passed). Doc discipline exemplary: ADR-0018 present, ADR-0006 status
+amended, glossary carries Compaction Boundary (redefined) + Compaction Outcome. Pipeline may
+advance to hand-off.
