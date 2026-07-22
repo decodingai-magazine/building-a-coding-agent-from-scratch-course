@@ -82,24 +82,26 @@ The whole repo is free: clone it, read it, ship it. But anyone can read an agent
 
 The finished agent ships with demo skills under [`.decode/skills/`](.decode/skills/). Open the TUI, type `/demo-`, pick one, and watch the harness you're about to build do real work:
 
+<p align="center">
+  <img src="assets/tui-session-start.png" alt="A fresh decode session: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer" width="90%"/>
+  <br/>
+  <i>A fresh session — Opik tracing on, a Modal-served Qwen, steering keys in the footer</i>
+</p>
+
 <table>
   <tr>
-    <td width="50%">
-      <img src="assets/tui-session-start.png" alt="A fresh decode session: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer"/>
-      <p align="center"><i>A fresh session — Opik tracing on, a Modal-served Qwen, steering keys in the footer</i></p>
-    </td>
     <td width="50%">
       <img src="assets/demo-snake-game.png" alt="A playable Snake game built by decode"/>
       <p align="center"><i><code>/demo-1-terminal-arcade</code> — one prompt, a playable Snake game</i></p>
     </td>
-  </tr>
-  <tr>
     <td width="50%">
       <img src="assets/demo-repo-pulse.png" alt="Live GitHub repo data rendered as a web dashboard"/>
       <p align="center"><i><code>/demo-3-repo-pulse</code> — live GitHub API data rendered as a dashboard</i></p>
     </td>
-    <td width="50%">
-      <img src="assets/demo-knowledge-graph.png" alt="An interactive knowledge graph scraped from web articles"/>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="assets/demo-knowledge-graph.png" alt="An interactive knowledge graph scraped from web articles" width="90%"/>
       <p align="center"><i><code>/demo-6-article-kg</code> — web articles scraped into an interactive knowledge graph</i></p>
     </td>
   </tr>
