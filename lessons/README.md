@@ -6,7 +6,7 @@ decode surface) with a **README playbook** (the interactive parts you type into
 the REPL yourself) and links the newsletter articles that motivated it.
 
 Prerequisite: the 5-minute core setup in
-[getting_started/install_and_usage.md](../getting_started/install_and_usage.md)
+[running_the_code/install_and_usage.md](../running_the_code/install_and_usage.md)
 (`make install` + `GEMINI_API_KEY` in `.env`). Extra requirements are per-row.
 
 | Lesson | Scope | Entrypoint | Extra requirements |

@@ -38,7 +38,7 @@ with your ambient credentials. No credential ever enters the sandbox.
 - [ADR-0003 — permission system + agents catalog](../../docs/adr/0003-milestone-2-permission-system-and-agents-catalog.md)
 - [ADR-0012 — isolated Workspace](../../docs/adr/0012-isolated-workspace.md)
 - [ADR-0016 — dropping the credential proxy](../../docs/adr/0016-drop-credential-proxy.md) — the postmortem
-- [getting_started/sandboxing.md](../../getting_started/sandboxing.md) · [credentials.md](../../getting_started/credentials.md)
+- [running_the_code/sandboxing.md](../../running_the_code/sandboxing.md) · [credentials.md](../../running_the_code/credentials.md)
 
 ## Background reading
 

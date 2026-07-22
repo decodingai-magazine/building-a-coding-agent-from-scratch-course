@@ -49,7 +49,7 @@ to fork it with the model swapped.
 - `src/decode/runtime/`
 - [ADR-0008 — Kitaru durable runtime](../../docs/adr/0008-kitaru-durable-runtime.md)
 - [ADR-0010 — runtime replay](../../docs/adr/0010-runtime-replay.md)
-- [getting_started/runtime.md](../../getting_started/runtime.md)
+- [running_the_code/runtime.md](../../running_the_code/runtime.md)
 
 ## Background reading
 

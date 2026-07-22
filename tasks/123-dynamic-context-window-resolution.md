@@ -75,7 +75,7 @@ truth: it may only claim the window is assumed when neither the probe nor the ta
       `test_settings.py` window tests still pass unchanged.
 - [x] `make format-check lint-check unit-tests` clean. The 5 pre-existing opik-drift failures in
       `tests/unit/evals/harness/` are unrelated and stay out of scope — confirm the count is still 5.
-- [x] `.env.example` and `getting_started/` describe the resolution order.
+- [x] `.env.example` and `running_the_code/` describe the resolution order.
 
 ## Out of scope
 
@@ -119,7 +119,7 @@ a no-inference path (`--help`, `--version`, `decode replay --list`) and cold-sta
 - `tests/conftest.py` — hermeticity guard `_no_context_window_probe`: stubs `_probe` suite-wide, so no
   test can reach a live provider (or cold-start an H100). Same pattern as `_no_real_provider_key`.
 - `tests/support/settings_env.py` — NEW: `hermetic_settings()`; see Notes.
-- `.env.example`, `getting_started/install_and_usage.md` — the resolution order + probing rules.
+- `.env.example`, `running_the_code/install_and_usage.md` — the resolution order + probing rules.
 - Tests: `tests/unit/decode/agent/test_context_window.py` (NEW, 30), plus additions to
   `test_cli.py`, `test_flow.py`, `test_loop.py`, `tui/test_app.py`.
 
@@ -262,9 +262,9 @@ in-flight tasks during this review; see "Other issues found"):
 - [x] PASS — `make format-check lint-check unit-tests` clean; the 5 pre-existing opik-drift failures
       confirmed still exactly 5, identical test ids, independently reproduced on a bare `abf31e5`
       worktree — no new failure introduced by this task.
-- [x] PASS — `.env.example` and `getting_started/install_and_usage.md` both describe the
+- [x] PASS — `.env.example` and `running_the_code/install_and_usage.md` both describe the
       explicit > probe > table > 200k resolution order (`git show ccd9886 -- .env.example
-      getting_started/install_and_usage.md`).
+      running_the_code/install_and_usage.md`).
 
 **Design judgment calls (asked to independently assess, not just accept)**
 - `_match_window`'s sole-entry fallback (a modal endpoint with one served, non-matching model id

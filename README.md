@@ -29,7 +29,7 @@
 > uv run decode
 > ```
 >
-> Then type `/demo-` and pick a demo — see [what they do](#-see-it-work) below. Full guide: [install_and_usage.md](getting_started/install_and_usage.md).
+> Then type `/demo-` and pick a demo — see [what they do](#-see-it-work) below. Full guide: [install_and_usage.md](running_the_code/install_and_usage.md).
 
 ## 📖 About This Course
 
@@ -157,7 +157,7 @@ Running the code costs **$0** if you stick to free tiers:
 | [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (self-served open models + remote sandbox) | $30 free credits |
 | [Opik](https://www.comet.com/site/?utm_source=newsletter&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals) | free tier |
 | [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (durable runtime) | free, runs locally offline |
-| GCP — deploy the agent to run remotely *(optional)* | ~$16/month while it's up — see [infra.md](getting_started/infra.md) |
+| GCP — deploy the agent to run remotely *(optional)* | ~$16/month while it's up — see [infra.md](running_the_code/infra.md) |
 
 **Reading-only? Everything's free!**
 
@@ -177,16 +177,71 @@ Self-paced and project-based — no paywall, no certificate theater: read the le
 
 Eight written lessons and four videos — video 2 covers lessons 2–3, video 3 covers lessons 4–6. The full codebase is already here — lessons publish progressively on [Decoding AI](https://www.decodingai.com) and the links below light up as they go live.
 
-| Lesson | Written Lesson | Video Lesson | Description | Running the code |
-|--------|----------------|--------------|-------------|------------------|
-| 1 | [Building a Coding Agent From Scratch: Harness Architecture](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) — **live now** | 🎬 *Video 1 — coming soon* | decode's architecture top-down: the harness vs the agent loop vs the model, every component and interface, and how they all connect — the map for the whole build. | [install_and_usage.md](getting_started/install_and_usage.md) |
-| 2 | The Agent Loop Plugged Into the TUI (The Interactive Mode) — *next week* | 🎬 *Video 2 — coming soon* | The ReAct loop and the core tools — `read` / `edit` / `bash`, and why `bash` is the scary one. Approve every tool call, steer mid-turn, queue follow-ups, abort; session logs with `--resume`; three LLM providers (Gemini / OpenRouter / Modal) plus Opik tracing. | `src/decode/agent/`, `src/decode/tui/`, `src/decode/tools/` |
-| 3 | The Runtime: Durable Execution, HITL & Replays (The Headless Mode) — *coming soon* | 🎬 *Video 2 — coming soon* | Two execution semantics, chosen by entry path: `asyncio.sleep` vs `kitaru.wait`. `kill -9` a headless run and resume from checkpoints, durable human-in-the-loop waits resolved from another terminal, and three-run replay with the model swapped as a flow input. | `src/decode/runtime/` · [runtime.md](getting_started/runtime.md) |
-| 4 | Containing the Agent: Permissions & Sandbox — *coming soon* | 🎬 *Video 3 — coming soon* | The trust ladder: four permission modes (default / edit / plan / bypass) and the allow/ask/deny decision matrix, then isolated Workspaces — local via Docker, remote via Modal — with git hand-back. | `src/decode/permissions/`, `src/decode/sandbox/` · [sandboxing.md](getting_started/sandboxing.md) |
-| 5 | Context Engineering for Coding Agents — *coming soon* | 🎬 *Video 3 — coming soon* | Context engineering without measurement is folklore. Five moves — memory that persists, compaction that evicts (micro at ~60%, full at ~80%), skills that never load until needed, LSP precision instead of bulk file reads, truncation — each proven with a measured before/after in Opik. | `src/decode/context/`, `src/decode/memory/`, `src/decode/skills/`, `src/decode/services/lsp/` |
-| 6 | Agents Catalog, Subagents & Parallel Fan-out — *coming soon* | 🎬 *Video 3 — coming soon* | Build/Plan/Code-Reviewer agents plus the read-only Explore subagent: one `agent` call fans out N parallel children under a width cap, each bound by a report contract and a budget split — and why owning your inference endpoint matters once the fan-out burst hits its concurrency limits. | `src/decode/agents/` |
-| 7 | Does It Work? Benchmarks, Regression & Online AI Evals — *coming soon* | 🎬 *Video 4 — coming soon* | Three questions, three mechanisms: benchmarks answer *does it work?*, regression probes answer *does it still work?*, online evals over live traffic answer *does it keep working?* — because a green 1,800-test suite can't answer any of them. Then the whole eval harness runs at scale, headless on Kitaru + Modal. | `evals/`, `src/decode/observability/` · [evals.md](getting_started/evals.md) |
-| 8 | Running Swarms of Remote Agents — *coming soon* | No video | Builder → operator: deploy the stack to GCP + Modal with environment-scoped secrets, then two case studies — a feature shipped as a cloud-reviewed GitHub PR, and the same feature built 5–10× in parallel, judged, winner merged. | [credentials.md](getting_started/credentials.md), [infra.md](getting_started/infra.md) |
+<table>
+  <tr>
+    <th align="center">Lesson</th>
+    <th align="center">Written Lesson</th>
+    <th align="center">Video Lesson</th>
+    <th align="center">Description</th>
+    <th align="center">Running the code</th>
+  </tr>
+  <tr>
+    <td align="center"><b>1</b><br/>Building a Coding Agent From Scratch: Harness Architecture</td>
+    <td align="center"><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><img src="assets/architecture.png" width="250" alt="Lesson 1 — the harness architecture"/></a></td>
+    <td align="center">🎬 <i>Video 1 — coming soon</i></td>
+    <td align="center">The map of every component before you write a single line of code.</td>
+    <td align="center"><a href="running_the_code/install_and_usage.md">install_and_usage.md</a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>2</b><br/>The Agent Loop Plugged Into the TUI (The Interactive Mode)</td>
+    <td align="center">📄 <i>Coming next week</i></td>
+    <td align="center">🎬 <i>Video 2 — coming soon</i></td>
+    <td align="center">The ReAct loop, the core tools, and the human approving and steering every turn.</td>
+    <td align="center"><a href="running_the_code/install_and_usage.md">install_and_usage.md</a> · <a href="running_the_code/modal_models.md">modal_models.md</a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>3</b><br/>The Runtime: Durable Execution, HITL & Replays (The Headless Mode)</td>
+    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center">🎬 <i>Video 2 — coming soon</i></td>
+    <td align="center"><code>kill -9</code> a headless run, resume it from checkpoints, replay it with the model swapped.</td>
+    <td align="center"><a href="running_the_code/runtime.md">runtime.md</a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>4</b><br/>Containing the Agent: Permissions & Sandbox</td>
+    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center">🎬 <i>Video 3 — coming soon</i></td>
+    <td align="center">Four permission modes, then Docker and Modal sandboxes — nothing executes on your machine.</td>
+    <td align="center"><a href="running_the_code/sandboxing.md">sandboxing.md</a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>5</b><br/>Context Engineering for Coding Agents</td>
+    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center">🎬 <i>Video 3 — coming soon</i></td>
+    <td align="center">Memory, compaction, skills, and LSP — the context window treated as a budget.</td>
+    <td align="center"><a href="running_the_code/install_and_usage.md">install_and_usage.md</a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>6</b><br/>Agents Catalog, Subagents & Parallel Fan-out</td>
+    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center">🎬 <i>Video 3 — coming soon</i></td>
+    <td align="center">One call fans out N parallel subagents, each with a budget and a report contract.</td>
+    <td align="center"><a href="running_the_code/install_and_usage.md">install_and_usage.md</a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>7</b><br/>Does It Work? Benchmarks, Regression & Online AI Evals</td>
+    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center">🎬 <i>Video 4 — coming soon</i></td>
+    <td align="center">Benchmarks, regression probes, and online evals: does it work, still work, keep working?</td>
+    <td align="center"><a href="running_the_code/evals.md">evals.md</a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>8</b><br/>Running Swarms of Remote Agents</td>
+    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center"><i>No video</i></td>
+    <td align="center">Deploy to GCP + Modal and build the same feature 5–10× in parallel — judged, winner merged.</td>
+    <td align="center"><a href="running_the_code/credentials.md">credentials.md</a> · <a href="running_the_code/infra.md">infra.md</a></td>
+  </tr>
+</table>
 
 ## 🏗️ Project Structure
 
@@ -217,18 +272,18 @@ One Python package; each module maps to one part of the architecture:
     └── config/, entities/    # settings singleton · shared models
 ```
 
-## 🚀 Getting Started
+## 🚀 Running the Code
 
-Everything lives under [`getting_started/`](getting_started/) — one core guide, plus one focused guide per side quest:
+Everything lives under [`running_the_code/`](running_the_code/) — one core guide, plus one focused guide per side quest:
 
 | Guide | What's inside |
 |-------|---------------|
-| [install_and_usage.md](getting_started/install_and_usage.md) | The core path: requirements, install, LLM provider setup (Gemini / OpenRouter / Modal), the REPL, and the dev workflow — about 5 minutes to a running agent. |
-| [runtime.md](getting_started/runtime.md) | Headless runs (`decode run`), durable checkpoints, human-in-the-loop waits, and model-swapped replay. |
-| [sandboxing.md](getting_started/sandboxing.md) | Isolated Docker/Modal Workspaces, working on any repo with `--repo`, and the git hand-back. |
-| [credentials.md](getting_started/credentials.md) | Environments & secrets, walked end-to-end. |
-| [modal_models.md](getting_started/modal_models.md) | Picking and serving your own open model on Modal. |
-| [infra.md](getting_started/infra.md) | Deploying the remote runtime stack to the cloud. 💰 *The only part of the course that costs real money (~$16/month on GCP) — and it's entirely optional.* |
+| [install_and_usage.md](running_the_code/install_and_usage.md) | The core path: requirements, install, LLM provider setup (Gemini / OpenRouter / Modal), the REPL, and the dev workflow — about 5 minutes to a running agent. |
+| [runtime.md](running_the_code/runtime.md) | Headless runs (`decode run`), durable checkpoints, human-in-the-loop waits, and model-swapped replay. |
+| [sandboxing.md](running_the_code/sandboxing.md) | Isolated Docker/Modal Workspaces, working on any repo with `--repo`, and the git hand-back. |
+| [credentials.md](running_the_code/credentials.md) | Environments & secrets, walked end-to-end. |
+| [modal_models.md](running_the_code/modal_models.md) | Picking and serving your own open model on Modal. |
+| [infra.md](running_the_code/infra.md) | Deploying the remote runtime stack to the cloud. 💰 *The only part of the course that costs real money (~$16/month on GCP) — and it's entirely optional.* |
 
 ## 🤝 Sponsors
 
@@ -246,7 +301,7 @@ Everything lives under [`getting_started/`](getting_started/) — one core guide
 
 ## 💡 Questions and Troubleshooting
 
-Open a [GitHub issue](https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues) for course questions, setup trouble, or concept clarifications. Known gotchas (macOS Kitaru daemon crash, non-tool-capable models, stale sandbox Workspaces) are documented inline in the [`getting_started/`](getting_started/) guides.
+Open a [GitHub issue](https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues) for course questions, setup trouble, or concept clarifications. Known gotchas (macOS Kitaru daemon crash, non-tool-capable models, stale sandbox Workspaces) are documented inline in the [`running_the_code/`](running_the_code/) guides.
 
 ## ❓ FAQ
 

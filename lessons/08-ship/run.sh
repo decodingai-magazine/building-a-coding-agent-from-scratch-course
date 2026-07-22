@@ -3,7 +3,7 @@
 # Builder → operator: the same agent, hydrated from an environment-scoped
 # secret bucket instead of your laptop's .env. Proves the two invariants that
 # matter in production: no silent .env backfill, loud failure on a missing
-# bucket. The full cloud pipeline is getting_started/infra.md (costs money).
+# bucket. The full cloud pipeline is running_the_code/infra.md (costs money).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 

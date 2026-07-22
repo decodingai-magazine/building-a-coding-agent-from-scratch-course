@@ -31,7 +31,7 @@ observe that; skip-friendly is a designed behavior, not an accident.
 - `evals/` · `src/decode/observability/`
 - [ADR-0014 — Opik observability](../../docs/adr/0014-opik-observability.md)
 - [ADR-0017 — decode eval suite](../../docs/adr/0017-decode-eval-suite.md)
-- [getting_started/evals.md](../../getting_started/evals.md) — the one-stop map
+- [running_the_code/evals.md](../../running_the_code/evals.md) — the one-stop map
 
 ## Background reading
 

@@ -24,7 +24,7 @@ friendly line and never backfills from your laptop.
 2. **Process env wins.** `GEMINI_API_KEY=<key> DECODE_ENV=staging uv run decode
    run "hi"` — the escape hatch when a bucket key is stale.
 3. **The full pipeline.** Deploy the remote runtime stack —
-   [getting_started/infra.md](../../getting_started/infra.md). The whole agent
+   [running_the_code/infra.md](../../running_the_code/infra.md). The whole agent
    runs on Modal, checkpoints on a self-hosted Kitaru server, and labeling a
    GitHub issue returns a reviewed PR. 💰 The only part of the course that
    costs real money (~$16/month) — entirely optional.
@@ -32,8 +32,8 @@ friendly line and never backfills from your laptop.
 ## Deep dives
 
 - [ADR-0015 — Environment Bucket secrets](../../docs/adr/0015-environment-bucket-secrets.md)
-- [getting_started/credentials.md](../../getting_started/credentials.md) — every negative case, walked
-- [getting_started/infra.md](../../getting_started/infra.md)
+- [running_the_code/credentials.md](../../running_the_code/credentials.md) — every negative case, walked
+- [running_the_code/infra.md](../../running_the_code/infra.md)
 
 ## Background reading
 
