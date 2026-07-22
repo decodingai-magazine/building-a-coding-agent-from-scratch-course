@@ -35,7 +35,7 @@
 
 Here's the most underrated result in agent engineering: in [one public experiment by LangChain](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness), changing only the *harness* — same model throughout — moved a coding agent from roughly 30th place into the top 5 on Terminal-Bench. Not a bigger model. Not more compute. Just the layer that decides what the model sees, what it touches, and what happens when it's wrong. That layer is the entire difference between an LLM in a chat window and the Claude Code you trust with your repo — and it's the part nobody teaches.
 
-This course teaches it by making you build it. We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), and distilled what we found into 8 lessons where, starting from an empty repo, you build **decode** — a terminal coding agent that grows lesson by lesson from a bare agent loop into a swarm of remote agents running in parallel in the cloud. By lesson 2 you type a prompt and watch your own agent ask permission before running `bash`; by lesson 8 it's deployed to the cloud, building the same feature 5–10× in parallel and handing you back reviewed pull requests to merge. Under the hood: a [Pydantic AI](https://ai.pydantic.dev) **ReAct loop** on Gemini, OpenRouter, or an open model you serve on [Modal](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng); **file / bash / web / LSP tools** and parallel **Explore subagents**; Docker/[Modal](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng) **sandboxes**; a durable [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) **runtime**; [Opik](https://www.comet.com/site/?utm_source=newsletter&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) **tracing and evals**.
+This course teaches it by making you build it. We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), and distilled what we found into 8 lessons where, starting from an empty repo, you build **decode** — a terminal coding agent that grows lesson by lesson from a bare agent loop into a swarm of remote agents running in parallel in the cloud. By lesson 2 you type a prompt and watch your own agent ask permission before running `bash`; by lesson 8 it's deployed to the cloud, building the same feature 5–10× in parallel and handing you back reviewed pull requests to merge. One headless core, two ways to drive it: an interactive TUI wired to one live session, and a remote runtime that runs N headless copies in parallel. Under the hood: a [Pydantic AI](https://ai.pydantic.dev) **ReAct loop** on Gemini, OpenRouter, or an open model you serve on [Modal](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng); **file / bash / web / LSP tools** and parallel **Explore subagents**; Docker/[Modal](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng) **sandboxes**; a durable [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) **runtime**; [Opik](https://www.comet.com/site/?utm_source=newsletter&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) **tracing and evals**.
 
 Finish the build and you walk away with two things. The skill behind that leaderboard jump — engineering custom harnesses for your own AI products. And x-ray vision into the tools you already pay for: nothing Claude Code or Codex does is magic once you've built the code underneath, which is what turns you from user into power user. Skip this layer and you're betting your work on tools you can't inspect.
 
@@ -44,6 +44,24 @@ The codebase is finished and honest: 1,800+ tests that run without an API key, a
 <p align="center">
   <img src="assets/architecture.png" alt="decode architecture" width="620">
 </p>
+<p align="center"><i>Two interface modes on the left, the headless harness on the right, the evals plane underneath.</i></p>
+
+### The agent is ~20 lines. The course is everything else.
+
+```python
+agent = Agent(
+    build_model(settings.llm_provider),        # gemini | openrouter | modal
+    deps_type=AgentDeps,                       # cwd, event sink, permission gate
+    output_type=[str, DeferredToolRequests],   # final answer, or tools paused for approval
+)
+register_tools(agent)                          # read, edit, bash, grep, ...
+
+async with agent.iter(prompt, message_history=history) as run:
+    async for node in run:                     # model request → tool calls → repeat
+        stream_events(node)
+```
+
+That's the *entire* tool-calling agent — the thing people call "the agent" ends here. Everything else in this repo — the permission gate, the sandbox, compaction, the steering queue, the durable runtime, the subagent fan-out, the evals — is the harness. That's what the 8 lessons build.
 
 ## 🎮 See It Work
 
@@ -161,13 +179,13 @@ Eight written lessons and four videos — video 2 covers lessons 2–3, video 3 
 
 | Lesson | Written Lesson | Video Lesson | Description | Running the code |
 |--------|----------------|--------------|-------------|------------------|
-| 1 | [Building a Coding Agent From Scratch: Harness Architecture](https://www.decodingai.com) — **live now** | 🎬 *Video 1 — coming soon* | decode's architecture top-down: the harness vs the agent loop vs the model, every component and interface, and how they all connect — the map for the whole build. | [install_and_usage.md](getting_started/install_and_usage.md) |
+| 1 | [Building a Coding Agent From Scratch: Harness Architecture](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) — **live now** | 🎬 *Video 1 — coming soon* | decode's architecture top-down: the harness vs the agent loop vs the model, every component and interface, and how they all connect — the map for the whole build. | [install_and_usage.md](getting_started/install_and_usage.md) |
 | 2 | The Agent Loop Plugged Into the TUI (The Interactive Mode) — *next week* | 🎬 *Video 2 — coming soon* | The ReAct loop and the core tools — `read` / `edit` / `bash`, and why `bash` is the scary one. Approve every tool call, steer mid-turn, queue follow-ups, abort; session logs with `--resume`; three LLM providers (Gemini / OpenRouter / Modal) plus Opik tracing. | `src/decode/agent/`, `src/decode/tui/`, `src/decode/tools/` |
 | 3 | The Runtime: Durable Execution, HITL & Replays (The Headless Mode) — *coming soon* | 🎬 *Video 2 — coming soon* | Two execution semantics, chosen by entry path: `asyncio.sleep` vs `kitaru.wait`. `kill -9` a headless run and resume from checkpoints, durable human-in-the-loop waits resolved from another terminal, and three-run replay with the model swapped as a flow input. | `src/decode/runtime/` · [runtime.md](getting_started/runtime.md) |
 | 4 | Containing the Agent: Permissions & Sandbox — *coming soon* | 🎬 *Video 3 — coming soon* | The trust ladder: four permission modes (default / edit / plan / bypass) and the allow/ask/deny decision matrix, then isolated Workspaces — local via Docker, remote via Modal — with git hand-back. | `src/decode/permissions/`, `src/decode/sandbox/` · [sandboxing.md](getting_started/sandboxing.md) |
 | 5 | Context Engineering for Coding Agents — *coming soon* | 🎬 *Video 3 — coming soon* | Context engineering without measurement is folklore. Five moves — memory that persists, compaction that evicts (micro at ~60%, full at ~80%), skills that never load until needed, LSP precision instead of bulk file reads, truncation — each proven with a measured before/after in Opik. | `src/decode/context/`, `src/decode/memory/`, `src/decode/skills/`, `src/decode/services/lsp/` |
 | 6 | Agents Catalog, Subagents & Parallel Fan-out — *coming soon* | 🎬 *Video 3 — coming soon* | Build/Plan/Code-Reviewer agents plus the read-only Explore subagent: one `agent` call fans out N parallel children under a width cap, each bound by a report contract and a budget split — and why owning your inference endpoint matters once the fan-out burst hits its concurrency limits. | `src/decode/agents/` |
-| 7 | Does It Work? Benchmarks, Regression & Online AI Evals — *coming soon* | 🎬 *Video 4 — coming soon* | The suite is green — 1,800+ tests — and it still can't tell you the agent got worse. Outcome benchmarks, regression probes, LLM-as-judge, and online evals over live traffic — then the whole eval harness run at scale, headless on Kitaru + Modal. | `evals/`, `src/decode/observability/` · [evals.md](getting_started/evals.md) |
+| 7 | Does It Work? Benchmarks, Regression & Online AI Evals — *coming soon* | 🎬 *Video 4 — coming soon* | Three questions, three mechanisms: benchmarks answer *does it work?*, regression probes answer *does it still work?*, online evals over live traffic answer *does it keep working?* — because a green 1,800-test suite can't answer any of them. Then the whole eval harness runs at scale, headless on Kitaru + Modal. | `evals/`, `src/decode/observability/` · [evals.md](getting_started/evals.md) |
 | 8 | Running Swarms of Remote Agents — *coming soon* | No video | Builder → operator: deploy the stack to GCP + Modal with environment-scoped secrets, then two case studies — a feature shipped as a cloud-reviewed GitHub PR, and the same feature built 5–10× in parallel, judged, winner merged. | [credentials.md](getting_started/credentials.md), [infra.md](getting_started/infra.md) |
 
 ## 🏗️ Project Structure
@@ -234,6 +252,15 @@ Open a [GitHub issue](https://github.com/decodingai-magazine/building-a-coding-a
 
 **Do I need a paid API key?**
 No. The default Gemini provider has a free tier, OpenRouter routes across `:free` models, and [Modal](https://modal.com?source=decodingai&campaign=harnesseng) gives $30 in credits — see [Cost Structure](#-cost-structure).
+
+**Why Python and not TypeScript or Go?**
+Accessibility — our audience knows Python. Claude Code, OpenCode, and Pi picked TypeScript; Go compiles to one tidy binary; and Aider proves Python can carry a serious coding agent. The course focuses on the design decisions, which transfer to any language — the implementation is swappable.
+
+**Why build from scratch instead of extending Pi, DeepAgents, or an existing harness?**
+Because adding custom logic to an existing harness is the easy part — *knowing what to add* requires understanding the internals. That's the fundamentals, and it's what still makes AI engineers valuable. Build a coding agent once and you're equipped to build a custom agent for any use case.
+
+**Why is there no vector database or codebase index?**
+Deliberately. Memory is plain files — `AGENTS.md` for your instructions, `MEMORY.md` for what the agent learns — and the repo is explored just-in-time with grep. Fresh reads beat a stale index, and you get to see exactly what the agent knows.
 
 ## 🥂 Contributing
 
