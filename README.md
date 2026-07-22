@@ -91,24 +91,26 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
 <p align="center">
   <img src="assets/demo-skills.png" alt="The demo skills listed inside the decode TUI after typing /demo-" width="90%"/>
   <br/>
-  <i>Type <code>/demo-</code> and the six demos are one keystroke away.</i>
+  <b>Implement the Skills Standard</b>
+  <br/>
+  <i>Type <code>/demo-</code> and the six demos are one keystroke away — each one a skill you'll build.</i>
 </p>
 
 <table>
   <tr>
     <td width="50%">
       <img src="assets/demo-snake-game.png" alt="A playable Snake game built by decode"/>
-      <p align="center"><i><code>/demo-1-terminal-arcade</code> — one prompt, a playable Snake game</i></p>
+      <p align="center"><b>Capable of Creating Games</b><br/><i><code>/demo-1-terminal-arcade</code> — one prompt, a playable Snake game</i></p>
     </td>
     <td width="50%">
       <img src="assets/demo-repo-pulse.png" alt="Live GitHub repo data rendered as a web dashboard"/>
-      <p align="center"><i><code>/demo-3-repo-pulse</code> — live GitHub API data rendered as a dashboard</i></p>
+      <p align="center"><b>Fetching Data & Creating Dashboards</b><br/><i><code>/demo-3-repo-pulse</code> — live GitHub API data rendered as a dashboard</i></p>
     </td>
   </tr>
   <tr>
     <td colspan="2" align="center">
       <img src="assets/demo-knowledge-graph.png" alt="An interactive knowledge graph scraped from web articles" width="90%"/>
-      <p align="center"><i><code>/demo-6-article-kg</code> — web articles scraped into an interactive knowledge graph</i></p>
+      <p align="center"><b>Extracting Ontologies & Rendering Graphs</b><br/><i><code>/demo-6-article-kg</code> — web articles scraped into an interactive knowledge graph</i></p>
     </td>
   </tr>
 </table>
@@ -119,21 +121,21 @@ And the machinery underneath is real infrastructure you'll stand up yourself, no
   <tr>
     <td width="50%">
       <img src="assets/kitaru-replay.png" alt="A durable run recorded step by step in Kitaru"/>
-      <p align="center"><i>Every run recorded step by step in <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru</a> — kill it, resume it, replay it with the model swapped</i></p>
+      <p align="center"><b>Replay and Improve AI Agents</b><br/><i>Every run recorded step by step in <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru</a> — kill it, resume it, replay it with the model swapped</i></p>
     </td>
     <td width="50%">
       <img src="assets/modal-sandboxes.png" alt="Live Modal sandboxes executing the agent's tools"/>
-      <p align="center"><i>The agent's <code>bash</code> runs in disposable <a href="https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng">Modal sandboxes</a> — six live here, ~1.3s cold start</i></p>
+      <p align="center"><b>Remote Sandboxing</b><br/><i>The agent's <code>bash</code> runs in disposable <a href="https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng">Modal sandboxes</a> — six live here, ~1.3s cold start</i></p>
     </td>
   </tr>
   <tr>
     <td width="50%">
       <img src="assets/modal-open-model.png" alt="A self-served open model endpoint on Modal"/>
-      <p align="center"><i>Your own Qwen3.6-35B served on an H200 via a <a href="https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng">Modal endpoint</a> — same harness, your model</i></p>
+      <p align="center"><b>Powered by Open Source Models</b><br/><i>Your own Qwen3.6-35B served on an H200 via a <a href="https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng">Modal endpoint</a> — same harness, your model</i></p>
     </td>
     <td width="50%">
       <img src="assets/opik-threads.png" alt="Sessions traced in Opik with secrets scrubbed"/>
-      <p align="center"><i>Every session traced in <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik</a> — note the secrets scrubbed before they reach a log</i></p>
+      <p align="center"><b>Adding AI Evals & Observability</b><br/><i>Every session traced in <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik</a> — note the secrets scrubbed before they reach a log</i></p>
     </td>
   </tr>
 </table>
