@@ -14,6 +14,7 @@ provider-authoritative usage.
 from __future__ import annotations
 
 import dataclasses
+import enum
 import logging
 from typing import TYPE_CHECKING
 
@@ -38,6 +39,22 @@ if TYPE_CHECKING:
     from pydantic_ai.usage import RunUsage
 
 logger = logging.getLogger(__name__)
+
+
+class CompactOutcome(enum.Enum):
+    """The three-valued result of a full compaction — the Compaction Outcome (ADR-0018 §3).
+
+    Replaces ``compact()``'s ambiguous bool: a bare ``False`` could not tell "there was nothing to
+    compact" apart from "the summarizer call failed". ``/compact`` prints a distinct line per
+    outcome (``SUMMARIZER_FAILED`` names ``.decode/logs/decode.log``; ``COMPACTED`` stays
+    event-rendered) and the auto path logs one INFO breadcrumb when a trigger fired but did not
+    land.
+    """
+
+    COMPACTED = "compacted"
+    NOTHING_TO_COMPACT = "nothing_to_compact"
+    SUMMARIZER_FAILED = "summarizer_failed"
+
 
 # Microcompaction placeholder: blanks content only — the part stays real, never orphaned.
 _MICRO_PLACEHOLDER = "[tool output elided by microcompaction]"

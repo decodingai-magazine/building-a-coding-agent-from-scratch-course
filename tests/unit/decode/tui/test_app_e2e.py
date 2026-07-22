@@ -946,9 +946,10 @@ async def test_run_app_compact_while_idle_compacts_the_over_budget_history(
 async def test_run_app_compact_with_nothing_to_compact_is_a_friendly_line(monkeypatch):
     """``/compact`` on a fresh (empty) session renders the friendly no-op line, REPL stays alive.
 
-    A fresh ``run_app`` has an empty history, so ``handler.compact()`` returns ``False`` (no
-    transcript → no summarizer call, no network) and the loop renders the friendly line instead of
-    a compaction event. A later normal line still runs a turn — the REPL kept going.
+    A fresh ``run_app`` has an empty history, so ``handler.compact()`` returns
+    ``CompactOutcome.NOTHING_TO_COMPACT`` (no transcript → no summarizer call, no network) and the
+    loop renders the friendly line instead of a compaction event. A later normal line still runs a
+    turn — the REPL kept going.
     """
     captured: list[list[ModelMessage]] = []
     agent = _build_capturing_chat_agent(captured)

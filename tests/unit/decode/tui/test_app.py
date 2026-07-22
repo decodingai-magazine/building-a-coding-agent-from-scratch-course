@@ -18,6 +18,7 @@ from decode.agent.deps import AgentDeps
 from decode.agent.loop import AgentTurnHandler
 from decode.agents.loader import load_agent
 from decode.config.settings import settings
+from decode.context.compaction import CompactOutcome
 from decode.entities import events
 from decode.entities.permissions import (
     PermissionDecision,
@@ -786,11 +787,11 @@ def test_reserved_command_is_not_shadowed_by_a_same_named_skill(tmp_path):
 # the manual /compact command (ADR-0006 §7, task 045)
 
 
-async def test_handle_compact_command_idle_true_compacts_and_emits_no_extra_line(mocker):
+async def test_handle_compact_command_idle_compacted_emits_no_extra_line(mocker):
     # Idle + something to compact: run handler.compact() (which already emitted ContextCompacted
-    # on True) and add NO extra line — the rendered compaction event is the only feedback.
+    # on COMPACTED) and add NO extra line — the rendered compaction event is the only feedback.
     handler = mocker.Mock()
-    handler.compact = mocker.AsyncMock(return_value=True)
+    handler.compact = mocker.AsyncMock(return_value=CompactOutcome.COMPACTED)
     runner = mocker.Mock()
     runner.phase = app.Phase.IDLE
     lines: list[str] = []
@@ -798,13 +799,13 @@ async def test_handle_compact_command_idle_true_compacts_and_emits_no_extra_line
     await app._handle_compact_command(handler, runner, emit=lines.append)
 
     handler.compact.assert_awaited_once_with()
-    assert lines == []  # True → the handler's ContextCompacted event is the feedback
+    assert lines == []  # COMPACTED → the handler's ContextCompacted event is the feedback
 
 
-async def test_handle_compact_command_idle_false_renders_nothing_to_compact(mocker):
-    # Idle but nothing to compact: handler.compact() returns False → the friendly line.
+async def test_handle_compact_command_idle_nothing_to_compact_renders_line(mocker):
+    # Idle but nothing to compact: NOTHING_TO_COMPACT → the existing friendly line, unchanged UX.
     handler = mocker.Mock()
-    handler.compact = mocker.AsyncMock(return_value=False)
+    handler.compact = mocker.AsyncMock(return_value=CompactOutcome.NOTHING_TO_COMPACT)
     runner = mocker.Mock()
     runner.phase = app.Phase.IDLE
     lines: list[str] = []
@@ -813,6 +814,23 @@ async def test_handle_compact_command_idle_false_renders_nothing_to_compact(mock
 
     handler.compact.assert_awaited_once_with()
     assert lines == ["Decode - nothing to compact yet."]
+
+
+async def test_handle_compact_command_idle_summarizer_failed_names_the_log(mocker):
+    # Regression (ADR-0018 §3): a failed summarizer with compactable history must NOT read as
+    # "nothing to compact" — the line names .decode/logs/decode.log so the user can act.
+    handler = mocker.Mock()
+    handler.compact = mocker.AsyncMock(return_value=CompactOutcome.SUMMARIZER_FAILED)
+    runner = mocker.Mock()
+    runner.phase = app.Phase.IDLE
+    lines: list[str] = []
+
+    await app._handle_compact_command(handler, runner, emit=lines.append)
+
+    handler.compact.assert_awaited_once_with()
+    assert len(lines) == 1
+    assert ".decode/logs/decode.log" in lines[0]
+    assert "nothing to compact" not in lines[0]
 
 
 @pytest.mark.parametrize("phase", [app.Phase.DISPATCHING, app.Phase.RUNNING])

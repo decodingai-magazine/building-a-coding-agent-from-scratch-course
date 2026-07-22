@@ -40,6 +40,7 @@ from decode import observability
 from decode.agent.deps import AgentDeps
 from decode.config.settings import Settings, settings
 from decode.context.compaction import (
+    CompactOutcome,
     build_summary_message,
     microcompact,
     should_compact,
@@ -287,29 +288,42 @@ class AgentTurnHandler:
             enabled=settings.compaction_enabled,
         )
         if full:
-            await self.compact()
+            outcome = await self.compact()
+            if outcome is not CompactOutcome.COMPACTED:
+                # Degrade-don't-break: the turn already completed. Leave ONE breadcrumb so an
+                # operator can tell a fired-but-unsuccessful auto compaction apart from silence.
+                logger.info(
+                    "full compaction trigger fired but did not land: outcome=%s", outcome.name
+                )
         elif micro:
-            self._microcompact()
+            elided = self._microcompact()
+            if elided == 0:
+                logger.info(
+                    "microcompaction trigger fired but elided nothing "
+                    "(no eligible tool output in the compactable prefix)"
+                )
 
-    async def compact(self) -> bool:
-        """Full compaction: replace history with ``[summary, *tail]`` (ADR-0006 §4-6).
+    async def compact(self) -> CompactOutcome:
+        """Full compaction: replace history with ``[summary, *tail]`` (ADR-0006 §4-6, ADR-0018 §3).
 
-        The LLM tier — also the body of ``/compact``. Returns ``False`` (history untouched) when
-        there is nothing to compact: ``split == 0`` (checked FIRST, so a no-op never spends a
-        summarizer call) or a ``None`` summary. On success a ``compaction`` checkpoint is written
-        (``OSError`` logged and swallowed), the persisted-count cursor reset, and a
-        ``ContextCompacted`` event emitted.
+        The LLM tier — also the body of ``/compact``. Returns a :class:`CompactOutcome`:
+        ``NOTHING_TO_COMPACT`` when ``split == 0`` (checked FIRST, so a no-op never spends a
+        summarizer call); ``SUMMARIZER_FAILED`` when the summarizer returned ``None`` (the call
+        failed or came back blank — ``split > 0`` implies a non-trivial transcript, so it is a
+        failure, not a no-op); ``COMPACTED`` on success. On success a ``compaction`` checkpoint is
+        written (``OSError`` logged and swallowed), the persisted-count cursor reset, and a
+        ``ContextCompacted`` event emitted; history is untouched otherwise.
         """
         split = split_tail(
             self.message_history, keep_recent_tokens=settings.compaction_keep_recent_tokens
         )
         if split == 0:
-            return False
+            return CompactOutcome.NOTHING_TO_COMPACT
         skeleton = await summarize_for_compaction(
             self.message_history, model_or_settings=self._compaction_model_or_settings
         )
         if skeleton is None:
-            return False
+            return CompactOutcome.SUMMARIZER_FAILED
         before_tokens = self._last_input_tokens
         summary_message = build_summary_message(skeleton)
         tail = self.message_history[split:]
@@ -323,7 +337,7 @@ class AgentTurnHandler:
         self._deps.emit(
             events.ContextCompacted(before_tokens=before_tokens, kept_messages=len(tail))
         )
-        return True
+        return CompactOutcome.COMPACTED
 
     def clear(self) -> None:
         """Reset the conversation to empty — the body of ``/clear``.
@@ -342,21 +356,24 @@ class AgentTurnHandler:
         self._last_input_tokens = 0
         self._announced_tool_calls.clear()
 
-    def _microcompact(self) -> None:
+    def _microcompact(self) -> int:
         """Microcompaction: blank old tool-output bodies, in memory only (ADR-0006 §3a).
 
         The no-LLM auto-only tier. Deliberately touches neither the session log nor the cursor —
-        the log keeps full fidelity and a resume re-microcompacts. Emits ``ContextMicrocompacted``.
+        the log keeps full fidelity and a resume re-microcompacts. Emits ``ContextMicrocompacted``
+        and returns the elided count so the caller can log a fired-but-zero-elided breadcrumb;
+        ``0`` when nothing was eligible.
         """
         new_messages, elided = microcompact(
             self.message_history, keep_recent_tokens=settings.compaction_keep_recent_tokens
         )
         if elided == 0:
-            return
+            return 0
         self.message_history = new_messages
         self._deps.emit(
             events.ContextMicrocompacted(elided_count=elided, before_tokens=self._last_input_tokens)
         )
+        return elided
 
     async def _run_leg(
         self,

@@ -31,7 +31,7 @@ from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
 from decode.config.settings import settings
-from decode.context.compaction import reserve_threshold, should_compact
+from decode.context.compaction import CompactOutcome, reserve_threshold, should_compact
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.memory.service import assemble_memory
 from decode.permissions.gate import PermissionGate
@@ -219,9 +219,9 @@ def test_compaction_survival_compact_actually_collapses_the_history(
         )
         before = len(handler.message_history)
 
-        fired = asyncio.run(handler.compact())
+        outcome = asyncio.run(handler.compact())
 
-        assert fired is True
+        assert outcome is CompactOutcome.COMPACTED
         assert len(handler.message_history) < before
         head = handler.message_history[0]
         assert isinstance(head, ModelResponse) is False  # the summary is a synthetic ModelRequest

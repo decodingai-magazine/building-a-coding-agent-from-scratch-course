@@ -8,6 +8,7 @@ No network: the agent is built once with a dummy key and every test swaps in a `
 """
 
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -961,6 +962,19 @@ def _skeleton_summarizer() -> FunctionModel:
     return FunctionModel(fill)
 
 
+def _raising_summarizer() -> FunctionModel:
+    """A summarizer Model whose call raises — the no-network seam for a failed summarizer leg.
+
+    ``summarize_for_compaction`` catches the exception and returns ``None``, so ``compact()`` maps
+    it to ``CompactOutcome.SUMMARIZER_FAILED`` (ADR-0018 §3).
+    """
+
+    async def boom(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise RuntimeError("summarizer offline")
+
+    return FunctionModel(boom)
+
+
 def _fresh_log(tmp_path: Path, tag: str) -> SessionLog:
     """A deterministic SessionLog under ``tmp_path`` (fixed clock + id for stable filenames)."""
     return SessionLog.create(
@@ -1285,7 +1299,7 @@ async def test_no_repersist_after_full_compaction(agent, tmp_path, mocker):
         compaction_model_or_settings=_skeleton_summarizer(),
     )
 
-    assert await handler.compact() is True
+    assert await handler.compact() is compaction.CompactOutcome.COMPACTED
     # The dropped oldest turn is gone from the running history.
     assert not any(
         "OLDEST-TURN-MARKER" in str(getattr(p, "content", ""))
@@ -1412,7 +1426,8 @@ async def test_zero_tokens_never_compacts(agent, mocker):
     ]
 
 
-async def test_compact_returns_false_on_trivial_history(agent):
+async def test_compact_returns_nothing_to_compact_on_trivial_history(agent):
+    # split == 0 (a no-op) is checked FIRST — a trivial history never spends a summarizer call.
     emitted: list[events.Event] = []
     handler = AgentTurnHandler(
         agent,
@@ -1421,11 +1436,13 @@ async def test_compact_returns_false_on_trivial_history(agent):
         compaction_model_or_settings=_skeleton_summarizer(),
     )
 
-    assert await handler.compact() is False
+    assert await handler.compact() is compaction.CompactOutcome.NOTHING_TO_COMPACT
     assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
 
 
-async def test_compact_returns_false_when_summary_is_none(agent, mocker):
+async def test_compact_returns_summarizer_failed_when_summary_is_blank(agent, mocker):
+    # split > 0 implies a non-trivial transcript, so a blank summary is a summarizer failure,
+    # NOT "nothing to compact" (ADR-0018 §3).
     mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
     emitted: list[events.Event] = []
     history: list[ModelMessage] = [
@@ -1441,9 +1458,82 @@ async def test_compact_returns_false_when_summary_is_none(agent, mocker):
         compaction_model_or_settings=TestModel(custom_output_text="   "),  # blank → None summary
     )
 
-    assert await handler.compact() is False
+    assert await handler.compact() is compaction.CompactOutcome.SUMMARIZER_FAILED
     assert handler.message_history == history  # untouched
     assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
+
+
+async def test_compact_returns_summarizer_failed_when_the_call_raises(agent, mocker):
+    # The failing-summarizer seam: a Model whose call raises → summarize_for_compaction returns
+    # None (never re-raises) → SUMMARIZER_FAILED, history untouched.
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    history: list[ModelMessage] = [
+        _user_msg("first"),
+        _assistant_msg("answer"),
+        _user_msg(_HUGE_PROMPT),
+        _assistant_msg("recent"),
+    ]
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=list(history),
+        compaction_model_or_settings=_raising_summarizer(),
+    )
+
+    assert await handler.compact() is compaction.CompactOutcome.SUMMARIZER_FAILED
+    assert handler.message_history == history  # untouched
+    assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
+
+
+async def test_auto_full_trigger_fired_but_failed_logs_one_info_line(agent, mocker, caplog):
+    # Auto path: full trigger fired but the summarizer failed → exactly ONE INFO breadcrumb
+    # naming the outcome; the turn is never interrupted (degrade-don't-break).
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 100)  # full at >= 80
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=[
+            _user_msg("first"),
+            _assistant_msg("answer"),
+            _user_msg(_HUGE_PROMPT),
+            _assistant_msg("recent"),
+        ],
+        compaction_model_or_settings=_raising_summarizer(),
+    )
+    handler._last_input_tokens = 90  # in the full band → full trigger fires
+
+    with caplog.at_level(logging.INFO, logger="decode.agent.loop"):
+        await handler._maybe_auto_compact()
+
+    info = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(info) == 1
+    assert "SUMMARIZER_FAILED" in info[0].getMessage()
+    assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
+
+
+async def test_auto_micro_trigger_fired_but_zero_elided_logs_one_info_line(agent, mocker, caplog):
+    # Auto path: micro trigger fired but nothing was eligible to elide → exactly ONE INFO line.
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 100)  # micro 60, full 80
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        # No tool output anywhere → microcompact elides nothing even when it fires.
+        message_history=[_user_msg("first"), _assistant_msg("answer")],
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+    handler._last_input_tokens = 70  # micro band (>= 60, < 80) → micro fires, full does not
+
+    with caplog.at_level(logging.INFO, logger="decode.agent.loop"):
+        await handler._maybe_auto_compact()
+
+    info = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(info) == 1
+    assert not [e for e in emitted if isinstance(e, events.ContextMicrocompacted)]
 
 
 async def test_none_seam_disables_cascade_even_with_a_tiny_window(agent, tmp_path, mocker):
