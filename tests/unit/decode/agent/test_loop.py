@@ -11,11 +11,12 @@ import contextlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
-from pydantic_ai import ApprovalRequired, ModelRetry, RunContext, UnexpectedModelBehavior
+from pydantic_ai import Agent, ApprovalRequired, ModelRetry, RunContext, UnexpectedModelBehavior
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -28,6 +29,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RequestUsage, RunUsage
 from support.noop_helper import register_noop
 
 from decode.agent import loop
@@ -1004,6 +1006,143 @@ async def test_run_leg_captures_input_tokens_and_property_exposes_it(agent):
     # A non-zero capture, exposed through the public property (the gauge's clean read).
     assert handler.last_input_tokens > 0
     assert handler.last_input_tokens == handler._last_input_tokens
+
+
+# task 126 (ADR-0018 §2): the gauge reads the LAST ModelResponse's per-request usage, not the
+# CUMULATIVE RunUsage summed across every tool round. The streaming FunctionModel estimates a
+# fixed per-request input, so exact per-response usages are driven through a stubbed run — the
+# ``or a stubbed run`` seam the task calls out — while the helper is also unit-tested directly.
+
+
+class _StubRun:
+    """A minimal stand-in for a pydantic-ai ``agent.iter`` run with pre-set messages + usage.
+
+    ``all_messages()`` returns the per-response ``ModelResponse``s (each with its own usage) and
+    ``usage()`` returns the CUMULATIVE ``RunUsage`` (the old, wrong source) — so a test can assert
+    the handler reads the former, not the latter. Yields no nodes: the streaming loop is a no-op.
+    """
+
+    def __init__(self, messages: list[ModelMessage], cumulative_input: int) -> None:
+        self._messages = messages
+        self._cumulative_input = cumulative_input
+        self.result = SimpleNamespace(output="done", new_messages=lambda: list(messages))
+
+    def all_messages(self) -> list[ModelMessage]:
+        return list(self._messages)
+
+    def usage(self) -> RunUsage:
+        return RunUsage(input_tokens=self._cumulative_input)
+
+    def __aiter__(self) -> "_StubRun":
+        return self
+
+    async def __anext__(self) -> object:
+        raise StopAsyncIteration
+
+
+class _StubIterCM:
+    """The async context manager ``agent.iter(...)`` returns, wrapping a :class:`_StubRun`."""
+
+    def __init__(self, run: _StubRun) -> None:
+        self._run = run
+
+    async def __aenter__(self) -> _StubRun:
+        return self._run
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def _drive_stub_leg(
+    agent: Agent, mocker, messages: list[ModelMessage], *, cumulative_input: int
+) -> AgentTurnHandler:
+    """Run ONE leg over a stubbed run with the given per-response ``messages`` + cumulative usage."""
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
+    run = _StubRun(messages, cumulative_input)
+    mocker.patch.object(handler._agent, "iter", return_value=_StubIterCM(run))
+    return handler
+
+
+async def test_leg_gauge_reads_last_response_not_cumulative_usage(agent, mocker):
+    """Regression (ADR-0018 §2): 3 responses at 100/220/350 → gauge is 350, not 670 cumulative."""
+    messages: list[ModelMessage] = [
+        _user_msg("go"),
+        ModelResponse(parts=[TextPart(content="a")], usage=RequestUsage(input_tokens=100)),
+        ModelResponse(parts=[TextPart(content="b")], usage=RequestUsage(input_tokens=220)),
+        ModelResponse(parts=[TextPart(content="c")], usage=RequestUsage(input_tokens=350)),
+    ]
+    handler = _drive_stub_leg(agent, mocker, messages, cumulative_input=670)
+
+    await handler._run_leg(_ctx(0, "go", []), prompt="go")
+
+    # The last response's own request usage — NOT 100+220+350 = 670 (the cumulative RunUsage).
+    assert handler.last_input_tokens == 350
+
+
+def test_leg_input_tokens_last_populated_response_wins():
+    """A later UNPOPULATED (default) usage does not clobber the last populated one."""
+    messages: list[ModelMessage] = [
+        _user_msg("first"),
+        ModelResponse(parts=[TextPart(content="a")], usage=RequestUsage(input_tokens=100)),
+        ModelResponse(parts=[TextPart(content="b")], usage=RequestUsage(input_tokens=350)),
+        ModelResponse(parts=[TextPart(content="c")]),  # default usage → input_tokens == 0
+    ]
+
+    assert loop._leg_input_tokens(messages) == 350
+
+
+def test_leg_input_tokens_adds_cache_read_tokens():
+    """Cached prompt tokens still occupy context: input_tokens + cache_read_tokens."""
+    messages: list[ModelMessage] = [
+        _user_msg("first"),
+        ModelResponse(
+            parts=[TextPart(content="a")],
+            usage=RequestUsage(input_tokens=300, cache_read_tokens=50),
+        ),
+    ]
+
+    assert loop._leg_input_tokens(messages) == 350
+
+
+def test_leg_input_tokens_all_unpopulated_is_zero():
+    """No ModelResponse with populated usage anywhere → 0 (ADR-0006 §3 safe fallback)."""
+    messages: list[ModelMessage] = [
+        _user_msg("first"),
+        ModelResponse(parts=[TextPart(content="a")]),  # default usage
+        _user_msg("second"),
+        ModelResponse(parts=[TextPart(content="b")]),  # default usage
+    ]
+
+    assert loop._leg_input_tokens(messages) == 0
+
+
+async def test_all_unpopulated_usage_leg_gauges_zero_and_never_compacts(agent, mocker):
+    """A whole leg of unpopulated usages → gauge 0 → the cascade fires nothing, even at a tiny window."""
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 1)  # would fire if > 0
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+
+    messages: list[ModelMessage] = [
+        _user_msg("go"),
+        ModelResponse(parts=[TextPart(content="a")]),  # default usage
+        ModelResponse(parts=[TextPart(content="b")]),  # default usage
+    ]
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        compaction_model_or_settings=_skeleton_summarizer(),
+    )
+    run = _StubRun(messages, cumulative_input=100)  # cumulative is non-zero; per-response is 0
+    mocker.patch.object(handler._agent, "iter", return_value=_StubIterCM(run))
+
+    await handler._run_leg(_ctx(0, "go", emitted), prompt="go")
+    assert handler.last_input_tokens == 0
+    await handler._maybe_auto_compact()
+
+    assert not [
+        e for e in emitted if isinstance(e, events.ContextCompacted | events.ContextMicrocompacted)
+    ]
 
 
 async def test_full_tier_compacts_through_the_turn(agent, tmp_path, mocker):

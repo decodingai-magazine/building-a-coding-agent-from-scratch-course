@@ -7,11 +7,13 @@ streaming FunctionModel plays the model, a second FunctionModel returns the fixe
 skeleton, GEMINI_API_KEY is faked so build_agent constructs, and the session log dir is
 redirected under tmp_path. Fully offline — no network, no API key, no skipif.
 
-Tier arithmetic: the streaming FunctionModel reports a fixed 50 input tokens per leg; a gated
-turn measures only its final resume leg (50) while each inline ``sleep`` adds a leg (1 sleep =
-100, 2 = 150). Window patched to 150 with default reserves (0.40/0.20) → micro line 90, full
-line 120, so the turns cross the tiers in order; a huge prompt forces each kept tail to be
-exactly the final turn.
+Tier arithmetic: the token source is the LAST populated ``ModelResponse.usage`` of the leg
+(ADR-0018 §2), NOT the cumulative RunUsage summed over tool rounds. A plain streaming FunctionModel
+pegs every response at a fixed 50 input tokens, so the scripted model (:class:`_ScriptedModel`)
+forces each turn's per-request input usage to its tier target: SETUP 50, MICRO 100, FULL 150,
+wrap-up 50 — the LAST response of each turn genuinely crosses its line. Window patched to 150 with
+default reserves (0.40/0.20) → micro line 90, full line 120, so the turns cross the tiers in order;
+a huge prompt forces each kept tail to be exactly the final turn.
 """
 
 from __future__ import annotations
@@ -19,7 +21,9 @@ from __future__ import annotations
 import io
 import json
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from pydantic import SecretStr
@@ -33,7 +37,13 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
+from pydantic_ai.usage import RequestUsage
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from pydantic_ai import RunContext
+    from pydantic_ai.models import ModelRequestParameters, StreamedResponse
+    from pydantic_ai.settings import ModelSettings
 
 import decode.agent.loop as loop
 from decode.agent.deps import AgentDeps
@@ -51,10 +61,10 @@ from decode.tui import render
 # --- window / tier arithmetic (defaults: micro reserve 0.40, full reserve 0.20) -------------
 _WINDOW = 150  # micro line = int(150*0.6) = 90; full line = int(150*0.8) = 120
 _KEEP_RECENT = 10  # tiny so the kept tail is just the final turn (the rest is "old")
-_USAGE_PER_LEG = 50  # pydantic-ai's streaming FunctionModel reports a fixed 50 input tokens/leg
-_USAGE_SETUP = 50  # gated write → final resume leg only
-_USAGE_MICRO = 100  # 1 inline sleep → 2 legs
-_USAGE_FULL = 150  # 2 inline sleeps → 3 legs
+_USAGE_PER_LEG = 50  # a no-tier turn: _ScriptedModel forces the last response's input to 50
+_USAGE_SETUP = 50  # SETUP turn's last response → below the micro line (no tier)
+_USAGE_MICRO = 100  # MICRO turn's last response → in [90, 120): microcompaction only
+_USAGE_FULL = 150  # FULL turn's last response → >= 120: full compaction
 
 # A prompt far larger than the keep-recent budget, so each tier's kept tail is just the final turn.
 _HUGE = "keep working on the task " * 100
@@ -98,12 +108,28 @@ def _tool_calls_since_user(messages: list[ModelMessage]) -> int:
     return count
 
 
+def _scripted_input_tokens(messages: list[ModelMessage]) -> int:
+    """The per-request input tokens this turn's LAST response must report, keyed by its prompt tag.
+
+    The token source is the last populated ``ModelResponse.usage`` (ADR-0018 §2), so pinning the
+    input usage per turn is what lands each turn's final response in its intended tier band.
+    """
+    text = _last_user_text(messages)
+    if _TAG_FULL in text:
+        return _USAGE_FULL
+    if _TAG_MICRO in text:
+        return _USAGE_MICRO
+    if _TAG_SETUP in text:
+        return _USAGE_SETUP
+    return _USAGE_PER_LEG  # the wrap-up / plain-text turn
+
+
 def _plan_for(text: str) -> list[DeltaToolCall]:
     """The ordered tool calls a turn issues, selected by its prompt tag.
 
     ``SETUP`` issues one gated ``write`` (the gated call/result pair); ``MICRO`` one inline
-    ``sleep`` (2 legs → usage 100); ``FULL`` two inline ``sleep``s (3 legs → usage 150); the
-    wrap-up turn issues none (plain text → usage 50).
+    ``sleep``; ``FULL`` two inline ``sleep``s; the wrap-up turn issues none (plain text). The
+    per-turn input usage is forced by :class:`_ScriptedModel` (SETUP/wrap-up 50, MICRO 100, FULL 150).
     """
     if _TAG_SETUP in text:
         return [
@@ -119,25 +145,52 @@ def _plan_for(text: str) -> list[DeltaToolCall]:
     return []
 
 
-def _scripted_model() -> FunctionModel:
-    """A streaming FunctionModel that walks each turn's plan, one tool call per fresh leg.
+async def _scripted_stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[object]:
+    """Walk each turn's plan, streaming one tool call per fresh leg, then plain text to stop.
 
     On each model-request leg it counts how many of this turn's planned tool calls have already
     fired and streams the next one; once the plan is exhausted it streams plain text so the turn
     reaches its would-stop boundary. Streaming (not returning) so the loop's node streamer runs.
     """
+    plan = _plan_for(_last_user_text(messages))
+    done = _tool_calls_since_user(messages)
+    if done < len(plan):
+        yield {0: plan[done]}
+        return
+    yield "done"
 
-    async def stream_function(
-        messages: list[ModelMessage], info: AgentInfo
-    ) -> AsyncIterator[object]:
-        plan = _plan_for(_last_user_text(messages))
-        done = _tool_calls_since_user(messages)
-        if done < len(plan):
-            yield {0: plan[done]}
-            return
-        yield "done"
 
-    return FunctionModel(stream_function=stream_function)
+class _ScriptedModel(FunctionModel):
+    """The scripted streaming model with per-request input usage forced to the turn's tier target.
+
+    A plain streaming FunctionModel estimates a FIXED 50 input tokens per response; under the
+    last-response token source (ADR-0018 §2) every leg would then read 50 and no tier would ever
+    fire. ``request_stream`` overrides the streamed response's input usage with the value this
+    turn's tag targets, so the LAST response of each turn genuinely crosses (or stays below) its
+    tier line — exercising the real ``_leg_input_tokens`` on real messages.
+    """
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[object] | None = None,
+    ) -> AsyncIterator[StreamedResponse]:
+        target = _scripted_input_tokens(messages)
+        async with super().request_stream(
+            messages, model_settings, model_request_parameters, run_context
+        ) as response:
+            # Replace the fixed-50 input estimate; streaming still adds output tokens on top, and
+            # the leg's LAST ModelResponse ends up with usage.input_tokens == target.
+            response._usage = RequestUsage(input_tokens=target)
+            yield response
+
+
+def _scripted_model() -> _ScriptedModel:
+    """The scripted model for the capstone (see :class:`_ScriptedModel`)."""
+    return _ScriptedModel(stream_function=_scripted_stream)
 
 
 def _skeleton_summarizer() -> FunctionModel:

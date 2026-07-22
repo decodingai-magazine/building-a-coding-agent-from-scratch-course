@@ -60,6 +60,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _leg_input_tokens(messages: list[ModelMessage]) -> int:
+    """Input-token occupancy of a leg: the LAST populated ``ModelResponse.usage`` (ADR-0018 §2).
+
+    Under pydantic-ai 1.95.1 (ADR-0009) ``RunUsage`` is CUMULATIVE across every request in a leg
+    (one request per tool round), so summing it overcounts ~Nx for an N-round turn. The true
+    context size is the last response's own per-request ``RequestUsage``: walk ``messages``
+    BACKWARDS and take the first :class:`ModelResponse` whose ``usage.input_tokens > 0`` — later
+    responses may carry default (unpopulated) usage, which must not clobber it. Value is
+    ``input_tokens + cache_read_tokens`` (cached prompt tokens still occupy context). No populated
+    response → ``0``, which ``should_compact`` treats as "don't fire" (ADR-0006 §3 safe fallback).
+    """
+    for message in reversed(messages):
+        if isinstance(message, ModelResponse) and message.usage.input_tokens > 0:
+            return message.usage.input_tokens + message.usage.cache_read_tokens
+    return 0
+
+
 class AgentTurnHandler:
     """Drive ``agent.iter()`` as the harness turn handler, carrying history across turns.
 
@@ -102,9 +119,13 @@ class AgentTurnHandler:
 
     @property
     def last_input_tokens(self) -> int:
-        """Provider-reported input tokens of the most recent leg (``0`` before any leg).
+        """The last response's provider-reported request usage for the most recent leg (ADR-0018 §2).
 
-        The public read the TUI footer fill gauge uses; the compaction trigger reads the same number.
+        Not the leg's cumulative usage: it is the last populated ``ModelResponse.usage``
+        (``input_tokens + cache_read_tokens``), so it tracks real context occupancy instead of
+        overcounting ~Nx across N tool rounds. ``0`` before any leg (and when no response reported
+        usage). The public read the TUI footer fill gauge uses; the compaction trigger reads the
+        same number.
         """
         return self._last_input_tokens
 
@@ -362,9 +383,11 @@ class AgentTurnHandler:
                 # in a ``finally`` so a leg that raises (a tool's ModelRetry budget exhausted)
                 # keeps its accumulated messages instead of freezing history at the prior leg.
                 self.message_history = run.all_messages()
-                # This leg's provider-reported input tokens: the compaction trigger + TUI gauge
-                # read. ``usage`` is a method on the run in pydantic-ai 1.x (ADR-0009).
-                self._last_input_tokens = run.usage().input_tokens
+                # This leg's context occupancy: the LAST response's provider-reported request
+                # usage, NOT the cumulative RunUsage summed over every tool round (ADR-0018 §2 —
+                # ``run.usage()`` accumulates ~Nx for N rounds). The compaction trigger + TUI
+                # gauge both read this single number.
+                self._last_input_tokens = _leg_input_tokens(self.message_history)
         # pydantic-ai may coalesce adjacent same-role prior messages (notably the two ModelRequests
         # a full compaction leaves), shrinking the persisted prefix. Clamp the cursor to the count
         # preceding this leg's new messages so the next persist never drops a fresh message.
