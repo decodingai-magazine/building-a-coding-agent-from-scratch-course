@@ -123,7 +123,7 @@ The full feature map — each row is one line here and a deep dive one click awa
 | **Environments & secrets** | `DECODE_ENV` selects `.env` (local) vs the Environment Bucket (deployed); secrets never reach the model's context. | [credentials.md](credentials.md) |
 | **Observability** | one `OPIK_API_KEY` and every turn ships a full trace — every model/tool call as a span with tokens, latency, cost. | [ADR-0014](../docs/adr/0014-opik-observability.md) |
 | **Evals** | outcome benchmark, behavior regression probes, LLM judges, online evals (`make eval-benchmark` / `make eval-regression`). | [running_the_code/evals.md](evals.md) |
-| **Cloud deployment** | the whole headless agent on Modal, checkpoints on a self-hosted Kitaru server. | [infra.md](infra.md) |
+| **Cloud deployment** | the whole headless agent on Modal, checkpoints on a self-hosted [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) server. | [infra.md](infra.md) |
 
 ### Context window resolution
 

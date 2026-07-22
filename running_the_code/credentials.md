@@ -16,7 +16,7 @@ A second, smaller question, kept separate: *which of those values does the **san
 opt-in — `SANDBOX_GIT_TOKEN` ([Part 2](#part-2--the-sandbox-git-token-sandbox_git_token)). Everything else
 stays in the harness process.
 
-Kitaru's footprint is one line: the Environment Bucket **is** a Kitaru secret — the only `get_secret` seam
+[Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs)'s footprint is one line: the Environment Bucket **is** a Kitaru secret — the only `get_secret` seam
 in the codebase ([ADR-0015 §6](../docs/adr/0015-environment-bucket-secrets.md)). (`MODAL_PROXY_TOKEN_ID` /
 `_SECRET` are unrelated: Modal's own endpoint-auth headers — see [`modal_models.md`](modal_models.md).)
 

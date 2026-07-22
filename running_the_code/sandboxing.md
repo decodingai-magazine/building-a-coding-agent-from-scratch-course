@@ -6,7 +6,7 @@ By default (`SANDBOX_MODE=none`) `bash` runs as a host subprocess and the file t
 |---|---|---|
 | `none` (default) | host subprocess + direct file tools | none — zero change, no Docker/Modal needed |
 | `docker` | one session-persistent **local** container | `/workspace` is a **live bind mount** of the host `.decode/sandbox/` |
-| `modal` | one session-persistent **remote** `modal.Sandbox` | nothing runs on your machine; `/workspace` is bootstrap-uploaded at launch and exported back on exit / `/ship` |
+| `modal` | one session-persistent **remote** [`modal.Sandbox`](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng) | nothing runs on your machine; `/workspace` is bootstrap-uploaded at launch and exported back on exit / `/ship` |
 
 Both modes are one unified executor with **fresh-exec** semantics: the filesystem persists across calls, but `cd`/`export` don't (chain them: `cd /workspace/app && …`). The sandbox starts eagerly at launch (a `sandbox:<mode>` banner segment), and `bash` stays gated exactly as before — the sandbox is defense-in-depth *beneath* the approval prompt.
 

@@ -2,7 +2,7 @@
 
 decode has tracing ([ADR-0014](../docs/adr/0014-opik-observability.md)) but tracing alone can't answer *"did
 this change make the agent better or worse?"*. The **eval suite** ([ADR-0017](../docs/adr/0017-decode-eval-suite.md))
-does, in four tracks over one shared Opik harness. It lives in top-level [`evals/`](../evals/) —
+does, in four tracks over one shared [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) harness. It lives in top-level [`evals/`](../evals/) —
 course material *about* the agent, never shipped in the wheel — and reads its config off the same
 `Settings` surface as decode itself.
 
