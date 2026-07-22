@@ -32,9 +32,9 @@
 > Then type `/demo-` and pick a demo — see [what they do](#-see-it-work) below. Full guide: [install_and_usage.md](running_the_code/install_and_usage.md).
 
 <p align="center">
-  <img src="assets/tui-session-start.png" alt="The decode TUI right after launch: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer" width="800">
+  <img src="assets/demo-skills.png" alt="The demo skills listed inside the decode TUI after typing /demo-" width="800">
 </p>
-<p align="center"><i>What opens: Opik tracing on, a Qwen you serve on Modal, skills one keystroke away, steering keys in the footer.</i></p>
+<p align="center"><i>What opens: type <code>/demo-</code> and the six demos are one keystroke away.</i></p>
 
 ## 📖 About This Course
 
@@ -83,8 +83,8 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/demo-skills.png" alt="The demo skills listed inside the TUI"/>
-      <p align="center"><i>Six demos, one keystroke away</i></p>
+      <img src="assets/tui-session-start.png" alt="A fresh decode session: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer"/>
+      <p align="center"><i>A fresh session — Opik tracing on, a Modal-served Qwen, steering keys in the footer</i></p>
     </td>
     <td width="50%">
       <img src="assets/demo-snake-game.png" alt="A playable Snake game built by decode"/>
