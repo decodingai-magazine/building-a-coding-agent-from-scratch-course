@@ -3,7 +3,9 @@
 Two tiers share these: the window-relative trigger (:func:`reserve_threshold` +
 :func:`should_compact`), full LLM compaction (:func:`summarize_for_compaction`,
 :func:`build_summary_message`, :func:`split_tail`), and the no-LLM :func:`microcompact`.
-The tail cut snaps back to a user-turn boundary so a tool-call/result pair is never split.
+The tail cut snaps back to a Compaction Boundary — a ``ModelResponse`` or a tool-return-free
+``ModelRequest`` — so a tool-call/result pair is never split, and a single long agentic turn
+still finds a cut (ADR-0018 §1 amends ADR-0006 §5).
 Microcompaction is in-memory only — the JSONL log keeps full fidelity (ADR-0006 §3a).
 The coarse ``chars≈/4`` estimate sizes the tail ONLY — never the trigger, which reads
 provider-authoritative usage.
@@ -126,12 +128,20 @@ def build_summary_message(skeleton: str) -> ModelRequest:
 
 def split_tail(messages: list[ModelMessage], *, keep_recent_tokens: int) -> int:
     """Index where the kept recent tail begins — the largest tail fitting ``keep_recent_tokens``,
-    snapped back to a user-turn boundary (ADR-0006 §5).
+    snapped back to the nearest Compaction Boundary at or below the raw budget cut (ADR-0018 §1,
+    amends ADR-0006 §5).
 
-    The snap-back guarantees the tail never starts on an orphaned ``ToolReturnPart`` /
-    ``RetryPromptPart`` — a tool-call/result pair is never split (it may keep slightly more
-    than the raw budget). Returns ``0`` when everything fits and ``len(messages)`` when
-    nothing fits. The ``chars≈/4`` estimate is tail sizing only, never the trigger.
+    A Compaction Boundary (see :func:`_is_compaction_boundary`) is a ``ModelResponse`` or a
+    ``ModelRequest`` carrying no ``ToolReturnPart`` / ``RetryPromptPart``. The snap-back
+    guarantees the tail never starts on an orphaned tool return — a tool-call/result pair is
+    never split (a return's matching call sits in the immediately preceding ``ModelResponse``,
+    so cutting AT a ``ModelResponse`` keeps the pair intact). It may keep slightly more than the
+    raw budget. Unlike the old user-turn-only snap, a single long agentic turn (one user prompt
+    + dozens of tool rounds) now finds a cut instead of collapsing to 0.
+
+    Returns ``0`` when everything fits (or the nearest valid boundary genuinely is 0) and
+    ``len(messages)`` when nothing fits. The ``chars≈/4`` estimate is tail sizing only, never
+    the trigger.
     """
     if not messages:
         return 0
@@ -151,10 +161,11 @@ def split_tail(messages: list[ModelMessage], *, keep_recent_tokens: int) -> int:
     if cut >= len(messages):
         return len(messages)  # nothing fits — keep only the summary
 
-    # Snap the cut back to the enclosing user-turn boundary so the tail never starts on an
-    # orphaned tool result. message[0] is normally a user request, so this terminates at 0 at worst.
+    # Snap the cut back to the nearest Compaction Boundary so the tail never starts on an orphaned
+    # tool return. message[0] is normally a user request (a boundary), so this terminates at 0 at
+    # worst — and only returns 0 when that nearest boundary genuinely is index 0.
     for index in range(cut, -1, -1):
-        if _is_user_turn_boundary(messages[index]):
+        if _is_compaction_boundary(messages[index]):
             return index
     return 0  # no boundary found → keep everything (safe degradation, never orphan)
 
@@ -251,7 +262,17 @@ def _part_chars(part: object) -> int:
     return 0
 
 
-def _is_user_turn_boundary(message: ModelMessage) -> bool:
-    return isinstance(message, ModelRequest) and any(
-        isinstance(part, UserPromptPart) for part in message.parts
-    )
+def _is_compaction_boundary(message: ModelMessage) -> bool:
+    """Whether ``message`` is a valid Compaction Boundary — a cut point (ADR-0018 §1).
+
+    Valid at a ``ModelResponse``, or at a ``ModelRequest`` carrying no ``ToolReturnPart`` /
+    ``RetryPromptPart`` (a user-turn or summary-head request). Never valid at a request carrying
+    a tool return or retry: its matching call sits in the immediately preceding ``ModelResponse``,
+    so cutting AT that response keeps every call/result pair intact. This subsumes the old
+    user-turn-only boundary — every user-turn request is still a valid cut.
+    """
+    if isinstance(message, ModelResponse):
+        return True
+    if isinstance(message, ModelRequest):
+        return not any(isinstance(part, ToolReturnPart | RetryPromptPart) for part in message.parts)
+    return False

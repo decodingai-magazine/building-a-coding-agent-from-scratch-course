@@ -297,32 +297,126 @@ def test_split_tail_returns_len_when_nothing_fits():
     assert split_tail(messages, keep_recent_tokens=0) == len(messages)
 
 
-def test_split_tail_snaps_back_to_a_user_turn_boundary_no_orphan():
+def _has_tool_return(message: ModelMessage) -> bool:
+    """Whether ``message`` is a ModelRequest carrying a ToolReturnPart/RetryPromptPart."""
+    return isinstance(message, ModelRequest) and any(
+        isinstance(part, ToolReturnPart | RetryPromptPart) for part in message.parts
+    )
+
+
+def _long_agentic_turn(pairs: int = 20, *, body_chars: int = 400) -> list[ModelMessage]:
+    """One user turn followed by ``pairs`` ToolCall/ToolReturn rounds — the failing session shape
+    (ADR-0018 §1: 1 prompt + dozens of tool messages, exactly one user-turn boundary at index 0).
+
+    Each tool-return body is ``body_chars`` chars (~``body_chars/4`` est tokens), so the bodies
+    together dwarf any small ``keep_recent_tokens`` budget.
+    """
+    messages: list[ModelMessage] = [_user("do a big research task")]
+    for index in range(pairs):
+        call_id = f"c{index}"
+        messages.append(_tool_call("read", call_id))
+        messages.append(_tool_return("read", call_id, "R" * body_chars))
+    return messages
+
+
+def test_split_tail_returns_positive_index_for_a_single_long_agentic_turn():
+    # REGRESSION (ADR-0018 §1, root cause 1): a single long agentic turn has exactly one
+    # user-turn boundary (index 0), so the OLD snap-back collapsed to 0 = "everything fits" and
+    # compaction no-op'd. The redefined Compaction Boundary (any ModelResponse) must find a cut.
+    messages = _long_agentic_turn()
+
+    cut = split_tail(messages, keep_recent_tokens=100)
+
+    assert cut > 0
+
+
+@pytest.mark.parametrize("keep_recent_tokens", [50, 100, 200, 400, 800])
+def test_split_tail_cut_lands_on_a_valid_boundary_never_an_orphan(keep_recent_tokens: int):
+    # For a spread of budgets, the returned index always lands on a valid Compaction Boundary:
+    # messages[cut] is a ModelResponse or a tool-return-free ModelRequest — never a request
+    # carrying a ToolReturnPart/RetryPromptPart (which would orphan its matching call).
+    messages = _long_agentic_turn()
+
+    cut = split_tail(messages, keep_recent_tokens=keep_recent_tokens)
+
+    if cut < len(messages):
+        head = messages[cut]
+        assert isinstance(head, ModelResponse) or not _has_tool_return(head)
+        assert not _has_tool_return(head)
+
+
+@pytest.mark.parametrize("keep_recent_tokens", [50, 100, 200, 400, 800])
+def test_split_tail_keeps_every_tool_pair_intact_across_the_cut(keep_recent_tokens: int):
+    # Every ToolReturnPart in the kept tail has its matching ToolCallPart (same tool_call_id) also
+    # in the tail — cutting AT a ModelResponse never splits a call/result pair.
+    messages = _long_agentic_turn()
+
+    cut = split_tail(messages, keep_recent_tokens=keep_recent_tokens)
+    tail = messages[cut:]
+
+    call_ids = {
+        part.tool_call_id
+        for message in tail
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+        if isinstance(part, ToolCallPart)
+    }
+    return_ids = {
+        part.tool_call_id
+        for message in tail
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    }
+    assert return_ids <= call_ids
+
+
+def test_split_tail_snaps_back_to_a_model_response_boundary_no_orphan():
     # The naive token cut lands BETWEEN a ToolCallPart and its ToolReturnPart (the call's big args
-    # blow the budget). split_tail must snap back to the enclosing user-turn boundary so the kept
-    # tail starts at a UserPromptPart and never at an orphaned tool result.
+    # blow the budget). split_tail must snap back to the nearest valid Compaction Boundary — the
+    # preceding ModelResponse — so the kept tail keeps the call/result pair intact and never starts
+    # on an orphaned tool result (ADR-0018 §1).
     big_args = "x" * 4_000  # ~1000 est tokens — far over the budget below
     messages: list[ModelMessage] = [
-        _user("q0"),  # 0  — turn 1 boundary
+        _user("q0"),  # 0  — user-turn boundary
         _tool_call("read", "c0"),  # 1
         _tool_return("read", "c0", "old read output"),  # 2
         _assistant("a0"),  # 3
-        _user("q1"),  # 4  — turn 2 boundary (the snap target)
-        _tool_call("write", "c1", args=big_args),  # 5  — big args break the budget here
+        _user("q1"),  # 4  — user-turn boundary
+        _tool_call("write", "c1", args=big_args),  # 5  — big args break the budget here (a cut)
         _tool_return("write", "c1", "recent write output"),  # 6
         _assistant("a1"),  # 7
     ]
 
     boundary = split_tail(messages, keep_recent_tokens=100)
 
-    # Snapped back to turn 2's user boundary, not left at the naive cut (index 6, an orphan).
-    assert boundary == 4
-    tail = messages[boundary:]
-    head = tail[0]
+    # Snapped back to the nearest ModelResponse (index 5), keeping the write call/result pair whole
+    # — not left at the naive cut (index 6, an orphaned return).
+    assert boundary == 5
+    head = messages[boundary]
+    assert isinstance(head, ModelResponse)
+    # No orphaned tool result at the head of the kept tail.
+    assert not _has_tool_return(head)
+
+
+def test_split_tail_still_snaps_to_a_user_turn_boundary_when_that_is_nearest():
+    # A user-turn ModelRequest remains a valid cut: when the nearest boundary at/below the raw cut
+    # is a user turn (no ModelResponse sits between), split_tail lands on it — multi-turn histories
+    # behave as before, never coarser.
+    big = "z" * 4_000  # ~1000 est tokens
+    messages: list[ModelMessage] = [
+        _user("q0"),  # 0
+        _assistant("a0 " + big),  # 1  — huge, breaks the budget
+        _user("q1"),  # 2  — user-turn boundary (the snap target)
+        _assistant("a1"),  # 3
+    ]
+
+    boundary = split_tail(messages, keep_recent_tokens=100)
+
+    assert boundary == 2
+    head = messages[boundary]
     assert isinstance(head, ModelRequest)
     assert any(isinstance(part, UserPromptPart) for part in head.parts)
-    # No orphaned tool result at the head of the kept tail.
-    assert not any(isinstance(part, ToolReturnPart) for part in head.parts)
 
 
 # microcompact
@@ -447,6 +541,26 @@ def test_microcompact_blanks_old_retry_prompt_parts():
     retry = new_messages[2].parts[0]
     assert isinstance(retry, RetryPromptPart)
     assert retry.content == _MICRO_PLACEHOLDER
+
+
+def test_microcompact_elides_inside_a_single_long_agentic_turn():
+    # REGRESSION (ADR-0018 §1, root cause 1): microcompact shares split_tail, so on a single long
+    # turn it used to snap the boundary to 0 and elide nothing. With the redefined Compaction
+    # Boundary it now finds a cut inside the turn and blanks the old tool outputs before it.
+    messages = _long_agentic_turn()
+
+    new_messages, elided = microcompact(messages, keep_recent_tokens=100)
+
+    assert elided > 0
+    boundary = split_tail(messages, keep_recent_tokens=100)
+    # Only parts before the boundary were blanked; the kept tail is byte-identical to the input.
+    assert new_messages[boundary:] == messages[boundary:]
+    # Every blanked tool return sits in the old region (before the boundary).
+    for index, message in enumerate(new_messages):
+        if isinstance(message, ModelRequest):
+            for part in message.parts:
+                if isinstance(part, ToolReturnPart) and part.content == _MICRO_PLACEHOLDER:
+                    assert index < boundary
 
 
 def test_micro_placeholder_constant():
