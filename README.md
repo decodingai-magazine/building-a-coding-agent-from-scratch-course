@@ -130,7 +130,7 @@ And the machinery underneath is real infrastructure you'll stand up yourself, no
   </tr>
 </table>
 
-## 🤖 What You'll Do
+## 🤖 You'll Walk Away Knowing How To
 
 - **Build one user turn end-to-end** — prompt to streamed answer, with a `y/n` gate on every tool call.
 - **`kill -9` a run mid-task and resume it** — checkpoints never re-pay for finished work.
