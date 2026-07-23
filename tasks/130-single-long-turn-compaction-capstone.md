@@ -1,7 +1,7 @@
 ---
 id: 130
 feature: fix-compaction
-status: done
+status: in-progress
 ---
 
 # Capstone regression: the original single-long-turn session shape compacts end to end
@@ -278,3 +278,80 @@ QA spot-check: format-check + lint-check clean; touched suites green (237 unit +
 capstone/e2e/grounding passed). Doc discipline exemplary: ADR-0018 present, ADR-0006 status
 amended, glossary carries Compaction Boundary (redefined) + Compaction Outcome. Pipeline may
 advance to hand-off.
+
+### [On-Call] 2026-07-23 00:10 — CI Failure
+
+**Failed step:** CI → ci → Lint, format & test (GitHub Actions run `29967544312`, PR #50,
+commit `ff8bd2a`)
+
+**Error**
+```
+tests/integration/test_compaction_capstone.py:703: in test_single_long_turn_primitives_on_the_original_shape
+    handler = AgentTurnHandler(
+>           build_agent(),
+...
+src/decode/agent/factory.py:113: in _build_model
+    provider=GoogleProvider(
+self = <GoogleProvider object>
+api_key = None, ...
+>                   raise UserError(
+                        'Set the `GOOGLE_API_KEY` environment variable or pass it via `GoogleProvider(api_key=...)`'
+                        ' to use the Google Generative Language API.'
+                    )
+E       pydantic_ai.exceptions.UserError: Set the `GOOGLE_API_KEY` environment variable or pass it via `GoogleProvider(api_key=...)` to use the Google Generative Language API.
+
+1 failed, 2323 passed, 19 skipped in 450.24s (0:07:30)
+```
+
+**Root cause**
+`test_single_long_turn_primitives_on_the_original_shape` (added in commit `3284e93`) calls
+`build_agent()` directly (around line 703) without first faking the provider key — unlike
+every other `build_agent()` call site in this file (`_long_turn_setup`,
+`test_compaction_capstone_micro_full_persist_resume`), which do
+`monkeypatch.setattr("decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"),
+raising=False)` before constructing the agent. Locally this went unnoticed because a
+developer's `.env` sets `LLM_PROVIDER=modal` (or similar), which `dotenv_values()` reads
+directly regardless of `env -i`/`env -u` process-env scrubbing — so `_build_model` never
+takes the `gemini` branch on a dev machine, including under the Tester's "offline / no-keys"
+`env -i` check. CI has no `.env` at all, so `settings.llm_provider` defaults to `"gemini"`
+(the field default), `_build_model` builds a real `GoogleProvider`, and with no key faked and
+no `GOOGLE_API_KEY`/`GEMINI_API_KEY` in the environment, `pydantic_ai` raises `UserError`. This
+is a real test bug (a missing monkeypatch line), not flake or infra — reproduced deterministically
+locally with `env -u GEMINI_API_KEY -u GOOGLE_API_KEY LLM_PROVIDER=gemini uv run pytest
+tests/integration/test_compaction_capstone.py::test_single_long_turn_primitives_on_the_original_shape`.
+
+Fixing now — handing a fix task to the SWE (Refs #130 in file mode; PR #50).
+
+### [SWE] 2026-07-23 — CI fix (On-Call task, PR #50)
+
+**Files modified**
+- `tests/integration/test_compaction_capstone.py` — in
+  `test_single_long_turn_primitives_on_the_original_shape`, added the missing
+  `monkeypatch.setattr("decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"),
+  raising=False)` immediately before the `handler = AgentTurnHandler(build_agent(), ...)` block,
+  matching `_long_turn_setup` and `test_compaction_capstone_micro_full_persist_resume`. Tests only —
+  no production code (`git diff --stat -- src/` empty).
+
+**Root cause** — This test called `build_agent()` without faking the provider key. With no `.env`
+(CI) `settings.llm_provider` defaults to `"gemini"`, so `_build_model` built a real `GoogleProvider`
+and raised `UserError` for the absent key. Local `.env` (`LLM_PROVIDER=modal`) is read by
+`dotenv_values()` regardless of `env -i`/`env -u`, so it masked the bug for the SWE and Tester.
+
+**Reproduction (CI-matching env)**
+```
+$ env -u GEMINI_API_KEY -u GOOGLE_API_KEY LLM_PROVIDER=gemini uv run pytest \
+    tests/integration/test_compaction_capstone.py::test_single_long_turn_primitives_on_the_original_shape -q
+# before: 1 failed (pydantic_ai UserError: Set the GOOGLE_API_KEY ...)
+# after:  1 passed in 0.82s
+
+$ env -u GEMINI_API_KEY -u GOOGLE_API_KEY LLM_PROVIDER=gemini uv run pytest \
+    tests/integration/test_compaction_capstone.py -q
+4 passed in 1.01s
+```
+
+**QA**
+- `make format-check` — 308 files already formatted
+- `make lint-check` — All checks passed
+- `make unit-tests` — 2219 passed in 118.61s
+
+**Notes** — Status left `in-progress` for On-Call to re-verify CI and close.

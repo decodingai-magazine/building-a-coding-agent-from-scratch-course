@@ -699,6 +699,12 @@ async def test_single_long_turn_primitives_on_the_original_shape(tmp_path, monke
         resolve_permission=_ScriptedResolvers().resolve_permission,
         resolve_user_question=_ScriptedResolvers().resolve_user_question,
     )
+    # ``build_agent()`` builds the real provider off ``settings.llm_provider`` (defaults to
+    # ``"gemini"`` when no ``.env`` is present, as in CI) — fake the key so it never reaches a live
+    # ``GoogleProvider``, matching every other ``build_agent()`` call site in this file.
+    monkeypatch.setattr(
+        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), raising=False
+    )
     handler = AgentTurnHandler(
         build_agent(),
         deps=deps,
