@@ -1,7 +1,7 @@
 ---
 id: 130
 feature: fix-compaction
-status: in-progress
+status: done
 ---
 
 # Capstone regression: the original single-long-turn session shape compacts end to end
@@ -355,3 +355,16 @@ $ env -u GEMINI_API_KEY -u GOOGLE_API_KEY LLM_PROVIDER=gemini uv run pytest \
 - `make unit-tests` — 2219 passed in 118.61s
 
 **Notes** — Status left `in-progress` for On-Call to re-verify CI and close.
+
+### [On-Call] 2026-07-23 00:16 — CI Resolution
+
+SWE pushed the fix as commit `a73331d` on `feat/fix-compaction` (PR #50): added the missing
+`monkeypatch.setattr("decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"),
+raising=False)` line to `test_single_long_turn_primitives_on_the_original_shape` before its
+`build_agent()` call, matching the pattern already used elsewhere in the file. Tests-only,
+verified locally by the SWE with the CI-matching env command (red before, green after; whole
+capstone 4 passed; unit 2219 passed).
+
+Re-checked CI: run `29968423979` on commit `a73331d` — `completed success`
+(https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/actions/runs/29968423979).
+Pipeline green. Closing task 130 again.
