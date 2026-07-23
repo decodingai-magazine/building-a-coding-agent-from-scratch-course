@@ -220,7 +220,7 @@ async def run_agent_once(
         agent,
         deps=deps,
         message_history=message_history,
-        compaction_model_or_settings=compaction_source,
+        compaction_model=compaction_source,
     )
     runner = Runner(handler, on_event=_capture_emit)
 

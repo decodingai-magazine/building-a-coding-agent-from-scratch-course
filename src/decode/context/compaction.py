@@ -3,15 +3,26 @@
 Two tiers share these: the window-relative trigger (:func:`reserve_threshold` +
 :func:`should_compact`), full LLM compaction (:func:`summarize_for_compaction`,
 :func:`build_summary_message`, :func:`split_tail`), and the no-LLM :func:`microcompact`.
-The tail cut snaps back to a user-turn boundary so a tool-call/result pair is never split.
+The tail cut snaps back to a Compaction Boundary — a ``ModelResponse`` or a tool-return-free
+``ModelRequest`` — so a tool-call/result pair is never split, and a single long agentic turn
+still finds a cut (ADR-0018 §1 amends ADR-0006 §5).
 Microcompaction is in-memory only — the JSONL log keeps full fidelity (ADR-0006 §3a).
-The coarse ``chars≈/4`` estimate sizes the tail ONLY — never the trigger, which reads
-provider-authoritative usage.
+The coarse ``chars≈/4`` estimate (:func:`estimate_history_tokens`) sizes the tail AND seeds the
+post-compaction gauge; it never INFLATES the trigger — the trigger reads provider-authoritative
+usage, and post-compaction the estimate can only understate, briefly, until the next leg reports
+(ADR-0018 §4 softens ADR-0006's stronger "the estimate never drives the trigger").
+
+The summarizer rides the existing Provider Seam (ADR-0018 §5): :func:`summarize_for_compaction`
+takes a built :class:`~pydantic_ai.models.Model` — the ACTIVE provider's model, wired in at
+``tui/app.py`` — so compaction works on gemini, openrouter, AND modal. This module builds no
+provider model itself (the old ``Settings → GoogleModel`` branch is deleted); it stays network-free
+and provider-agnostic, and the Model-instance argument doubles as the tests' no-network seam.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import enum
 import logging
 from typing import TYPE_CHECKING
 
@@ -25,10 +36,6 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
-from pydantic_ai.models.google import GoogleModel
-from pydantic_ai.providers.google import GoogleProvider
-
-from decode.config.settings import Settings
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -37,10 +44,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class CompactOutcome(enum.Enum):
+    """The three-valued result of a full compaction — the Compaction Outcome (ADR-0018 §3).
+
+    Replaces ``compact()``'s ambiguous bool: a bare ``False`` could not tell "there was nothing to
+    compact" apart from "the summarizer call failed". ``/compact`` prints a distinct line per
+    outcome (``SUMMARIZER_FAILED`` names ``.decode/logs/decode.log``; ``COMPACTED`` stays
+    event-rendered) and the auto path logs one INFO breadcrumb when a trigger fired but did not
+    land.
+    """
+
+    COMPACTED = "compacted"
+    NOTHING_TO_COMPACT = "nothing_to_compact"
+    SUMMARIZER_FAILED = "summarizer_failed"
+
+
 # Microcompaction placeholder: blanks content only — the part stays real, never orphaned.
 _MICRO_PLACEHOLDER = "[tool output elided by microcompaction]"
 
-# Coarse chars→tokens divisor — tail sizing ONLY, never the trigger (ADR-0006 §Consequences).
+# Coarse chars→tokens divisor — tail sizing + the post-compaction gauge seed; never INFLATES the
+# trigger, which reads provider-authoritative usage (ADR-0018 §4 softens ADR-0006 §Consequences).
 _CHARS_PER_TOKEN = 4
 
 # Full-tier summarizer instruction: fills the fixed skeleton (ADR-0006 §4).
@@ -87,22 +111,19 @@ def should_compact(usage: RunUsage, *, window: int, reserve: float, enabled: boo
     return usage.input_tokens >= reserve_threshold(window, reserve)
 
 
-async def summarize_for_compaction(
-    messages: list[ModelMessage], *, model_or_settings: Model | Settings
-) -> str | None:
+async def summarize_for_compaction(messages: list[ModelMessage], *, model: Model) -> str | None:
     """Summarize older history into the fixed skeleton with one cheap LLM call (ADR-0006 §4).
 
     Returns the filled skeleton, or ``None`` on an empty/trivial transcript (no call made), a
     blank result, or a failed call (logged at warning, never raised — degrades to "no
-    compaction this turn"). ``model_or_settings``: a concrete
-    :class:`~pydantic_ai.models.Model` (tests — no network) or
-    :class:`~decode.config.settings.Settings` (production Gemini).
+    compaction this turn"). ``model`` is a built :class:`~pydantic_ai.models.Model` — in production
+    the ACTIVE provider's model wired in at the call site so compaction rides the Provider Seam
+    (ADR-0018 §5), in tests a ``FunctionModel`` / ``TestModel`` (no network).
     """
     transcript = _render_transcript(messages)
     if not transcript:
         return None
 
-    model = _resolve_model(model_or_settings)
     agent: Agent[None, str] = Agent(model, instructions=_COMPACTION_INSTRUCTIONS)
     try:
         result = await agent.run(transcript)
@@ -126,12 +147,21 @@ def build_summary_message(skeleton: str) -> ModelRequest:
 
 def split_tail(messages: list[ModelMessage], *, keep_recent_tokens: int) -> int:
     """Index where the kept recent tail begins — the largest tail fitting ``keep_recent_tokens``,
-    snapped back to a user-turn boundary (ADR-0006 §5).
+    snapped back to the nearest Compaction Boundary at or below the raw budget cut (ADR-0018 §1,
+    amends ADR-0006 §5).
 
-    The snap-back guarantees the tail never starts on an orphaned ``ToolReturnPart`` /
-    ``RetryPromptPart`` — a tool-call/result pair is never split (it may keep slightly more
-    than the raw budget). Returns ``0`` when everything fits and ``len(messages)`` when
-    nothing fits. The ``chars≈/4`` estimate is tail sizing only, never the trigger.
+    A Compaction Boundary (see :func:`_is_compaction_boundary`) is a ``ModelResponse`` or a
+    ``ModelRequest`` carrying no ``ToolReturnPart`` / ``RetryPromptPart``. The snap-back
+    guarantees the tail never starts on an orphaned tool return — a tool-call/result pair is
+    never split (a return's matching call sits in the immediately preceding ``ModelResponse``,
+    so cutting AT a ``ModelResponse`` keeps the pair intact). It may keep slightly more than the
+    raw budget. Unlike the old user-turn-only snap, a single long agentic turn (one user prompt
+    + dozens of tool rounds) now finds a cut instead of collapsing to 0.
+
+    Returns ``0`` when everything fits (or the nearest valid boundary genuinely is 0) and
+    ``len(messages)`` when nothing fits. The ``chars≈/4`` estimate sizes the tail (and seeds the
+    post-compaction gauge, :func:`estimate_history_tokens`); it never INFLATES the trigger
+    (ADR-0018 §4).
     """
     if not messages:
         return 0
@@ -151,10 +181,11 @@ def split_tail(messages: list[ModelMessage], *, keep_recent_tokens: int) -> int:
     if cut >= len(messages):
         return len(messages)  # nothing fits — keep only the summary
 
-    # Snap the cut back to the enclosing user-turn boundary so the tail never starts on an
-    # orphaned tool result. message[0] is normally a user request, so this terminates at 0 at worst.
+    # Snap the cut back to the nearest Compaction Boundary so the tail never starts on an orphaned
+    # tool return. message[0] is normally a user request (a boundary), so this terminates at 0 at
+    # worst — and only returns 0 when that nearest boundary genuinely is index 0.
     for index in range(cut, -1, -1):
-        if _is_user_turn_boundary(messages[index]):
+        if _is_compaction_boundary(messages[index]):
             return index
     return 0  # no boundary found → keep everything (safe degradation, never orphan)
 
@@ -201,14 +232,6 @@ def microcompact(
     return new_messages, elided
 
 
-def _resolve_model(model_or_settings: Model | Settings) -> Model | GoogleModel:
-    """Pass a ``Model`` through, or build the config-driven Gemini model from ``Settings``."""
-    if isinstance(model_or_settings, Settings):
-        provider = GoogleProvider(api_key=model_or_settings.gemini_api_key.get_secret_value())
-        return GoogleModel(model_or_settings.gemini_model, provider=provider)
-    return model_or_settings
-
-
 def _render_transcript(messages: list[ModelMessage]) -> str:
     """Role-prefixed plain-text transcript with brief tool-activity notes (bodies dropped).
 
@@ -235,8 +258,23 @@ def _render_transcript(messages: list[ModelMessage]) -> str:
     return "\n".join(lines)
 
 
+def estimate_history_tokens(messages: list[ModelMessage]) -> int:
+    """Coarse ``chars≈/4`` token estimate of a whole history — the sum over messages of the same
+    per-message :func:`_estimate_tokens` that :func:`split_tail` sizes the tail with (ONE divisor,
+    no second estimator). Empty → ``0``.
+
+    Used both to size the recent tail and to seed the post-compaction gauge, so the footer drops to
+    the same currency the cut is made in the instant a compaction lands (ADR-0018 §4). This is why
+    the estimate now touches the gauge at all: post-compaction it can only understate real occupancy
+    (the divisor is coarse and the next leg's provider number overwrites it), so it never INFLATES
+    the trigger — ADR-0018 §4 softens ADR-0006's stronger "the estimate never drives the trigger".
+    """
+    return sum(_estimate_tokens(message) for message in messages)
+
+
 def _estimate_tokens(message: ModelMessage) -> int:
-    """Coarse ``chars≈/4`` token estimate for one message (tail sizing ONLY, never the trigger)."""
+    """Coarse ``chars≈/4`` token estimate for one message (tail sizing + the post-compaction gauge
+    seed via :func:`estimate_history_tokens`; never INFLATES the trigger — ADR-0018 §4)."""
     chars = sum(_part_chars(part) for part in message.parts)
     return chars // _CHARS_PER_TOKEN
 
@@ -251,7 +289,17 @@ def _part_chars(part: object) -> int:
     return 0
 
 
-def _is_user_turn_boundary(message: ModelMessage) -> bool:
-    return isinstance(message, ModelRequest) and any(
-        isinstance(part, UserPromptPart) for part in message.parts
-    )
+def _is_compaction_boundary(message: ModelMessage) -> bool:
+    """Whether ``message`` is a valid Compaction Boundary — a cut point (ADR-0018 §1).
+
+    Valid at a ``ModelResponse``, or at a ``ModelRequest`` carrying no ``ToolReturnPart`` /
+    ``RetryPromptPart`` (a user-turn or summary-head request). Never valid at a request carrying
+    a tool return or retry: its matching call sits in the immediately preceding ``ModelResponse``,
+    so cutting AT that response keeps every call/result pair intact. This subsumes the old
+    user-turn-only boundary — every user-turn request is still a valid cut.
+    """
+    if isinstance(message, ModelResponse):
+        return True
+    if isinstance(message, ModelRequest):
+        return not any(isinstance(part, ToolReturnPart | RetryPromptPart) for part in message.parts)
+    return False

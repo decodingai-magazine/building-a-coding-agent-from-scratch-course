@@ -16,13 +16,17 @@ import pytest
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from pydantic import SecretStr
 from pydantic_ai import Agent, ApprovalRequired, DeferredToolRequests, RunContext
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
+from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.models.openai import OpenAIChatModel
 from rich.console import Console
 from support.noop_helper import register_noop
 
 from decode.agent.deps import AgentDeps
+from decode.agent.factory import build_agent
 from decode.config.settings import settings
 from decode.sandbox.executor import FileStat
 from decode.tools import files
@@ -893,7 +897,7 @@ async def test_run_app_compact_while_idle_compacts_the_over_budget_history(
     """
     from decode.agent import loop as agent_loop
 
-    async def fake_summarize(messages, *, model_or_settings):
+    async def fake_summarize(messages, *, model):
         return _COMPACT_SKELETON
 
     monkeypatch.setattr(agent_loop, "summarize_for_compaction", fake_summarize)
@@ -946,9 +950,10 @@ async def test_run_app_compact_while_idle_compacts_the_over_budget_history(
 async def test_run_app_compact_with_nothing_to_compact_is_a_friendly_line(monkeypatch):
     """``/compact`` on a fresh (empty) session renders the friendly no-op line, REPL stays alive.
 
-    A fresh ``run_app`` has an empty history, so ``handler.compact()`` returns ``False`` (no
-    transcript → no summarizer call, no network) and the loop renders the friendly line instead of
-    a compaction event. A later normal line still runs a turn — the REPL kept going.
+    A fresh ``run_app`` has an empty history, so ``handler.compact()`` returns
+    ``CompactOutcome.NOTHING_TO_COMPACT`` (no transcript → no summarizer call, no network) and the
+    loop renders the friendly line instead of a compaction event. A later normal line still runs a
+    turn — the REPL kept going.
     """
     captured: list[list[ModelMessage]] = []
     agent = _build_capturing_chat_agent(captured)
@@ -1437,3 +1442,96 @@ async def test_run_app_repo_clone_failure_degrades_to_empty_workspace(
     assert "empty workspace" in _visible(output)  # wrap-insensitive: a long tmp_path soft-wraps it
     workspace = workspace_dir(tmp_path)
     assert list(workspace.iterdir()) == []  # degraded to a valid empty scratch
+
+
+# The compaction summarizer rides the Provider Seam (ADR-0018 §5)
+#
+# ``run_app`` must hand the handler the ACTIVE provider's own built model (``agent.model``), NOT a
+# ``Settings``-driven ``GoogleModel``. The regression: an openrouter/modal user with no
+# ``GEMINI_API_KEY`` used to get a hardcoded Google summarizer that silently failed. Construction
+# is offline for every provider (the autouse ``_no_context_window_probe`` stubs the network probe),
+# and ``/quit`` runs no turn — so this asserts the WIRING, never a model call.
+
+
+def _patch_active_provider(mocker, provider: str) -> None:
+    """Point ``settings.llm_provider`` (and the keys the seam reads) at ``provider`` — offline.
+
+    Mirrors ``test_factory._patch_provider``: fake credentials suffice because every provider
+    constructs its model without a network call. Patches the shared ``settings`` singleton the
+    factory and ``run_app`` both read.
+    """
+    mocker.patch("decode.agent.factory.settings.llm_provider", provider, create=False)
+    if provider == "gemini":
+        mocker.patch(
+            "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
+        )
+        mocker.patch("decode.agent.factory.settings.gemini_model", "gemini-2.5-flash", create=False)
+    elif provider == "openrouter":
+        mocker.patch(
+            "decode.agent.factory.settings.openrouter_api_key", SecretStr("or-key"), create=False
+        )
+        mocker.patch(
+            "decode.agent.factory.settings.openrouter_model", "openrouter/free", create=False
+        )
+    elif provider == "modal":
+        mocker.patch(
+            "decode.agent.factory.settings.modal_endpoint_url",
+            "https://modal-endpoint.example.com",
+            create=False,
+        )
+        mocker.patch(
+            "decode.agent.factory.settings.modal_endpoint_model",
+            "openai/gpt-oss-120b",
+            create=False,
+        )
+        mocker.patch(
+            "decode.agent.factory.settings.modal_proxy_token_id", SecretStr("wk-id"), create=False
+        )
+        mocker.patch(
+            "decode.agent.factory.settings.modal_proxy_token_secret",
+            SecretStr("ws-secret"),
+            create=False,
+        )
+    else:  # pragma: no cover - guard against a typo in the parametrization
+        raise AssertionError(f"unhandled provider: {provider}")
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_cls", "is_google"),
+    [
+        ("gemini", GoogleModel, True),
+        ("openrouter", OpenAIChatModel, False),
+        ("modal", OpenAIChatModel, False),
+    ],
+)
+async def test_run_app_wires_the_active_providers_model_as_the_compaction_summarizer(
+    monkeypatch, mocker, provider, expected_cls, is_google
+):
+    """ADR-0018 §5: the handler's compaction model is the ACTIVE provider's built model.
+
+    ``run_app`` passes ``compaction_model=agent.model`` — the model already serving the session,
+    produced by the Provider Seam for ``settings.llm_provider``. So openrouter/modal never
+    construct a ``GoogleModel`` on the compaction path (the bug this task fixes), and gemini keeps
+    its ``GoogleModel``. Red on the old wiring, which passed ``settings`` instead of a built model.
+    """
+    _patch_active_provider(mocker, provider)
+    agent = build_agent()  # real provider agent; agent.model is the Provider Seam output
+
+    captured: dict[str, object] = {}
+    real_handler_cls = app_mod.AgentTurnHandler
+
+    def capture_handler(*args, **kwargs):
+        captured["compaction_model"] = kwargs.get("compaction_model")
+        return real_handler_cls(*args, **kwargs)
+
+    monkeypatch.setattr(app_mod, "AgentTurnHandler", capture_handler)
+
+    async def script(buf: io.StringIO, send: Callable[[str], None]) -> None:
+        send("/quit")
+
+    await _drive_run_app(monkeypatch, agent, script=script)
+
+    compaction_model = captured["compaction_model"]
+    assert compaction_model is agent.model  # the active provider's own built model, zero re-build
+    assert isinstance(compaction_model, expected_cls)
+    assert isinstance(compaction_model, GoogleModel) is is_google

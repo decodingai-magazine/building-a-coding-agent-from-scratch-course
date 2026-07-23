@@ -323,7 +323,7 @@ async def test_in_turn_compaction_nests_under_the_turn_root(active_tracing, tmp_
             ModelRequest(parts=[UserPromptPart(content="earlier")]),
             ModelResponse(parts=[TextPart(content="earlier answer")]),
         ],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
     runner = Runner(handler, on_event=sink.append)
 

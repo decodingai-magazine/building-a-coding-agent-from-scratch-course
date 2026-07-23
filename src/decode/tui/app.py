@@ -36,6 +36,7 @@ from decode.agent.factory import build_agent
 from decode.agent.loop import AgentTurnHandler
 from decode.agents.select import select_agent
 from decode.config.settings import settings
+from decode.context.compaction import CompactOutcome
 from decode.context.session_log import SessionLog, load, load_latest, resolve_session
 from decode.entities import events
 from decode.entities.permissions import (
@@ -314,9 +315,10 @@ def _handle_mode_command(
     emit(mode_switch_confirmation(mode.value))
 
 
-# Inline lines for ``/compact`` (the success path renders nothing — the ContextCompacted event is
-# the feedback).
+# Inline lines for ``/compact`` (the COMPACTED path renders nothing — the ContextCompacted event
+# is the feedback). One distinct line per Compaction Outcome (ADR-0018 §3).
 _COMPACT_NOTHING = "Decode - nothing to compact yet."
+_COMPACT_SUMMARIZER_FAILED = "Decode - compaction summarizer failed; see .decode/logs/decode.log."
 _COMPACT_BUSY = "Decode - busy; try /compact again once the turn finishes."
 
 
@@ -326,17 +328,22 @@ async def _handle_compact_command(
     *,
     emit: Callable[[str], None],
 ) -> None:
-    """Force a full compaction now — the manual ``/compact`` command (ADR-0006 §7).
+    """Force a full compaction now — the manual ``/compact`` command (ADR-0006 §7, ADR-0018 §3).
 
-    Idle-only (the handler owns the live ``message_history`` — never compact mid-turn). An
-    explicit request compacts regardless of the thresholds or ``compaction_enabled``; ``False``
-    from ``handler.compact()`` means there was nothing to compact.
+    Idle-only (the handler owns the live ``message_history`` — never compact mid-turn). An explicit
+    request compacts regardless of the thresholds or ``compaction_enabled``. Each
+    :class:`CompactOutcome` gets a distinct line: ``COMPACTED`` renders nothing (its
+    ``ContextCompacted`` event is the feedback); ``NOTHING_TO_COMPACT`` the friendly line;
+    ``SUMMARIZER_FAILED`` a line naming ``.decode/logs/decode.log`` so the user can act.
     """
     if runner.phase is not Phase.IDLE:
         emit(_COMPACT_BUSY)
         return
-    if not await handler.compact():
+    outcome = await handler.compact()
+    if outcome is CompactOutcome.NOTHING_TO_COMPACT:
         emit(_COMPACT_NOTHING)
+    elif outcome is CompactOutcome.SUMMARIZER_FAILED:
+        emit(_COMPACT_SUMMARIZER_FAILED)
 
 
 # Inline lines for ``/clear`` (unlike ``/compact`` there is no event to render, so it confirms).
@@ -845,8 +852,10 @@ async def run_app(
     session_log = SessionLog.create(settings.sessions_dir, cwd=harness_home)
 
     # The handler owns the cross-turn ``message_history`` the on-exit write-back summarizes; one
-    # per session (§1). ``compaction_model_or_settings=settings`` arms the two-tier compaction
-    # cascade (ADR-0006 §3-7).
+    # per session (§1). ``compaction_model=agent.model`` arms the two-tier compaction cascade
+    # (ADR-0006 §3-7) on the ACTIVE provider's own built model, so the summarizer rides the Provider
+    # Seam and works on gemini/openrouter/modal alike — zero extra construction, guaranteed same
+    # provider (ADR-0018 §5).
     handler = AgentTurnHandler(
         agent,
         deps=deps,
@@ -854,7 +863,7 @@ async def run_app(
         # Also the Opik Thread id grouping the session's per-turn traces (ADR-0014 §4).
         session_id=session_log.session_id,
         message_history=resumed_history,
-        compaction_model_or_settings=settings,
+        compaction_model=agent.model,
     )
     runner = Runner(handler, on_event=_on_event)
 

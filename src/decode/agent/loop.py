@@ -38,9 +38,11 @@ from pydantic_ai.usage import RunUsage
 
 from decode import observability
 from decode.agent.deps import AgentDeps
-from decode.config.settings import Settings, settings
+from decode.config.settings import settings
 from decode.context.compaction import (
+    CompactOutcome,
     build_summary_message,
+    estimate_history_tokens,
     microcompact,
     should_compact,
     split_tail,
@@ -60,16 +62,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _leg_input_tokens(messages: list[ModelMessage]) -> int:
+    """Input-token occupancy of a leg: the LAST populated ``ModelResponse.usage`` (ADR-0018 §2).
+
+    Under pydantic-ai 1.95.1 (ADR-0009) ``RunUsage`` is CUMULATIVE across every request in a leg
+    (one request per tool round), so summing it overcounts ~Nx for an N-round turn. The true
+    context size is the last response's own per-request ``RequestUsage``: walk ``messages``
+    BACKWARDS and take the first :class:`ModelResponse` whose ``usage.input_tokens > 0`` — later
+    responses may carry default (unpopulated) usage, which must not clobber it. Value is
+    ``input_tokens + cache_read_tokens`` (cached prompt tokens still occupy context). No populated
+    response → ``0``, which ``should_compact`` treats as "don't fire" (ADR-0006 §3 safe fallback).
+    """
+    for message in reversed(messages):
+        if isinstance(message, ModelResponse) and message.usage.input_tokens > 0:
+            return message.usage.input_tokens + message.usage.cache_read_tokens
+    return 0
+
+
 class AgentTurnHandler:
     """Drive ``agent.iter()`` as the harness turn handler, carrying history across turns.
 
     One instance per REPL session: it owns the cross-turn ``message_history``; calling it with
     a :class:`~decode.harness.runner.TurnContext` returns the async generator the runner drives.
     Three optional seams, each ``None``-off so a headless/test run is unchanged: ``session_log=``
-    appends each turn's new messages as JSONL for ``--resume`` (ADR-0002 §9); ``compaction_model_
-    or_settings=`` enables the two-tier compaction cascade at would-stop (ADR-0006 §3-7; :meth:`compact`
-    is also the body of ``/compact``); ``session_id=`` makes each turn one Opik ``chat_turn`` root
-    span grouped into a per-session Thread (ADR-0014 §4).
+    appends each turn's new messages as JSONL for ``--resume`` (ADR-0002 §9); ``compaction_model=``
+    enables the two-tier compaction cascade at would-stop (ADR-0006 §3-7; :meth:`compact` is also
+    the body of ``/compact``) — it is the ACTIVE provider's built model so the summarizer rides the
+    Provider Seam (ADR-0018 §5), and ``None`` disables the cascade; ``session_id=`` makes each turn
+    one Opik ``chat_turn`` root span grouped into a per-session Thread (ADR-0014 §4).
     """
 
     def __init__(
@@ -80,7 +100,7 @@ class AgentTurnHandler:
         session_log: SessionLog | None = None,
         session_id: str | None = None,
         message_history: list[ModelMessage] | None = None,
-        compaction_model_or_settings: Model | Settings | None = None,
+        compaction_model: Model | None = None,
     ) -> None:
         self._agent = agent
         self._deps = deps
@@ -92,9 +112,12 @@ class AgentTurnHandler:
         self._session_log = session_log
         # Persisted-count cursor: the seeded prefix counts as persisted so resume never re-writes it.
         self._persisted_count = len(self.message_history)
-        # Compaction summarizer source (Model or Settings, ADR-0006 §4); ``None`` disables the cascade.
-        self._compaction_model_or_settings = compaction_model_or_settings
-        # Provider-reported input tokens of the most recent leg (compaction trigger + TUI gauge).
+        # Compaction summarizer: the ACTIVE provider's built model (ADR-0006 §4, ADR-0018 §5);
+        # ``None`` disables the cascade.
+        self._compaction_model = compaction_model
+        # Input-token occupancy driving the compaction trigger + TUI gauge: the most recent leg's
+        # provider-reported number, or — the instant a compaction lands — the chars≈/4 estimate of
+        # the kept history, which the next leg's provider number overwrites (ADR-0018 §2, §4).
         self._last_input_tokens = 0
         # tool_call_ids that already emitted ToolCallStarted: a gated call streams on both the
         # pause and resume legs, so announce each call only once.
@@ -102,9 +125,16 @@ class AgentTurnHandler:
 
     @property
     def last_input_tokens(self) -> int:
-        """Provider-reported input tokens of the most recent leg (``0`` before any leg).
+        """Input-token occupancy of the most recent leg — the TUI footer gauge + compaction trigger
+        read this single number (ADR-0018 §2, §4).
 
-        The public read the TUI footer fill gauge uses; the compaction trigger reads the same number.
+        Normally the last populated ``ModelResponse.usage`` of the leg (``input_tokens +
+        cache_read_tokens``), NOT the leg's cumulative usage: it tracks real context occupancy
+        instead of overcounting ~Nx across N tool rounds. The one exception is the instant a full
+        compaction lands: the gauge is reseeded with the chars≈/4 estimate of the kept
+        ``[summary, *tail]`` so the footer drops immediately (understating, never inflating), and
+        the next leg's provider number overwrites it (ADR-0018 §4). ``0`` before any leg (and when
+        no response reported usage).
         """
         return self._last_input_tokens
 
@@ -247,7 +277,7 @@ class AgentTurnHandler:
         Full (LLM) is checked first because its trigger level sits above micro's — the larger micro
         reserve fires earlier; the cheapest applicable tier runs.
         """
-        if self._compaction_model_or_settings is None:
+        if self._compaction_model is None:
             return
         usage = RunUsage(input_tokens=self._last_input_tokens)
         # The window of the model THIS run is actually using (``--model`` included, task 123);
@@ -266,29 +296,42 @@ class AgentTurnHandler:
             enabled=settings.compaction_enabled,
         )
         if full:
-            await self.compact()
+            outcome = await self.compact()
+            if outcome is not CompactOutcome.COMPACTED:
+                # Degrade-don't-break: the turn already completed. Leave ONE breadcrumb so an
+                # operator can tell a fired-but-unsuccessful auto compaction apart from silence.
+                logger.info(
+                    "full compaction trigger fired but did not land: outcome=%s", outcome.name
+                )
         elif micro:
-            self._microcompact()
+            elided = self._microcompact()
+            if elided == 0:
+                logger.info(
+                    "microcompaction trigger fired but elided nothing "
+                    "(no eligible tool output in the compactable prefix)"
+                )
 
-    async def compact(self) -> bool:
-        """Full compaction: replace history with ``[summary, *tail]`` (ADR-0006 §4-6).
+    async def compact(self) -> CompactOutcome:
+        """Full compaction: replace history with ``[summary, *tail]`` (ADR-0006 §4-6, ADR-0018 §3).
 
-        The LLM tier — also the body of ``/compact``. Returns ``False`` (history untouched) when
-        there is nothing to compact: ``split == 0`` (checked FIRST, so a no-op never spends a
-        summarizer call) or a ``None`` summary. On success a ``compaction`` checkpoint is written
-        (``OSError`` logged and swallowed), the persisted-count cursor reset, and a
-        ``ContextCompacted`` event emitted.
+        The LLM tier — also the body of ``/compact``. Returns a :class:`CompactOutcome`:
+        ``NOTHING_TO_COMPACT`` when ``split == 0`` (checked FIRST, so a no-op never spends a
+        summarizer call); ``SUMMARIZER_FAILED`` when the summarizer returned ``None`` (the call
+        failed or came back blank — ``split > 0`` implies a non-trivial transcript, so it is a
+        failure, not a no-op); ``COMPACTED`` on success. On success a ``compaction`` checkpoint is
+        written (``OSError`` logged and swallowed), the persisted-count cursor reset, and a
+        ``ContextCompacted`` event emitted; history is untouched otherwise.
         """
         split = split_tail(
             self.message_history, keep_recent_tokens=settings.compaction_keep_recent_tokens
         )
         if split == 0:
-            return False
+            return CompactOutcome.NOTHING_TO_COMPACT
         skeleton = await summarize_for_compaction(
-            self.message_history, model_or_settings=self._compaction_model_or_settings
+            self.message_history, model=self._compaction_model
         )
         if skeleton is None:
-            return False
+            return CompactOutcome.SUMMARIZER_FAILED
         before_tokens = self._last_input_tokens
         summary_message = build_summary_message(skeleton)
         tail = self.message_history[split:]
@@ -298,11 +341,17 @@ class AgentTurnHandler:
             except OSError:
                 logger.warning("failed to persist compaction checkpoint", exc_info=True)
         self.message_history = [summary_message, *tail]
+        # Drop the footer gauge to the chars≈/4 estimate of the kept history the instant compaction
+        # lands, instead of leaving it stuck on the pre-compaction provider number until the next
+        # leg reports. This softens ADR-0006's "the estimate never drives the trigger" to "never
+        # INFLATES it": post-compaction the estimate can only understate, and the next leg's
+        # provider-authoritative number overwrites it — so it can start no compaction loop (ADR-0018 §4).
+        self._last_input_tokens = estimate_history_tokens(self.message_history)
         self._persisted_count = len(self.message_history)
         self._deps.emit(
             events.ContextCompacted(before_tokens=before_tokens, kept_messages=len(tail))
         )
-        return True
+        return CompactOutcome.COMPACTED
 
     def clear(self) -> None:
         """Reset the conversation to empty — the body of ``/clear``.
@@ -321,21 +370,24 @@ class AgentTurnHandler:
         self._last_input_tokens = 0
         self._announced_tool_calls.clear()
 
-    def _microcompact(self) -> None:
+    def _microcompact(self) -> int:
         """Microcompaction: blank old tool-output bodies, in memory only (ADR-0006 §3a).
 
         The no-LLM auto-only tier. Deliberately touches neither the session log nor the cursor —
-        the log keeps full fidelity and a resume re-microcompacts. Emits ``ContextMicrocompacted``.
+        the log keeps full fidelity and a resume re-microcompacts. Emits ``ContextMicrocompacted``
+        and returns the elided count so the caller can log a fired-but-zero-elided breadcrumb;
+        ``0`` when nothing was eligible.
         """
         new_messages, elided = microcompact(
             self.message_history, keep_recent_tokens=settings.compaction_keep_recent_tokens
         )
         if elided == 0:
-            return
+            return 0
         self.message_history = new_messages
         self._deps.emit(
             events.ContextMicrocompacted(elided_count=elided, before_tokens=self._last_input_tokens)
         )
+        return elided
 
     async def _run_leg(
         self,
@@ -362,9 +414,11 @@ class AgentTurnHandler:
                 # in a ``finally`` so a leg that raises (a tool's ModelRetry budget exhausted)
                 # keeps its accumulated messages instead of freezing history at the prior leg.
                 self.message_history = run.all_messages()
-                # This leg's provider-reported input tokens: the compaction trigger + TUI gauge
-                # read. ``usage`` is a method on the run in pydantic-ai 1.x (ADR-0009).
-                self._last_input_tokens = run.usage().input_tokens
+                # This leg's context occupancy: the LAST response's provider-reported request
+                # usage, NOT the cumulative RunUsage summed over every tool round (ADR-0018 §2 —
+                # ``run.usage()`` accumulates ~Nx for N rounds). The compaction trigger + TUI
+                # gauge both read this single number.
+                self._last_input_tokens = _leg_input_tokens(self.message_history)
         # pydantic-ai may coalesce adjacent same-role prior messages (notably the two ModelRequests
         # a full compaction leaves), shrinking the persisted prefix. Clamp the cursor to the count
         # preceding this leg's new messages so the next persist never drops a fresh message.

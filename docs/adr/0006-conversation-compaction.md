@@ -1,6 +1,6 @@
 # 0006. Conversation compaction — window-relative two-tier in-context + on-exit memory compression, on JSONL
 
-**Status:** Accepted
+**Status:** Accepted — §3 (token source), §3a/§5 (cut points), §7 (/compact feedback) and the tail-sizing consequence amended by [ADR-0018](0018-compaction-cut-points-token-source-and-provider-seam-summarizer.md)
 **Date:** 2026-06-26
 
 ## Context

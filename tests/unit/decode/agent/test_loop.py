@@ -8,14 +8,16 @@ No network: the agent is built once with a dummy key and every test swaps in a `
 """
 
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
-from pydantic_ai import ApprovalRequired, ModelRetry, RunContext, UnexpectedModelBehavior
+from pydantic_ai import Agent, ApprovalRequired, ModelRetry, RunContext, UnexpectedModelBehavior
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -28,6 +30,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RequestUsage, RunUsage
 from support.noop_helper import register_noop
 
 from decode.agent import loop
@@ -959,6 +962,19 @@ def _skeleton_summarizer() -> FunctionModel:
     return FunctionModel(fill)
 
 
+def _raising_summarizer() -> FunctionModel:
+    """A summarizer Model whose call raises — the no-network seam for a failed summarizer leg.
+
+    ``summarize_for_compaction`` catches the exception and returns ``None``, so ``compact()`` maps
+    it to ``CompactOutcome.SUMMARIZER_FAILED`` (ADR-0018 §3).
+    """
+
+    async def boom(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise RuntimeError("summarizer offline")
+
+    return FunctionModel(boom)
+
+
 def _fresh_log(tmp_path: Path, tag: str) -> SessionLog:
     """A deterministic SessionLog under ``tmp_path`` (fixed clock + id for stable filenames)."""
     return SessionLog.create(
@@ -1006,6 +1022,143 @@ async def test_run_leg_captures_input_tokens_and_property_exposes_it(agent):
     assert handler.last_input_tokens == handler._last_input_tokens
 
 
+# task 126 (ADR-0018 §2): the gauge reads the LAST ModelResponse's per-request usage, not the
+# CUMULATIVE RunUsage summed across every tool round. The streaming FunctionModel estimates a
+# fixed per-request input, so exact per-response usages are driven through a stubbed run — the
+# ``or a stubbed run`` seam the task calls out — while the helper is also unit-tested directly.
+
+
+class _StubRun:
+    """A minimal stand-in for a pydantic-ai ``agent.iter`` run with pre-set messages + usage.
+
+    ``all_messages()`` returns the per-response ``ModelResponse``s (each with its own usage) and
+    ``usage()`` returns the CUMULATIVE ``RunUsage`` (the old, wrong source) — so a test can assert
+    the handler reads the former, not the latter. Yields no nodes: the streaming loop is a no-op.
+    """
+
+    def __init__(self, messages: list[ModelMessage], cumulative_input: int) -> None:
+        self._messages = messages
+        self._cumulative_input = cumulative_input
+        self.result = SimpleNamespace(output="done", new_messages=lambda: list(messages))
+
+    def all_messages(self) -> list[ModelMessage]:
+        return list(self._messages)
+
+    def usage(self) -> RunUsage:
+        return RunUsage(input_tokens=self._cumulative_input)
+
+    def __aiter__(self) -> "_StubRun":
+        return self
+
+    async def __anext__(self) -> object:
+        raise StopAsyncIteration
+
+
+class _StubIterCM:
+    """The async context manager ``agent.iter(...)`` returns, wrapping a :class:`_StubRun`."""
+
+    def __init__(self, run: _StubRun) -> None:
+        self._run = run
+
+    async def __aenter__(self) -> _StubRun:
+        return self._run
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def _drive_stub_leg(
+    agent: Agent, mocker, messages: list[ModelMessage], *, cumulative_input: int
+) -> AgentTurnHandler:
+    """Run ONE leg over a stubbed run with the given per-response ``messages`` + cumulative usage."""
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
+    run = _StubRun(messages, cumulative_input)
+    mocker.patch.object(handler._agent, "iter", return_value=_StubIterCM(run))
+    return handler
+
+
+async def test_leg_gauge_reads_last_response_not_cumulative_usage(agent, mocker):
+    """Regression (ADR-0018 §2): 3 responses at 100/220/350 → gauge is 350, not 670 cumulative."""
+    messages: list[ModelMessage] = [
+        _user_msg("go"),
+        ModelResponse(parts=[TextPart(content="a")], usage=RequestUsage(input_tokens=100)),
+        ModelResponse(parts=[TextPart(content="b")], usage=RequestUsage(input_tokens=220)),
+        ModelResponse(parts=[TextPart(content="c")], usage=RequestUsage(input_tokens=350)),
+    ]
+    handler = _drive_stub_leg(agent, mocker, messages, cumulative_input=670)
+
+    await handler._run_leg(_ctx(0, "go", []), prompt="go")
+
+    # The last response's own request usage — NOT 100+220+350 = 670 (the cumulative RunUsage).
+    assert handler.last_input_tokens == 350
+
+
+def test_leg_input_tokens_last_populated_response_wins():
+    """A later UNPOPULATED (default) usage does not clobber the last populated one."""
+    messages: list[ModelMessage] = [
+        _user_msg("first"),
+        ModelResponse(parts=[TextPart(content="a")], usage=RequestUsage(input_tokens=100)),
+        ModelResponse(parts=[TextPart(content="b")], usage=RequestUsage(input_tokens=350)),
+        ModelResponse(parts=[TextPart(content="c")]),  # default usage → input_tokens == 0
+    ]
+
+    assert loop._leg_input_tokens(messages) == 350
+
+
+def test_leg_input_tokens_adds_cache_read_tokens():
+    """Cached prompt tokens still occupy context: input_tokens + cache_read_tokens."""
+    messages: list[ModelMessage] = [
+        _user_msg("first"),
+        ModelResponse(
+            parts=[TextPart(content="a")],
+            usage=RequestUsage(input_tokens=300, cache_read_tokens=50),
+        ),
+    ]
+
+    assert loop._leg_input_tokens(messages) == 350
+
+
+def test_leg_input_tokens_all_unpopulated_is_zero():
+    """No ModelResponse with populated usage anywhere → 0 (ADR-0006 §3 safe fallback)."""
+    messages: list[ModelMessage] = [
+        _user_msg("first"),
+        ModelResponse(parts=[TextPart(content="a")]),  # default usage
+        _user_msg("second"),
+        ModelResponse(parts=[TextPart(content="b")]),  # default usage
+    ]
+
+    assert loop._leg_input_tokens(messages) == 0
+
+
+async def test_all_unpopulated_usage_leg_gauges_zero_and_never_compacts(agent, mocker):
+    """A whole leg of unpopulated usages → gauge 0 → the cascade fires nothing, even at a tiny window."""
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 1)  # would fire if > 0
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+
+    messages: list[ModelMessage] = [
+        _user_msg("go"),
+        ModelResponse(parts=[TextPart(content="a")]),  # default usage
+        ModelResponse(parts=[TextPart(content="b")]),  # default usage
+    ]
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        compaction_model=_skeleton_summarizer(),
+    )
+    run = _StubRun(messages, cumulative_input=100)  # cumulative is non-zero; per-response is 0
+    mocker.patch.object(handler._agent, "iter", return_value=_StubIterCM(run))
+
+    await handler._run_leg(_ctx(0, "go", emitted), prompt="go")
+    assert handler.last_input_tokens == 0
+    await handler._maybe_auto_compact()
+
+    assert not [
+        e for e in emitted if isinstance(e, events.ContextCompacted | events.ContextMicrocompacted)
+    ]
+
+
 async def test_full_tier_compacts_through_the_turn(agent, tmp_path, mocker):
     mocker.patch.object(loop.settings, "compaction_context_window_tokens", 60)  # full band
     mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
@@ -1017,7 +1170,7 @@ async def test_full_tier_compacts_through_the_turn(agent, tmp_path, mocker):
         deps=_deps(emitted.append),
         session_log=log,
         message_history=[_user_msg("first"), _assistant_msg("first answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     with agent.override(model=_text_model("ok")):
@@ -1059,7 +1212,7 @@ async def test_middle_tier_microcompacts_through_the_turn(agent, tmp_path, mocke
         deps=_deps(emitted.append),
         session_log=log,
         message_history=list(seed),
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
     count_before = len(seed) + 2  # the driven turn adds a user prompt + an assistant response
 
@@ -1101,7 +1254,7 @@ async def test_microcompaction_keeps_full_fidelity_on_disk(agent, tmp_path, mock
         resolve_user_question=_no_user_resolver,
     )
     handler = AgentTurnHandler(
-        agent, deps=deps, session_log=log, compaction_model_or_settings=_skeleton_summarizer()
+        agent, deps=deps, session_log=log, compaction_model=_skeleton_summarizer()
     )
 
     # Turn 1: a read-tool turn persists the FULL tool output to the log (recent → micro no-op).
@@ -1143,10 +1296,10 @@ async def test_no_repersist_after_full_compaction(agent, tmp_path, mocker):
             _user_msg(_HUGE_PROMPT),
             _assistant_msg("recent answer"),
         ],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
-    assert await handler.compact() is True
+    assert await handler.compact() is compaction.CompactOutcome.COMPACTED
     # The dropped oldest turn is gone from the running history.
     assert not any(
         "OLDEST-TURN-MARKER" in str(getattr(p, "content", ""))
@@ -1218,7 +1371,7 @@ async def test_below_both_tiers_is_a_no_op(agent, tmp_path, mocker):
         agent,
         deps=_deps(emitted.append),
         message_history=list(seed),
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     with agent.override(model=_text_model("ok")):
@@ -1241,7 +1394,7 @@ async def test_disabled_flag_skips_the_cascade(agent, mocker):
         agent,
         deps=_deps(emitted.append),
         message_history=[_user_msg("first"), _assistant_msg("answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     with agent.override(model=_text_model("ok")):
@@ -1261,7 +1414,7 @@ async def test_zero_tokens_never_compacts(agent, mocker):
         agent,
         deps=_deps(emitted.append),
         message_history=[_user_msg("first"), _assistant_msg("answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     # No leg has run, so last_input_tokens is 0; the cascade must not fire on a bogus zero.
@@ -1273,20 +1426,122 @@ async def test_zero_tokens_never_compacts(agent, mocker):
     ]
 
 
-async def test_compact_returns_false_on_trivial_history(agent):
+async def test_compact_returns_nothing_to_compact_on_trivial_history(agent):
+    # split == 0 (a no-op) is checked FIRST — a trivial history never spends a summarizer call.
     emitted: list[events.Event] = []
     handler = AgentTurnHandler(
         agent,
         deps=_deps(emitted.append),
         message_history=[_user_msg("just one short turn"), _assistant_msg("ok")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
-    assert await handler.compact() is False
+    assert await handler.compact() is compaction.CompactOutcome.NOTHING_TO_COMPACT
     assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
 
 
-async def test_compact_returns_false_when_summary_is_none(agent, mocker):
+# task 128 (ADR-0018 §4): a successful compaction drops the gauge IMMEDIATELY to the chars≈/4
+# estimate of the kept [summary, *tail]; the next leg's provider number overwrites it, and the
+# non-COMPACTED outcomes never touch the gauge.
+
+
+def _compactable_history() -> list[ModelMessage]:
+    """A history with a droppable old prefix and a recent tail (compaction lands, tail is small)."""
+    return [
+        _user_msg("first"),
+        _assistant_msg("answer"),
+        _user_msg(_HUGE_PROMPT),
+        _assistant_msg("recent"),
+    ]
+
+
+async def test_compaction_seeds_the_gauge_with_the_kept_history_estimate(agent, mocker):
+    """Regression (ADR-0018 §4): a successful compact() drops the gauge to the chars≈/4 estimate of
+    the new [summary, *tail], strictly below the pre-compaction provider number — red before the
+    seed line, which left the gauge reading the stale pre-compaction value until the next leg."""
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=_compactable_history(),
+        compaction_model=_skeleton_summarizer(),
+    )
+    handler._last_input_tokens = 999_999  # a prior leg's provider number: the ~85%-full footer
+
+    assert await handler.compact() is compaction.CompactOutcome.COMPACTED
+
+    # The gauge now reads the estimate of exactly the kept history — the single-source-of-truth
+    # helper, not a second estimator.
+    assert handler.last_input_tokens == compaction.estimate_history_tokens(handler.message_history)
+    # ...and it dropped: the footer falls the instant /compact lands (understates, never inflates).
+    assert handler.last_input_tokens < 999_999
+
+
+async def test_next_leg_overwrites_the_post_compaction_estimate(agent, mocker):
+    """The estimate is transient: the next leg's provider-authoritative number overwrites it, so a
+    compact→trigger→compact loop can never start from the estimate (rides task 126's stub seam)."""
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=_compactable_history(),
+        compaction_model=_skeleton_summarizer(),
+    )
+
+    assert await handler.compact() is compaction.CompactOutcome.COMPACTED
+    seeded = handler.last_input_tokens
+    assert seeded == compaction.estimate_history_tokens(handler.message_history)
+
+    # The next leg reports its own per-request usage; _run_leg overwrites the estimate with it.
+    messages: list[ModelMessage] = [
+        _user_msg("go"),
+        ModelResponse(parts=[TextPart(content="a")], usage=RequestUsage(input_tokens=4242)),
+    ]
+    run = _StubRun(messages, cumulative_input=4242)
+    mocker.patch.object(handler._agent, "iter", return_value=_StubIterCM(run))
+
+    await handler._run_leg(_ctx(0, "go", emitted), prompt="go")
+
+    assert handler.last_input_tokens == 4242
+    assert handler.last_input_tokens != seeded
+
+
+async def test_nothing_to_compact_leaves_the_gauge_untouched(agent):
+    """A NOTHING_TO_COMPACT no-op must not seed the gauge — history is untouched, so is the footer."""
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=[_user_msg("just one short turn"), _assistant_msg("ok")],
+        compaction_model=_skeleton_summarizer(),
+    )
+    handler._last_input_tokens = 777
+
+    assert await handler.compact() is compaction.CompactOutcome.NOTHING_TO_COMPACT
+    assert handler.last_input_tokens == 777
+
+
+async def test_summarizer_failed_leaves_the_gauge_untouched(agent, mocker):
+    """A SUMMARIZER_FAILED degrade must not seed the gauge — history is untouched, so is the footer."""
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=_compactable_history(),
+        compaction_model=_raising_summarizer(),
+    )
+    handler._last_input_tokens = 555
+
+    assert await handler.compact() is compaction.CompactOutcome.SUMMARIZER_FAILED
+    assert handler.last_input_tokens == 555
+
+
+async def test_compact_returns_summarizer_failed_when_summary_is_blank(agent, mocker):
+    # split > 0 implies a non-trivial transcript, so a blank summary is a summarizer failure,
+    # NOT "nothing to compact" (ADR-0018 §3).
     mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
     emitted: list[events.Event] = []
     history: list[ModelMessage] = [
@@ -1299,16 +1554,89 @@ async def test_compact_returns_false_when_summary_is_none(agent, mocker):
         agent,
         deps=_deps(emitted.append),
         message_history=list(history),
-        compaction_model_or_settings=TestModel(custom_output_text="   "),  # blank → None summary
+        compaction_model=TestModel(custom_output_text="   "),  # blank → None summary
     )
 
-    assert await handler.compact() is False
+    assert await handler.compact() is compaction.CompactOutcome.SUMMARIZER_FAILED
     assert handler.message_history == history  # untouched
     assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
 
 
+async def test_compact_returns_summarizer_failed_when_the_call_raises(agent, mocker):
+    # The failing-summarizer seam: a Model whose call raises → summarize_for_compaction returns
+    # None (never re-raises) → SUMMARIZER_FAILED, history untouched.
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    history: list[ModelMessage] = [
+        _user_msg("first"),
+        _assistant_msg("answer"),
+        _user_msg(_HUGE_PROMPT),
+        _assistant_msg("recent"),
+    ]
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=list(history),
+        compaction_model=_raising_summarizer(),
+    )
+
+    assert await handler.compact() is compaction.CompactOutcome.SUMMARIZER_FAILED
+    assert handler.message_history == history  # untouched
+    assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
+
+
+async def test_auto_full_trigger_fired_but_failed_logs_one_info_line(agent, mocker, caplog):
+    # Auto path: full trigger fired but the summarizer failed → exactly ONE INFO breadcrumb
+    # naming the outcome; the turn is never interrupted (degrade-don't-break).
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 100)  # full at >= 80
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        message_history=[
+            _user_msg("first"),
+            _assistant_msg("answer"),
+            _user_msg(_HUGE_PROMPT),
+            _assistant_msg("recent"),
+        ],
+        compaction_model=_raising_summarizer(),
+    )
+    handler._last_input_tokens = 90  # in the full band → full trigger fires
+
+    with caplog.at_level(logging.INFO, logger="decode.agent.loop"):
+        await handler._maybe_auto_compact()
+
+    info = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(info) == 1
+    assert "SUMMARIZER_FAILED" in info[0].getMessage()
+    assert not [e for e in emitted if isinstance(e, events.ContextCompacted)]
+
+
+async def test_auto_micro_trigger_fired_but_zero_elided_logs_one_info_line(agent, mocker, caplog):
+    # Auto path: micro trigger fired but nothing was eligible to elide → exactly ONE INFO line.
+    mocker.patch.object(loop.settings, "compaction_context_window_tokens", 100)  # micro 60, full 80
+    mocker.patch.object(loop.settings, "compaction_keep_recent_tokens", 10)
+    emitted: list[events.Event] = []
+    handler = AgentTurnHandler(
+        agent,
+        deps=_deps(emitted.append),
+        # No tool output anywhere → microcompact elides nothing even when it fires.
+        message_history=[_user_msg("first"), _assistant_msg("answer")],
+        compaction_model=_skeleton_summarizer(),
+    )
+    handler._last_input_tokens = 70  # micro band (>= 60, < 80) → micro fires, full does not
+
+    with caplog.at_level(logging.INFO, logger="decode.agent.loop"):
+        await handler._maybe_auto_compact()
+
+    info = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(info) == 1
+    assert not [e for e in emitted if isinstance(e, events.ContextMicrocompacted)]
+
+
 async def test_none_seam_disables_cascade_even_with_a_tiny_window(agent, tmp_path, mocker):
-    """AC (hard regression): compaction_model_or_settings=None disables the whole cascade.
+    """AC (hard regression): compaction_model=None disables the whole cascade.
 
     Even with the window patched so a wired handler would fully compact, the unwired handler must
     behave exactly as before: history grows normally, the turn persists, and no compaction event
@@ -1319,7 +1647,7 @@ async def test_none_seam_disables_cascade_even_with_a_tiny_window(agent, tmp_pat
     log = _fresh_log(tmp_path, "05")
 
     emitted: list[events.Event] = []
-    handler = AgentTurnHandler(  # no compaction_model_or_settings → None (the default)
+    handler = AgentTurnHandler(  # no compaction_model → None (the default)
         agent,
         deps=_deps(emitted.append),
         session_log=log,
@@ -1518,7 +1846,7 @@ async def test_compaction_fires_on_the_runs_resolved_window_not_the_configured_o
         deps=deps,
         session_log=log,
         message_history=[_user_msg("first"), _assistant_msg("first answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     with agent.override(model=_text_model("ok")):
@@ -1543,7 +1871,7 @@ async def test_an_unresolved_window_still_falls_back_to_the_configured_setting(
         deps=deps,
         session_log=log,
         message_history=[_user_msg("first"), _assistant_msg("first answer")],
-        compaction_model_or_settings=_skeleton_summarizer(),
+        compaction_model=_skeleton_summarizer(),
     )
 
     with agent.override(model=_text_model("ok")):
