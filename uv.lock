@@ -649,7 +649,7 @@ requires-dist = [
     { name = "kitaru", extras = ["local", "pydantic-ai", "llm"], specifier = ">=0.18.0" },
     { name = "logfire", specifier = ">=4.37.0" },
     { name = "markdownify", specifier = ">=1.2.3" },
-    { name = "modal", specifier = ">=1.5.2" },
+    { name = "modal", specifier = ">=1.5.3" },
     { name = "prompt-toolkit", specifier = ">=3" },
     { name = "pydantic", specifier = ">=2.0,<2.13" },
     { name = "pydantic-ai-slim", extras = ["google", "openai"], specifier = ">=1.95,<1.96" },
@@ -2120,7 +2120,7 @@ wheels = [
 
 [[package]]
 name = "modal"
-version = "1.5.2"
+version = "1.5.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -2137,9 +2137,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "watchfiles" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b8/e6/44f609084472d16a3acf7748c184e23d3009944eed5860e855aaafc61065/modal-1.5.2.tar.gz", hash = "sha256:ac0d2983ecccacb80c54385906404d75f37a3751f1374c750974cd7853c0008a", size = 818040, upload-time = "2026-07-10T18:12:55.164Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/09/13/c54908743129b75f9761ebcc767f8de5e5b16e2a0303e171f7ae38d90d4d/modal-1.5.3.tar.gz", hash = "sha256:0551c6fa2386ce78619f1a058eb4dd3ca527a54048952ea870e26704557c76c4", size = 844542, upload-time = "2026-07-23T21:06:49.14Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/fe/7e284d889eb3ea2c307e48828eccdd9a984beb2e096bce5577ef796592e9/modal-1.5.2-py3-none-any.whl", hash = "sha256:7508a44f8742c6f26be4d28da71f46092ef3bcc07d0f27cbd0ea8c9d6d9fc873", size = 932258, upload-time = "2026-07-10T18:12:52.219Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/5d/834ba7387383077538f28a1d17d2df95d596e225a44a1ea1207ad90977f3/modal-1.5.3-py3-none-any.whl", hash = "sha256:d3fbe1d95321d1e4bdb08140bf42711084d705e7e3de644f7ae55c9b96b6c51d", size = 961068, upload-time = "2026-07-23T21:06:46.866Z" },
 ]
 
 [[package]]
