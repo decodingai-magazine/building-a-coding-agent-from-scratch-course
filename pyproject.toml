@@ -65,7 +65,7 @@ dev = [
 ]
 remote = [
     "gcsfs<=2024.12.0,!=2025.5.0,!=2025.5.0.post1",
-    "google-cloud-aiplatform>=1.161.0",
+    "google-cloud-aiplatform>=1.162.0",
     "google-cloud-artifact-registry>=1.11.3",
     "google-cloud-build>=3.11.0",
     "google-cloud-container>=2.21.0",
