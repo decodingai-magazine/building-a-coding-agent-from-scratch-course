@@ -1007,7 +1007,7 @@ def _log_line_types(log: SessionLog) -> list[str]:
     return types
 
 
-async def test_run_leg_captures_input_tokens_and_property_exposes_it(agent):
+async def test_run_turn_captures_input_tokens_and_property_exposes_it(agent):
     emitted: list[events.Event] = []
     handler = AgentTurnHandler(agent, deps=_deps(emitted.append))
 
@@ -1088,7 +1088,7 @@ async def test_leg_gauge_reads_last_response_not_cumulative_usage(agent, mocker)
     ]
     handler = _drive_stub_leg(agent, mocker, messages, cumulative_input=670)
 
-    await handler._run_leg(_ctx(0, "go", []), prompt="go")
+    await handler._run_turn(_ctx(0, "go", []), prompt="go")
 
     # The last response's own request usage — NOT 100+220+350 = 670 (the cumulative RunUsage).
     assert handler.last_input_tokens == 350
@@ -1150,7 +1150,7 @@ async def test_all_unpopulated_usage_leg_gauges_zero_and_never_compacts(agent, m
     run = _StubRun(messages, cumulative_input=100)  # cumulative is non-zero; per-response is 0
     mocker.patch.object(handler._agent, "iter", return_value=_StubIterCM(run))
 
-    await handler._run_leg(_ctx(0, "go", emitted), prompt="go")
+    await handler._run_turn(_ctx(0, "go", emitted), prompt="go")
     assert handler.last_input_tokens == 0
     await handler._maybe_auto_compact()
 
@@ -1494,7 +1494,7 @@ async def test_next_leg_overwrites_the_post_compaction_estimate(agent, mocker):
     seeded = handler.last_input_tokens
     assert seeded == compaction.estimate_history_tokens(handler.message_history)
 
-    # The next leg reports its own per-request usage; _run_leg overwrites the estimate with it.
+    # The next leg reports its own per-request usage; _run_turn overwrites the estimate with it.
     messages: list[ModelMessage] = [
         _user_msg("go"),
         ModelResponse(parts=[TextPart(content="a")], usage=RequestUsage(input_tokens=4242)),
@@ -1502,7 +1502,7 @@ async def test_next_leg_overwrites_the_post_compaction_estimate(agent, mocker):
     run = _StubRun(messages, cumulative_input=4242)
     mocker.patch.object(handler._agent, "iter", return_value=_StubIterCM(run))
 
-    await handler._run_leg(_ctx(0, "go", emitted), prompt="go")
+    await handler._run_turn(_ctx(0, "go", emitted), prompt="go")
 
     assert handler.last_input_tokens == 4242
     assert handler.last_input_tokens != seeded
