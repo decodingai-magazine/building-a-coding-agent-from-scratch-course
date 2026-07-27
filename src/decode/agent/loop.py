@@ -162,7 +162,7 @@ class AgentTurnHandler:
                     if pending_results is not None:
                         # Deferred resume leg: no new prompt, so steering rides the history instead.
                         self._append_steering(steering)
-                        output = await self._run_leg(ctx, deferred_results=pending_results)
+                        output = await self._run_turn(ctx, deferred_results=pending_results)
                         pending_results = None
                     else:
                         prompt = self._compose_prompt(next_prompt, steering)
@@ -177,7 +177,7 @@ class AgentTurnHandler:
                             next_prompt = "\n".join(follow_ups)
                             continue
                         self._heal_dangling_tool_calls()
-                        output = await self._run_leg(ctx, prompt=prompt)
+                        output = await self._run_turn(ctx, prompt=prompt)
 
                     if isinstance(output, DeferredToolRequests):
                         # A gated tool paused the run: resolve approvals and loop back to resume.
@@ -389,7 +389,7 @@ class AgentTurnHandler:
         )
         return elided
 
-    async def _run_leg(
+    async def _run_turn(
         self,
         ctx: TurnContext,
         *,
