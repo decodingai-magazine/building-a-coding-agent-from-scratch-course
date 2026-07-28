@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/coding-agent-logo.png" alt="decode logo" width="140">
   <h1>Building a Coding Agent From Scratch</h1>
-  <h3>The harness, not the model, makes a coding agent good. Build one from scratch — from a bare agent loop to a swarm of cloud agents.</h3>
+  <h3>The harness, not the model, makes a coding agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents.</h3>
   <p class="tagline">Open-source course by <a href="https://www.decodingai.com">Decoding AI</a> in collaboration with <a href="https://modal.com?source=decodingai&campaign=harnesseng">Modal</a>, <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik (by Comet)</a> and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru (by ZenML)</a>.</p>
 </div>
 
@@ -257,13 +257,13 @@ Best for **ML/AI engineers** who want to level up their craft and for **software
 
 Running the code costs **$0** if you stick to free tiers:
 
-| Service                                                                                                                                                      | Cost                                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| Gemini API (default provider — easy setup, but limited API requests)                                                                                         | free tier ([Google AI Studio](https://aistudio.google.com/apikey))                                    |
-| [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (recommended provider + remote sandbox)                                                     | $30 free credits — enough to run the course                                                           |
-| OpenRouter (alternative provider)                                                                                                                            | $0 on `:free` models (optional $10 credit raises the daily cap)                                       |
-| [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)               | free tier                                                                                             |
-| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (durable runtime) | free, runs locally offline                                                                            |
+| Service                                                                                                                                                      | Cost                                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| Gemini API (default provider — easy setup, but limited API requests)                                                                                         | free tier ([Google AI Studio](https://aistudio.google.com/apikey))                                         |
+| [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (recommended provider + remote sandbox)                                                     | $30 free credits — enough to run the course                                                                |
+| OpenRouter (alternative provider)                                                                                                                            | $0 on `:free` models (optional $10 credit raises the daily cap)                                            |
+| [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)               | free tier                                                                                                  |
+| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (durable runtime) | free, runs locally offline                                                                                 |
 | GCP — deploy the agent to run remotely _(optional)_                                                                                                          | ~$16/month while it's up; new GCP accounts get $300 in credits — see [infra.md](running_the_code/infra.md) |
 
 **Reading-only? Everything's free!**
