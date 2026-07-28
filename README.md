@@ -78,7 +78,7 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
   <br/>
   <b>Implement the Skills Standard</b>
   <br/>
-  <i>Type <code>/demo-</code> and the six demos are one keystroke away — each one a skill you'll build.</i>
+  <i>Type <code>/demo-</code> and the six demos are one keystroke away.</i>
 </p>
 
 <table>
@@ -100,27 +100,27 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
   </tr>
 </table>
 
-And the machinery underneath is real infrastructure you'll stand up yourself, not a diagram:
+And the infra that powers the agents:
 
 <table>
   <tr>
     <td width="50%">
       <img src="assets/kitaru-replay.png" alt="A durable run recorded step by step in Kitaru"/>
-      <p align="center"><b>Replay and Improve AI Agents</b><br/><i>Every run recorded step by step in <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru</a> — kill it, resume it, replay it with the model swapped</i></p>
+      <p align="center"><b>Durability & Replay for AI Agents</b><br/><i>Every run recorded step by step in <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru</a> — kill it, resume it, replay it with the model swapped</i></p>
     </td>
     <td width="50%">
       <img src="assets/modal-sandboxes.png" alt="Live Modal sandboxes executing the agent's tools"/>
-      <p align="center"><b>Remote Sandboxing</b><br/><i>The agent's <code>bash</code> runs in disposable <a href="https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng">Modal sandboxes</a> — six live here, ~1.3s cold start</i></p>
+      <p align="center"><b>Remote Sandboxing</b><br/><i>The agent's <code>bash</code> runs in disposable <a href="https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng">Modal sandboxes</a></i></p>
     </td>
   </tr>
   <tr>
     <td width="50%">
       <img src="assets/modal-open-model.png" alt="A self-served open model endpoint on Modal"/>
-      <p align="center"><b>Powered by Open Source Models</b><br/><i>Your own Qwen3.6-35B served on an H200 via a <a href="https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng">Modal endpoint</a> — same harness, your model</i></p>
+      <p align="center"><b>Powered by Open Source Models</b><br/><i>Your own Qwen3.6-35B served on an H200 via a <a href="https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng">Modal endpoint</a></i></p>
     </td>
     <td width="50%">
       <img src="assets/opik-threads.png" alt="Sessions traced in Opik with secrets scrubbed"/>
-      <p align="center"><b>Adding AI Evals & Observability</b><br/><i>Every session traced in <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik</a> — note the secrets scrubbed before they reach a log</i></p>
+      <p align="center"><b>Adding AI Evals & Observability</b><br/><i>Every session traced in <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik</a></i></p>
     </td>
   </tr>
 </table>
