@@ -158,7 +158,7 @@ The code is written in Python, with the following frameworks and libraries:
 
 Otherwise, we build all the functionality from scratch, to teach you the foundations that last, not frameworks that abstract away the hard parts.
 
-## The code tells you _what_. The lessons tell you _why_.
+## 💡The code tells you _what_. The lessons tell you _why_.
 
 For the full experience, go through the articles and videos that cover what the code can't. **The why behind every decision.**
 

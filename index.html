@@ -3,13 +3,105 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Building a Coding Agent From Scratch — free open-source course</title>
-<meta name="description" content="The harness, not the model, makes a coding agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents. 8 free lessons in Python.">
-<meta property="og:title" content="Building a Coding Agent From Scratch">
-<meta property="og:description" content="The harness, not the model, makes a coding agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents. 8 free lessons in Python.">
+<title>Building a Coding Agent From Scratch — Free Open-Source Course in Python</title>
+<meta name="description" content="Build a coding agent from scratch in Python: the ReAct agent loop, tools, permissions, Docker and Modal sandboxes, durable runtime, subagents and evals. 8 free lessons, $0 to run.">
+<meta name="author" content="Paul Iusztin — Decoding AI">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<link rel="canonical" href="https://building-a-coding-agent-from-scratch-course.decodingai.com/">
+
+<meta property="og:site_name" content="Decoding AI">
+<meta property="og:title" content="Building a Coding Agent From Scratch — Free Open-Source Course in Python">
+<meta property="og:description" content="The harness, not the model, makes a coding agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents. 8 free lessons, $0 to run.">
 <meta property="og:type" content="website">
+<meta property="og:url" content="https://building-a-coding-agent-from-scratch-course.decodingai.com/">
+<meta property="og:locale" content="en_US">
 <meta property="og:image" content="https://raw.githubusercontent.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/main/assets/github-repo-banner-dark.png">
+<meta property="og:image:alt" content="decode — a coding agent built from scratch, sponsored by Modal, Opik and Kitaru">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Building a Coding Agent From Scratch — Free Open-Source Course in Python">
+<meta name="twitter:description" content="The harness, not the model, makes a coding agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents. 8 free lessons, $0 to run.">
+<meta name="twitter:image" content="https://raw.githubusercontent.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/main/assets/github-repo-banner-dark.png">
+
 <link rel="icon" href="assets/coding-agent-logo.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Course",
+  "name": "Building a Coding Agent From Scratch",
+  "description": "Build a coding agent from scratch in Python: the ReAct agent loop, tools, permissions, Docker and Modal sandboxes, durable runtime, context engineering, subagents and evals. 8 written lessons and 4 videos, free and open-source.",
+  "url": "https://building-a-coding-agent-from-scratch-course.decodingai.com/",
+  "inLanguage": "en",
+  "isAccessibleForFree": true,
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "teaches": [
+    "Coding agent harness architecture",
+    "The ReAct agent loop with Pydantic AI",
+    "Agent tools: file I/O, bash, web, LSP",
+    "Permissions and sandboxing with Docker and Modal",
+    "Durable execution, human-in-the-loop and replays",
+    "Context engineering: memory, compaction, skills",
+    "Subagents and parallel fan-out",
+    "Benchmarks, regression and online AI evals"
+  ],
+  "provider": {
+    "@type": "Organization",
+    "name": "Decoding AI",
+    "url": "https://www.decodingai.com"
+  },
+  "author": {
+    "@type": "Person",
+    "name": "Paul Iusztin",
+    "url": "https://www.pauliusztin.ai/"
+  },
+  "hasCourseInstance": {
+    "@type": "CourseInstance",
+    "courseMode": "online",
+    "courseWorkload": "PT8H"
+  },
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD",
+    "availability": "https://schema.org/InStock",
+    "category": "Free"
+  }
+}
+</script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Do I need a paid API key?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. The default Gemini provider has a free tier, OpenRouter routes across :free models, and Modal gives $30 in credits."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Why Python and not TypeScript or Go?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Accessibility: our audience knows Python. The course focuses on the design decisions, which transfer to any language."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Why build from scratch instead of extending Pi, DeepAgents, or an existing harness?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Because adding custom logic to an existing harness is the easy part — knowing what to add requires understanding the internals. That's the fundamentals, and it's what still makes AI engineers valuable. Build a coding agent once and you're equipped to build a custom agent for any use case."
+      }
+    }
+  ]
+}
+</script>
 <style>
   :root {
     --bg: #0a0e14;
