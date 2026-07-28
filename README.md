@@ -310,6 +310,7 @@ Everything lives under [`running_the_code/`](running_the_code/). One core guide,
 | Guide                                                         | What's inside                                        |
 | ------------------------------------------------------------- | ---------------------------------------------------- |
 | [install_and_usage.md](running_the_code/install_and_usage.md) | Start here                                           |
+| [troubleshooting.md](running_the_code/troubleshooting.md)     | Every known failure, and its fix                     |
 | [modal_models.md](running_the_code/modal_models.md)           | Serving open models on Modal                         |
 | [runtime.md](running_the_code/runtime.md)                     | Runtime setup for headless mode                      |
 | [sandboxing.md](running_the_code/sandboxing.md)               | Docker (local) / Modal (remote) setup for sandboxing |

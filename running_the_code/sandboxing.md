@@ -10,6 +10,23 @@ By default (`SANDBOX_MODE=none`) `bash` runs as a host subprocess and the file t
 
 Both modes are one unified executor with **fresh-exec** semantics: the filesystem persists across calls, but `cd`/`export` don't (chain them: `cd /workspace/app && …`). The sandbox starts eagerly at launch (a `sandbox:<mode>` banner segment), and `bash` stays gated exactly as before — the sandbox is defense-in-depth *beneath* the approval prompt.
 
+## Setup
+
+Nothing here is needed for the first lessons — [install_and_usage.md](install_and_usage.md) gets the agent running with `SANDBOX_MODE=none`. Add the backend you want:
+
+| Mode | Prerequisite | Install / authenticate |
+| --- | --- | --- |
+| `docker` | Docker running locally | [docker.com](https://www.docker.com/products/docker-desktop/), then start Docker Desktop |
+| `modal` | Modal account tokens in the **process env** | `modal token set --token-id … --token-secret …` (writes `~/.modal.toml`). These are **not** decode settings — putting them in `.env` does nothing. |
+
+| Env var | What it's for |
+| --- | --- |
+| `SANDBOX_MODE` | `none` (default) · `docker` · `modal` |
+| `SANDBOX_REPO` | repo cloned into the Workspace; `--repo` overrides it |
+| `SANDBOX_WORKSPACE_DIR` | the host dir that **is** the Workspace (default `.decode/sandbox`) |
+| `SANDBOX_IMAGE`, `SANDBOX_TIMEOUT_S`, `SANDBOX_GIT_USER_NAME`, `SANDBOX_GIT_USER_EMAIL` | tunables — see below |
+| `SANDBOX_GIT_TOKEN` | opt-in: lets the **model** push / open PRs from inside the Workspace ([below](#the-sandbox-git-token-sandbox_git_token)). A GitHub fine-grained, repo-scoped PAT. |
+
 ## Work on any repo, and get a branch back
 
 ```bash
@@ -32,6 +49,20 @@ Hand-back (above) needs **no** credential in the sandbox — it pushes host-side
 > **A sandboxed process can read `$GITHUB_TOKEN`** — a prompt-injected agent too. Use a **fine-grained, repo-scoped, revocable** PAT, and revoke it when you're done. Leave the variable **unset** and the sandbox holds no credential at all — hand-back still ships your branch.
 
 decode used to hide this token behind a mitmproxy sidecar (the **Credential Proxy**). It is **deleted** ([ADR-0016](../docs/adr/0016-drop-credential-proxy.md)): it only ever worked in one of the three sandbox modes, egress was cooperative anyway (`curl --noproxy '*'` walked around it), and the machinery cost more than it protected. One mechanism now, both backends — a security story that is *true as written*.
+
+## Troubleshooting
+
+Sandbox guards check **presence only** and fire in both the REPL and the headless pre-flight:
+
+| What you see | What it means | Fix |
+| --- | --- | --- |
+| `Decode: SANDBOX_MODE=docker but the Docker daemon is not reachable` | `docker` selected with Docker stopped | start Docker Desktop, or set `SANDBOX_MODE=none`. |
+| `Decode: SANDBOX_MODE=modal but Modal credentials are missing` | no Modal **account** tokens in the process env | `modal token set …`. `.env` does nothing for these. |
+| `Decode: --repo/SANDBOX_REPO clones a repo into the isolated sandbox Workspace …` | `--repo` passed with `SANDBOX_MODE=none` | set `SANDBOX_MODE=docker` or `modal`, or drop `--repo`. |
+| `--repo` seems ignored, and there's no `origin` to push to | the Workspace was already populated — decode never re-clones over in-progress work | `rm -rf .decode/sandbox` to force a fresh clone. |
+| `cd` or `export` from one `bash` call doesn't apply to the next | fresh-exec semantics: the filesystem persists, the process doesn't | chain them: `cd /workspace/app && …`. |
+
+Everything else — provider keys, rate limits, skills, sessions — is in [troubleshooting.md](troubleshooting.md).
 
 ## Go further
 

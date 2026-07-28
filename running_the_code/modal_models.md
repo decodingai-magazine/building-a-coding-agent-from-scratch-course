@@ -153,3 +153,21 @@ OpenAI-compatible surface, going from the Qwen default to GPT-OSS or GLM-5.2 mea
 `MODAL_ENDPOINT_URL` / `MODAL_ENDPOINT_MODEL` at the other endpoint — no harness change, no code
 change. Build against the default, then re-point at a bigger model when you want to see how far the
 same loop goes.
+
+## Killing cold starts while you work
+
+On the default autoscaling setting (**Min 0**) the endpoint scales to zero between sessions, so the
+first request after an idle stretch waits for the GPU to wake. That is the right default for a
+model you touch occasionally — and the wrong one while you are iterating on the harness, where it
+shows up as a long pause on the first turn of every session.
+
+The fix is one dashboard setting: **set the minimum number of containers to 1** so a container stays
+warm and every turn answers immediately. Autoscaling is dashboard-only (not a `modal endpoint
+create` flag) — open the endpoint, then **AUTOSCALING → Edit → Override**:
+
+![Setting the minimum number of containers to 1 on a Modal endpoint](../assets/modal_setup_endpoint.gif)
+
+**A warm container bills for the idle time too.** That is the whole trade: you are paying GPU-hours
+to not wait. Keep Min 1 for a working session, then put it back to 0 — or stop the endpoint
+entirely (`uv run modal endpoint stop <endpoint-id> --env main`) — when you are done, so an
+afternoon of not-coding doesn't quietly spend the $30.
