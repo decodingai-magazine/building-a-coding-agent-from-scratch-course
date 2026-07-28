@@ -28,7 +28,7 @@
 > uv run decode
 > ```
 >
-> Then type `/demo-` and pick a demo — see [what they do](#-see-it-work) below. [Full guide](#-running-the-code)
+> Then type `/demo-` and pick a demo — see [what they do](#-see-it-work) below. [Full setup guide.](#-running-the-code)
 
 <p align="center">
   <img src="assets/demo-skills.png" alt="The demo skills listed inside the decode TUI after typing /demo-" width="800">
