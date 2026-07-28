@@ -178,8 +178,8 @@ Eight written lessons and four videos: video 2 covers lessons 2–3, video 3 cov
     <td align="center"><a href="running_the_code/install_and_usage.md">install_and_usage.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>2</b><br/>The Agent Loop Plugged Into the TUI (The Interactive Mode)</td>
-    <td align="center">📄 <i>Coming next week</i></td>
+    <td align="center"><b>2</b><br/>The Bare-Bones Coding Agent Loop</td>
+    <td align="center"><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank"><img src="assets/architecture_lesson_2.png" width="250" alt="Lesson 2 — the bare-bones coding agent loop"/></a></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
     <td align="center">The ReAct loop, the core tools, and the human approving and steering every turn.</td>
     <td align="center"><a href="running_the_code/install_and_usage.md">install_and_usage.md</a> · <a href="running_the_code/modal_models.md">modal_models.md</a></td>
