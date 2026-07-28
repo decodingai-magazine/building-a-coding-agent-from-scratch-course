@@ -30,6 +30,23 @@ _REMOTE_ENVS = frozenset({"dev", "staging", "prod"})
 
 _DECODE_ENV_VAR = "DECODE_ENV"
 
+# Literals that mean "I copied .env.example and have not filled this in yet", matched
+# case-insensitively after stripping. A secret holding one of these reads as UNSET, so the startup
+# preflight prints its one friendly line instead of the provider rejecting the placeholder mid-turn:
+# presence checks (``if not key``) are the only thing standing between a half-filled ``.env`` and a
+# raw 400 on the user's first message.
+_PLACEHOLDER_SECRETS = frozenset({"changeme", "change-me", "your-key-here", "todo", "xxx"})
+
+# The secret fields the placeholder scrub covers: every one gates a startup presence check.
+_SCRUBBED_SECRET_FIELDS = (
+    "gemini_api_key",
+    "openrouter_api_key",
+    "modal_proxy_token_id",
+    "modal_proxy_token_secret",
+    "opik_api_key",
+    "sandbox_git_token",
+)
+
 # Known MAX INPUT windows in tokens, matched case-insensitively as a SUBSTRING of the active
 # provider's model id, most-specific first. Substring (not equality) because ids carry vendor
 # prefixes and quantization suffixes the window does not depend on:
@@ -358,6 +375,30 @@ class Settings(BaseSettings):
     # The Opik project eval runs log under — kept distinct from the live-REPL project (ADR-0014) so
     # eval traces never mix into ``decode-<env>``.
     eval_project_name: str = "decode-evals"
+
+    @model_validator(mode="after")
+    def _scrub_placeholder_secrets(self) -> Settings:
+        """Read an unfilled ``.env.example`` placeholder (``changeme``) as UNSET.
+
+        Every provider guard in ``cli.py`` is a PRESENCE check, so a literal placeholder is worse
+        than an empty value: it sails past the guard and the run dies on a provider 400 at the first
+        message, with nothing pointing back at ``.env``. Scrubbing here means one friendly startup
+        line instead.
+
+        Whitespace-only values scrub too — ``GEMINI_API_KEY=" "`` is the same mistake. Writes via
+        ``object.__setattr__`` so the field keeps its "explicitly supplied" mark in
+        ``model_fields_set``; the operator DID set it, they just set it to a placeholder.
+        """
+        for name in _SCRUBBED_SECRET_FIELDS:
+            current: SecretStr | None = getattr(self, name)
+            if current is None:
+                continue
+            value = current.get_secret_value()
+            if value.strip().lower() in _PLACEHOLDER_SECRETS or not value.strip():
+                if value:  # a name, never the value — the placeholder itself is not worth echoing
+                    logger.debug("ignoring placeholder value for %s", name.upper())
+                object.__setattr__(self, name, SecretStr(""))
+        return self
 
     @model_validator(mode="after")
     def _derive_opik_project_name(self) -> Settings:

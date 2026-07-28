@@ -119,6 +119,48 @@ def test_process_env_var_overrides_dotenv(tmp_path, monkeypatch):
     assert s.gemini_api_key.get_secret_value() == "sk-from-process-env"
 
 
+@pytest.mark.parametrize("placeholder", ["changeme", "CHANGEME", " change-me ", "your-key-here"])
+def test_placeholder_secret_reads_as_unset(tmp_path, monkeypatch, placeholder):
+    """An unfilled ``.env.example`` value must fail the startup PRESENCE check, not a provider 400."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    env = tmp_path / ".env"
+    env.write_text(f"GEMINI_API_KEY={placeholder}\n")
+    s = Settings(_env_file=str(env))
+    assert s.gemini_api_key.get_secret_value() == ""
+
+
+def test_whitespace_only_secret_reads_as_unset(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "   ")
+    s = Settings(_env_file=None)
+    assert s.openrouter_api_key.get_secret_value() == ""
+
+
+def test_scrub_leaves_a_real_key_alone(monkeypatch):
+    """The scrub is an exact-literal match: a real key that merely CONTAINS one survives."""
+    monkeypatch.setenv("GEMINI_API_KEY", "sk-changeme-not-really")
+    s = Settings(_env_file=None)
+    assert s.gemini_api_key.get_secret_value() == "sk-changeme-not-really"
+
+
+def test_scrub_covers_every_gated_secret(monkeypatch):
+    for var in ("OPIK_API_KEY", "MODAL_PROXY_TOKEN_ID", "MODAL_PROXY_TOKEN_SECRET"):
+        monkeypatch.setenv(var, "changeme")
+    monkeypatch.setenv("SANDBOX_GIT_TOKEN", "changeme")
+    s = Settings(_env_file=None)
+    assert s.opik_api_key.get_secret_value() == ""
+    assert s.modal_proxy_token_id.get_secret_value() == ""
+    assert s.modal_proxy_token_secret.get_secret_value() == ""
+    assert s.sandbox_git_token is not None
+    assert s.sandbox_git_token.get_secret_value() == ""
+
+
+def test_unset_sandbox_git_token_stays_none(monkeypatch):
+    """``None`` (never set) is distinct from a scrubbed empty and must survive the scrub."""
+    monkeypatch.delenv("SANDBOX_GIT_TOKEN", raising=False)
+    s = Settings(_env_file=None)
+    assert s.sandbox_git_token is None
+
+
 def test_secret_not_in_repr():
     s = Settings(_env_file=None, gemini_api_key="topsecret")
     assert "topsecret" not in repr(s)
