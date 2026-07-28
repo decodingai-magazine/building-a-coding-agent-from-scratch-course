@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Building a Coding Agent From Scratch — free open-source course</title>
-<meta name="description" content="The harness, not the model, makes a coding agent good. Build one from scratch — from a bare agent loop to a swarm of cloud agents. 8 free lessons in Python.">
+<meta name="description" content="The harness, not the model, makes a coding agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents. 8 free lessons in Python.">
 <meta property="og:title" content="Building a Coding Agent From Scratch">
-<meta property="og:description" content="The harness, not the model, makes a coding agent good. Build one from scratch — from a bare agent loop to a swarm of cloud agents. 8 free lessons in Python.">
+<meta property="og:description" content="The harness, not the model, makes a coding agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents. 8 free lessons in Python.">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://raw.githubusercontent.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/main/assets/github-repo-banner-dark.png">
 <link rel="icon" href="assets/coding-agent-logo.png">
@@ -152,7 +152,7 @@
   <div class="wrap">
     <img class="logo" src="assets/coding-agent-logo.png" alt="decode logo">
     <h1>Building a Coding Agent From&nbsp;Scratch</h1>
-    <p class="sub"><b>The harness, not the model, makes a coding agent good.</b> Build one from scratch — from a bare agent loop to a swarm of cloud agents.</p>
+    <p class="sub"><b>The harness, not the model, makes a coding agent good.</b> Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents.</p>
     <div class="badges">
       <img src="https://img.shields.io/badge/type-open--source_course-8a2be2" alt="Open-source course">
       <img src="https://img.shields.io/badge/cost_to_run-%240-2ea44f" alt="$0 to run">
@@ -186,10 +186,10 @@
 <span class="p">$</span> cp .env.example .env   <span class="c"># set GEMINI_API_KEY — free at https://aistudio.google.com/apikey</span>
 <span class="p">$</span> uv run decode</pre>
     </div>
-    <p>Then type <code>/demo-</code> and pick a demo — <a href="#see-it-work">see what they do</a>. Full guide: <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/install_and_usage.md" target="_blank" rel="noopener">install_and_usage.md</a>.</p>
+    <p>Then type <code>/demo-</code> and pick a demo — <a href="#see-it-work">see what they do</a>. Full setup guide: <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/install_and_usage.md" target="_blank" rel="noopener">install_and_usage.md</a>.</p>
     <figure>
       <img src="assets/demo-skills.png" alt="The demo skills listed inside the decode TUI after typing /demo-" style="max-width:820px">
-      <figcaption>What opens: type <code>/demo-</code> and the six demos are one keystroke away.</figcaption>
+      <figcaption>Type <code>/demo-</code> and the six demos are one keystroke away.</figcaption>
     </figure>
   </div>
 </section>
@@ -210,14 +210,14 @@ register_tools(agent)                          <span class="c"># read, edit, bas
 <span class="k">async with</span> agent.iter(prompt, message_history=history) <span class="k">as</span> run:
     <span class="k">async for</span> node <span class="k">in</span> run:                     <span class="c"># model request → tool calls → repeat</span>
         stream_events(node)</pre>
-    <p>That's the <i>entire</i> tool-calling agent — the thing people call "the agent" ends here. Everything else in this repo — the permission gate, the sandbox, compaction, the steering queue, the durable runtime, the subagent fan-out, the evals — is the harness. That's what you're here to build.</p>
+    <p>That's the <i>entire</i> tool-calling agent — the thing people call "the agent" ends here. Everything else in this repo — the tools, skills, the permission layer, sandbox, steering queue, memory, compaction, durable runtime, remote execution, the subagent fan-out, the evals — is the harness. That's what you're here to build.</p>
 
     <figure>
       <img src="assets/tui-session-start.png" alt="A fresh decode session: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer">
       <figcaption>A fresh session — Opik tracing, a Modal-served Qwen, steering keys in the footer. All harness; none of it in those 20 lines.</figcaption>
     </figure>
 
-    <p>We spent months under the hood of Claude Code (via its leaked source), <a href="https://github.com/anomalyco/opencode" target="_blank" rel="noopener">OpenCode</a>, <a href="https://github.com/earendil-works/pi" target="_blank" rel="noopener">Pi</a>, and <a href="https://github.com/aider-ai/aider" target="_blank" rel="noopener">Aider</a>, then distilled it into 8 lessons where, from an empty repo, you build <b>decode</b>, your own terminal coding agent. By lesson 2 it asks permission before running <code>bash</code>; by lesson 8 it's deployed to the cloud, building the same feature 5–10× in parallel and handing you back reviewed pull requests. One headless core, two ways to drive it: an interactive TUI wired to a live session, and a remote runtime running N copies in parallel.</p>
+    <p>We spent months under the hood of Claude Code (via its leaked source), <a href="https://github.com/anomalyco/opencode" target="_blank" rel="noopener">OpenCode</a>, <a href="https://github.com/earendil-works/pi" target="_blank" rel="noopener">Pi</a>, and <a href="https://github.com/aider-ai/aider" target="_blank" rel="noopener">Aider</a>, then distilled it into 8 articles and 4 videos where you'll build <b>decode</b>, your own coding agent, from scratch. By lesson 4 it asks permission before running <code>bash</code>; by lesson 8 it's deployed to the cloud, building the same feature 5–10× in parallel and handing you back reviewed pull requests. One headless core hooked to two modes: an interactive TUI and a remote runtime running N copies in parallel.</p>
 
     <p><b>Under the hood:</b> a <a href="https://ai.pydantic.dev" target="_blank" rel="noopener">Pydantic AI</a> ReAct loop on Gemini, OpenRouter, or an open model you serve on <a href="https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng" target="_blank" rel="noopener">Modal</a>; file / bash / web / LSP tools and parallel Explore subagents; Docker/<a href="https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng" target="_blank" rel="noopener">Modal</a> sandboxes; a durable <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand" target="_blank" rel="noopener">Kitaru</a> runtime; <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course" target="_blank" rel="noopener">Opik</a> tracing and evals.</p>
 
@@ -259,24 +259,24 @@ register_tools(agent)                          <span class="c"># read, edit, bas
       <figcaption><b>Extracting Ontologies &amp; Rendering Graphs</b><code>/demo-6-article-kg</code> — web articles scraped into an interactive knowledge graph</figcaption>
     </figure>
 
-    <p style="margin-top:2.2rem;">And the machinery underneath is real infrastructure you'll stand up yourself, not a diagram:</p>
+    <p style="margin-top:2.2rem;">And the infra that powers the agents:</p>
 
     <div class="grid2" style="margin-top:1.8rem;">
       <figure>
         <img src="assets/kitaru-replay.png" alt="A durable run recorded step by step in Kitaru">
-        <figcaption><b>Replay and Improve AI Agents</b>Every run recorded step by step in <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand" target="_blank" rel="noopener">Kitaru</a> — kill it, resume it, replay it with the model swapped</figcaption>
+        <figcaption><b>Durability &amp; Replay for AI Agents</b>Every run recorded step by step in <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand" target="_blank" rel="noopener">Kitaru</a> — kill it, resume it, replay it with the model swapped</figcaption>
       </figure>
       <figure>
         <img src="assets/modal-sandboxes.png" alt="Live Modal sandboxes executing the agent's tools">
-        <figcaption><b>Remote Sandboxing</b>The agent's <code>bash</code> runs in disposable <a href="https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng" target="_blank" rel="noopener">Modal sandboxes</a> — six live here, ~1.3s cold start</figcaption>
+        <figcaption><b>Remote Sandboxing</b>The agent's <code>bash</code> runs in disposable <a href="https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng" target="_blank" rel="noopener">Modal sandboxes</a></figcaption>
       </figure>
       <figure>
         <img src="assets/modal-open-model.png" alt="A self-served open model endpoint on Modal">
-        <figcaption><b>Powered by Open Source Models</b>Your own Qwen3.6-35B served on an H200 via a <a href="https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng" target="_blank" rel="noopener">Modal endpoint</a> — same harness, your model</figcaption>
+        <figcaption><b>Powered by Open Source Models</b>Your own Qwen3.6-35B served on an H200 via a <a href="https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng" target="_blank" rel="noopener">Modal endpoint</a></figcaption>
       </figure>
       <figure>
         <img src="assets/opik-threads.png" alt="Sessions traced in Opik with secrets scrubbed">
-        <figcaption><b>Adding AI Evals &amp; Observability</b>Every session traced in <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course" target="_blank" rel="noopener">Opik</a> — note the secrets scrubbed before they reach a log</figcaption>
+        <figcaption><b>Adding AI Evals &amp; Observability</b>Every session traced in <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course" target="_blank" rel="noopener">Opik</a></figcaption>
       </figure>
     </div>
   </div>
@@ -311,17 +311,18 @@ register_tools(agent)                          <span class="c"># read, edit, bas
       <div class="card">
         <span class="num">Lesson 1</span> <span class="live">● live</span>
         <h4>Building a Coding Agent From Scratch: Harness Architecture</h4>
-        <p>The map of every component before you write a single line of code.</p>
+        <p>Designing the harness around the model, from the agent loop to a remote swarm.</p>
         <div class="links">
           <a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank" rel="noopener">read lesson →</a>
           <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/install_and_usage.md" target="_blank" rel="noopener">install_and_usage.md</a>
         </div>
       </div>
       <div class="card">
-        <span class="num">Lesson 2</span> <span class="soon">○ next week · video 2</span>
-        <h4>The Agent Loop Plugged Into the TUI (The Interactive Mode)</h4>
-        <p>The ReAct loop, the core tools, and the human approving and steering every turn.</p>
+        <span class="num">Lesson 2</span> <span class="live">● live</span>
+        <h4>The Bare-Bones Coding Agent Loop</h4>
+        <p>One agent loop, 9 tools, and a terminal you can steer.</p>
         <div class="links">
+          <a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank" rel="noopener">read lesson →</a>
           <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/install_and_usage.md" target="_blank" rel="noopener">install_and_usage.md</a>
           <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/modal_models.md" target="_blank" rel="noopener">modal_models.md</a>
         </div>
@@ -382,7 +383,7 @@ register_tools(agent)                          <span class="c"># read, edit, bas
 <section id="who">
   <div class="wrap">
     <h2><span class="hash">##</span>Who Should Join?</h2>
-    <p><b>For: engineers who learn by building.</b> You finish with a working coding agent and patterns to steal for your own agentic applications.</p>
+    <p><b>For: engineers who learn by building.</b> You finish with a working coding agent that teaches you harness engineering patterns to steal for your own agentic applications.</p>
     <div class="tbl-wrap">
       <table class="tbl">
         <tr><th>Target Audience</th><th>Why Join?</th></tr>
@@ -397,9 +398,9 @@ register_tools(agent)                          <span class="c"># read, edit, bas
       <table class="tbl">
         <tr><th>Category</th><th>Requirements</th></tr>
         <tr><td><b>Skills</b></td><td>Python (Intermediate) · LLMs &amp; agents (Beginner)</td></tr>
-        <tr><td><b>Hardware</b></td><td>Modern laptop/PC. Docker optional (for the local sandbox); everything heavier runs in the cloud.</td></tr>
+        <tr><td><b>Hardware</b></td><td>Any modern machine will do. No GPU required, as we run all the LLMs in the cloud.</td></tr>
         <tr><td><b>Level</b></td><td>Intermediate (but with a little sweat and patience, anyone can do it)</td></tr>
-        <tr><td><b>Time</b></td><td>~4–6 hours for the whole course — 4 if you read and watch, 6 if you run everything.</td></tr>
+        <tr><td><b>Time</b></td><td>~4–8 hours for the whole course — 4 if you read and watch, 6–8 if you run everything.</td></tr>
       </table>
     </div>
   </div>
@@ -412,12 +413,12 @@ register_tools(agent)                          <span class="c"># read, edit, bas
     <div class="tbl-wrap">
       <table class="tbl">
         <tr><th>Service</th><th>Cost</th></tr>
-        <tr><td>Gemini API (default provider)</td><td>free tier (<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>)</td></tr>
+        <tr><td>Gemini API (default provider — easy setup, but limited API requests)</td><td>free tier (<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>)</td></tr>
+        <tr><td><a href="https://modal.com?source=decodingai&campaign=harnesseng" target="_blank" rel="noopener">Modal</a> (recommended provider + remote sandbox)</td><td>$30 free credits — enough to run the course</td></tr>
         <tr><td>OpenRouter (alternative provider)</td><td>$0 on <code>:free</code> models (optional $10 credit raises the daily cap)</td></tr>
-        <tr><td><a href="https://modal.com?source=decodingai&campaign=harnesseng" target="_blank" rel="noopener">Modal</a> (self-served open models + remote sandbox)</td><td>$30 free credits</td></tr>
         <tr><td><a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course" target="_blank" rel="noopener">Opik</a> (tracing + evals)</td><td>free tier</td></tr>
         <tr><td><a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand" target="_blank" rel="noopener">Kitaru</a> (durable runtime)</td><td>free, runs locally offline</td></tr>
-        <tr><td>GCP — deploy the agent to run remotely <i>(optional)</i></td><td>~$16/month while it's up — see <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/infra.md" target="_blank" rel="noopener">infra.md</a></td></tr>
+        <tr><td>GCP — deploy the agent to run remotely <i>(optional)</i></td><td>~$16/month while it's up; new GCP accounts get $300 in credits — see <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/infra.md" target="_blank" rel="noopener">infra.md</a></td></tr>
       </table>
     </div>
     <p style="margin-top:1rem;"><b>Reading-only? Everything's free!</b></p>
@@ -462,9 +463,9 @@ register_tools(agent)                          <span class="c"># read, edit, bas
   <div class="wrap">
     <h2><span class="hash">##</span>Course Author</h2>
     <div class="author">
-      <a href="https://github.com/iusztinpaul" target="_blank" rel="noopener"><img src="https://github.com/iusztinpaul.png" alt="Paul Iusztin"></a>
+      <a href="https://www.pauliusztin.ai/" target="_blank" rel="noopener"><img src="https://github.com/iusztinpaul.png" alt="Paul Iusztin"></a>
       <div>
-        <b><a href="https://github.com/iusztinpaul" target="_blank" rel="noopener">Paul Iusztin</a></b> — AI Engineer &amp; Founder of <a href="https://www.decodingai.com" target="_blank" rel="noopener">Decoding AI</a>
+        <b>Paul Iusztin</b> — Senior AI Engineer, Educator &amp; Founder of <a href="https://www.decodingai.com" target="_blank" rel="noopener">Decoding AI</a>
         <p>After shipping 21 AI applications, Paul uses his best-selling <a href="https://www.amazon.com/LLM-Engineers-Handbook-engineering-production/dp/1836200072" target="_blank" rel="noopener">LLM Engineer's Handbook</a>, Decoding AI Magazine, and courses like this one to lead 160,000+ AI engineers out of demo purgatory and into production-grade engineering.</p>
       </div>
     </div>
