@@ -353,13 +353,15 @@ Found a bug and know the fix? Fork, fix, run `make ci` (no API key needed), and 
 
 <table style="border-collapse: collapse; border: none;">
   <tr style="border: none;">
-    <td width="15%" style="border: none;">
-      <a href="https://github.com/iusztinpaul" target="_blank">
+    <td width="15%" align="center" style="border: none;">
+      <a href="https://www.pauliusztin.ai/" target="_blank">
         <img src="https://github.com/iusztinpaul.png" width="100" style="border-radius: 50%;" alt="Paul Iusztin"/>
       </a>
+      <br/>
+      <b>Paul Iusztin</b>
     </td>
     <td width="85%" style="border: none;">
-      <b><a href="https://github.com/iusztinpaul" target="_blank">Paul Iusztin</a></b> — Senior AI Engineer, Educator & Founder of <a href="https://www.decodingai.com">Decoding AI</a><br/> After shipping 21 AI applications, Paul uses his best-selling <a href="https://www.amazon.com/LLM-Engineers-Handbook-engineering-production/dp/1836200072">LLM Engineer's Handbook</a>, Decoding AI Magazine, and courses like this one to lead 160,000+ AI engineers out of demo purgatory and into production-grade engineering.
+      Senior AI Engineer, Educator & Founder of Decoding AI. Author of the best-selling <a href="https://www.amazon.com/LLM-Engineers-Handbook-engineering-production/dp/1836200072">LLM Engineer's Handbook</a>
     </td>
   </tr>
 </table>
