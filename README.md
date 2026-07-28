@@ -158,7 +158,7 @@ The code is written in Python, with the following frameworks and libraries:
 
 Otherwise, we build all the functionality from scratch, to teach you the foundations that last, not frameworks that abstract away the hard parts.
 
-## 💡The code tells you _what_. The lessons tell you _why_.
+## 💡 The code tells you _what_. The lessons tell you _why_.
 
 For the full experience, go through the articles and videos that cover what the code can't. **The why behind every decision.**
 
@@ -330,7 +330,7 @@ Everything lives under [`running_the_code/`](running_the_code/). One core guide,
   Opik and Kitaru are open source. Consider starring their repositories: <a href="https://github.com/comet-ml/opik" target="_blank">Opik on GitHub</a> · <a href="https://github.com/zenml-io/kitaru" target="_blank">Kitaru on GitHub</a>.
 </p>
 
-## 💡 Questions and Troubleshooting
+## 🗣️ Questions and Troubleshooting
 
 Open a [GitHub issue](https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues) for course questions, setup trouble, or concept clarifications. Known gotchas are documented in the [`running_the_code/`](running_the_code/) guides.
 
