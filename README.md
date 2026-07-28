@@ -54,7 +54,7 @@ async with agent.iter(prompt, message_history=history) as run:
         stream_events(node)
 ```
 
-That's the _entire_ tool-calling agent — the thing people call "the agent" ends here. Everything else in this repo — the tools, skills, the permission layer, sandbox, steering queue, memory, compacation, durable runtime, remote execution, the subagent fan-out, the evals — is the harness. That's what you're here to build.
+That's the _entire_ tool-calling agent — the thing people call "the agent" ends here. Everything else in this repo — the tools, skills, the permission layer, sandbox, steering queue, memory, compaction, durable runtime, remote execution, the subagent fan-out, the evals — is the harness. That's what you're here to build.
 
 <p align="center">
   <img src="assets/tui-session-start.png" alt="A fresh decode session: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer" width="90%"/>
@@ -62,7 +62,7 @@ That's the _entire_ tool-calling agent — the thing people call "the agent" end
   <i>A fresh session powered by Qwen 3.6 35B hosted on Modal</i>
 </p>
 
-We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), then distilled it into 8 articles and 4 videos where, you'll build from scratch **decode**, your own coding agent. With one headless core, hooked to two modes: an interactive TUI and a remote runtime running N copies in parallel.
+We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), then distilled it into 8 articles and 4 videos where you'll build **decode**, your own coding agent, from scratch — one headless core hooked to two modes: an interactive TUI and a remote runtime running N copies in parallel.
 
 <p align="center">
   <img src="assets/architecture.png" alt="decode architecture" width="620">
@@ -130,15 +130,15 @@ And the machinery underneath is real infrastructure you'll stand up yourself, no
 - Design a coding agent harness from scratch
 - Implement a headless coding agent loop
 - Attach the headless harness to multiple modes: TUI and remote
-- Add a runtime for durable execution, human in the loop and replays when running parallel agents
-- Implementing guardrails and safety nets for the agent's behavior by adding a permission layer and local & remote sandboxing
-- Building essential context engineering techniques: memory, compaction, skills
-- Hooking up an LSP server for faster feedback loops
-- Implementing an agents catalog: build, plan, code reviewer and exploration agents
-- Spawning parallel subagents via fan-out strategies
-- Adding observability
-- Designing an eval harness for benchmarking the agent and checking for regressions
-- Deploying and running swarms of agents
+- Add a runtime for durable execution, human-in-the-loop and replays when running parallel agents
+- Implement guardrails and safety nets for the agent's behavior by adding a permission layer and local & remote sandboxing
+- Build essential context engineering techniques: memory, compaction, skills
+- Hook up an LSP server for faster feedback loops
+- Implement an agents catalog: build, plan, code reviewer and exploration agents
+- Spawn parallel subagents via fan-out strategies
+- Add observability
+- Design an eval harness for benchmarking the agent and checking for regressions
+- Deploy and run swarms of agents
 
 <p align="center">
   <img src="assets/tui-plan-mode-todo.png" alt="decode in plan mode breaking the Snake demo into a task list with the todo tool" width="800">
@@ -156,14 +156,14 @@ The code is written in Python, with the following frameworks and libraries:
 - **Sandboxing:** local Docker & remote [Modal sandboxes](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng)
 - **Deploying:** GCP & Modal
 
-Otherwise we build the whole functionality from scratch, to teach you the foundations that last, not frameworks that abstract away the hard parts.
+Otherwise, we build all the functionality from scratch, to teach you the foundations that last, not frameworks that abstract away the hard parts.
 
 ## The code tells you _what_. The lessons tell you _why_.
 
 For the full experience, go through the articles and videos that cover what the code can't. **The why behind every decision.**
 
 Why we have a headless harness and two interface modes: TUI + Remote.
-What are the essential components of a coding agent, and what is optional.
+What the essential components of a coding agent are, and what is optional.
 Why we plugged in 9 tools, no more, no less.
 Why we need a durable runtime and replays.
 What guardrails are actually useful.
@@ -242,16 +242,16 @@ Why you need benchmarks, regression tests and online evals.
 
 **For: engineers who learn by building.** You finish with a working coding agent that teaches you harness engineering patterns to steal for your own agentic applications.
 
-Best for **ML/AI engineers** who want to level-up in their craft and for **software engineers, data scientists or engineers** who want to transition into building agentic systems from scratch.
+Best for **ML/AI engineers** who want to level up their craft and for **software engineers and data scientists** who want to transition into building agentic systems from scratch.
 
 ## 🎓 Prerequisites
 
 | Category     | Requirements                                                                          |
 | ------------ | ------------------------------------------------------------------------------------- |
 | **Skills**   | - Python (Intermediate) <br/> - LLMs & agents (Beginner)                              |
-| **Hardware** | Any modern machine will do. No GPU required as we will run all the LLMs in the cloud. |
+| **Hardware** | Any modern machine will do. No GPU required, as we run all the LLMs in the cloud.     |
 | **Level**    | Intermediate (but with a little sweat and patience, anyone can do it)                 |
-| **Time**     | ~4–8 hours for the whole course — 4 if you read and watch, 6-8 if you run everything. |
+| **Time**     | ~4–8 hours for the whole course — 4 if you read and watch, 6–8 if you run everything. |
 
 ## 💰 Cost Structure
 
@@ -259,12 +259,12 @@ Running the code costs **$0** if you stick to free tiers:
 
 | Service                                                                                                                                                      | Cost                                                                                                  |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| Gemini API (default provider - easy setup but limited API requests)                                                                                          | free tier ([Google AI Studio](https://aistudio.google.com/apikey))                                    |
-| [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (recommended provider + remote sandbox)                                                     | $30 free credits - enough to run the course                                                           |
+| Gemini API (default provider — easy setup, but limited API requests)                                                                                         | free tier ([Google AI Studio](https://aistudio.google.com/apikey))                                    |
+| [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (recommended provider + remote sandbox)                                                     | $30 free credits — enough to run the course                                                           |
 | OpenRouter (alternative provider)                                                                                                                            | $0 on `:free` models (optional $10 credit raises the daily cap)                                       |
 | [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)               | free tier                                                                                             |
 | [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (durable runtime) | free, runs locally offline                                                                            |
-| GCP — deploy the agent to run remotely _(optional)_                                                                                                          | ~$16/month while it's up, new GCP account $300 in credits - see [infra.md](running_the_code/infra.md) |
+| GCP — deploy the agent to run remotely _(optional)_                                                                                                          | ~$16/month while it's up; new GCP accounts get $300 in credits — see [infra.md](running_the_code/infra.md) |
 
 **Reading-only? Everything's free!**
 
@@ -361,7 +361,7 @@ Found a bug and know the fix? Fork, fix, run `make ci` (no API key needed), and 
       <b>Paul Iusztin</b>
     </td>
     <td width="85%" style="border: none;">
-      Senior AI Engineer, Educator & Founder of Decoding AI. Author of the best-selling <a href="https://www.amazon.com/LLM-Engineers-Handbook-engineering-production/dp/1836200072">LLM Engineer's Handbook</a>
+      Senior AI Engineer, Educator & Founder of Decoding AI. Author of the best-selling <a href="https://www.amazon.com/LLM-Engineers-Handbook-engineering-production/dp/1836200072">LLM Engineer's Handbook</a>.
     </td>
   </tr>
 </table>
@@ -376,7 +376,7 @@ Found a bug and know the fix? Fork, fix, run `make ci` (no API key needed), and 
 
 ## ⭐ One More Thing
 
-If you found this course useful, consider starring the repository, so others can find it too.
+If you found this course useful, consider starring the repository so others can find it too.
 
 ## License
 
