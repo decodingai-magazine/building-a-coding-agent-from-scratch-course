@@ -25,7 +25,6 @@ the real `<OUT>` path into the first one so you never re-derive it.
 
 One `web_fetch` per URL (the tool returns Markdown):
 
-- https://www.decodingai.com/p/keep-knowledge-graph-clean
 - https://www.decodingai.com/p/understanding-neo4j-graph-agent-memory-system
 - https://www.decodingai.com/p/ship-a-knowledge-graph-ontology-in-5-minutes
 
@@ -41,12 +40,14 @@ two. Write it to `<OUT>/graph.json`:
 ```json
 {
   "nodes": [
-    {"id": "Ontology", "type": "concept", "desc": "one sentence in your own words"},
-    {"id": "Neo4j", "type": "tool", "desc": "one sentence in your own words"}
+    {
+      "id": "Ontology",
+      "type": "concept",
+      "desc": "one sentence in your own words"
+    },
+    { "id": "Neo4j", "type": "tool", "desc": "one sentence in your own words" }
   ],
-  "edges": [
-    {"source": "Ontology", "target": "KG drift", "label": "prevents"}
-  ]
+  "edges": [{ "source": "Ontology", "target": "KG drift", "label": "prevents" }]
 }
 ```
 
@@ -95,10 +96,10 @@ is the node's type color.
 **Simulation.** A hand-rolled force simulation in vanilla JS — no library, no framework. One
 `tick()` applying three forces, then integrating:
 
-- *Repulsion*, every node pair: magnitude `5000 / distanceSquared`, pushing apart along the line
+- _Repulsion_, every node pair: magnitude `5000 / distanceSquared`, pushing apart along the line
   between them. Clamp `distanceSquared` to a minimum of 1 and jitter coincident nodes.
-- *Springs*, along each edge: pull proportional to `(distance - 110) * 0.01`.
-- *Centering*: nudge each node toward the viewport center by `0.0015` of its offset.
+- _Springs_, along each edge: pull proportional to `(distance - 110) * 0.01`.
+- _Centering_: nudge each node toward the viewport center by `0.0015` of its offset.
 - Integrate: multiply velocity by `0.86` damping, add to position, clamp inside the viewport with a
   margin so nothing hides under the header.
 
@@ -108,10 +109,10 @@ first paint so the page opens settled, then `requestAnimationFrame` a loop of ti
 
 **Interactions.**
 
-- *Drag*: `pointerdown` on a node pins it and captures the pointer; `pointermove` sets its position
+- _Drag_: `pointerdown` on a node pins it and captures the pointer; `pointermove` sets its position
   and zeroes its velocity; `pointerup` unpins and releases. Bump `alpha` on grab so the graph
   re-settles around it.
-- *Hover*: highlight the node and its edges, dim every non-neighbor, and fill the detail card with
+- _Hover_: highlight the node and its edges, dim every non-neighbor, and fill the detail card with
   the node's type, id, `desc`, and its relations — outgoing as `label → target`, incoming as
   `source label →`. Clear it on leave, but not mid-drag.
 
