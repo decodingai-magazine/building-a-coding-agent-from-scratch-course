@@ -18,7 +18,7 @@ stays in the harness process.
 
 [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs)'s footprint is one line: the Environment Bucket **is** a Kitaru secret — the only `get_secret` seam
 in the codebase ([ADR-0015 §6](../docs/adr/0015-environment-bucket-secrets.md)). (`MODAL_PROXY_TOKEN_ID` /
-`_SECRET` are unrelated: Modal's own endpoint-auth headers — see [`modal_models.md`](modal_models.md).)
+`_SECRET` are unrelated: Modal's own endpoint-auth headers — see [`02_modal_endpoints.md`](02_modal_endpoints.md).)
 
 The rest is a manual e2e tutorial. Every case is an **A/B**: the same command with one thing flipped, and a
 different observable. Part 4 is the automated backstop — same claims, no network, no PAT, no Kitaru.
@@ -44,7 +44,7 @@ uv run kitaru login     # or bring the local server + web dashboard back up on 1
 ```
 
 On macOS the local Kitaru server can also die mid-run with an ObjC fork-safety abort — the
-`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` fix is in [runtime.md](runtime.md#macos-the-local-kitaru-server-crashes-mid-run).
+`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` fix is in [03_runtime.md](03_runtime.md#macos-the-local-kitaru-server-crashes-mid-run).
 
 ## Part 1 — the config surface (`DECODE_ENV`)
 
@@ -147,7 +147,7 @@ headless-only toggle).
 
 | Command | Working looks like |
 |---|---|
-| **Missing bucket** (or Kitaru local server down): `DECODE_ENV=prod uv run decode run "hi"` | ONE friendly stderr line, exit 1, **no traceback** — and it names the fix, not the missing key: *Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded (it is missing, or the Kitaru local server is down) — run `make sync-secrets ENV=prod` (see running_the_code/credentials.md).* |
+| **Missing bucket** (or Kitaru local server down): `DECODE_ENV=prod uv run decode run "hi"` | ONE friendly stderr line, exit 1, **no traceback** — and it names the fix, not the missing key: *Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded (it is missing, or the Kitaru local server is down) — run `make sync-secrets ENV=prod` (see running_the_code/06_credentials.md).* |
 | Same, in the **TUI**: `DECODE_ENV=prod uv run decode` | The **same** line, exit 1 — the REPL is guarded before it starts. Both surfaces or it isn't a config surface. |
 | **No backfill**: delete `GEMINI_API_KEY` from the bucket (`make sync-secrets ENV=staging` after removing it from `.env`), put it back in `.env`, then `env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode run "hi"` | `Decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example).` — it fails **loudly** even though the key is sitting right there in `.env`. That file is not in the chain at a remote env. **This is the point of having environments at all**: a provisioning gap must not be masked by a developer's laptop. |
 | **Process env wins**: `GEMINI_API_KEY=<a-real-key> DECODE_ENV=staging uv run decode run "hi"` | It answers, using *your* key — precedence is always `process env > (.env \| bucket) > defaults`. Handy for a one-off override; also the escape hatch when a bucket key is stale. |
@@ -212,7 +212,7 @@ larger ask: letting the **model itself** push and open the PR.
 
 > ### `rm -rf .decode/sandbox` before *any* `--repo` run — not optional
 >
-> `--repo` clones **only into an empty Workspace** ([sandboxing.md](sandboxing.md)); a populated
+> `--repo` clones **only into an empty Workspace** ([04_sandboxing.md](04_sandboxing.md)); a populated
 > `.decode/sandbox` is reused and `--repo` **silently ignored** — no `origin`, and the push dies with a
 > baffling `'origin' does not appear to be a git repository`. Confirm before you blame the token:
 > `git -C .decode/sandbox remote -v` — a clone has an `origin`, a leftover scratch tree has none.

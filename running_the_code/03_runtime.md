@@ -2,7 +2,7 @@
 
 The REPL needs you at the keyboard. `decode run` doesn't: it runs one task to completion unattended and prints the answer on stdout (pipe-clean). Same agent, different driver — a [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs) **durable flow** checkpoints every model and tool call, so an expensive run survives a crash and resumes instead of re-paying for finished work ([ADR-0008](../docs/adr/0008-kitaru-durable-runtime.md)).
 
-Prerequisite: the core setup from [install_and_usage.md](install_and_usage.md). Nothing else — the local Kitaru stack runs offline, no server needed.
+Prerequisite: the core setup from [01_install_and_usage.md](01_install_and_usage.md). Nothing else — the local Kitaru stack runs offline, no server needed.
 
 ## Run a task
 
@@ -41,6 +41,6 @@ Prefer `logout` unless you actually want the web dashboard — `decode run`, `ki
 
 ## Go further
 
-- Run headless **inside a sandbox** and on any repo: [sandboxing.md](sandboxing.md) (`SANDBOX_MODE=docker decode run --repo <url> "<task>"`).
-- Run headless **in the cloud** — the whole agent on Modal, checkpoints on a self-hosted server: [infra.md](infra.md).
-- Hydrate the run's secrets from an Environment Bucket instead of `.env`: [credentials.md](credentials.md).
+- Run headless **inside a sandbox** and on any repo: [04_sandboxing.md](04_sandboxing.md) (`SANDBOX_MODE=docker decode run --repo <url> "<task>"`).
+- Run headless **in the cloud** — the whole agent on Modal, checkpoints on a self-hosted server: [07_infra.md](07_infra.md).
+- Hydrate the run's secrets from an Environment Bucket instead of `.env`: [06_credentials.md](06_credentials.md).

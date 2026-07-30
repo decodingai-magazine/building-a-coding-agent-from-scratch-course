@@ -218,7 +218,7 @@ class Settings(BaseSettings):
     # MODAL_TOKEN_* account tokens; the url is per-user deploy output (used as ``{url}/v1``); proxy
     # tokens are optional (empty = --unauthenticated), both-or-neither.
     modal_endpoint_url: str = ""
-    # More on supported models: running_the_code/modal_models.md
+    # More on supported models: running_the_code/02_modal_endpoints.md
     modal_endpoint_model: str = "Qwen/Qwen3.6-35B-A3B-FP8"
     modal_proxy_token_id: SecretStr = SecretStr("")  # Modal-Key: wk-... request header
     modal_proxy_token_secret: SecretStr = SecretStr("")  # Modal-Secret: ws-... request header

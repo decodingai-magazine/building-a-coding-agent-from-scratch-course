@@ -185,56 +185,56 @@ Why you need benchmarks, regression tests and online evals.
     <td align="center"><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><img src="assets/architecture.png" width="250" alt="Lesson 1 — the harness architecture"/></a></td>
     <td align="center">🎬 <i>Video 1 — coming soon</i></td>
     <td align="center">Designing the harness around the model, from the agent loop to a remote swarm.</td>
-    <td align="center"><a href="running_the_code/install_and_usage.md">install_and_usage.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>2</b><br/>The Bare-Bones Coding Agent Loop</td>
     <td align="center"><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank"><img src="assets/architecture_lesson_2.png" width="250" alt="Lesson 2 — the bare-bones coding agent loop"/></a></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
     <td align="center">One agent loop, 9 tools, and a terminal you can steer.</td>
-    <td align="center"><a href="running_the_code/install_and_usage.md">install_and_usage.md</a> · <a href="running_the_code/modal_models.md">modal_models.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>3</b><br/>The Runtime: Durable Execution, HITL & Replays (The Headless Mode)</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
     <td align="center"><code>kill -9</code> a headless run, resume it from checkpoints, replay it with the model swapped.</td>
-    <td align="center"><a href="running_the_code/runtime.md">runtime.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_runtime.md">03_runtime.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>4</b><br/>Containing the Agent: Permissions & Sandbox</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 3 — coming soon</i></td>
     <td align="center">Four permission modes, then Docker and Modal sandboxes — nothing executes on your machine.</td>
-    <td align="center"><a href="running_the_code/sandboxing.md">sandboxing.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>5</b><br/>Context Engineering for Coding Agents</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 3 — coming soon</i></td>
     <td align="center">Memory, compaction, skills, and LSP — the context window treated as a budget.</td>
-    <td align="center"><a href="running_the_code/install_and_usage.md">install_and_usage.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>6</b><br/>Agents Catalog, Subagents & Parallel Fan-out</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 3 — coming soon</i></td>
     <td align="center">One call fans out N parallel subagents, each with a budget and a report contract.</td>
-    <td align="center"><a href="running_the_code/install_and_usage.md">install_and_usage.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>7</b><br/>Does It Work? Benchmarks, Regression & Online AI Evals</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 4 — coming soon</i></td>
     <td align="center">Benchmarks, regression probes, and online evals: does it work, still work, keep working?</td>
-    <td align="center"><a href="running_the_code/evals.md">evals.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>8</b><br/>Running Swarms of Remote Agents</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center"><i>No video</i></td>
     <td align="center">Deploy to GCP + Modal and build the same feature 5–10× in parallel — judged, winner merged.</td>
-    <td align="center"><a href="running_the_code/credentials.md">credentials.md</a> · <a href="running_the_code/infra.md">infra.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_runtime.md">03_runtime.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a> · <a href="running_the_code/06_credentials.md">06_credentials.md</a> · <a href="running_the_code/07_infra.md">07_infra.md</a></td>
   </tr>
 </table>
 
@@ -257,14 +257,14 @@ Best for **ML/AI engineers** who want to level up their craft and for **software
 
 Running the code costs **$0** if you stick to free tiers:
 
-| Service                                                                                                                                                      | Cost                                                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| Gemini API (default provider — easy setup, but limited API requests)                                                                                         | free tier ([Google AI Studio](https://aistudio.google.com/apikey))                                         |
-| [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (recommended provider + remote sandbox)                                                     | $30 free credits — enough to run the course                                                                |
-| OpenRouter (alternative provider)                                                                                                                            | $0 on `:free` models (optional $10 credit raises the daily cap)                                            |
-| [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)               | free tier                                                                                                  |
-| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (durable runtime) | free, runs locally offline                                                                                 |
-| GCP — deploy the agent to run remotely _(optional)_                                                                                                          | ~$16/month while it's up; new GCP accounts get $300 in credits — see [infra.md](running_the_code/infra.md) |
+| Service                                                                                                                                                      | Cost                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| Gemini API (default provider — easy setup, but limited API requests)                                                                                         | free tier ([Google AI Studio](https://aistudio.google.com/apikey))                                               |
+| [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (recommended provider + remote sandbox)                                                     | $30 free credits — enough to run the course                                                                      |
+| OpenRouter (alternative provider)                                                                                                                            | $0 on `:free` models (optional $10 credit raises the daily cap)                                                  |
+| [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)               | free tier                                                                                                        |
+| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (durable runtime) | free, runs locally offline                                                                                       |
+| GCP — deploy the agent to run remotely _(optional)_                                                                                                          | ~$16/month while it's up; new GCP accounts get $300 in credits — see [07_infra.md](running_the_code/07_infra.md) |
 
 **Reading-only? Everything's free!**
 
@@ -307,15 +307,16 @@ One Python package; each module maps to one part of the architecture:
 
 Everything lives under [`running_the_code/`](running_the_code/). One core guide, plus one focused guide per side quest:
 
-| Guide                                                         | What's inside                                        |
-| ------------------------------------------------------------- | ---------------------------------------------------- |
-| [install_and_usage.md](running_the_code/install_and_usage.md) | Start here                                           |
-| [troubleshooting.md](running_the_code/troubleshooting.md)     | Every known failure, and its fix                     |
-| [modal_models.md](running_the_code/modal_models.md)           | Serving open models on Modal                         |
-| [runtime.md](running_the_code/runtime.md)                     | Runtime setup for headless mode                      |
-| [sandboxing.md](running_the_code/sandboxing.md)               | Docker (local) / Modal (remote) setup for sandboxing |
-| [credentials.md](running_the_code/credentials.md)             | Environments & secrets, walked end-to-end            |
-| [infra.md](running_the_code/infra.md)                         | Deploying the remote runtime to GCP and Modal        |
+| Guide                                                               | What's inside                                        |
+| ------------------------------------------------------------------- | ---------------------------------------------------- |
+| [00_troubleshooting.md](running_the_code/00_troubleshooting.md)     | Every known failure, and its fix                     |
+| [01_install_and_usage.md](running_the_code/01_install_and_usage.md) | Start here                                           |
+| [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)     | Serving open models on Modal                         |
+| [03_runtime.md](running_the_code/03_runtime.md)                     | Runtime setup for headless mode                      |
+| [04_sandboxing.md](running_the_code/04_sandboxing.md)               | Docker (local) / Modal (remote) setup for sandboxing |
+| [05_evals.md](running_the_code/05_evals.md)                         | Benchmarks, regression probes, and online evals      |
+| [06_credentials.md](running_the_code/06_credentials.md)             | Environments & secrets, walked end-to-end            |
+| [07_infra.md](running_the_code/07_infra.md)                         | Deploying the remote runtime to GCP and Modal        |
 
 ## 🤝 Sponsors
 

@@ -2,7 +2,7 @@
 
 Every known failure in one place. Decode's startup guards check **presence only** and print one line, never a traceback — so start by matching the line you got.
 
-Setup and first-run problems are below. Two areas keep their own tables next to the feature that produces them: **sandbox modes** in [sandboxing.md](sandboxing.md#troubleshooting) and the **durable runtime** in [runtime.md](runtime.md#troubleshooting).
+Setup and first-run problems are below. Two areas keep their own tables next to the feature that produces them: **sandbox modes** in [04_sandboxing.md](04_sandboxing.md#troubleshooting) and the **durable runtime** in [03_runtime.md](03_runtime.md#troubleshooting).
 
 ## Install
 
@@ -19,7 +19,7 @@ Setup and first-run problems are below. Two areas keep their own tables next to 
 | --- | --- | --- |
 | `Decode: set GEMINI_API_KEY in your environment or .env to start` | no key, an empty one, or an unfilled placeholder (`changeme`) — all three read as unset | put a real key in `.env`. Confirm with `grep -c '^GEMINI_API_KEY=.\+' .env`. |
 | `Decode: LLM_PROVIDER=openrouter needs OPENROUTER_API_KEY …` | provider switched, its key not set | set `OPENROUTER_API_KEY`, or drop `LLM_PROVIDER` to fall back to Gemini. |
-| `Decode: LLM_PROVIDER=modal needs MODAL_ENDPOINT_URL …` | provider set to `modal` before the endpoint exists | create the endpoint ([install_and_usage.md step 3a](install_and_usage.md#3a-modal--your-own-open-source-model-recommended)), then paste its URL and model id into `.env`. |
+| `Decode: LLM_PROVIDER=modal needs MODAL_ENDPOINT_URL …` | provider set to `modal` before the endpoint exists | create the endpoint ([01_install_and_usage.md step 3a](01_install_and_usage.md#3a-modal--your-own-open-source-model-recommended)), then paste its URL and model id into `.env`. |
 | `Decode: LLM_PROVIDER=modal proxy tokens are both-or-neither …` | one of `MODAL_PROXY_TOKEN_ID` / `_SECRET` is set | set both, or neither for an `--unauthenticated` endpoint. |
 | `401` from your Modal endpoint | proxy tokens missing, mismatched, or not allowed on that env | re-mint with `uv run modal workspace proxy-tokens create`, then `uv run modal workspace proxy-tokens allow wk-... main`. |
 | The first Modal turn hangs for a long time, then works | cold start — the GPU scaled to zero and is waking | expected on `Min 0`. Set `COMPACTION_CONTEXT_WINDOW_TOKENS` to skip the startup probe; keep-warm (`Min ≥ 1`) removes it entirely but bills idle GPU. |

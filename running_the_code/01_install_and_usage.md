@@ -24,7 +24,7 @@ uv run decode
 
 Supported on **macOS, Linux, and Windows via [WSL2](https://learn.microsoft.com/windows/wsl/install)**. Native Windows (PowerShell / cmd) is untested — the TUI keybindings assume a POSIX shell.
 
-That's the whole list. Docker and `gcloud` are required for later lessons — [sandboxing.md](sandboxing.md) and [infra.md](infra.md) will walk you through their setup.
+That's the whole list. Docker and `gcloud` are required for later lessons — [04_sandboxing.md](04_sandboxing.md) and [07_infra.md](07_infra.md) will walk you through their setup.
 
 > **✅ Checkpoint** — `uv --version` prints a version. If it says `command not found`, uv is installed but not on your PATH yet: restart your shell.
 
@@ -103,7 +103,7 @@ Lost the URL? `uv run modal endpoint list --env main`.
 
 **If the first turn is slow**, that's the cold start waking the GPU. Setting `COMPACTION_CONTEXT_WINDOW_TOKENS=262144` skips decode's startup probe of `/v1/models`, which is the one request that has to wait on a cold endpoint — decode otherwise reads the window from the endpoint, then a static table, then assumes a conservative `200000`.
 
-**Picking a different model, endpoint tuning, autoscaling, benchmarks, and the cost/capability ladder** all live in [`modal_models.md`](modal_models.md). The default above is what every lesson is built and tested against.
+**Picking a different model, endpoint tuning, autoscaling, benchmarks, and the cost/capability ladder** all live in [`02_modal_endpoints.md`](02_modal_endpoints.md). The default above is what every lesson is built and tested against.
 
 > **✅ Checkpoint** — this returns your model id, and proves the URL and both proxy tokens are right:
 >
@@ -144,7 +144,7 @@ That's it — `gemini` is the default provider, so no `LLM_PROVIDER` line is nee
 
 | Provider (`LLM_PROVIDER`) | Model variable         | Default                    | Notes                                                                                                                                                                                                                                                                                                    |
 | ------------------------- | ---------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `modal` **(recommended)** | `MODAL_ENDPOINT_MODEL` | `Qwen/Qwen3.6-35B-A3B-FP8` | your own endpoint — no rate limits, $30 credits ≈ ~7h on 1×H100. Setup above; catalog in [`modal_models.md`](modal_models.md).                                                                                                                                                                           |
+| `modal` **(recommended)** | `MODAL_ENDPOINT_MODEL` | `Qwen/Qwen3.6-35B-A3B-FP8` | your own endpoint — no rate limits, $30 credits ≈ ~7h on 1×H100. Setup above; catalog in [`02_modal_endpoints.md`](02_modal_endpoints.md).                                                                                                                                                                           |
 | `gemini` (default)        | `GEMINI_MODEL`         | `gemini-3.5-flash`         | free tier at [Google AI Studio](https://aistudio.google.com/apikey); rate-limited.                                                                                                                                                                                                                       |
 | `openrouter`              | `OPENROUTER_MODEL`     | `openrouter/free`          | needs `OPENROUTER_API_KEY`. The [Free Models Router](https://openrouter.ai/docs/guides/routing/routers/free-router) auto-routes across free tool-capable models so one congested provider can't 429-block you. $10 of credit raises the free daily cap (~50 → ~1000 req/day); free models still cost $0. |
 
@@ -187,7 +187,7 @@ You get an interactive REPL: type a message, the agent streams a reply, and ever
 
 Everything decode produces is saved under **`<cwd>/.decode/`** (gitignored): `sessions/*.jsonl` (replayable sessions), `MEMORY.md` (cross-session memory), `logs/decode.log` (logs stay off the terminal).
 
-> **✅ Checkpoint** — type `what files are in this directory?` and press `Enter`. Working looks like: the agent asks to run a read-only tool, streams a list back, and `.decode/sessions/` now holds a `.jsonl` transcript. If the answer never streams, see [troubleshooting.md](troubleshooting.md).
+> **✅ Checkpoint** — type `what files are in this directory?` and press `Enter`. Working looks like: the agent asks to run a read-only tool, streams a list back, and `.decode/sessions/` now holds a `.jsonl` transcript. If the answer never streams, see [00_troubleshooting.md](00_troubleshooting.md).
 
 ### Resume a session
 
@@ -220,7 +220,7 @@ Two skills (`/commit`, `/review-diff`) ship inside the package and work from any
 
 > **✅ Checkpoint** — type `/` and the completion menu lists the demos. An empty menu means decode was launched somewhere without a `.decode/skills/` directory.
 
-**Something not working?** Every known failure and its fix is in [troubleshooting.md](troubleshooting.md).
+**Something not working?** Every known failure and its fix is in [00_troubleshooting.md](00_troubleshooting.md).
 
 ## Develop
 

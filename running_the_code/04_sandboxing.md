@@ -12,7 +12,7 @@ Both modes are one unified executor with **fresh-exec** semantics: the filesyste
 
 ## Setup
 
-Nothing here is needed for the first lessons — [install_and_usage.md](install_and_usage.md) gets the agent running with `SANDBOX_MODE=none`. Add the backend you want:
+Nothing here is needed for the first lessons — [01_install_and_usage.md](01_install_and_usage.md) gets the agent running with `SANDBOX_MODE=none`. Add the backend you want:
 
 | Mode | Prerequisite | Install / authenticate |
 | --- | --- | --- |
@@ -44,7 +44,7 @@ Tunables (all optional, documented in [`.env.example`](../.env.example)): `SANDB
 
 ## The sandbox git token (`SANDBOX_GIT_TOKEN`)
 
-Hand-back (above) needs **no** credential in the sandbox — it pushes host-side. `SANDBOX_GIT_TOKEN` is the opt-in for the strictly larger ask: letting the **model itself** run `git push` / `gh pr create` from inside the Workspace. Set it and the token is direct-injected into the Worker's env as `GITHUB_TOKEN` in both backends, plus a git credential-helper so HTTPS pushes and `gh` authenticate ([ADR-0016](../docs/adr/0016-drop-credential-proxy.md)) — exact mechanics, live proofs, and every negative case: [credentials.md Part 2](credentials.md#part-2--the-sandbox-git-token-sandbox_git_token).
+Hand-back (above) needs **no** credential in the sandbox — it pushes host-side. `SANDBOX_GIT_TOKEN` is the opt-in for the strictly larger ask: letting the **model itself** run `git push` / `gh pr create` from inside the Workspace. Set it and the token is direct-injected into the Worker's env as `GITHUB_TOKEN` in both backends, plus a git credential-helper so HTTPS pushes and `gh` authenticate ([ADR-0016](../docs/adr/0016-drop-credential-proxy.md)) — exact mechanics, live proofs, and every negative case: [06_credentials.md Part 2](06_credentials.md#part-2--the-sandbox-git-token-sandbox_git_token).
 
 > **A sandboxed process can read `$GITHUB_TOKEN`** — a prompt-injected agent too. Use a **fine-grained, repo-scoped, revocable** PAT, and revoke it when you're done. Leave the variable **unset** and the sandbox holds no credential at all — hand-back still ships your branch.
 
@@ -62,10 +62,10 @@ Sandbox guards check **presence only** and fire in both the REPL and the headles
 | `--repo` seems ignored, and there's no `origin` to push to | the Workspace was already populated — decode never re-clones over in-progress work | `rm -rf .decode/sandbox` to force a fresh clone. |
 | `cd` or `export` from one `bash` call doesn't apply to the next | fresh-exec semantics: the filesystem persists, the process doesn't | chain them: `cd /workspace/app && …`. |
 
-Everything else — provider keys, rate limits, skills, sessions — is in [troubleshooting.md](troubleshooting.md).
+Everything else — provider keys, rate limits, skills, sessions — is in [00_troubleshooting.md](00_troubleshooting.md).
 
 ## Go further
 
-- The end-to-end credential walkthrough — token set, token unset, and every negative case: [credentials.md](credentials.md).
-- Run a sandboxed agent headless (`decode run --repo …`): [runtime.md](runtime.md).
-- Move the *whole agent* (not just its tools) to the cloud: [infra.md](infra.md).
+- The end-to-end credential walkthrough — token set, token unset, and every negative case: [06_credentials.md](06_credentials.md).
+- Run a sandboxed agent headless (`decode run --repo …`): [03_runtime.md](03_runtime.md).
+- Move the *whole agent* (not just its tools) to the cloud: [07_infra.md](07_infra.md).
