@@ -185,7 +185,7 @@ Why you need benchmarks, regression tests and online evals.
     <td align="center"><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><img src="assets/architecture.png" width="250" alt="Lesson 1 — the harness architecture"/></a></td>
     <td align="center">🎬 <i>Video 1 — coming soon</i></td>
     <td align="center">Designing the harness around the model, from the agent loop to a remote swarm.</td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a><a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>2</b><br/>The Bare-Bones Coding Agent Loop</td>
