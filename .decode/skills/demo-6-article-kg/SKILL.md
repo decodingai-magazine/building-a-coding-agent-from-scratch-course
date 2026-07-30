@@ -1,9 +1,9 @@
 ---
 name: demo-6-article-kg
-description: Demo skill that web-fetches three Decoding AI knowledge-graph articles, has the agent itself distill them into a typed entity/relation graph, and renders an interactive dark-themed force-directed KG into one self-contained kg.html — no graph library, no CDN.
+description: Demo skill that web-fetches two Decoding AI knowledge-graph articles, has the agent itself distill them into a typed entity/relation graph, and renders an interactive dark-themed force-directed KG into one self-contained kg.html — no graph library, no CDN.
 ---
 
-The hardcore one: turn three live articles into a knowledge graph you can play with in the browser.
+The hardcore one: turn two live articles into a knowledge graph you can play with in the browser.
 You do all of it — you are the extractor (no NLP library) and you are the renderer (no graph
 library, no CDN, no framework). Two artifacts, one page that works the instant it lands.
 
@@ -21,11 +21,10 @@ Resolve it once, call it `<OUT>`, and use `<OUT>` everywhere below:
 Put the pipeline in `todo_write` as five items (fetch, extract, render, verify, report) and write
 the real `<OUT>` path into the first one so you never re-derive it.
 
-## Step 1 — fetch the three sources
+## Step 1 — fetch the two sources
 
 One `web_fetch` per URL (the tool returns Markdown):
 
-- https://www.decodingai.com/p/keep-knowledge-graph-clean
 - https://www.decodingai.com/p/understanding-neo4j-graph-agent-memory-system
 - https://www.decodingai.com/p/ship-a-knowledge-graph-ontology-in-5-minutes
 
@@ -35,7 +34,7 @@ what you have — never invent content you did not fetch.
 
 ## Step 2 — extract one merged graph
 
-Distill ONE graph across all three articles: an entity discussed in two articles is ONE node, not
+Distill ONE graph across both articles: an entity discussed in both articles is ONE node, not
 two. Write it to `<OUT>/graph.json`:
 
 ```json
@@ -73,7 +72,7 @@ substitute later, and never write an unexpanded template string. If you catch yo
 Author `<OUT>/kg.html` in this order — each section complete before the next:
 
 1. `<head>`: `<title>`, and one `<style>` block. No external stylesheet, script, or font.
-2. `<header>`: the page title, the three article URLs as links, and the type legend (a colored dot
+2. `<header>`: the page title, the two article URLs as links, and the type legend (a colored dot
    plus the type name, four of them).
 3. An empty `<svg>` filling the viewport, and an empty detail card `<div>` positioned on the right.
 4. One `<script>` block, in this order: the data, the model, the drawing, the simulation, the

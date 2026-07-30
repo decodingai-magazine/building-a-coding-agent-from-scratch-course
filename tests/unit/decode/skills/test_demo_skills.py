@@ -192,13 +192,13 @@ def test_demo_5_covers_pushing_the_branch_and_the_prepush_timeout():
 def test_demo_6_pins_the_articles_and_the_kg_page_contract():
     body = _skill_text(DEMO_6)
 
-    # The three live Decoding AI sources, fetched with decode's own web_fetch tool.
+    # The two live Decoding AI sources, fetched with decode's own web_fetch tool.
     for slug in (
-        "keep-knowledge-graph-clean",
         "understanding-neo4j-graph-agent-memory-system",
         "ship-a-knowledge-graph-ontology-in-5-minutes",
     ):
         assert f"https://www.decodingai.com/p/{slug}" in body
+    assert "keep-knowledge-graph-clean" not in body
     assert "web_fetch" in body
     # Two artifacts: the extraction checkpoint and the page embedding the same data.
     assert "graph.json" in body
