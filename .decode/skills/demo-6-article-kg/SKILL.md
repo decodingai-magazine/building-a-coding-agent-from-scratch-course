@@ -25,6 +25,7 @@ the real `<OUT>` path into the first one so you never re-derive it.
 
 One `web_fetch` per URL (the tool returns Markdown):
 
+- https://www.decodingai.com/p/keep-knowledge-graph-clean
 - https://www.decodingai.com/p/understanding-neo4j-graph-agent-memory-system
 - https://www.decodingai.com/p/ship-a-knowledge-graph-ontology-in-5-minutes
 
