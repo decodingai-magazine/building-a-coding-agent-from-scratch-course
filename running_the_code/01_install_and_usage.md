@@ -91,6 +91,7 @@ MODAL_TOKEN_SECRET=as-...
 
 MODAL_ENDPOINT_URL=https://your-workspace--your-app.modal.run   # decode calls {url}/v1
 MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8
+
 MODAL_PROXY_TOKEN_ID=wk-...          # both, or neither (an --unauthenticated endpoint)
 MODAL_PROXY_TOKEN_SECRET=ws-...
 ```
@@ -132,6 +133,7 @@ Pin a specific model with `OPENROUTER_MODEL=<slug>` — but check that it suppor
 ### 3c. Gemini — one key (fastest start)
 
 ```bash
+LLM_PROVIDER=gemini
 GEMINI_API_KEY=your-key-here     # free at https://aistudio.google.com/apikey
 # GEMINI_MODEL=gemini-3.5-flash  # the default — leave it alone unless you want a specific model
 ```
@@ -144,7 +146,7 @@ That's it — `gemini` is the default provider, so no `LLM_PROVIDER` line is nee
 
 | Provider (`LLM_PROVIDER`) | Model variable         | Default                    | Notes                                                                                                                                                                                                                                                                                                    |
 | ------------------------- | ---------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `modal` **(recommended)** | `MODAL_ENDPOINT_MODEL` | `Qwen/Qwen3.6-35B-A3B-FP8` | your own endpoint — no rate limits, $30 credits ≈ ~7h on 1×H100. Setup above; catalog in [`02_modal_endpoints.md`](02_modal_endpoints.md).                                                                                                                                                                           |
+| `modal` **(recommended)** | `MODAL_ENDPOINT_MODEL` | `Qwen/Qwen3.6-35B-A3B-FP8` | your own endpoint — no rate limits, $30 credits ≈ ~7h on 1×H100. Setup above; catalog in [`02_modal_endpoints.md`](02_modal_endpoints.md).                                                                                                                                                               |
 | `gemini` (default)        | `GEMINI_MODEL`         | `gemini-3.5-flash`         | free tier at [Google AI Studio](https://aistudio.google.com/apikey); rate-limited.                                                                                                                                                                                                                       |
 | `openrouter`              | `OPENROUTER_MODEL`     | `openrouter/free`          | needs `OPENROUTER_API_KEY`. The [Free Models Router](https://openrouter.ai/docs/guides/routing/routers/free-router) auto-routes across free tool-capable models so one congested provider can't 429-block you. $10 of credit raises the free daily cap (~50 → ~1000 req/day); free models still cost $0. |
 
