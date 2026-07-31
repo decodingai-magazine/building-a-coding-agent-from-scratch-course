@@ -40,7 +40,7 @@ dependencies = [
     "markdownify>=1.2.3",
     "pyyaml>=6.0.3",
     "modal>=1.5.3",
-    "anyio>=4.14.1",
+    "anyio>=4.14.2",
     "kitaru[local,pydantic-ai,llm]>=0.18.0",  # durability runtime (ADR-0008); mcp extra dropped (conflicts pydantic-ai mcp)
     "logfire>=4.37.0",
 ]
