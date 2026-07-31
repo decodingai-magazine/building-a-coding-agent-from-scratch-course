@@ -28,7 +28,7 @@ dependencies = [
     "python-dotenv>=1",  # explicit .env-file parsing for pydantic-settings (env_file=".env")
     "click>=8.1,<8.3",  # capped <8.3 for kitaru→zenml (≤8.2.1); see ADR-0009
     "rich>=13",
-    "prompt-toolkit>=3",
+    "prompt-toolkit>=3.0.53",
     # 1.x line for kitaru[pydantic-ai]; downgraded from 2.0 (ADR-0009). NOTE (task 058): switched from
     # the `pydantic-ai` meta package to `pydantic-ai-slim[google,openai]` and bumped the floor 1.89->1.95.
     # The meta package's all-provider extras (mistral/temporal/...) cap the resolver at 1.94.0, which
