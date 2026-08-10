@@ -49,8 +49,65 @@ img{max-width:100%;height:auto;display:block}
 @media (max-width:700px){
   /* phones: every multi-column grid becomes one column */
   [style*="grid-template-columns"]{grid-template-columns:1fr!important}
-  /* the section jump-links don't fit a phone; the GitHub button stays */
-  header nav a[href^="#"]{display:none!important}
+  /* the section jump-links don't fit a phone: collapse them behind a burger.
+     #site-menu is display:contents on desktop, so this is the only place it exists. */
+  #om-burger{display:inline-flex!important}
+  .om-ico-close{display:none}
+  header[data-open="1"] .om-ico-open{display:none}
+  header[data-open="1"] .om-ico-close{display:inline-flex}
+  #site-menu{
+    display:none!important;
+    position:absolute;left:0;right:0;top:100%;
+    flex-direction:column;align-items:stretch;gap:2px;
+    padding:8px clamp(20px,3vw,40px) 14px;
+    /* opaque, not rgba+backdrop-filter: the blurred backdrop composited
+       through and page text stayed legible behind the panel */
+    background:#131314;
+    border-bottom:1px solid var(--border);
+    box-shadow:0 18px 40px rgba(0,0,0,.45);
+  }
+  header[data-open="1"] #site-menu{display:flex!important}
+  #site-menu a{font-size:15px!important;padding:12px 10px!important}
+
+  /* infra divider: hide the flanking lines, let the title center + wrap */
+  .m-divider{justify-content:center}
+  .m-divider > span[style*="height:1px"]{display:none!important}
+  .m-divider > h3{flex:1 1 auto!important;font-size:clamp(17px,5.4vw,22px)!important}
+
+  /* cost table: drop the orphaned SERVICE/COST header, tighten stacked rows */
+  .m-costhead{display:none!important}
+  #cost div[style*="1.35fr 1fr"]{gap:3px!important;padding-top:13px!important;padding-bottom:13px!important}
+
+  /* running-the-code rows: filename + arrow on one row, description below */
+  a.x10[href*="running_the_code"]{grid-template-columns:1fr auto!important;column-gap:12px!important;row-gap:5px!important;align-items:center!important}
+  a.x10[href*="running_the_code"] > span:first-child{grid-column:1;grid-row:1}
+  a.x10[href*="running_the_code"] > :last-child{grid-column:2;grid-row:1}
+  a.x10[href*="running_the_code"] > span:nth-child(2){grid-column:1 / -1;grid-row:2}
+
+  /* hero: keep both CTAs on one row, and center the badge bar */
+  .m-herobtns{flex-wrap:nowrap!important;gap:10px!important}
+  .m-herobtns > a{flex:1 1 0;justify-content:center;padding-left:14px!important;padding-right:14px!important;white-space:nowrap}
+  .m-badgebar{justify-content:center!important}
+  .m-badgebar > div{justify-content:center!important}
+
+  /* section headings: let lines fill the width instead of balancing into a stub */
+  section h2{font-size:clamp(21px,6.4vw,26px)!important}
+  section h1,section h2,section h3,section h4{text-wrap-style:auto!important}
+
+  /* code snippets read smaller on a phone */
+  pre{font-size:clamp(8px,2.3vw,12.5px)!important}
+
+  /* lesson card titles: 17px can't fit a second word in a 270px card, so lines
+     ended ~68% full. 14px lets them fill; applied to all cards to stay uniform. */
+  #curriculum h3{font-size:14.5px!important;line-height:1.32!important}
+  #curriculum article p{font-size:14px!important}
+
+  /* headings that must stay on a single line: sized to the viewport with ~3% slack */
+  .m1a{font-size:min(4.9vw,26px)!important;line-height:1.25!important}
+  /* out-rank the id-scoped hero rule in the 1180px block */
+  #top h1.m1a{font-size:min(4.9vw,26px)!important}
+  /* hero tagline: regular weight reads better than bold at phone size */
+  #top>div>div>div>p:nth-of-type(1){font-weight:500!important}
 }
 </style>
 <style>
@@ -328,14 +385,20 @@ a:hover{color:var(--primary-hover)}
 <span style="font-family:var(--font-mono);font-size:15px;font-weight:700;color:var(--fg);letter-spacing:-.01em">decode</span>
 </a>
 <nav style="margin-left:auto;display:flex;align-items:center;gap:2px">
+<div id="site-menu" style="display:contents">
 <a class="x1" href="#about" style="font-size:13.5px;font-weight:600;color:var(--fg-2);padding:8px 12px;border-radius:var(--radius-pill);text-decoration:none">About</a>
 <a class="x1" href="#curriculum" style="font-size:13.5px;font-weight:600;color:var(--fg-2);padding:8px 12px;border-radius:var(--radius-pill);text-decoration:none">Outline</a>
 <a class="x1" href="#see-it-work" style="font-size:13.5px;font-weight:600;color:var(--fg-2);padding:8px 12px;border-radius:var(--radius-pill);text-decoration:none">See it work</a>
 <a class="x1" href="#cost" style="font-size:13.5px;font-weight:600;color:var(--fg-2);padding:8px 12px;border-radius:var(--radius-pill);text-decoration:none">Cost</a>
 <a class="x1" href="#running" style="font-size:13.5px;font-weight:600;color:var(--fg-2);padding:8px 12px;border-radius:var(--radius-pill);text-decoration:none">Run it</a>
 <a class="x1" href="#faq" style="font-size:13.5px;font-weight:600;color:var(--fg-2);padding:8px 12px;border-radius:var(--radius-pill);text-decoration:none">FAQ</a>
+</div>
 <span style="width:8px"></span>
 <a class="x2" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:700;color:var(--fg);border:1.5px solid var(--border-strong);border-radius:var(--radius-pill);padding:8px 15px;text-decoration:none;transition:background .15s"><i data-lucide="star" style="width:14px;height:14px"></i>GitHub</a>
+<button id="om-burger" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="site-menu" style="display:none;align-items:center;justify-content:center;width:38px;height:38px;margin-left:6px;background:transparent;border:1.5px solid var(--border-strong);border-radius:10px;color:var(--fg);cursor:pointer;flex:none;padding:0">
+<i data-lucide="menu" class="om-ico-open" style="width:19px;height:19px"></i>
+<i data-lucide="x" class="om-ico-close" style="width:19px;height:19px"></i>
+</button>
 </nav>
 </div>
 </header>
@@ -350,10 +413,10 @@ a:hover{color:var(--primary-hover)}
 <span style="width:1px;height:16px;background:rgba(255,255,255,.22);flex:none"></span>
 <span style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--orange)">Free open-source course</span>
 </div>
-<h1 style="font-size:min(2.5vw,32px);font-weight:700;line-height:1.1;letter-spacing:-.03em;margin:0;color:#fff;white-space:nowrap">Building a Coding Agent <span style="color:#fff">From Scratch</span></h1>
+<h1 class="m1a" style="font-size:min(2.5vw,32px);font-weight:700;line-height:1.1;letter-spacing:-.03em;margin:0;color:#fff;white-space:nowrap">Building a Coding Agent <span style="color:#fff">From Scratch</span></h1>
 <p style="font-size:min(1.4vw,19px);line-height:1.5;color:#fff;font-weight:700;margin:clamp(14px,2.2vh,20px) 0 0;white-space:nowrap">The harness, not the model, makes a coding agent good.</p>
 <p style="font-size:min(1.06vw,14.5px);line-height:1.62;color:#9a9ca1;margin:8px 0 0;white-space:nowrap">Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents.</p>
-<div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:clamp(24px,3.6vh,34px) 0 0">
+<div class="m-herobtns" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:clamp(24px,3.6vh,34px) 0 0">
 <a class="x3" href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:9px;font-size:15px;font-weight:700;color:#fff;background:var(--gradient-warm);border:none;border-radius:var(--radius-pill);padding:14px 26px;text-decoration:none;transition:transform .15s cubic-bezier(.2,.8,.2,1)">Start Lesson 1 <i data-lucide="arrow-right" style="width:16px;height:16px"></i></a>
 <a class="x4" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;font-size:15px;font-weight:700;color:#fff;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.22);border-radius:var(--radius-pill);padding:13px 24px;text-decoration:none;transition:background .15s"><i data-lucide="star" style="width:16px;height:16px"></i>Star the repo</a>
 </div>
@@ -372,7 +435,7 @@ a:hover{color:var(--primary-hover)}
 </div>
 </div>
 </div>
-<div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px 28px;margin:clamp(30px,4.6vh,48px) 0 0;padding:clamp(16px,2.4vh,22px) 0 0;border-top:1px solid rgba(255,255,255,.10)">
+<div class="m-badgebar" style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px 28px;margin:clamp(30px,4.6vh,48px) 0 0;padding:clamp(16px,2.4vh,22px) 0 0;border-top:1px solid rgba(255,255,255,.10)">
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">
 <img src="https://img.shields.io/badge/type-open--source_course-8a2be2" alt="Open-source course" style="height:20px;width:auto">
 <img src="https://img.shields.io/badge/cost_to_run-%240-2ea44f" alt="$0 to run" style="height:20px;width:auto">
@@ -406,7 +469,7 @@ a:hover{color:var(--primary-hover)}
 <span style="font-family:var(--font-mono);font-size:11.5px;color:#8a8c90;margin-left:6px">quickstart.sh</span>
 <button class="x3" type="button" id="om-copy-btn" style="margin-left:auto;display:inline-flex;align-items:center;gap:7px;font-family:var(--font-sans);font-size:12.5px;font-weight:700;color:#fff;background:var(--gradient-warm);border:none;border-radius:var(--radius-pill);padding:7px 14px;cursor:pointer;transition:transform .15s cubic-bezier(.2,.8,.2,1)"><i data-lucide="copy" style="width:13px;height:13px"></i><span data-om-copy-label="true">copy</span></button>
 </div>
-<pre style="flex:1;margin:0;padding:20px 22px;overflow-x:auto;font-family:var(--font-mono);font-size:13px;line-height:1.85;color:#f3f3f4;display:grid;gap:0;align-content:center"><div><span style="color:var(--orange)">$</span> git clone https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course.git</div><div><span style="color:var(--orange)">$</span> cd building-a-coding-agent-from-scratch-course</div><div><span style="color:var(--orange)">$</span> make install</div><div><span style="color:var(--orange)">$</span> cp .env.example .env   <span style="color:#6b6c6f"># set LLM API key</span></div><div><span style="color:var(--orange)">$</span> uv run decode</div></pre>
+<pre style="flex:1;margin:0;padding:20px 22px;overflow-x:auto;font-family:var(--font-mono);font-size:clamp(10px,2.8vw,13px);line-height:1.85;color:#f3f3f4;display:grid;gap:0;align-content:center"><div><span style="color:var(--orange)">$</span> git clone https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course.git</div><div><span style="color:var(--orange)">$</span> cd building-a-coding-agent-from-scratch-course</div><div><span style="color:var(--orange)">$</span> make install</div><div><span style="color:var(--orange)">$</span> cp .env.example .env   <span style="color:#6b6c6f"># set LLM API key</span></div><div><span style="color:var(--orange)">$</span> uv run decode</div></pre>
 </div>
 <p style="font-size:14.5px;line-height:1.65;color:var(--fg-2);margin:18px 0 0">Then type <span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);background:var(--surface-2);border:1px solid var(--border);border-radius:4px;padding:2px 6px">/demo-</span> and pick a demo — <a href="#see-it-work" style="color:var(--primary);text-decoration:none">see what they do</a> below. <a href="#running" style="color:var(--primary);text-decoration:none">Full setup guide.</a></p>
 </div>
@@ -431,7 +494,7 @@ a:hover{color:var(--primary-hover)}
 <div style="max-width:1320px;margin:0 auto">
 <div style="display:flex;align-items:center;gap:14px"><span style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--primary)">About this course</span><span style="flex:1;height:1px;background:linear-gradient(90deg,var(--border-strong),transparent)"></span><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--fg-3);flex:none">02</span></div>
 <h2 style="font-size:min(3.2vw,41px);font-weight:800;line-height:1.1;letter-spacing:-.028em;color:var(--fg);margin:clamp(18px,2.6vh,26px) 0 0;white-space:nowrap">The Agent Is <span style="font-weight: normal;">~</span>20 Lines. The Course Is Everything Else.</h2>
-<p style="font-size:min(1.3vw,18px);line-height:1.6;color:var(--fg-2);margin:clamp(14px,2.2vh,20px) 0 0;white-space:nowrap">In <a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">LangChain's Terminal-Bench test</a>, changing only the harness moved an agent from ~30th to top 5. The harness, not the model, wins.</p>
+<p style="font-size:clamp(15px,1.3vw,18px);line-height:1.6;color:var(--fg-2);margin:clamp(14px,2.2vh,20px) 0 0;white-space:nowrap">In <a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">LangChain's Terminal-Bench test</a>, changing only the harness moved an agent from ~30th to top 5. The harness, not the model, wins.</p>
 
 <div style="display:grid;grid-template-columns:1.15fr .85fr;gap:clamp(20px,2.8vw,36px);align-items:center;margin:clamp(30px,5vh,52px) 0 0">
 <div style="order:2;min-width:0">
@@ -647,7 +710,7 @@ a:hover{color:var(--primary-hover)}
 </figure>
 </div>
 
-<div style="position:relative;overflow:hidden;display:flex;align-items:center;gap:clamp(16px,2.4vw,30px);margin:clamp(30px,4.4vh,50px) 0 0;padding:clamp(16px,2.2vh,24px) 0"><span style="position:absolute;top:0;bottom:0;left:50%;transform:translateX(-50%);width:min(900px,96%);pointer-events:none;background:linear-gradient(90deg,rgba(127,238,100,.3) 12%,rgba(227,13,62,.38) 50%,rgba(220,105,46,.35) 88%);filter:blur(22px);-webkit-mask-image:radial-gradient(closest-side ellipse at 50% 50%,#000 30%,transparent 100%);mask-image:radial-gradient(closest-side ellipse at 50% 50%,#000 30%,transparent 100%)"></span><span style="flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--border-strong))"></span>
+<div class="m-divider" style="position:relative;overflow:hidden;display:flex;align-items:center;gap:clamp(16px,2.4vw,30px);margin:clamp(30px,4.4vh,50px) 0 0;padding:clamp(16px,2.2vh,24px) 0"><span style="position:absolute;top:0;bottom:0;left:50%;transform:translateX(-50%);width:min(900px,96%);pointer-events:none;background:linear-gradient(90deg,rgba(127,238,100,.3) 12%,rgba(227,13,62,.38) 50%,rgba(220,105,46,.35) 88%);filter:blur(22px);-webkit-mask-image:radial-gradient(closest-side ellipse at 50% 50%,#000 30%,transparent 100%);mask-image:radial-gradient(closest-side ellipse at 50% 50%,#000 30%,transparent 100%)"></span><span style="flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--border-strong))"></span>
 <h3 style="position:relative;font-size:clamp(19px,2.2vw,26px);font-weight:800;line-height:1.15;letter-spacing:-.02em;color:var(--fg);margin:0;flex:none;text-align:center">And the infra that powers the agents.</h3>
 <span style="flex:1;height:1px;background:linear-gradient(90deg,var(--border-strong),transparent)"></span></div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:clamp(14px,1.8vw,20px);margin:clamp(18px,2.6vh,26px) 0 0">
@@ -762,7 +825,7 @@ a:hover{color:var(--primary-hover)}
 <h2 style="font-size:clamp(26px,3.4vw,42px);font-weight:800;line-height:1.1;letter-spacing:-.028em;color:var(--fg);margin:12px 0 0;text-wrap:pretty">Running It Costs <span class="text-gradient">$0</span>.</h2>
 <p style="font-size:15px;line-height:1.65;color:var(--fg-2);margin:14px 0 0;max-width:60ch">If you stick to free tiers. Reading only? Everything's free, full stop.</p>
 <div style="display:grid;margin:clamp(22px,3.4vh,34px) 0 0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
-<div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:14px clamp(20px,2.4vw,28px);background:var(--surface-3);border-bottom:1px solid var(--border-strong);font-family:var(--font-mono);font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--fg-2)"><span>Service</span><span>Cost</span></div>
+<div class="m-costhead" style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:14px clamp(20px,2.4vw,28px);background:var(--surface-3);border-bottom:1px solid var(--border-strong);font-family:var(--font-mono);font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--fg-2)"><span>Service</span><span>Cost</span></div>
 <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:16px clamp(20px,2.4vw,28px);border-bottom:1px solid var(--border);align-items:baseline"><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Gemini API <span style="color:var(--fg-3)">(default provider — easy setup, but limited API requests)</span></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg)">free tier (<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">Google AI Studio</a>)</span></div>
 <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:16px clamp(20px,2.4vw,28px);border-bottom:1px solid var(--border);align-items:baseline"><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)"><a href="https://modal.com/?source=decodingai&amp;campaign=harnesseng" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700;text-decoration:none">Modal</a> <span style="color:var(--fg-3)">(recommended provider + remote sandbox)</span></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg)">$30 free credits — enough to run the course</span></div>
 <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:16px clamp(20px,2.4vw,28px);border-bottom:1px solid var(--border);align-items:baseline"><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">OpenRouter <span style="color:var(--fg-3)">(alternative provider)</span></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg)">$0 on <span style="font-family:var(--font-mono);font-size:13.5px">:free</span> models (optional $10 credit raises the daily cap)</span></div>
@@ -840,7 +903,7 @@ a:hover{color:var(--primary-hover)}
 
 <section id="sponsors" style="position:relative;overflow:hidden;background:var(--gradient-warm-diag);padding:clamp(56px,7vw,104px) clamp(20px,3vw,40px)">
 <div style="max-width:1320px;margin:0 auto;text-align:center">
-<h2 style="font-size:clamp(26px,3.4vw,42px);font-weight:800;line-height:1.1;letter-spacing:-.028em;color:#fff;margin:0 auto;white-space:nowrap">This Course Is Free Thanks to Them.</h2>
+<h2 style="font-size:clamp(26px,3.4vw,42px);font-weight:800;line-height:1.1;letter-spacing:-.028em;color:#fff;margin:0 auto;white-space:nowrap" class="m1a">This Course Is Free Thanks to Them.</h2>
 <div style="margin:clamp(24px,3.6vh,38px) auto 0;max-width:820px;border:1px solid rgba(0,0,0,.28);border-radius:var(--radius-lg);overflow:hidden;box-shadow:0 22px 50px rgba(0,0,0,.3)">
 <img src="assets/github-repo-banner-dark.png" alt="Sponsored by Modal, Opik and Kitaru" style="width:100%">
 </div>
@@ -923,6 +986,37 @@ a:hover{color:var(--primary-hover)}
     if (n < 60) setTimeout(function(){ icons(n + 1); }, 150);
   }
   icons();
+
+  var burger = document.getElementById('om-burger');
+  var header = document.querySelector('header');
+  var menu = document.getElementById('site-menu');
+  if (burger && header && menu) {
+    var setOpen = function(open){
+      header.setAttribute('data-open', open ? '1' : '0');
+      burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      burger.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+    };
+    setOpen(false);
+    burger.addEventListener('click', function(){
+      setOpen(header.getAttribute('data-open') !== '1');
+    });
+    // a jump-link was tapped — collapse the panel so the section is visible
+    menu.addEventListener('click', function(e){
+      if (e.target.closest('a')) setOpen(false);
+    });
+    document.addEventListener('keydown', function(e){
+      if (e.key === 'Escape') setOpen(false);
+    });
+    // tapping outside the header closes it
+    document.addEventListener('click', function(e){
+      if (header.getAttribute('data-open') === '1' && !header.contains(e.target)) setOpen(false);
+    });
+    // never leave it stuck open when rotating back to a wide viewport
+    window.addEventListener('resize', function(){
+      if (window.innerWidth > 700) setOpen(false);
+    });
+  }
+
   var btn = document.getElementById('om-copy-btn');
   if (btn) btn.addEventListener('click', function(){
     var text = [
