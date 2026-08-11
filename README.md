@@ -54,7 +54,7 @@ async with agent.iter(prompt, message_history=history) as run:
         stream_events(node)
 ```
 
-That's the _entire_ tool-calling agent — the thing people call "the agent" ends here. Everything else in this repo — the tools, skills, the permission layer, sandbox, steering queue, memory, compaction, durable runtime, remote execution, the subagent fan-out, the evals — is the harness. That's what you're here to build.
+That's the _entire_ tool-calling agent. Everything else in this repo: the tools, skills, the permission layer, sandbox, steering queue, memory, compaction, durable runtime, remote execution, the subagent fan-out, the evals, is the harness. That's what you're here to build.
 
 <p align="center">
   <img src="assets/tui-session-start.png" alt="A fresh decode session: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer" width="90%"/>
@@ -62,7 +62,7 @@ That's the _entire_ tool-calling agent — the thing people call "the agent" end
   <i>A fresh session powered by Qwen 3.6 35B hosted on Modal</i>
 </p>
 
-We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), then distilled it into 8 articles and 4 videos where you'll build **decode**, your own coding agent, from scratch — one headless core hooked to two modes: an interactive TUI and a remote runtime running N copies in parallel.
+We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), then distilled it into 8 articles and 4 videos where you'll build **decode**, your own coding agent, from scratch. One headless core hooked to two modes: an interactive TUI and a remote runtime running N copies in parallel.
 
 <p align="center">
   <img src="assets/architecture.png" alt="decode architecture" width="620">
@@ -100,7 +100,9 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
   </tr>
 </table>
 
-And the infra that powers the agents:
+<p align="center">
+  And the infra that powers the agents.
+</p>
 
 <table>
   <tr>
@@ -162,13 +164,13 @@ Otherwise, we build all the functionality from scratch, to teach you the foundat
 
 For the full experience, go through the articles and videos that cover what the code can't. **The why behind every decision.**
 
-Why we have a headless harness and two interface modes: TUI + Remote.
-What the essential components of a coding agent are, and what is optional.
-Why we plugged in 9 tools, no more, no less.
-Why we need a durable runtime and replays.
-What guardrails are actually useful.
-Why compaction fires at ~80% of the window instead of at the limit.
-Why you need benchmarks, regression tests and online evals.
+- Why we have a headless harness and two interface modes: TUI + Remote.
+- What the essential components of a coding agent are, and what is optional.
+- Why we plugged in 9 tools, no more, no less.
+- Why we need a durable runtime and replays.
+- What guardrails are actually useful.
+- Why compaction fires at ~80% of the window instead of at the limit.
+- Why you need benchmarks, regression tests and online evals.
 
 ## 📚 Course Outline
 
@@ -212,7 +214,7 @@ Why you need benchmarks, regression tests and online evals.
     <td align="center"><b>5</b><br/>Context Engineering for Coding Agents</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 3 — coming soon</i></td>
-    <td align="center">Memory, compaction, skills, and LSP — the context window treated as a budget.</td>
+    <td align="center">Memory, compaction, skills, and LSP: the context window treated as a budget.</td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
@@ -240,7 +242,7 @@ Why you need benchmarks, regression tests and online evals.
 
 ## 👥 Who Should Join?
 
-**For: engineers who learn by building.** You finish with a working coding agent that teaches you harness engineering patterns to steal for your own agentic applications.
+**Engineers who learn by building.** You finish with a working coding agent that teaches you harness engineering patterns to steal for your own agentic applications.
 
 Best for **ML/AI engineers** who want to level up their craft and for **software engineers and data scientists** who want to transition into building agentic systems from scratch.
 
@@ -266,7 +268,7 @@ Running the code costs **$0** if you stick to free tiers:
 | [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (durable runtime) | free, runs locally offline                                                                                       |
 | GCP — deploy the agent to run remotely _(optional)_                                                                                                          | ~$16/month while it's up; new GCP accounts get $300 in credits — see [07_infra.md](running_the_code/07_infra.md) |
 
-**Reading-only? Everything's free!**
+_**Reading-only? Everything's free!**_
 
 ## ⚙️ How It Works
 
@@ -345,7 +347,7 @@ No. The default Gemini provider has a free tier, OpenRouter routes across `:free
 Accessibility: our audience knows Python. The course focuses on the design decisions, which transfer to any language.
 
 **Why build from scratch instead of extending Pi, DeepAgents, or an existing harness?**
-Because adding custom logic to an existing harness is the easy part — _knowing what to add_ requires understanding the internals. That's the fundamentals, and it's what still makes AI engineers valuable. Build a coding agent once and you're equipped to build a custom agent for any use case.
+Because adding custom logic to an existing harness is the easy part. _Knowing what to add_ requires understanding the internals. That's the fundamentals, and it's what still makes AI engineers valuable. Build a coding agent once and you're equipped to build a custom agent for any use case.
 
 ## 🥂 Contributing
 
