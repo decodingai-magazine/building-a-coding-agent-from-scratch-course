@@ -183,7 +183,7 @@ For the full experience, go through the articles and videos that cover what the 
     <th align="center">Running the code</th>
   </tr>
   <tr>
-    <td align="center"><b>1</b><br/>Building a Coding Agent From Scratch: Harness Architecture</td>
+    <td align="center"><b>1</b><br/>Building a Coding Agent From Scratch</td>
     <td align="center"><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><img src="assets/architecture.png" width="250" alt="Lesson 1 — the harness architecture"/></a></td>
     <td align="center">🎬 <i>Video 1 — coming soon</i></td>
     <td align="center">Designing the harness around the model, from the agent loop to a remote swarm.</td>
@@ -192,51 +192,51 @@ For the full experience, go through the articles and videos that cover what the 
   <tr>
     <td align="center"><b>2</b><br/>The Bare-Bones Coding Agent Loop</td>
     <td align="center"><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank"><img src="assets/architecture_lesson_2.png" width="250" alt="Lesson 2 — the bare-bones coding agent loop"/></a></td>
-    <td align="center">🎬 <i>Video 2 — coming soon</i></td>
+    <td align="center">🎬 <i>Video 1 — coming soon</i></td>
     <td align="center">One agent loop, 9 tools, and a terminal you can steer.</td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>3</b><br/>The Runtime: Durable Execution, HITL & Replays (The Headless Mode)</td>
-    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center"><b>3</b><br/>From a Raw Shell to a Sandboxed Coding Agent</td>
+    <td align="center"><a href="https://www.decodingai.com/p/run-coding-agents-safely" target="_blank"><img src="assets/architecture_lesson_3.png" width="250" alt="Lesson 3 — from a raw shell to a sandboxed coding agent"/></a></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
-    <td align="center"><code>kill -9</code> a headless run, resume it from checkpoints, replay it with the model swapped.</td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_runtime.md">03_runtime.md</a></td>
-  </tr>
-  <tr>
-    <td align="center"><b>4</b><br/>Containing the Agent: Permissions & Sandbox</td>
-    <td align="center">📄 <i>Coming soon</i></td>
-    <td align="center">🎬 <i>Video 3 — coming soon</i></td>
-    <td align="center">Four permission modes, then Docker and Modal sandboxes — nothing executes on your machine.</td>
+    <td align="center">Safely execute your agent's commands locally via Docker or remotely via Modal.</td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>5</b><br/>Context Engineering for Coding Agents</td>
+    <td align="center"><b>4</b><br/>Context Engineering for Coding Agents</td>
     <td align="center">📄 <i>Coming soon</i></td>
-    <td align="center">🎬 <i>Video 3 — coming soon</i></td>
+    <td align="center">🎬 <i>Video 2 — coming soon</i></td>
     <td align="center">Memory, compaction, skills, and LSP: the context window treated as a budget.</td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>6</b><br/>Agents Catalog, Subagents & Parallel Fan-out</td>
+    <td align="center"><b>5</b><br/>Agents Catalog, Subagents & Parallel Fan-out</td>
     <td align="center">📄 <i>Coming soon</i></td>
-    <td align="center">🎬 <i>Video 3 — coming soon</i></td>
+    <td align="center">🎬 <i>Video 2 — coming soon</i></td>
     <td align="center">One call fans out N parallel subagents, each with a budget and a report contract.</td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>7</b><br/>Does It Work? Benchmarks, Regression & Online AI Evals</td>
+    <td align="center"><b>6</b><br/>Remote Headless Mode & Durability</td>
     <td align="center">📄 <i>Coming soon</i></td>
-    <td align="center">🎬 <i>Video 4 — coming soon</i></td>
+    <td align="center">🎬 <i>Video 3 — coming soon</i></td>
+    <td align="center"><code>kill -9</code> a headless run, resume it from checkpoints, deploy to GCP + Modal and build the same feature 5–10× in parallel.</td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_runtime.md">03_runtime.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a> · <a href="running_the_code/06_credentials.md">06_credentials.md</a> ·<br/><a href="running_the_code/07_infra.md">07_infra.md</a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>7</b><br/>AI Evals Foundations: Benchmarks, Regression and Online</td>
+    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center">🎬 <i>Video 3 — coming soon</i></td>
     <td align="center">Benchmarks, regression probes, and online evals: does it work, still work, keep working?</td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>8</b><br/>Running Swarms of Remote Agents</td>
+    <td align="center"><b>8</b><br/>AI Evals on Steroids via Replays</td>
     <td align="center">📄 <i>Coming soon</i></td>
-    <td align="center"><i>No video</i></td>
-    <td align="center">Deploy to GCP + Modal and build the same feature 5–10× in parallel — judged, winner merged.</td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_runtime.md">03_runtime.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a> · <a href="running_the_code/06_credentials.md">06_credentials.md</a> ·<br/><a href="running_the_code/07_infra.md">07_infra.md</a></td>
+    <td align="center">🎬 <i>Video 4 — coming soon</i></td>
+    <td align="center">Replay a recorded run with the model or a checkpoint swapped, and diff the two executions.</td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_runtime.md">03_runtime.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a></td>
   </tr>
 </table>
 
