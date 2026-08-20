@@ -177,7 +177,7 @@ For the full experience, go through the articles and videos that cover what the 
 <table>
   <tr>
     <th align="center">Lesson</th>
-    <th align="center" width="240">Written Lesson</th>
+    <th align="center" width="180">Written Lesson</th>
     <th align="center" width="240">Video Lesson</th>
     <th align="center">Running the code</th>
   </tr>
