@@ -185,7 +185,7 @@ For the full experience, go through the articles and videos that cover what the 
   <tr>
     <td align="center"><b>1</b><br/>Building a Coding Agent From Scratch</td>
     <td align="center"><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><img src="assets/architecture.png" width="250" alt="Lesson 1 — the harness architecture"/></a><br/><i><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank">Article 1</a></i></td>
-    <td align="center" rowspan="2"><a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank"><img src="assets/thumbnail_video_1.jpg" width="250" alt="Video 1 — the video version of lessons 1 and 2"/></a><br/><i>Video 1</i></td>
+    <td align="center" rowspan="2"><a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank"><img src="assets/thumbnail_video_1.jpg" width="320" alt="Video 1 — the video version of lessons 1 and 2"/></a><br/><i><a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank">Video 1</a></i></td>
     <td align="center">Designing the harness around the model, from the agent loop to a remote swarm.</td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
