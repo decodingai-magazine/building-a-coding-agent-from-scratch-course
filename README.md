@@ -183,48 +183,48 @@ For the full experience, go through the articles and videos that cover what the 
   </tr>
   <tr>
     <td align="center"><b>1</b><br/>Building a Coding Agent From Scratch</td>
-    <td align="center" width="360"><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><img src="assets/architecture.png" width="300" alt="Lesson 1 — the harness architecture"/></a><br/><i><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank">Article 1</a></i></td>
+    <td align="center"><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><img src="assets/architecture.png" width="300" alt="Lesson 1 — the harness architecture"/></a><br/><i><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank">Article 1</a></i></td>
     <td align="center" rowspan="2"><a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank"><img src="assets/thumbnail_video_1.jpg" width="600" alt="Video 1 — the video version of lessons 1 and 2"/></a><br/><i><a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank">Video 1</a></i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>2</b><br/>The Bare-Bones Coding Agent Loop</td>
-    <td align="center" width="360"><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank"><img src="assets/architecture_lesson_2.png" width="300" alt="Lesson 2 — the bare-bones coding agent loop"/></a><br/><i><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank">Article 2</a></i></td>
+    <td align="center"><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank"><img src="assets/architecture_lesson_2.png" width="300" alt="Lesson 2 — the bare-bones coding agent loop"/></a><br/><i><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank">Article 2</a></i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>3</b><br/>From a Raw Shell to a Sandboxed Coding Agent</td>
-    <td align="center" width="360"><a href="https://www.decodingai.com/p/run-coding-agents-safely" target="_blank"><img src="assets/architecture_lesson_3.png" width="300" alt="Lesson 3 — from a raw shell to a sandboxed coding agent"/></a><br/><i><a href="https://www.decodingai.com/p/run-coding-agents-safely" target="_blank">Article 3</a></i></td>
+    <td align="center"><a href="https://www.decodingai.com/p/run-coding-agents-safely" target="_blank"><img src="assets/architecture_lesson_3.png" width="300" alt="Lesson 3 — from a raw shell to a sandboxed coding agent"/></a><br/><i><a href="https://www.decodingai.com/p/run-coding-agents-safely" target="_blank">Article 3</a></i></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>4</b><br/>Context Engineering for Coding Agents</td>
-    <td align="center" width="360">📄 <i>Coming soon</i></td>
+    <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>5</b><br/>Agents Catalog, Subagents & Parallel Fan-out</td>
-    <td align="center" width="360">📄 <i>Coming soon</i></td>
+    <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>6</b><br/>Remote Headless Mode & Durability</td>
-    <td align="center" width="360">📄 <i>Coming soon</i></td>
+    <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 3 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_runtime.md">03_runtime.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a> · <a href="running_the_code/06_credentials.md">06_credentials.md</a> ·<br/><a href="running_the_code/07_infra.md">07_infra.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>7</b><br/>AI Evals Foundations: Benchmarks, Regression and Online</td>
-    <td align="center" width="360">📄 <i>Coming soon</i></td>
+    <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 3 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>8</b><br/>AI Evals on Steroids via Replays</td>
-    <td align="center" width="360">📄 <i>Coming soon</i></td>
+    <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 4 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_runtime.md">03_runtime.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a></td>
   </tr>
