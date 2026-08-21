@@ -25,7 +25,9 @@ def _has_output(session: SessionView) -> bool:
     outputs = session.session.outputs
     if outputs is None:
         return False
-    return isinstance(outputs, (str, list, dict)) and not outputs
+    if isinstance(outputs, (str, list, dict)):
+        return bool(outputs)
+    return True
 
 
 def evaluate(session: SessionView, **params: Any) -> EvaluationResult | list[EvaluationResult]:
