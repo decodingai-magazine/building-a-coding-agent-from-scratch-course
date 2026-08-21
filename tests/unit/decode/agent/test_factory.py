@@ -249,7 +249,8 @@ async def test_build_agent_retries_empty_model_responses_before_giving_up(tmp_pa
     Gemini 2.5 sometimes returns an empty (thinking-only) response after a tool call; pydantic-ai
     re-requests on an empty turn, but its default output-retry budget is 1 — a *second* empty turn
     aborts a real ``decode run`` with "Exceeded maximum output retries". Two empty turns then text must
-    succeed here, which only holds because ``build_agent`` sets ``output_retries`` above the default 1.
+    succeed here, which only holds because ``build_agent`` sets ``retries=AgentRetries(output=3, ...)``
+    — the 2.x per-category budget — above the default 1.
     """
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
