@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "skills": {
+    "kitaru-adapter-builder": {
+      "source": "zenml-io/kitaru-skills",
+      "sourceType": "github",
+      "skillPath": "skills/kitaru-adapter-builder/SKILL.md",
+      "computedHash": "da2945b437142b014fbe31f1e3d2530fe718bf4a0b929f65c1850f7e63b352d3"
+    },
+    "kitaru-guided-tour": {
+      "source": "zenml-io/kitaru-skills",
+      "sourceType": "github",
+      "skillPath": "skills/kitaru-guided-tour/SKILL.md",
+      "computedHash": "8f7f6faba0be1dee09466a3e1ad6d08477e0954a8b0c692baaacf8b1960e196a"
+    },
+    "kitaru-importer-builder": {
+      "source": "zenml-io/kitaru-skills",
+      "sourceType": "github",
+      "skillPath": "skills/kitaru-importer-builder/SKILL.md",
+      "computedHash": "894e7fa3e687ecbebd97523ff050c3b3d4bd2a71e93c9b3b2620d0e1dc97fded"
+    },
+    "kitaru-investigation": {
+      "source": "zenml-io/kitaru-skills",
+      "sourceType": "github",
+      "skillPath": "skills/kitaru-investigation/SKILL.md",
+      "computedHash": "dd2321276607dc61ca67c3c21c60af64dd4ec0ec9390d1f0107f306b3657d026"
+    },
+    "kitaru-replay-experiment": {
+      "source": "zenml-io/kitaru-skills",
+      "sourceType": "github",
+      "skillPath": "skills/kitaru-replay-experiment/SKILL.md",
+      "computedHash": "4c2488346d4aa0bd4af396edb5cae2ef610bd597e3d722f209bc84e11ae79595"
+    },
+    "skills-release": {
+      "source": "zenml-io/kitaru-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/skills-release/SKILL.md",
+      "computedHash": "5e4c3bac37d639acd1899eb29e688d29bbeb662c7e82e25480f9b4f0bb312da3"
+    }
+  }
+}

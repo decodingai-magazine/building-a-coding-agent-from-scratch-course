@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "kitaru": {
+      "command": "uv",
+      "args": [
+        "run",
+        "kitaru-mcp",
+        "--server",
+        "https://f5ee9622-kitaru.cloudinfra.zenml.io",
+        "--mode",
+        "standard"
+      ]
+    }
+  }
+}

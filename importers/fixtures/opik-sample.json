@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "workspace": "default",
+  "project": "decode-local",
+  "traces": [
+    {
+      "trace": {
+        "id": "trace-turn-1",
+        "thread_id": "thread-alpha",
+        "name": "chat_turn",
+        "start_time": "2026-07-30T11:33:40.100000+00:00",
+        "end_time": "2026-07-30T11:33:47.900000+00:00",
+        "input": {"pydantic_ai.all_messages": [{"role": "user", "parts": [{"type": "text", "content": "REDACTED_USER_PROMPT"}]}]},
+        "output": {"final_result": "REDACTED_FINAL_ANSWER"},
+        "metadata": {"integration": "pydantic-ai", "agent_name": "agent", "thread_id": "thread-alpha", "model_name": "gemini-3.5-flash"}
+      },
+      "spans": [
+        {
+          "id": "span-root-1",
+          "trace_id": "trace-turn-1",
+          "parent_span_id": null,
+          "name": "agent run",
+          "type": "general",
+          "start_time": "2026-07-30T11:33:40.200000+00:00",
+          "end_time": "2026-07-30T11:33:47.800000+00:00",
+          "input": {"prompt": "REDACTED"},
+          "output": {"final_result": "REDACTED"},
+          "metadata": {"integration": "pydantic-ai", "gen_ai.operation.name": "invoke_agent", "agent_name": "agent", "logfire.msg": "agent run"}
+        },
+        {
+          "id": "span-llm-1",
+          "trace_id": "trace-turn-1",
+          "parent_span_id": "span-root-1",
+          "name": "chat gemini-3.5-flash",
+          "type": "llm",
+          "start_time": "2026-07-30T11:33:41.000000+00:00",
+          "end_time": "2026-07-30T11:33:44.000000+00:00",
+          "input": {"messages": "REDACTED"},
+          "output": {"message": "REDACTED"},
+          "model": "gemini-3.5-flash",
+          "provider": "google-gla",
+          "usage": {"total_tokens": 328, "completion_tokens": 276, "prompt_tokens": 52, "details.thoughts_tokens": 262},
+          "total_estimated_cost": 0.000415,
+          "metadata": {"integration": "pydantic-ai", "model_name": "gemini-3.5-flash"}
+        },
+        {
+          "id": "span-tool-1",
+          "trace_id": "trace-turn-1",
+          "parent_span_id": "span-root-1",
+          "name": "running tool",
+          "type": "general",
+          "start_time": "2026-07-30T11:33:45.430000+00:00",
+          "end_time": "2026-07-30T11:33:46.180000+00:00",
+          "input": {"tool_arguments": {"url": "REDACTED_URL"}},
+          "output": {"tool_response": "REDACTED_TOOL_RESPONSE"},
+          "metadata": {"integration": "pydantic-ai", "gen_ai.operation.name": "execute_tool", "logfire.msg": "running tool: web_fetch", "call.id": "call-1"}
+        }
+      ]
+    },
+    {
+      "trace": {
+        "id": "trace-turn-2",
+        "thread_id": "thread-alpha",
+        "name": "chat_turn",
+        "start_time": "2026-07-30T11:35:00.000000+00:00",
+        "end_time": "2026-07-30T11:35:05.000000+00:00",
+        "input": {"pydantic_ai.all_messages": [{"role": "user", "parts": [{"type": "text", "content": "REDACTED_FOLLOWUP"}]}]},
+        "output": {"final_result": "REDACTED_ANSWER_2"},
+        "metadata": {"integration": "pydantic-ai", "agent_name": "agent", "thread_id": "thread-alpha"}
+      },
+      "spans": [
+        {
+          "id": "span-root-2",
+          "trace_id": "trace-turn-2",
+          "parent_span_id": null,
+          "name": "agent run",
+          "type": "general",
+          "start_time": "2026-07-30T11:35:00.100000+00:00",
+          "end_time": "2026-07-30T11:35:04.900000+00:00",
+          "input": {"prompt": "REDACTED"},
+          "output": {"final_result": "REDACTED"},
+          "metadata": {"integration": "pydantic-ai", "gen_ai.operation.name": "invoke_agent"}
+        },
+        {
+          "id": "span-orphan-1",
+          "trace_id": "trace-turn-2",
+          "parent_span_id": "span-not-exported",
+          "name": "running tool",
+          "type": "general",
+          "start_time": "2026-07-30T11:35:02.000000+00:00",
+          "end_time": "2026-07-30T11:35:02.500000+00:00",
+          "input": {"tool_arguments": {"command": "REDACTED"}},
+          "output": {"tool_response": "REDACTED"},
+          "metadata": {"integration": "pydantic-ai", "gen_ai.operation.name": "execute_tool", "logfire.msg": "running tool: bash"}
+        }
+      ]
+    },
+    {
+      "trace": {
+        "id": "trace-failed-1",
+        "name": "agent run",
+        "start_time": "2026-08-01T09:00:00.000000+00:00",
+        "end_time": "2026-08-01T09:00:03.000000+00:00",
+        "input": {"pydantic_ai.all_messages": [{"role": "user", "parts": [{"type": "text", "content": "REDACTED"}]}]},
+        "error_info": {"exception_type": "pydantic_ai.exceptions.ModelHTTPError", "message": "status_code: 503, model_name: REDACTED_MODEL", "traceback": "REDACTED"},
+        "metadata": {"integration": "pydantic-ai", "agent_name": "agent"}
+      },
+      "spans": [
+        {
+          "id": "span-failed-root",
+          "trace_id": "trace-failed-1",
+          "parent_span_id": null,
+          "name": "agent run",
+          "type": "general",
+          "start_time": "2026-08-01T09:00:00.100000+00:00",
+          "end_time": "2026-08-01T09:00:02.900000+00:00",
+          "input": {"prompt": "REDACTED"},
+          "error_info": {"exception_type": "pydantic_ai.exceptions.ModelHTTPError", "message": "status_code: 503"},
+          "metadata": {"integration": "pydantic-ai", "gen_ai.operation.name": "invoke_agent"}
+        }
+      ]
+    },
+    {
+      "trace": {"name": "broken entry with no id"},
+      "spans": []
+    }
+  ]
+}
