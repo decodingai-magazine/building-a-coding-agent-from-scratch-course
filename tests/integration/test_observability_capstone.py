@@ -599,8 +599,8 @@ async def test_live_opik_export_smoke(monkeypatch, caplog, tmp_path):
       priced Gemini models** (tokens-only is acceptable for open models — ADR-0014 §8). An in-memory
       ``TestExporter`` is tapped onto the same provider purely to read those attributes locally.
 
-    Kept to ONE turn for cost hygiene. ``build_agent(flow_mode=True)`` hands Gemini a keep-alive-free
-    HTTP client so no pooled socket lingers under ``filterwarnings=["error"]``. The autouse
+    Kept to ONE turn for cost hygiene (``flow_mode`` and its keep-alive-free client died with the
+    Durable Flow's per-call event loops — ADR-0019 §1). The autouse
     ``_isolate_tracing_state`` (plus a best-effort ``reset_tracing`` here) unwinds the real activation so
     the global config never leaks into a later test.
     """
@@ -620,7 +620,7 @@ async def test_live_opik_export_smoke(monkeypatch, caplog, tmp_path):
 
     sink = _RecordingSink()
     resolvers = _RecordingResolvers()
-    agent = build_agent(flow_mode=True)  # real Gemini, keep-alive-free HTTP client
+    agent = build_agent()  # real Gemini
     handler = AgentTurnHandler(agent, deps=_deps(sink, resolvers, tmp_path), session_id=_SESSION_ID)
     runner = Runner(handler, on_event=sink)
 

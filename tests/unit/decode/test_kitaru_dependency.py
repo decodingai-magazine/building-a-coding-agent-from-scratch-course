@@ -1,11 +1,10 @@
-"""Smoke test that the pinned ``kitaru`` runtime dependency resolves and imports (ADR-0009).
+"""Smoke test that the pinned ``kitaru`` runtime dependency resolves and imports (ADR-0019).
 
-Task 063 downgraded pydantic-ai 2.0 → 1.x and added ``kitaru[local,pydantic-ai,llm]`` so the
-durable runtime (ADR-0008, tasks 058-062) can build in-process against the same ``build_agent()``.
-The runtime package itself does not exist yet, so this guards only the thing this task lands: the
-dependency is installed and the durability surface decode will use (``flow`` / ``checkpoint`` /
-``wait``) is importable. If a future kitaru/resolution change drops one of these names, this fails
-loudly here instead of deep inside an unbuilt ``runtime/`` module.
+Kitaru 0.22.2 removed the durable-execution surface decode was built on (``flow`` / ``checkpoint``
+/ ``wait`` / ``save`` / ``ImageSettings``), which is why the Durable Flow is deleted rather than
+ported. This guards the two facts that outlive it: the dependency still installs and imports, and
+the retired surface stays retired — a re-appearing ``flow`` would mean the pin moved backwards, not
+that the durable runtime is welcome back.
 """
 
 import importlib
@@ -17,9 +16,12 @@ def test_kitaru_is_importable():
     assert module is not None
 
 
-def test_kitaru_exposes_the_durability_surface():
-    from kitaru import checkpoint, flow, wait
+def test_the_durable_execution_surface_is_gone_upstream():
+    """The ImportError that made ``runtime/flow.py`` dead code, pinned as a fact (ADR-0019)."""
+    module = importlib.import_module("kitaru")
 
-    assert callable(flow)
-    assert callable(checkpoint)
-    assert callable(wait)
+    for retired in ("flow", "checkpoint", "wait", "save", "ImageSettings"):
+        assert not hasattr(module, retired), (
+            f"kitaru re-exposes {retired!r}: the durable runtime was deleted on the premise that "
+            "upstream removed it (ADR-0019) — re-read the ADR before building on this again."
+        )

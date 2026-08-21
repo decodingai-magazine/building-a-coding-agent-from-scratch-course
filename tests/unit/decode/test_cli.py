@@ -76,6 +76,11 @@ def test_cli_runs_and_exits_zero():
     assert "Decode" in result.output
 
 
+def test_run_is_the_only_subcommand():
+    """ADR-0019 §1: ``run`` is the whole headless surface — ``replay`` died with the Durable Flow."""
+    assert set(cli.commands) == {"run"}
+
+
 def test_run_subcommand_is_registered_without_breaking_the_bare_repl(mocker):
     """ADR-0008: ``cli`` is now a group exposing ``run``, yet bare ``decode`` still reaches the REPL.
 
@@ -95,11 +100,11 @@ def test_run_subcommand_is_registered_without_breaking_the_bare_repl(mocker):
 
 
 def test_importing_the_cli_does_not_import_kitaru():
-    """The REPL entrypoint must stay kitaru-free: ``decode run`` imports the runtime lazily (ADR-0008).
+    """The REPL entrypoint must stay kitaru-free (ADR-0015 §1; ADR-0019 §3).
 
-    Importing ``decode.cli`` in a fresh interpreter must not pull in ``kitaru`` (a heavy
-    zenml/temporalio stack) — only ``decode run`` does, inside the subcommand body. A subprocess
-    keeps the check honest regardless of what the rest of the suite already imported.
+    Importing ``decode.cli`` in a fresh interpreter must not pull in ``kitaru`` — at
+    ``DECODE_ENV=local`` nothing does. A subprocess keeps the check honest regardless of what the
+    rest of the suite already imported.
     """
     import subprocess
     import sys

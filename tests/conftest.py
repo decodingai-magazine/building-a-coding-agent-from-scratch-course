@@ -11,20 +11,10 @@ os.environ["DECODE_LOG_FILE"] = ""
 import pytest
 from pydantic import SecretStr
 
-# Headless-Runtime test fixtures are registered HERE, at the rootdir conftest, on purpose: under
-# ``--import-mode=importlib`` a per-package ``conftest`` is reliably applied only when its tests are
-# collected contiguously, so a non-runtime file collected between two runtime files (e.g. under
-# ``pytest-randomly``) de-associated ``tests/unit/decode/runtime/conftest.py`` from the second file —
-# its autouse Kitaru-store isolation stopped running and a ``create_secret`` fell through to the
-# developer's real ZenML store (task 065). The rootdir conftest is the only ancestor always in scope
-# for every collected test, so its fixtures apply in any order. ``isolated_kitaru_store`` is autouse
-# but gated to the unit runtime package (a no-op importing nothing elsewhere); see the module.
+# The Kitaru/ZenML store-isolation fixtures that used to be registered here died with the durable
+# runtime (ADR-0019 §1): the headless runner boots no local stack, so there is no global store to
+# redirect and no durable wait to resolve.
 from support.git_env import GIT_HOOK_ENV_VARS
-from support.runtime_fixtures import (  # noqa: F401 — re-exported so pytest registers them
-    env_bucket_name,
-    inline_wait_resolver,
-    isolated_kitaru_store,
-)
 
 
 @pytest.fixture(autouse=True)

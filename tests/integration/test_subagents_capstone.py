@@ -11,9 +11,8 @@ scripted FunctionModel drives parent AND children (``agent.override`` is context
 so it covers the child's nested run); GEMINI_API_KEY is faked so build_agent constructs.
 The hermetic tests pin: bounded genuine overlap, permission-free children, byte-cap
 truncation, parent-only usage gauge, recursion default-deny, output validation (a
-zero-tool-call child retried once with the nudge, then noted — ADR-0017 §7), ephemeral
-transcripts + resume,
-and the headless cache-disable contract (bash only, never agent — kitaru-skipif). They then COMPOSE:
+zero-tool-call child retried once with the nudge, then noted — ADR-0017 §7), and ephemeral
+transcripts + resume. They then COMPOSE:
 the resilience matrix (one turn, four children — healthy / retried / twice-bad / healthy — with the
 budget split, the footer, the silence, the parent-only gauge and a resumable log all holding at once),
 and the two guard ROUND-TRIPS through the real loop (over-wide and under-specified calls nagged back to
@@ -70,19 +69,6 @@ from decode.tui import render
 # Markers the scripted model streams, so the assertions read as a transcript.
 _PARENT_FINAL = "fan-out complete"
 _CHILD_REPORT = "explore-subagent report"
-
-
-# Is the durable runtime importable (kitaru + the local ZenML stack)? Mirrors the runtime capstone's
-# probe (``test_runtime_capstone.py``): the headless contract-pin test imports ``runtime.flow`` (which
-# pulls in kitaru), so when an environment cannot host the runtime that ONE test SKIPS rather than
-# fails. The always-run hermetic slice above never imports kitaru.
-try:  # pragma: no cover - import-time capability probe
-    import kitaru as _kitaru  # noqa: F401
-    import zenml.client as _zenml_client  # noqa: F401
-
-    _RUNTIME_IMPORTABLE = True
-except Exception:  # pragma: no cover - only on an incompatible environment
-    _RUNTIME_IMPORTABLE = False
 
 
 def _configured_gemini_key() -> str:
@@ -894,48 +880,11 @@ async def test_ephemeral_child_transcripts_survive_resume(parent_agent, tmp_path
     assert session_log.load_latest(sessions_dir) == handler.message_history
 
 
-# 7. Headless no-special-casing (contract pin) — the flow cache-disables ONLY bash, never agent.
-
-
-@pytest.mark.filterwarnings("ignore:'crypt' is deprecated:DeprecationWarning")
-@pytest.mark.filterwarnings("ignore:There is no current event loop:DeprecationWarning")
-@pytest.mark.skipif(
-    not _RUNTIME_IMPORTABLE,
-    reason="the durable runtime (kitaru + zenml) is not importable in this environment",
-)
-def test_headless_flow_cache_disable_set_covers_only_bash_never_agent(monkeypatch):
-    """The headless flow's replay-safety config cache-disables only ``bash`` — never ``agent`` (§9).
-
-    A read-only child's summary is deterministic and side-effect-free, so its checkpoint is replay-safe
-    under the default caching — unlike a sandbox ``bash`` (real shell side effects), which the flow
-    cache-disables so a ``decode replay`` re-executes it (ADR-0011 §5). This pins that contract at the
-    source of truth (``runtime/flow.py::_build_runtime_agent``) without booting a flow: it patches the
-    ``KitaruAgent`` + ``build_agent`` seams to capture the kwargs and asserts the cache-disable set.
-    """
-    import decode.runtime.flow as flow_mod
-    from decode.tools.bash import BASH_TOOL_NAME
-
-    captured: dict[str, object] = {}
-
-    class _SpyKitaruAgent:
-        def __init__(self, agent, **kwargs):
-            captured.clear()
-            captured.update(kwargs)
-
-    monkeypatch.setattr(flow_mod, "KitaruAgent", _SpyKitaruAgent)
-    monkeypatch.setattr(flow_mod, "build_agent", lambda **kwargs: object())
-
-    # ``none`` mode: nothing is cache-disabled — the default caching stands for every tool (incl. agent).
-    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "none")
-    flow_mod._build_runtime_agent()
-    assert "tool_checkpoint_config_by_name" not in captured
-
-    # A sandbox mode cache-disables ONLY ``bash`` — ``agent`` is never in the set (replay-safe summary).
-    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", "docker")
-    flow_mod._build_runtime_agent()
-    cache_disabled = captured["tool_checkpoint_config_by_name"]
-    assert set(cache_disabled) == {BASH_TOOL_NAME}
-    assert AGENT_TOOL_NAME not in cache_disabled
+# 7. Headless no-special-casing — the flow-era contract pin is gone with the flow.
+# It asserted that the Durable Flow cache-disabled only ``bash``'s checkpoint (never ``agent``) so a
+# Replay re-executed it. Kitaru 0.22.2 has no checkpoints and the flow is deleted (ADR-0019 §1), so
+# there is no per-tool replay-safety config left to pin: the headless runner builds ONE agent, the
+# same one the REPL builds, with no tool special-cased anywhere.
 
 
 # 8. THE RESILIENCE MATRIX — every ADR-0017 failure mode, composed, in ONE turn.
@@ -1280,14 +1229,14 @@ async def test_live_gemini_fanout_smoke(monkeypatch):
     Content is otherwise unasserted (a live model is non-deterministic). Naming concrete,
     definitely-present files steers each child to a reliable ``read`` (a guessy ``glob`` can miss and
     abort the parallel leg — the children share the parent's fault domain, ADR-0013 §1). The
-    ``flow_mode=True`` build hands Gemini a keep-alive-free HTTP client so no pooled socket lingers to
-    trip ``filterwarnings=["error"]``; the fan-out mechanism is identical to the interactive build.
+    The build is the plain interactive one — ``flow_mode`` (and its keep-alive-free client) died with
+    the Durable Flow's per-call event loops (ADR-0019 §1); the fan-out mechanism is unchanged.
     """
     monkeypatch.setattr(factory.settings, "gemini_api_key", SecretStr(_LIVE_GEMINI_KEY))
     monkeypatch.setattr(factory.settings, "llm_provider", "gemini")
     monkeypatch.setattr(settings, "subagent_max_requests", 10)  # bound each child's real model legs
 
-    agent = build_agent(flow_mode=True)  # real Gemini, keep-alive-free client, + the spawn seam
+    agent = build_agent()  # real Gemini + the subagent-spawn seam
 
     child_prompts: list[str] = []
     real_run = agent.run
@@ -1374,7 +1323,7 @@ async def test_live_gemini_unsteered_broad_question_fans_out(monkeypatch):
     monkeypatch.setattr(factory.settings, "llm_provider", "gemini")
     monkeypatch.setattr(settings, "subagent_max_requests", 8)  # bound each child's real model legs
 
-    agent = build_agent(flow_mode=True)  # real Gemini + the subagent-spawn seam (build persona)
+    agent = build_agent()  # real Gemini + the subagent-spawn seam (build persona)
     sink = _RecordingSink()
     resolvers = _RecordingResolvers()
     repo_root = Path(__file__).resolve().parents[2]  # read THIS repo, read-only

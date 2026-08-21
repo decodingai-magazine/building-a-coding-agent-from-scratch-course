@@ -75,18 +75,10 @@ _DOCKER_PROBE_TIMEOUT_S = 5.0
 # The startup Agent persona when ``--agent`` is omitted (ADR-0003 §9).
 _DEFAULT_AGENT = "build"
 
-# Friendly line when ``decode run`` is invoked with RUNTIME_ENABLED=false (ADR-0008).
+# Friendly line when ``decode run`` is invoked with RUNTIME_ENABLED=false (ADR-0019 §1).
 _RUNTIME_DISABLED_MESSAGE = (
     "Decode: the headless runtime is disabled — set RUNTIME_ENABLED=true in your environment "
     "or .env to use `decode run` (see .env.example)."
-)
-
-# Kitaru replay REQUIRES an anchor (``from_`` has no default — verified on kitaru 0.18); decode
-# mirrors that and invents none (ADR-0010 §5).
-_REPLAY_NO_FROM_MESSAGE = (
-    "Decode: `decode replay` needs --from <checkpoint> — Kitaru replay requires an explicit anchor "
-    "(it has no default). List a recorded run's checkpoints with `kitaru executions get <exec_id>` and "
-    "pass one as --from (e.g. an early `*_model_request` step to swap the model for the whole run)."
 )
 
 
@@ -244,18 +236,17 @@ def _env_bucket_error() -> str | None:
 
 
 def _runtime_config_preflight(repo: str | None = None) -> str | None:
-    """The shared headless guard chain for ``decode run`` / ``decode replay``; a friendly line or None.
+    """The headless guard chain for ``decode run``; the FIRST friendly error line, or None.
 
-    Both headless entrypoints run this identical ordered chain, returning the FIRST friendly error
-    line. Order is load-bearing:
+    Order is load-bearing:
 
     1. Environment-Bucket guard — at a remote ``DECODE_ENV`` the provider key is expected to come from
        the bucket, so a bucket failure must be named before any key guard can mis-blame ``.env``.
     2. Per-provider config guard — unconditional: hydration is process-scoped (ADR-0015 §5), so this
        already runs against the hydrated config, whichever mechanism supplied it.
-    3. ``RUNTIME_ENABLED`` — a disabled runtime never builds/replays a flow.
-    4. Sandbox backend guard, then the sandbox-repo guard. ``repo`` is the ``--repo`` flag (``None``
-       for ``decode replay``), resolved against ``SANDBOX_REPO`` inside.
+    3. ``RUNTIME_ENABLED`` — a disabled runtime never builds an agent.
+    4. Sandbox backend guard, then the sandbox-repo guard. ``repo`` is the ``--repo`` flag, resolved
+       against ``SANDBOX_REPO`` inside.
     """
     bucket_error = _env_bucket_error()
     if bucket_error is not None:
@@ -334,8 +325,8 @@ def cli(
     """Decode — a terminal coding agent you run in your terminal.
 
     Bare ``decode`` (no subcommand) launches the interactive REPL with the flags below — the
-    behaviour is identical to the pre-runtime build. ``decode run "<task>"`` (ADR-0008) runs a
-    single task headlessly through the durable runtime instead.
+    behaviour is identical to the pre-runtime build. ``decode run "<task>"`` (ADR-0019) runs a
+    single task headlessly through the same agent instead.
 
     In a sandbox mode ``--repo <url-or-local-path>`` clones a repo into the isolated Workspace at
     launch (overriding ``SANDBOX_REPO``); ``--local`` picks a fast local clone (ADR-0012 §3).
@@ -412,14 +403,6 @@ def cli(
 @cli.command("run")
 @click.argument("task")
 @click.option(
-    "--hitl",
-    is_flag=True,
-    help=(
-        "Human-in-the-loop: run under a gating gate so mutating tools and ask_user pause on durable "
-        "Kitaru waits resolved out-of-band (`kitaru executions input`), instead of bypassing them."
-    ),
-)
-@click.option(
     "--model",
     "model",
     default=None,
@@ -443,42 +426,32 @@ def cli(
     is_flag=True,
     help="Use a fast local clone (git clone --local) when --repo is a local path.",
 )
-def run(task: str, hitl: bool, model: str | None, repo: str | None, local: bool) -> None:
-    """Run a single TASK headlessly through the durable runtime, then print the result (ADR-0008).
+def run(task: str, model: str | None, repo: str | None, local: bool) -> None:
+    """Run a single TASK headlessly, then print the agent's answer (ADR-0019 §1).
 
-    The autonomous counterpart to the REPL: ``decode run "<task>"`` builds the same agent as the
-    TUI but drives it through a Kitaru Durable Flow (checkpoints + replay). Two modes:
+    The autonomous counterpart to the REPL: ``decode run "<task>"`` builds the SAME agent the TUI
+    does and drives it to completion in one ``asyncio.run``. Every gated tool runs inline with no
+    prompt (the gate is in bypass) and ``ask_user`` is a headless no-op — there is no pause, ever.
 
-    \b
-    * default — **bypass** (task 058): every tool runs inline with no prompt; the agent's final text
-      is printed to stdout. ``ask_user`` / approvals are headless no-ops.
-    * ``--hitl`` — **human-in-the-loop** (task 059): a gating gate so ``write`` / ``edit`` / ``bash``
-      and ``ask_user`` pause the whole execution on a durable wait. If a wait is resolved out-of-band
-      while the run polls it continues and prints the result; otherwise the run pauses and prints the
-      execution id + the ``kitaru executions input`` command to resolve it. The poll timeout differs
-      by wait kind (a known limitation — decode does not fork the adapter): the ``ask_user`` /
-      ``exit_plan_mode`` answer waits honor ``runtime_wait_timeout_s``; the native ``write`` /
-      ``edit`` / ``bash`` **approval** waits use the adapter's fixed ``600s`` default (ADR-0008 §3).
+    ``--model ID`` overrides the active provider's model id for this run; the provider itself stays
+    selected by ``LLM_PROVIDER`` (no cross-provider swap). Presence, not correctness: a model id
+    wrong for the provider is not validated here (matching the key guards) — it fails at the first
+    model request.
 
-    ``--model ID`` overrides the active provider's model id for this run — the provider itself stays
-    selected by ``LLM_PROVIDER`` (no cross-provider swap). It rides through as a durable **flow input**,
-    so a later ``decode replay`` can swap it to ask what a different model would have done (ADR-0010
-    §2,4). Presence, not correctness: a model id wrong for the provider is not validated here (matching
-    the key guards) — it fails at the first model request.
+    In a sandbox mode ``--repo <url-or-local-path>`` clones a repo into the isolated Workspace
+    (overriding ``SANDBOX_REPO``) and ``--local`` picks a fast local clone; on completion the
+    Workspace ships back as a ``decode/<session-id>`` branch (ADR-0012 §3,8).
 
-    After a bypass run the agent's answer prints on **stdout** while the durable ``exec_id`` and a
-    paste-ready ``decode replay`` hint print on **stderr** — so stdout stays clean for piping and the
-    checkpoint→replay loop is discoverable from the terminal (ADR-0010 §4).
+    The agent's answer prints on **stdout** and nothing else does, so a piped ``decode run`` yields
+    exactly the answer; diagnostics go to stderr.
 
     Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): at a remote
     ``DECODE_ENV`` the Environment-Bucket guard fires first (a missing bucket names
     ``make sync-secrets ENV=<env>``, ADR-0015 §5), then the per-provider config guard — it reads the
     already-hydrated config, whichever mechanism supplied it — then ``RUNTIME_ENABLED``: a disabled
-    runtime never builds a flow. ``kitaru`` is imported lazily here so a ``DECODE_ENV=local`` REPL
-    path never loads it.
+    runtime never builds an agent, then the sandbox backend / repo guards.
     """
-    # The shared headless guard chain, byte-identical to ``decode replay`` so the two cannot drift;
-    # any failure exits non-zero here, before any flow is built.
+    # The headless guard chain; any failure exits non-zero here, before any agent is built.
     config_error = _runtime_config_preflight(repo=repo)
     if config_error is not None:
         click.echo(config_error, err=True)
@@ -491,17 +464,12 @@ def run(task: str, hitl: bool, model: str | None, repo: str | None, local: bool)
     if window_notice is not None:
         click.echo(window_notice, err=True)
 
-    # Resolve the Workspace source once and thread it into the flow (ADR-0012 §3); guaranteed
-    # ``None`` in ``none`` mode by the guard above.
+    # Resolve the Workspace source once (ADR-0012 §3); guaranteed ``None`` in ``none`` mode by the
+    # guard above.
     resolved_repo = _resolve_sandbox_repo(repo)
 
-    # Lazy import: keep kitaru's heavy zenml/temporalio stack off the REPL path entirely.
-    if hitl:
-        _run_hitl(task, model, resolved_repo, local)
-        return
-
-    from decode.runtime import run_agent_task
-    from decode.runtime.flow import _load_runtime_output
+    # Imported inside the subcommand so the REPL path loads no headless machinery.
+    from decode.runtime import run_headless_task
 
     logger.debug(
         "decode run starting (task=%r, model=%r, repo=%r, local=%s)",
@@ -510,213 +478,10 @@ def run(task: str, hitl: bool, model: str | None, repo: str | None, local: bool)
         resolved_repo,
         local,
     )
-    # Under the ``"calls"`` default the flow ends in several terminal checkpoints, so Kitaru's
-    # ``.wait()`` cannot auto-extract one return value; the flow saves its final text via the
-    # ``_capture_runtime_output`` checkpoint, read back by artifact name (ADR-0010 §3). Bypass never
-    # pauses, so the handle is finished here. ``model`` / ``repo`` / ``local`` ride as flow inputs.
-    handle = run_agent_task.run(task=task, model=model, repo=resolved_repo, local=local)
-    click.echo(
-        _load_runtime_output(handle.exec_id)
-    )  # stdout: only the clean agent answer (pipe-safe)
-    _echo_replay_anchor(handle.exec_id, model)  # stderr: exec_id + a paste-ready decode replay hint
-    # The Git hand-back (ADR-0012 §8) runs INSIDE the flow, not here: the flow's process is the one
-    # that owns the Workspace — on a remote stack that is the Modal container, and this submitting
-    # process's ``.decode/sandbox`` is a stranger to the run (``flow._ship_headless_workspace``).
-
-
-def _echo_replay_anchor(exec_id: str, model: str | None) -> None:
-    """Echo a finished bypass run's ``exec_id`` + a paste-ready ``decode replay`` hint to **stderr** (ADR-0010 §4).
-
-    Kept off stdout so a piped ``decode run`` stays exactly the agent's answer. Documentation, not a
-    validated command — presence, not correctness.
-    """
-    model_hint = model if model else "<model-id>"
-    click.echo(f"exec_id: {exec_id}", err=True)
-    click.echo(f"replay it with a change:  decode replay {exec_id} --model {model_hint}", err=True)
-
-
-def _run_hitl(task: str, model: str | None, repo: str | None, local: bool) -> None:
-    """Drive the HITL Durable Flow and print the result, or the pause + how to resolve it (ADR-0008 §3).
-
-    A pause is a normal HITL outcome (exit stays zero): print the exec_id + the ``kitaru executions``
-    commands to resolve and resume it. A finished run prints the answer on stdout and points at
-    ``kitaru executions replay`` — ``decode replay`` is bypass-only (ADR-0010 §5,7).
-    """
-    from decode.runtime import run_hitl_agent_task
-
-    logger.debug(
-        "decode run --hitl starting (task=%r, model=%r, repo=%r, local=%s)",
-        task,
-        model,
-        repo,
-        local,
-    )
-    result = run_hitl_agent_task(task, model, repo, local)
-    if result.paused:
-        click.echo(
-            f"Decode: the task paused on a durable human-in-the-loop wait (execution "
-            f"{result.exec_id}). Resolve it out-of-band, then resume:",
-            err=True,
-        )
-        click.echo("  kitaru executions list", err=True)
-        click.echo(
-            f"  kitaru executions input {result.exec_id} --wait <name> --value '<answer>'", err=True
-        )
-        click.echo(f"  kitaru executions resume {result.exec_id}", err=True)
-        return
-    click.echo(result.output)  # stdout: only the clean agent answer (pipe-safe)
-    # ``decode replay`` is bypass-only, so point a completed HITL run at the Kitaru operator surface.
-    click.echo(f"exec_id: {result.exec_id}", err=True)
-    click.echo(
-        f"  decode replay is bypass-only; replay this HITL run with "
-        f"`kitaru executions replay {result.exec_id}` (ADR-0010 §5).",
-        err=True,
-    )
-
-
-@cli.command("replay")
-@click.argument("exec_id")
-@click.option(
-    "--from",
-    "from_",
-    default=None,
-    metavar="CHECKPOINT",
-    help=(
-        "Replay anchor: a recorded checkpoint (name, invocation id, or call id). Turns before it serve "
-        "from cache; it and everything downstream re-execute. Required — Kitaru has no default anchor."
-    ),
-)
-@click.option(
-    "--model",
-    "model",
-    default=None,
-    metavar="ID",
-    help=(
-        "Swap the active provider's model id for the re-executed turns (the what-if change); defaults "
-        "to the run's recorded model. Does not change the provider (set LLM_PROVIDER for that)."
-    ),
-)
-def replay(exec_id: str, from_: str | None, model: str | None) -> None:
-    """Replay a recorded bypass ``decode run`` from a checkpoint with a swapped model (ADR-0010 §5-6).
-
-    The what-if counterpart to ``decode run``: it re-executes a durable execution ``EXEC_ID`` (the id a
-    prior ``decode run`` printed on stderr) from the ``--from`` checkpoint with one thing changed — the
-    model. Everything upstream of ``--from`` serves from the original run's cache; the anchor and its
-    downstream turns re-execute for real, so a ``--model`` swap only bites downstream of ``--from``. The
-    (possibly changed) answer prints on **stdout**; the new Fork ``exec_id``, the source id, and a diff
-    hint print on **stderr** — so stdout stays pipe-clean and the compare-the-two loop is discoverable.
-
-    \b
-    A thin, **bypass-only** wrapper over Kitaru's native flow-object replay:
-    * ``--from`` maps straight to Kitaru's ``from_`` — decode invents no default anchor. Kitaru *requires*
-      one, so omitting ``--from`` exits with one friendly line naming the requirement (not a traceback).
-    * ``--model`` maps to the Model Override flow input Kitaru swaps on replay (ADR-0010 §2); omitting it
-      replays as-is. Raw ``--args`` / ``--overrides`` are **not** exposed here — they stay on the
-      ``kitaru executions replay`` CLI (see the replay playbook in AGENTS.md).
-    * A **HITL** exec_id is refused with guidance: a HITL replay re-asks every durable wait on the local
-      stack (Kitaru cannot pre-populate wait results — ADR-0010 §5,7), so it points at
-      ``kitaru executions replay`` instead. HITL answer-reuse is deferred (``tasks/future/``).
-
-    Guards: the same headless chain as ``decode run`` (environment bucket / provider-config /
-    ``RUNTIME_ENABLED`` / sandbox) fires first — a replay re-executes downstream model calls, so it needs
-    a valid provider config. Kitaru's own replay failures each become one friendly stderr line, never a raw traceback: an
-    ambiguous/invalid ``--from`` (``KitaruStateError``), a swap that diverged the recorded call sequence
-    (``KitaruDivergenceError``), and a missing/unloadable ``EXEC_ID`` (``KitaruBackendError``). ``kitaru``
-    is imported lazily here so the REPL path never loads it.
-    """
-    config_error = _runtime_config_preflight()
-    if config_error is not None:
-        click.echo(config_error, err=True)
-        raise click.exceptions.Exit(1)
-
-    # Kitaru requires an explicit ``from_`` — checked after the guard chain so a disabled runtime /
-    # missing key still wins (ADR-0010 §5).
-    if from_ is None:
-        click.echo(_REPLAY_NO_FROM_MESSAGE, err=True)
-        raise click.exceptions.Exit(1)
-
-    # Lazy imports: keep kitaru off the REPL path, exactly like ``decode run``.
-    from kitaru.errors import KitaruDivergenceError, KitaruError, KitaruStateError
-
-    from decode.runtime import is_hitl_execution, replay_agent_task
-
-    logger.debug("decode replay starting (exec_id=%r, from_=%r, model=%r)", exec_id, from_, model)
-    try:
-        # Bypass-only: a HITL replay re-asks every wait (ADR-0010 §5,7). ``is_hitl_execution`` reads
-        # the recorded flow name; a missing/unloadable id raises KitaruBackendError, caught below.
-        if is_hitl_execution(exec_id):
-            click.echo(_replay_hitl_message(exec_id), err=True)
-            raise click.exceptions.Exit(1)
-        result = replay_agent_task(exec_id, from_=from_, model=model)
-    except KitaruStateError as exc:
-        logger.debug("replay anchor rejected for %s: %s", exec_id, exc)
-        click.echo(_replay_bad_anchor_message(exc), err=True)
-        raise click.exceptions.Exit(1) from exc
-    except KitaruDivergenceError as exc:
-        logger.debug("replay diverged for %s: %s", exec_id, exc)
-        click.echo(_replay_diverged_message(exec_id), err=True)
-        raise click.exceptions.Exit(1) from exc
-    except KitaruError as exc:
-        # Catch-all for the remaining kitaru failures so no raw traceback ever escapes.
-        logger.debug("replay could not load/execute %s: %s", exec_id, exc)
-        click.echo(_replay_load_failed_message(exec_id, exc), err=True)
-        raise click.exceptions.Exit(1) from exc
-
-    click.echo(result.output)  # stdout: only the (possibly changed) agent answer (pipe-safe)
-    _echo_replay_fork(
-        result.exec_id, result.original_exec_id
-    )  # stderr: fork id + source + diff hint
-
-
-def _replay_hitl_message(exec_id: str) -> str:
-    """The friendly line refusing a HITL exec_id — decode replay is bypass-only (ADR-0010 §5,7)."""
-    return (
-        f"Decode: `decode replay` is bypass-only — execution {exec_id} is a HITL run, and a HITL replay "
-        f"re-asks every durable wait on the local stack (ADR-0010 §5). Replay it on the Kitaru operator "
-        f"surface instead: `kitaru executions replay {exec_id} --from <checkpoint>`."
-    )
-
-
-def _replay_bad_anchor_message(exc: Exception) -> str:
-    """The friendly line for an ambiguous/invalid ``--from`` (``KitaruStateError``); Kitaru's own
-    message already names the valid checkpoints, so it is surfaced verbatim."""
-    return (
-        f"Decode: replay could not use that --from anchor — {exc} "
-        "Pick one from `kitaru executions get <exec_id>` (a checkpoint name, invocation id, or call id)."
-    )
-
-
-def _replay_diverged_message(exec_id: str) -> str:
-    """The friendly line when the model swap diverged the recorded call sequence (``KitaruDivergenceError``)."""
-    return (
-        f"Decode: the model swap diverged the recorded call sequence of {exec_id} — the new model "
-        "tool-called differently downstream of --from, so Kitaru cannot replay it against the original "
-        "(that IS the honest what-if outcome: the change altered the run). Try anchoring --from later."
-    )
-
-
-def _replay_load_failed_message(exec_id: str, exc: Exception) -> str:
-    """The friendly line for a missing/unloadable ``EXEC_ID`` (``KitaruBackendError``) or other kitaru failure."""
-    return (
-        f"Decode: replay could not load or execute {exec_id} — {exc} "
-        "Check the id (from a `decode run` stderr `exec_id:` line, or `kitaru executions list`)."
-    )
-
-
-def _echo_replay_fork(new_exec_id: str, original_exec_id: str) -> None:
-    """Echo the Fork's new exec_id, the source exec_id, and a diff hint to **stderr** (ADR-0010 §4,6).
-
-    Kept off stdout for piping. The hint points ONLY at Kitaru's confirmed operator surface — there
-    is no ``kitaru diff`` CLI and no ``.diff()`` SDK method (verified on kitaru 0.18); the full
-    playbook lives in AGENTS.md under "Headless replay & what-if".
-    """
-    click.echo(f"exec_id: {new_exec_id}  (the fork — a new execution)", err=True)
-    click.echo(f"original: {original_exec_id}", err=True)
-    click.echo(
-        f"compare them:  kitaru executions get {new_exec_id}  "
-        f"vs  kitaru executions get {original_exec_id}",
-        err=True,
-    )
+    output = run_headless_task(task, model=model, repo=resolved_repo, local=local)
+    click.echo(output)  # stdout: only the clean agent answer (pipe-safe)
+    # The Git hand-back (ADR-0012 §8) runs inside ``run_headless_task``, right after the sandbox
+    # executor is reaped — the runner process is the one that owns the Workspace.
 
 
 if __name__ == "__main__":

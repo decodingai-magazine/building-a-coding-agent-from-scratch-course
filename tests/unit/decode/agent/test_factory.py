@@ -8,6 +8,7 @@ ready. These tests assert the *construction contract* without making any network
 request is issued just by building the agent — every provider constructs offline).
 """
 
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,8 +32,9 @@ from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
+from decode.agent import factory
 from decode.agent.deps import AgentDeps
-from decode.agent.factory import _build_model, _flow_mode_http_client, build_agent
+from decode.agent.factory import _build_model, build_agent
 from decode.agents.loader import load_agent
 from decode.entities.agent_def import AgentDef
 from decode.entities.permissions import PermissionDecision, PermissionRequest
@@ -303,50 +305,26 @@ async def test_build_agent_gives_tools_a_modelretry_budget_beyond_one(tmp_path, 
     assert attempts["n"] == 4  # three ModelRetry nags tolerated, the fourth call succeeds
 
 
-def test_flow_mode_http_client_is_loop_safe_with_a_valid_deadline():
-    """The flow-mode provider client disables keep-alive and sets a deadline ≥ Gemini's 10s minimum.
+def test_build_agent_has_no_flow_mode_parameter():
+    """ADR-0019 §1 (clean break): ``flow_mode`` + its keep-alive-free client are deleted.
 
-    Both values are load-bearing and only fail on a real cross-loop run (so they can't be caught by a
-    scripted-model test) — guard them here. Keep-alive off stops Kitaru's per-call event loops from
-    reusing a connection across loops (``RuntimeError('Event loop is closed')``); the deadline (httpx's
-    read timeout, which google-genai forwards) must clear Gemini's 10s floor or the API returns 400.
+    Their only rationale was Kitaru 0.18's per-call event loops, which are gone with the Durable
+    Flow — so one build serves the REPL and the headless runner alike. Pinned because a re-added
+    parameter would silently split the two paths again.
     """
-    client = _flow_mode_http_client()
-    # google-genai forwards httpx's read timeout as the request deadline; Gemini rejects < 10s.
-    assert client.timeout.read is not None and client.timeout.read >= 10
-    # No pooled keep-alive connection can outlive a checkpoint's event loop (deep httpx internals; pinned).
-    assert client._transport._pool._max_keepalive_connections == 0
+    parameters = inspect.signature(build_agent).parameters
+
+    assert "flow_mode" not in parameters
+    assert set(parameters) == {"model"}
+    assert not hasattr(factory, "_flow_mode_http_client")
 
 
-def test_gemini_flow_mode_wires_the_loop_safe_http_client(mocker):
-    """`_build_model(flow_mode=True)` for gemini reaches for the loop-safe client; the REPL path doesn't.
-
-    Complements the isolated ``_flow_mode_http_client`` test by proving the *wiring* — that flow mode
-    (Kitaru's per-call event loops) attaches the keep-alive-free client, while the one-loop interactive
-    path keeps httpx's default keep-alive. Spying on the helper avoids reaching into ``GoogleModel``
-    internals for the attached client.
-    """
-    mocker.patch(
-        "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
-    )
-    mocker.patch("decode.agent.factory.settings.llm_provider", "gemini")
-    spy = mocker.patch("decode.agent.factory._flow_mode_http_client", wraps=_flow_mode_http_client)
-
-    _build_model(flow_mode=True)
-    assert spy.call_count == 1  # flow mode builds the keep-alive-free client
-
-    _build_model(flow_mode=False)
-    assert spy.call_count == 1  # interactive path does NOT (one event loop — keep-alive is fine)
+def test_build_model_has_no_flow_mode_parameter():
+    assert "flow_mode" not in inspect.signature(factory._build_model).parameters
 
 
-def test_flow_mode_reads_the_gemini_key_from_settings(mocker):
-    """ADR-0015 §4: flow mode no longer changes key sourcing — the key comes from ``Settings``, period.
-
-    The retired model-key secret resolution used to divert a flow-mode build to ``kitaru.get_secret``.
-    It is deleted: a flow-mode build reads the same settings ``SecretStr`` the REPL does, and no
-    secret-store lookup happens (``flow_mode`` now only selects the keep-alive-free HTTP client,
-    ADR-0010 §3).
-    """
+def test_the_provider_key_comes_from_settings_for_gemini(mocker):
+    """ADR-0015 §4: the key is the settings ``SecretStr``, headless or interactive — no other source."""
     mocker.patch("decode.agent.factory.settings.llm_provider", "gemini")
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key",
@@ -354,15 +332,13 @@ def test_flow_mode_reads_the_gemini_key_from_settings(mocker):
         create=False,
     )
     mocker.patch("decode.agent.factory.settings.gemini_model", "gemini-2.5-flash")
-    get_secret = mocker.patch("kitaru.get_secret")
 
-    agent = build_agent(flow_mode=True)
+    agent = build_agent()
 
     assert agent.model._provider.client._api_client.api_key == "settings-gemini-key"
-    get_secret.assert_not_called()  # no kitaru secret-store lookup on the key path any more
 
 
-def test_flow_mode_reads_the_openrouter_key_from_settings(mocker):
+def test_the_provider_key_comes_from_settings_for_openrouter(mocker):
     """The same settings-only key sourcing for the other single-api-key provider (ADR-0015 §4)."""
     mocker.patch("decode.agent.factory.settings.llm_provider", "openrouter")
     mocker.patch(
@@ -371,12 +347,10 @@ def test_flow_mode_reads_the_openrouter_key_from_settings(mocker):
         create=False,
     )
     mocker.patch("decode.agent.factory.settings.openrouter_model", "openrouter/free")
-    get_secret = mocker.patch("kitaru.get_secret")
 
-    agent = build_agent(flow_mode=True)
+    agent = build_agent()
 
     assert agent.model._provider.client.api_key == "settings-openrouter-key"
-    get_secret.assert_not_called()
 
 
 async def test_memory_injection_is_evaluated_per_run(tmp_path, mocker):

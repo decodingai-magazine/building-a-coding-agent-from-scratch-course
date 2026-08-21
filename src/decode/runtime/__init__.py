@@ -1,31 +1,17 @@
-"""The Headless Runtime — Kitaru Durable Flow + ``decode run`` (ADR-0008).
+"""The Headless Runtime — a plain ``asyncio.run`` around ``build_agent()`` for ``decode run`` (ADR-0019 §1).
 
-Two flows, one ``build_agent()``: :func:`run_agent_task` (bypass — every tool inline) and
-:func:`run_hitl_agent_task` (durable HITL waits resolved out-of-band). Importing this package pulls
-in ``kitaru`` (a heavy zenml/temporalio stack), so :mod:`decode.cli` imports it lazily inside the
-``run`` subcommand — the REPL path never imports kitaru.
+One entrypoint, :func:`~decode.runtime.headless.run_headless_task`: bypass permissions, ``ask_user``
+as a no-op, the sandbox Workspace + host-side Hand-back, and Opik tracing. The Kitaru Durable Flow
+this package used to host (checkpoints, HITL waits, ``decode replay``) is deleted — upstream removed
+the primitives. :mod:`decode.cli` still imports this package lazily inside the ``run`` subcommand, so
+the REPL path loads no headless machinery.
 """
 
 from __future__ import annotations
 
-from decode.runtime.flow import (
-    RUNTIME_AGENT_NAME,
-    HitlRunResult,
-    ReplayResult,
-    is_hitl_execution,
-    replay_agent_task,
-    run_agent_task,
-    run_agent_task_hitl,
-    run_hitl_agent_task,
-)
+from decode.runtime.headless import RUN_SPAN_NAME, run_headless_task
 
 __all__ = [
-    "RUNTIME_AGENT_NAME",
-    "HitlRunResult",
-    "ReplayResult",
-    "is_hitl_execution",
-    "replay_agent_task",
-    "run_agent_task",
-    "run_agent_task_hitl",
-    "run_hitl_agent_task",
+    "RUN_SPAN_NAME",
+    "run_headless_task",
 ]

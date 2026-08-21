@@ -7,7 +7,7 @@ harness artifacts stay at Harness Home; results ship back via the host-side git 
 ``none`` mode stays byte-identical to M1. Offline vs real split: Part 1 always runs offline
 (REAL executor / gate / registry / file-tool seams / hand-back / git-token injection; FAKED: a
 scripted FunctionModel, recording / local-exec SandboxBackend doubles, a monkeypatched
-``Settings`` field for the token, a stubbed LSP call, a spied KitaruAgent build — no daemon, no
+``Settings`` field for the token, a stubbed LSP call — no daemon, no
 network, no GEMINI_API_KEY); Part 2 is skipif-guarded real-infra smokes (docker probe /
 modal creds — SKIP, never fail) that reap all infra in ``finally``. The exhaustive matrices
 live in the per-backend files; this capstone is the integrated proof they hang together. A
@@ -870,44 +870,12 @@ def test_no_token_means_no_credential_machinery_anywhere() -> None:
     assert "credential.helper" not in docker_backend._git_setup_command()
 
 
-def _spy_runtime_agent_kwargs(monkeypatch, *, mode: str) -> dict[str, Any]:
-    """Call ``flow._build_runtime_agent`` with a spied ``KitaruAgent`` and return its kwargs (no stack)."""
-    import decode.runtime.flow as flow_mod
-
-    captured: dict[str, Any] = {}
-
-    def _fake_kitaru_agent(agent: Any, **kwargs: Any) -> Any:
-        captured.update(kwargs)
-        return SimpleNamespace(agent=agent, kwargs=kwargs)
-
-    monkeypatch.setattr(flow_mod.settings, "sandbox_mode", mode)
-    monkeypatch.setattr(
-        flow_mod, "build_agent", lambda flow_mode=True, model=None: SimpleNamespace()
-    )
-    monkeypatch.setattr(flow_mod, "KitaruAgent", _fake_kitaru_agent)
-
-    flow_mod._build_runtime_agent()
-    return captured
-
-
-def test_sandbox_bypass_agent_gets_the_cache_false_bash_checkpoint(monkeypatch) -> None:
-    """``docker`` mode: the bypass durable agent re-executes ``bash`` on replay (``{"cache": False}``, §5)."""
-    import decode.runtime.flow as flow_mod
-
-    captured = _spy_runtime_agent_kwargs(monkeypatch, mode="docker")
-
-    assert captured["tool_checkpoint_config_by_name"] == {_BASH: {"cache": False}}
-    assert captured["name"] == flow_mod.RUNTIME_AGENT_NAME
-    assert captured["checkpoint_strategy"] == "calls"  # the replay-ready default
-
-
-def test_none_mode_bypass_agent_is_byte_identical_without_the_replay_safety_kwarg(
-    monkeypatch,
-) -> None:
-    """``none`` mode: the bypass durable agent build carries NO replay-safety kwarg (byte-identical)."""
-    captured = _spy_runtime_agent_kwargs(monkeypatch, mode="none")
-
-    assert "tool_checkpoint_config_by_name" not in captured
+# The bypass agent's replay-safety checkpoint config (a ``{"cache": False}`` ``bash`` checkpoint so a
+# Replay re-executed it) is GONE with the Durable Flow it configured — kitaru 0.22.2 has no
+# checkpoints, so there is nothing to make replay-safe and nothing left to spy on (ADR-0019 §1).
+# The headless runner's own sandbox wiring is proved in tests/unit/decode/runtime/test_headless.py
+# (Workspace prep + warm-up, executor reap, host-side hand-back) and, against real docker, in
+# tests/integration/test_sandbox_teardown.py.
 
 
 def _run_isolated(code: str, *, mode: str) -> subprocess.CompletedProcess[str]:

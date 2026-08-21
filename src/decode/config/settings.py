@@ -322,17 +322,12 @@ class Settings(BaseSettings):
     # Per-request best-effort wall-clock timeout (seconds); ``initialize`` is bounded too.
     lsp_request_timeout_s: float = Field(10.0, gt=0)
 
-    # --- Kitaru durable runtime (ADR-0008) ---
+    # --- Headless runtime (ADR-0019 §1) ---
     # ``runtime_enabled`` master-gates the WHOLE headless feature: ``False`` → ``decode run`` exits
-    # with a friendly line and never builds a Durable Flow.
+    # with a friendly line and never builds an agent. The durable-flow knobs
+    # (``RUNTIME_CHECKPOINT_STRATEGY`` / ``RUNTIME_WAIT_TIMEOUT_S``) died with the flow — a clean
+    # break, no shim: a stale entry in a developer's ``.env`` is silently ignored.
     runtime_enabled: bool = True
-    # Checkpoint granularity. ``"calls"`` (default) makes every run replay-ready — each model/tool
-    # call is its own Checkpoint (loop-safe on gemini via the keep-alive-free flow-mode HTTP client,
-    # ADR-0010 §3). ``"turn"`` is a cheaper opt-out but replayable only whole. HITL always forces
-    # ``"calls"`` (``flow.py``).
-    runtime_checkpoint_strategy: Literal["turn", "calls"] = "calls"
-    # The durable Wait (HITL) poll timeout (seconds); matches Kitaru's local 600s default.
-    runtime_wait_timeout_s: float = Field(600.0, gt=0)
     # Secrets are NOT a runtime knob any more: the retired ``RUNTIME_SECRET_*`` family is deleted,
     # with no shim — config comes from ``DECODE_ENV`` (above), in the TUI and headless alike, and a
     # stale entry in a developer's ``.env`` is silently ignored (ADR-0015 §4; loud in .env.example).
