@@ -94,13 +94,8 @@ def _model_spans(spans: list[dict]) -> list[dict]:
 
 
 def _tool_spans(spans: list[dict]) -> list[dict]:
-    """The tool-call spans, under either pydantic-ai span naming.
-
-    2.22 (the pin task 133 lands) names them ``running tool``; 2.23+ (installed here today) names
-    them ``execute_tool <name>``. Accepting both keeps this proof honest across that swap instead
-    of failing on a rename that has nothing to do with the trace shape under test.
-    """
-    return [s for s in spans if s["name"] == "running tool" or s["name"].startswith("execute_tool")]
+    """The tool-call spans — ``execute_tool <name>`` under pydantic-ai 2.x instrumentation."""
+    return [s for s in spans if s["name"].startswith("execute_tool")]
 
 
 def test_a_headless_run_is_one_decode_run_root_with_nested_spans_and_usage(

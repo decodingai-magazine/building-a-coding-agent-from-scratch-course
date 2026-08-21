@@ -15,6 +15,7 @@ from typing import Literal
 
 from openai import AsyncOpenAI
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
+from pydantic_ai.agent import AgentRetries
 from pydantic_ai.models import Model
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -52,14 +53,14 @@ def build_agent(*, model: str | None = None) -> Agent[AgentDeps, str | DeferredT
         built_model,
         deps_type=AgentDeps,
         output_type=[str, DeferredToolRequests],
-        # Gemini 2.5 sometimes returns empty/thinking-only turns after a tool call; the default
-        # output-retry budget of 1 then aborts real multi-turn runs. Give it a few attempts.
-        output_retries=3,
-        # Tools coach the model with ModelRetry (edit "old_string not found", grep "no matches");
-        # the default per-tool budget of 1 turns the SECOND consecutive nag into
-        # UnexpectedModelBehavior, killing the whole turn. The counter only resets when the tool
-        # *succeeds* — a re-read between two mis-aimed edits doesn't help — so give real headroom.
-        tool_retries=5,
+        # Per-category retry budgets, one dict since pydantic-ai 2.x (``AgentRetries``):
+        # - output: Gemini 2.5 sometimes returns empty/thinking-only turns after a tool call; the
+        #   default budget of 1 then aborts real multi-turn runs. Give it a few attempts.
+        # - tools: tools coach the model with ModelRetry (edit "old_string not found", grep "no
+        #   matches"); the default per-tool budget of 1 turns the SECOND consecutive nag into
+        #   UnexpectedModelBehavior, killing the whole turn. The counter only resets when the tool
+        #   *succeeds* — a re-read between two mis-aimed edits doesn't help — so give real headroom.
+        retries=AgentRetries(output=3, tools=5),
     )
     register_tools(agent)
     _register_instructions(agent)
@@ -75,7 +76,7 @@ def _build_model(*, model: str | None = None) -> Model:
 
     ``model`` is the optional Model Override: ``model or settings.<provider>_model`` per branch —
     never the provider branch or the auth/key path; no cross-provider swap. Branch facts verified
-    against the installed SDKs: ``gemini`` uses the google-gla API-key path and never passes
+    against the installed SDKs: ``gemini`` uses the Generative-Language API-key path and never passes
     ``vertexai=`` (its deprecation warning would fail under ``filterwarnings=["error"]``);
     ``openrouter`` / ``modal`` both ride ``OpenAIChatModel``, modal over a bespoke ``AsyncOpenAI``
     client for its per-user ``base_url`` + dual-header proxy-token auth (both-or-neither enforced

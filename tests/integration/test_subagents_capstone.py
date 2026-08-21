@@ -37,6 +37,7 @@ from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
+from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -1204,6 +1205,21 @@ async def test_the_substance_nag_round_trips_and_the_rewritten_prompts_spawn_chi
 # 11. Live-Gemini fan-out smoke — one real fan-out; SKIPPED when GEMINI_API_KEY is unset.
 
 
+async def _close_live_gemini_client(agent: Agent) -> None:
+    """Close the REAL provider HTTP client this test opened, then finalize stragglers.
+
+    ``build_agent`` leaves the provider's keep-alive connection open (``flow_mode`` and its
+    keep-alive-free client died with the Durable Flow — ADR-0019 §1), so a live turn parks a socket
+    that pytest's unraisable hook reports at SESSION teardown — turning a run in which every test
+    passed red under ``filterwarnings=["error"]``. Entering and exiting the agent runs pydantic-ai
+    2.22's own provider lifecycle, whose ``__aexit__`` ``aclose()``s the client it created; whoever
+    opens a live client closes it.
+    """
+    async with agent:
+        pass
+    gc.collect()
+
+
 @pytest.mark.filterwarnings("ignore::ResourceWarning")
 @pytest.mark.skipif(
     not _LIVE_GEMINI_KEY,
@@ -1294,7 +1310,7 @@ async def test_live_gemini_fanout_smoke(monkeypatch):
         f"which means the feature does not work. Answer was:\n{answer}"
     )
 
-    gc.collect()  # finalize any straggler within this test's scope (belt-and-braces with keep-alive-off)
+    await _close_live_gemini_client(agent)
 
 
 # 12. Live-Gemini UNSTEERED probe — the delegation nudge's only real proof (task 110).
@@ -1343,4 +1359,4 @@ async def test_live_gemini_unsteered_broad_question_fans_out(monkeypatch):
         "asks for at least 3 distinct angles)"
     )
 
-    gc.collect()  # finalize any straggler within this test's scope (keep-alive-off belt-and-braces)
+    await _close_live_gemini_client(agent)

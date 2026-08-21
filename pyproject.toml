@@ -23,13 +23,14 @@ classifiers = [
 # Runtime deps only. Dev/test go in [dependency-groups]. Kept light on purpose —
 # the course adds the heavier integrations at the step that needs them.
 dependencies = [
-    "pydantic>=2.0,<2.13",  # capped <2.13 for kitaru→zenml (≤2.12.5); see ADR-0009
+    "pydantic>=2.0,<3",  # major bound only: the old <2.13 zenml cap died with kitaru 0.22 (ADR-0019)
     "pydantic-settings>=2.4",
     "python-dotenv>=1",  # explicit .env-file parsing for pydantic-settings (env_file=".env")
-    "click>=8.1,<8.3",  # capped <8.3 for kitaru→zenml (≤8.2.1); see ADR-0009
+    "click>=8.1,<9",  # major bound only: the old <8.3 zenml cap died with kitaru 0.22 (ADR-0019)
     "rich>=13",
     "prompt-toolkit>=3",
-    "pydantic-ai-slim[google,openai]>=2.33.0",
+    # capped <2.23 by the kitaru-pydantic-ai adapter; lift when the adapter does (ADR-0019 §2)
+    "pydantic-ai-slim[google,openai]>=2.22,<2.23",
     "httpx>=0.28.1",
     "markdownify>=1.2.3",
     "pyyaml>=6.0.3",
@@ -37,6 +38,7 @@ dependencies = [
     "anyio>=4.14.1",
     "logfire>=4.37.0",
     "kitaru[cli,mcp,worker]>=0.22.2",
+    "kitaru-pydantic-ai>=0.1.0",  # recording adapter: KitaruAgent wraps build_agent() (ADR-0019 §2)
 ]
 
 [project.scripts]

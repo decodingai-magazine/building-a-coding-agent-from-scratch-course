@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 def _leg_input_tokens(messages: list[ModelMessage]) -> int:
     """Input-token occupancy of a leg: the LAST populated ``ModelResponse.usage`` (ADR-0018 §2).
 
-    Under pydantic-ai 1.95.1 (ADR-0009) ``RunUsage`` is CUMULATIVE across every request in a leg
+    Under pydantic-ai 2.22 (ADR-0019 §2) ``RunUsage`` is CUMULATIVE across every request in a leg
     (one request per tool round), so summing it overcounts ~Nx for an N-round turn. The true
     context size is the last response's own per-request ``RequestUsage``: walk ``messages``
     BACKWARDS and take the first :class:`ModelResponse` whose ``usage.input_tokens > 0`` — later

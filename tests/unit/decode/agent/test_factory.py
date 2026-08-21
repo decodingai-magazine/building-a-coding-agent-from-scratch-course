@@ -2,7 +2,7 @@
 
 ADR-0002 §1-2 / ADR-0005 §3-5: the agent is a Pydantic AI :class:`~pydantic_ai.Agent` built on
 the configured **LLM Provider** — model construction is delegated to the ``_build_model()``
-Provider Seam (gemini via the ``google-gla`` API-key path, openrouter and modal via
+Provider Seam (gemini via the Generative-Language API-key path, openrouter and modal via
 ``OpenAIChatModel``). ``output_type=[str, DeferredToolRequests]`` keeps the deferred-tool seam
 ready. These tests assert the *construction contract* without making any network call (no model
 request is issued just by building the agent — every provider constructs offline).
@@ -119,10 +119,10 @@ def test_build_agent_uses_google_model_with_configured_id(mocker):
 
     assert isinstance(agent.model, GoogleModel)
     assert agent.model.model_name == "gemini-2.5-flash"
-    # google-gla (Generative-Language), NOT Vertex: the provider's system name is "google-gla"
-    # (pydantic-ai 1.x — it was "google" under 2.0; ADR-0009).
+    # Generative-Language API key path, NOT Vertex: the provider's system name is "google" under
+    # pydantic-ai 2.x (it was "google-gla" on 1.x, before the pin moved; ADR-0019 §2).
     assert isinstance(agent.model._provider, GoogleProvider)
-    assert agent.model.system == "google-gla"
+    assert agent.model.system == "google"
 
 
 def test_build_agent_respects_a_custom_model_id(mocker):
@@ -547,7 +547,7 @@ async def test_skills_catalog_is_injected_regardless_of_active_agent(tmp_path, m
 # these tests assert the model *type* + the client *shape* (base_url / headers / placeholder
 # api_key) with ``mocker.patch``ed settings, never a live call (ADR-0005 Consequences).
 #
-# The attribute paths below were verified against the installed openai 2.43 / pydantic-ai 1.107:
+# The attribute paths below were verified against the installed openai 2.43 / pydantic-ai 2.22:
 # the custom modal client is reachable at ``agent.model._provider.client``; httpx normalizes the
 # ``base_url`` with a trailing slash (``.../v1`` round-trips as ``.../v1/``); ``default_headers``
 # carries the Modal proxy headers; ``api_key`` reads back the secret / ``"EMPTY"`` placeholder.
@@ -567,8 +567,8 @@ def _patch_provider(mocker, provider, *, modal_authenticated=True):
             "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
         )
         mocker.patch("decode.agent.factory.settings.gemini_model", "gemini-2.5-flash", create=False)
-        # GoogleModel.system is "google-gla" under pydantic-ai 1.x (was "google" under 2.0; ADR-0009).
-        return GoogleModel, "google-gla", "gemini-2.5-flash"
+        # GoogleModel.system is "google" under pydantic-ai 2.x (it was "google-gla" on 1.x; ADR-0019 §2).
+        return GoogleModel, "google", "gemini-2.5-flash"
     if provider == "openrouter":
         mocker.patch(
             "decode.agent.factory.settings.openrouter_api_key", SecretStr("or-key"), create=False
@@ -669,7 +669,9 @@ def test_build_model_rejects_an_unsupported_provider(mocker):
 # never changes the provider class or the auth/key path (permanent non-goal: no cross-provider
 # swap). Construction stays offline for every provider (building a model issues no model request).
 
-_OVERRIDE_MODEL_ID = "some-override-model-id"
+# Shaped like a real gateway id (``vendor/model``): OpenRouter ids always carry the vendor prefix,
+# and ``OpenRouterProvider.model_profile`` splits on it to pick the model profile.
+_OVERRIDE_MODEL_ID = "some-vendor/some-override-model-id"
 
 _PROVIDER_CASES = [
     ("gemini", False),
@@ -724,9 +726,9 @@ def test_gemini_override_keeps_the_google_provider_and_settings_key(mocker):
 def test_openrouter_override_keeps_the_openrouter_provider_and_key(mocker):
     _patch_provider(mocker, "openrouter")
 
-    model = _build_model(model="some-openrouter-id")
+    model = _build_model(model="some-vendor/some-openrouter-id")
 
-    assert model.model_name == "some-openrouter-id"
+    assert model.model_name == "some-vendor/some-openrouter-id"
     assert isinstance(model, OpenAIChatModel)
     assert isinstance(model._provider, OpenRouterProvider)
     assert model._provider.client.api_key == "or-key"
