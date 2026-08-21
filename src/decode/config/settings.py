@@ -11,8 +11,11 @@ chain entirely so a key missing from the bucket fails loudly instead of being ba
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from collections.abc import Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 
@@ -84,7 +87,7 @@ def context_window_for(model_id: str) -> int | None:
 
 
 # The last Environment-Bucket load failure, or None. The ``settings`` singleton is built at IMPORT
-# time, so the source must never raise: a missing bucket (or a downed Kitaru local server) is
+# time, so the source must never raise: a missing bucket (or an unreachable Kitaru workspace) is
 # recorded here and rendered by the cli startup guards as ONE friendly line (ADR-0015 §5).
 _bucket_load_error: str | None = None
 
@@ -132,6 +135,50 @@ def _resolve_decode_env(dotenv_settings: PydanticBaseSettingsSource) -> str:
     return os.environ.get(_DECODE_ENV_VAR) or _decode_env_from_dotenv(dotenv_settings) or "local"
 
 
+def _run_blocking[T](coro: Coroutine[Any, Any, T]) -> T:
+    """Run ``coro`` to completion on a private event loop in a worker thread, and return its result.
+
+    Deliberately NOT :func:`asyncio.run`: the ``settings`` singleton is built at IMPORT time, and an
+    import that happens to run inside a live event loop (a lazy import from async code) makes
+    ``asyncio.run`` raise — which would degrade a perfectly healthy bucket into the "unavailable"
+    friendly line. A worker thread owns its own loop, so the read behaves identically either way.
+    """
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="decode-bucket") as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _read_bucket(bucket: str) -> dict[str, str]:
+    """The values of the named Kitaru secret ``bucket``, read off the managed workspace (ADR-0019 §5).
+
+    Two calls, because the 0.22.2 secrets resource has no get-by-name endpoint: list filtered by
+    ``name``, then get that id ``include_values=True``. The client resolves its own URL and
+    credentials from ``KITARU_API_URL`` / ``KITARU_API_KEY`` (else the on-disk ``kitaru login``
+    store) — decode adds no knob of its own, so there is one place to configure the workspace.
+
+    Raises on anything (no such secret, unreachable server, expired login): the single caller owns
+    the never-raises contract (ADR-0015 §5), and swallowing here would hide *which* step failed.
+    """
+    from kitaru.api_models.v1.filter import FilterCondition
+    from kitaru.api_models.v1.secret import SecretListParams
+    from kitaru.client import KitaruClient
+
+    async def read() -> dict[str, str]:
+        client = KitaruClient()
+        try:
+            page = await client.api.secrets.list(
+                SecretListParams(filter=FilterCondition(field="name", op="eq", value=bucket))
+            )
+            found = next((item for item in page.items if item.name == bucket), None)
+            if found is None:
+                raise LookupError("no secret with this name on the Kitaru workspace")
+            secret = await client.api.secrets.get(found.id, include_values=True)
+        finally:
+            await client.close()
+        return {key: value.get_secret_value() for key, value in secret.values.items()}
+
+    return _run_blocking(read())
+
+
 class EnvironmentBucketSettingsSource(PydanticBaseSettingsSource):
     """A pydantic-settings source that hydrates the whole surface from the Environment Bucket (ADR-0015 §2).
 
@@ -143,8 +190,9 @@ class EnvironmentBucketSettingsSource(PydanticBaseSettingsSource):
       is a remote environment (the restated REPL-safety invariant, ADR-0015 §5).
     * **``Settings`` object only — never ``os.environ``.** Nothing is written to the process env, so
       a model-chosen ``bash`` never inherits a bucket-sourced secret.
-    * **Never raises.** The singleton is built at import; a missing bucket / a downed Kitaru local
-      server is captured in :func:`bucket_load_error` and surfaced by the cli as one friendly line.
+    * **Never raises.** The singleton is built at import; a missing bucket / an unreachable or
+      unauthenticated Kitaru workspace is captured in :func:`bucket_load_error` and surfaced by the
+      cli as one friendly line.
     """
 
     def __init__(self, settings_cls: type[BaseSettings], decode_env: str) -> None:
@@ -168,9 +216,9 @@ class EnvironmentBucketSettingsSource(PydanticBaseSettingsSource):
 
         bucket = environment_bucket_name(self.decode_env)
         try:
-            from kitaru import get_secret  # lazy: a remote env is the only importer of kitaru here
-
-            values = get_secret(bucket).values
+            values = _read_bucket(
+                bucket
+            )  # lazily imports the kitaru client — see :func:`_read_bucket`
         except Exception as exc:  # broad on purpose: an import-time crash is never acceptable here
             _bucket_load_error = f"{bucket}: {exc}"
             logger.debug("environment bucket %r could not be loaded: %s", bucket, exc)

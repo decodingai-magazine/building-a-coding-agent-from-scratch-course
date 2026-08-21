@@ -230,7 +230,8 @@ def _env_bucket_error() -> str | None:
     bucket = environment_bucket_name(settings.decode_env)
     return (
         f"Decode: DECODE_ENV={settings.decode_env} but the environment bucket {bucket!r} could not "
-        f"be loaded (it is missing, or the Kitaru local server is down) — run "
+        f"be loaded (no such secret on the Kitaru workspace, or this machine cannot reach it — "
+        f"check `kitaru login` / KITARU_API_URL) — run "
         f"`make sync-secrets ENV={settings.decode_env}` (see running_the_code/06_credentials.md)."
     )
 
