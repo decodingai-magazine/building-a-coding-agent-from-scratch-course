@@ -105,15 +105,25 @@ def test_importing_the_cli_does_not_import_kitaru():
     Importing ``decode.cli`` in a fresh interpreter must not pull in ``kitaru`` — at
     ``DECODE_ENV=local`` nothing does. A subprocess keeps the check honest regardless of what the
     rest of the suite already imported.
+
+    Tightened for the Recording Seam (ADR-0019 §3): the headless package and the seam module itself
+    are imported too, and BOTH kitaru distributions are checked (``kitaru`` and the adapter
+    ``kitaru_pydantic_ai``) — the seam's imports live inside its configured branch, so an unconfigured
+    process must still come up with neither in ``sys.modules``.
     """
     import subprocess
     import sys
 
-    proc = subprocess.run(
-        [sys.executable, "-c", "import decode.cli, sys; assert 'kitaru' not in sys.modules"],
-        capture_output=True,
-        text=True,
+    code = (
+        "import sys\n"
+        "import decode.cli\n"
+        "import decode.runtime\n"
+        "import decode.runtime.recording\n"
+        "leaked = sorted(m for m in sys.modules if m.split('.')[0] in "
+        "{'kitaru', 'kitaru_pydantic_ai'})\n"
+        "assert not leaked, leaked\n"
     )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     assert proc.returncode == 0, proc.stderr
 

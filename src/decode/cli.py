@@ -451,6 +451,10 @@ def run(task: str, model: str | None, repo: str | None, local: bool) -> None:
     ``make sync-secrets ENV=<env>``, ADR-0015 §5), then the per-provider config guard — it reads the
     already-hydrated config, whichever mechanism supplied it — then ``RUNTIME_ENABLED``: a disabled
     runtime never builds an agent, then the sandbox backend / repo guards.
+
+    Recording (ADR-0019 §3) keeps the same stderr contract: a configured-but-unreachable Kitaru
+    workspace costs ONE stderr line and the run continues on the bare agent (exit 0), while under a
+    Kitaru Worker Task the same failure is ONE stderr line and a non-zero exit — never a traceback.
     """
     # The headless guard chain; any failure exits non-zero here, before any agent is built.
     config_error = _runtime_config_preflight(repo=repo)
@@ -471,6 +475,7 @@ def run(task: str, model: str | None, repo: str | None, local: bool) -> None:
 
     # Imported inside the subcommand so the REPL path loads no headless machinery.
     from decode.runtime import run_headless_task
+    from decode.runtime.recording import RecordingUnavailableError
 
     logger.debug(
         "decode run starting (task=%r, model=%r, repo=%r, local=%s)",
@@ -479,7 +484,15 @@ def run(task: str, model: str | None, repo: str | None, local: bool) -> None:
         resolved_repo,
         local,
     )
-    output = run_headless_task(task, model=model, repo=resolved_repo, local=local)
+    try:
+        output = run_headless_task(task, model=model, repo=resolved_repo, local=local)
+    except RecordingUnavailableError as exc:
+        # Same friendly-line-on-stderr contract as the guards above: a Kitaru Worker's captured
+        # stderr should be the one line that names the failure, not 40 frames of pydantic-ai and
+        # httpx. The traceback still lands in the log file for whoever debugs the workspace.
+        logger.warning("recording unavailable for a Kitaru Worker Task; failing", exc_info=True)
+        click.echo(f"Decode: {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
     click.echo(output)  # stdout: only the clean agent answer (pipe-safe)
     # The Git hand-back (ADR-0012 §8) runs inside ``run_headless_task``, right after the sandbox
     # executor is reaped — the runner process is the one that owns the Workspace.

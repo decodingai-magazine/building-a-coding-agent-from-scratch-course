@@ -14,16 +14,22 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 from pydantic_ai import DeferredToolRequests
 from pydantic_ai.messages import ModelResponse, RetryPromptPart, TextPart, ToolCallPart
+from support.kitaru_recording import install_fake_recording_stack
 from support.runtime_agents import make_scripted_agent
 
 import decode.runtime.headless as hl
 import decode.tools.bash as bash_mod
 from decode.entities.permissions import PermissionOutcome
 from decode.permissions.types import PermissionMode
+from decode.runtime.recording import RecordingUnavailableError
+
+# A syntactically valid Kitaru agent id — the recording opt-in the seam parses (ADR-0019 §3).
+AGENT_ID = "6f1d6b6a-6f6f-4c0a-9c9a-0f0f0f0f0f0f"
 
 
 @pytest.fixture(autouse=True)
@@ -174,6 +180,115 @@ def test_ask_user_feeds_the_no_interactive_user_message_back_to_the_model(monkey
     hl.run_headless_task("ask me something")
 
     assert any("No interactive user is attached" in message for message in captured)
+
+
+# --- the Recording Seam (ADR-0019 §3) -----------------------------------------------------------
+
+
+def test_an_unrecorded_run_drives_the_bare_agent(monkeypatch):
+    """The default: nothing configured, so the seam hands back the very agent that was built."""
+    agent, _counter = make_scripted_agent([_text("done")])
+    monkeypatch.setattr(hl, "_build_headless_agent", lambda model=None: agent)
+    seen: list[object] = []
+    real_wrap = hl.wrap_for_recording
+
+    async def _wrap(built, *, session_name=None):
+        result = await real_wrap(built, session_name=session_name)
+        seen.append(result)
+        return result
+
+    monkeypatch.setattr(hl, "wrap_for_recording", _wrap)
+
+    assert hl.run_headless_task("do it") == "done"
+    assert seen == [(agent, None)]  # the same agent back, and nothing to tell the operator
+
+
+def test_the_run_goes_through_the_recording_seam_named_by_its_session_id(monkeypatch, mocker):
+    """``session_name`` is the run's session id — the same id the Session Branch carries."""
+    captured: dict[str, object] = {}
+    spans: list[str | None] = []
+    real_root_span = hl.observability.root_span
+
+    def _root_span(name, *, thread_id=None, input=None):
+        spans.append(thread_id)
+        return real_root_span(name, thread_id=thread_id, input=input)
+
+    monkeypatch.setattr(hl.observability, "root_span", _root_span)
+
+    async def _wrap(built, *, session_name=None):
+        captured["agent"] = built
+        captured["session_name"] = session_name
+        return built, None
+
+    monkeypatch.setattr(hl, "wrap_for_recording", _wrap)
+    _patch_agent(monkeypatch, [_text("done")])
+
+    hl.run_headless_task("record me")
+
+    assert captured["session_name"] == spans[0]
+
+
+def test_a_recorded_run_executes_through_the_kitaru_wrapper(monkeypatch, capsys):
+    """AC2: configured + a reachable (faked) workspace → the run really goes through KitaruAgent."""
+    stack = install_fake_recording_stack(monkeypatch)
+    monkeypatch.setattr(hl.settings, "kitaru_agent_id", AGENT_ID)
+    monkeypatch.setenv("KITARU_API_URL", "https://kitaru.example.invalid")
+    _patch_agent(monkeypatch, [_text("recorded answer")])
+
+    assert hl.run_headless_task("record me") == "recorded answer"
+
+    assert capsys.readouterr().err == ""  # a working recording is silent — only a loss is news
+    assert len(stack.wrapped) == 1
+    assert stack.wrapped[0].agent_id == UUID(AGENT_ID)
+    assert stack.wrapped[0].runs == ["record me"]  # the wrapper, not the bare agent, ran the task
+
+
+def test_an_unreachable_workspace_still_completes_the_run(monkeypatch, caplog):
+    """AC3: ONE warning line, the answer still comes back, and nothing raises."""
+    install_fake_recording_stack(monkeypatch, probe_error=ConnectionError("connection refused"))
+    monkeypatch.setattr(hl.settings, "kitaru_agent_id", AGENT_ID)
+    monkeypatch.setenv("KITARU_API_URL", "https://kitaru.example.invalid")
+    _patch_agent(monkeypatch, [_text("unrecorded answer")])
+
+    with caplog.at_level(logging.WARNING, logger="decode.runtime.recording"):
+        assert hl.run_headless_task("record me") == "unrecorded answer"
+
+    assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
+
+
+def test_the_degrade_warning_reaches_the_operators_stderr(monkeypatch, caplog, capsys):
+    """AC3: "prints ONE warning line" means the terminal, not a log file nobody is tailing.
+
+    The operator asked for a recorded run and is not getting one — a line filed under
+    ``.decode/logs/decode.log`` during a headless run is invisible. stdout stays untouched, so a
+    piped ``decode run`` still yields exactly the answer.
+    """
+    install_fake_recording_stack(monkeypatch, probe_error=ConnectionError("connection refused"))
+    monkeypatch.setattr(hl.settings, "kitaru_agent_id", AGENT_ID)
+    monkeypatch.setenv("KITARU_API_URL", "https://kitaru.example.invalid")
+    _patch_agent(monkeypatch, [_text("unrecorded answer")])
+
+    with caplog.at_level(logging.WARNING, logger="decode.runtime.recording"):
+        hl.run_headless_task("record me")
+
+    printed = capsys.readouterr()
+    logged = next(r for r in caplog.records if r.levelno >= logging.WARNING).getMessage()
+    assert printed.err == f"{logged}\n"  # the same one line, on the terminal too
+    assert "kitaru.example.invalid" in printed.err  # ...naming the workspace that was unreachable
+    assert "Traceback" not in printed.err
+    assert printed.out == ""  # stdout is the answer channel and nothing else
+
+
+def test_a_worker_task_run_fails_when_the_workspace_is_unreachable(monkeypatch):
+    """AC4: under a Worker Task the failure propagates — the cli turns it into a non-zero exit."""
+    install_fake_recording_stack(monkeypatch, probe_error=ConnectionError("connection refused"))
+    monkeypatch.setattr(hl.settings, "kitaru_agent_id", AGENT_ID)
+    monkeypatch.setenv("KITARU_API_URL", "https://kitaru.example.invalid")
+    monkeypatch.setenv("KITARU_TASK_ID", "0f9d1a3e-0000-4000-8000-000000000001")
+    _patch_agent(monkeypatch, [_text("never reached")])
+
+    with pytest.raises(RecordingUnavailableError, match="recording is unavailable"):
+        hl.run_headless_task("record me")
 
 
 # --- tracing -----------------------------------------------------------------------------------

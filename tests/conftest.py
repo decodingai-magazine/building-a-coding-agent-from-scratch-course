@@ -138,6 +138,30 @@ def _default_decode_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_kitaru_recording(monkeypatch):
+    """Hermeticity guard — no test may record a Kitaru session (ADR-0019 §3, task 134).
+
+    Recording is presence-based, so ``KITARU_AGENT_ID`` (a ``Settings`` field, possibly loaded from a
+    developer's ``.env`` at import time) plus an exported ``KITARU_API_URL`` is a *behavioral switch*:
+    the Recording Seam would wrap every agent the suite builds and probe a real workspace over the
+    network. ``KITARU_TASK_ID`` is worse — it flips the seam from degrade to hard-fail, so an
+    operator who ran a Kitaru Worker in the same shell would see failures no one else gets. Same
+    class of leak as :func:`_no_real_provider_key` / :func:`_default_sandbox_mode`.
+
+    The env vars are deleted (which also scrubs them for the subprocesses tests spawn, keeping the
+    "no kitaru import unless configured" invariant checks honest) and the singleton field is blanked.
+    The recording tests set their own values with ``monkeypatch`` (which runs after this fixture, so
+    they win).
+    """
+    for name in ("KITARU_AGENT_ID", "KITARU_API_URL", "KITARU_TASK_ID"):
+        monkeypatch.delenv(name, raising=False)
+
+    from decode.config.settings import settings
+
+    monkeypatch.setattr(settings, "kitaru_agent_id", "", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _default_sandbox_mode(monkeypatch):
     """Hermeticity guard — pin ``SANDBOX_MODE=none`` on the singleton (ADR-0011, task 071).
 

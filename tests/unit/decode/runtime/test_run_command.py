@@ -17,6 +17,7 @@ from pydantic import SecretStr, ValidationError
 import decode.cli as cli_mod
 import decode.runtime as runtime_mod
 from decode.cli import cli
+from decode.runtime.recording import RecordingUnavailableError
 
 
 @pytest.fixture
@@ -86,6 +87,45 @@ def test_run_threads_the_task_and_defaults_into_the_runner(monkeypatch, _provide
     assert captured["model"] is None
     assert captured["repo"] is None
     assert captured["local"] is False
+
+
+def _recording_unavailable_runner(monkeypatch) -> None:
+    """Make the runner raise the Seam's hard failure, as a Worker Task with a dead workspace does."""
+
+    def _fails(*_args, **_kwargs):
+        raise RecordingUnavailableError("[kitaru] recording is unavailable for this Worker Task")
+
+    monkeypatch.setattr(runtime_mod, "run_headless_task", _fails)
+
+
+def test_run_exits_non_zero_when_a_worker_task_cannot_be_recorded(monkeypatch, _provider_ok):
+    """AC4: the Recording Seam's hard failure reaches the process exit code (ADR-0019 §3).
+
+    The runner raises :class:`RecordingUnavailableError` under a Worker Task whose workspace is
+    unreachable; ``decode run`` must NOT swallow it into a 0 — a Kitaru Worker reads the exit code to
+    decide whether the replay produced anything trustworthy.
+    """
+    _recording_unavailable_runner(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run", "replay this"])
+
+    assert result.exit_code != 0
+    assert "recording is unavailable" in result.stderr
+    assert result.stdout == ""  # nothing on stdout to mistake for an answer
+
+
+def test_run_recording_hard_failure_is_a_friendly_line_not_a_traceback(monkeypatch, _provider_ok):
+    """Same contract as every other guard: ONE stderr line, no framework frames (ADR-0019 §3).
+
+    A Kitaru Worker captures this stderr; 40 lines of pydantic-ai/httpx frames bury the one fact
+    that matters. The traceback still goes to the log file for whoever debugs the workspace.
+    """
+    _recording_unavailable_runner(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run", "replay this"])
+
+    assert result.stderr == "Decode: [kitaru] recording is unavailable for this Worker Task\n"
+    assert "Traceback" not in result.stderr
 
 
 # --- the deleted surfaces: `decode replay` and `decode run --hitl` -------------------------------

@@ -376,6 +376,14 @@ class Settings(BaseSettings):
     # (``RUNTIME_CHECKPOINT_STRATEGY`` / ``RUNTIME_WAIT_TIMEOUT_S``) died with the flow — a clean
     # break, no shim: a stale entry in a developer's ``.env`` is silently ignored.
     runtime_enabled: bool = True
+    # --- Recording Seam (ADR-0019 §3) ---
+    # The Kitaru agent (a UUID) recorded runs are filed under. Presence-based opt-in and decode's
+    # ONLY recording knob: set it (together with the adapter client's own ``KITARU_API_URL`` /
+    # ``KITARU_API_KEY`` **process** env) and a run is wrapped in ``kitaru_pydantic_ai.KitaruAgent``;
+    # empty → the bare agent, and no kitaru module is ever imported. Deliberately NOT paired with
+    # url/key settings of decode's own: the adapter client resolves those itself, so there is exactly
+    # one place to configure the workspace (a second one would drift).
+    kitaru_agent_id: str = ""
     # Secrets are NOT a runtime knob any more: the retired ``RUNTIME_SECRET_*`` family is deleted,
     # with no shim — config comes from ``DECODE_ENV`` (above), in the TUI and headless alike, and a
     # stale entry in a developer's ``.env`` is silently ignored (ADR-0015 §4; loud in .env.example).

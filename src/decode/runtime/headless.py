@@ -14,6 +14,9 @@ primitives — so a headless run is now a plain async agent run:
   died with the flow.
 * **Tracing**: :func:`decode.observability.init_tracing` runs before the agent is built, exactly
   like the TUI, and the run opens one root span keyed on the run's session id (ADR-0014 §4-5).
+* **Recording**: the Recording Seam (:mod:`decode.runtime.recording`) decides wrapped-vs-bare; when
+  it degrades, this runner echoes its ONE notice line on stderr — stdout stays the answer alone
+  (ADR-0019 §3).
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import logging
 from pathlib import Path
 from uuid import uuid4
 
+import click
 from pydantic_ai import Agent, DeferredToolRequests
 
 from decode import observability
@@ -34,6 +38,7 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
+from decode.runtime.recording import wrap_for_recording
 from decode.tools.askuser import deny_user_question_resolver
 from decode.tools.bash import close_executor, warm_executor
 
@@ -160,7 +165,18 @@ async def _run_task(
 ) -> str:
     """Run ONE task to completion through the bypass agent and return its final text (ADR-0019 §1)."""
     tool_scope = await _prepare_headless_tool_scope(repo, local)
-    agent = _build_headless_agent(model)
+    # The Recording Seam (ADR-0019 §3): the SAME agent back unless recording is configured, in which
+    # case it comes back wrapped for Kitaru, with this run's session id naming the Kitaru Session —
+    # so a recorded session, the Opik trace thread and the Session Branch all carry one id.
+    agent, recording_notice = await wrap_for_recording(
+        _build_headless_agent(model), session_name=session_id
+    )
+    # A dropped recording is not a guard: the run proceeds and exits 0. But the operator who asked
+    # for recording must SEE that they did not get it, before the run burns its tokens — so the one
+    # line the seam logged is echoed on stderr too, like the cli's context-window notice. stdout
+    # stays exactly the agent's answer (ADR-0019 §1).
+    if recording_notice is not None:
+        click.echo(recording_notice, err=True)
     deps = _build_headless_deps(tool_scope, model)
     # One root span per run, keyed on the run's session id (a nullcontext when tracing is off).
     with observability.root_span(RUN_SPAN_NAME, thread_id=session_id, input=task) as span:
