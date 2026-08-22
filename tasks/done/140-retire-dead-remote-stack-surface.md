@@ -1,7 +1,7 @@
 ---
 id: 140
 feature: kitaru-replay-runtime
-status: pending
+status: done
 ---
 
 # Retire the dead remote-stack operator surface (Makefile deploy/run-remote, scripts/deploy.sh, last exec_id docstring)
@@ -85,3 +85,9 @@ script they drive, and the final `exec_id` docstring in `src/`.
   thread-id grep.
 
 Ready for implementation.
+
+### [PA] 2026-08-22 — Done-by-absorption
+
+Scope moved WHOLESALE into `tasks/141-retire-dead-remote-surface.md` (feature
+modal-remote-headless, ADR-0020 §6) at grooming, so the work stays gated there and this
+task cannot be double-scheduled. No work was performed under this id.
