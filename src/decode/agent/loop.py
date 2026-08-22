@@ -55,6 +55,7 @@ from decode.permissions.rules import subject_for
 from decode.tools import tool_kind
 
 if TYPE_CHECKING:
+    from pydantic_ai.agent import AbstractAgent
     from pydantic_ai.models import Model
 
     from decode.context.session_log import SessionLog
@@ -94,7 +95,10 @@ class AgentTurnHandler:
 
     def __init__(
         self,
-        agent: Agent[AgentDeps, str | DeferredToolRequests],
+        # ``AbstractAgent``, not ``Agent``: the handler only ever calls ``iter()``, and the REPL may
+        # hand it a pydantic-ai ``WrapperAgent`` — today the Recording Seam's ``KitaruAgent``
+        # (ADR-0019 §3). Nothing else about the loop changes for a wrapped agent.
+        agent: AbstractAgent[AgentDeps, str | DeferredToolRequests],
         *,
         deps: AgentDeps,
         session_log: SessionLog | None = None,

@@ -7,9 +7,11 @@ nothing else: no server, no credentials, no network.
 
 Two deliberate choices:
 
-* **The fake adapter really delegates.** ``FakeKitaruAgent.run`` awaits the wrapped agent, so a test
-  that runs THROUGH the wrapper proves the run still produces the agent's answer — a fake that
-  returned a canned string would pass while the wrapper silently swallowed the run.
+* **The fake adapter really delegates.** ``FakeKitaruAgent.run`` awaits the wrapped agent and its
+  ``iter`` re-yields the wrapped agent's own ``AgentRun``, so a test that runs THROUGH the wrapper
+  proves the run still produces the agent's answer — a fake that returned a canned string would pass
+  while the wrapper silently swallowed the run. Both are needed because decode drives the wrapper
+  from two surfaces: ``run()`` headlessly, ``iter()`` from the REPL's ``AgentTurnHandler``.
 * **Every workspace call recorded by NAME.** :attr:`FakeRecordingStack.probe_calls` carries
   ``(resource, target)`` tuples so a test can pin *which* workspace call the seam's reachability
   probe made (``agents.get <configured-id>`` when decode knows the agent, ``info.get`` when a Worker
@@ -23,6 +25,8 @@ from __future__ import annotations
 import sys
 import types
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 
@@ -31,7 +35,9 @@ class FakeKitaruAgent:
 
     The keyword-only signature mirrors the installed adapter's (pinned by
     ``tests/unit/decode/test_kitaru_dependency.py``), so a call this fake accepts is a call the real
-    ``KitaruAgent`` accepts.
+    ``KitaruAgent`` accepts. Same for the surface it exposes: the real adapter is a pydantic-ai
+    ``WrapperAgent``, so ``model`` proxies through to the wrapped agent and ``iter`` is an async
+    context manager yielding the wrapped agent's ``AgentRun``.
     """
 
     def __init__(
@@ -49,10 +55,21 @@ class FakeKitaruAgent:
         self.session_name = session_name
         self.batch_size = batch_size
         self.runs: list[str] = []
+        self.iters: list[str] = []
+
+    @property
+    def model(self) -> Any:
+        return self.wrapped.model
 
     async def run(self, *args: Any, **kwargs: Any) -> Any:
         self.runs.append(str(args[0]) if args else "")
         return await self.wrapped.run(*args, **kwargs)
+
+    @asynccontextmanager
+    async def iter(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        self.iters.append(str(args[0]) if args else "")
+        async with self.wrapped.iter(*args, **kwargs) as run:
+            yield run
 
 
 class FakeRecordingStack:
