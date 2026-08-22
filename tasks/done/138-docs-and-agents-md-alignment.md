@@ -297,3 +297,31 @@ $ uv run kitaru session get 01a0272f-a45d-7b52-94a2-6901a7a5c240
   confirmed still broken and correctly left alone — unrelated to this task's dead-model sweep.
 
 **VERDICT: PASS**
+
+### [PA] 2026-08-22 06:00 — Acceptance Review (feature kitaru-replay-runtime, tasks 131-138, PR #65)
+
+**VERDICT: ACCEPT**
+
+Walked the whole feature from the operator's perspective against the Tasks Plan ACs and
+ADR-0019 **including its dated Amendments section** (which already records the input-contract
+widening, `secret_ids: []`, and the Worker-gate widening — the PR body's "Follow-ups" claim
+that the ADR still needs a PA amendment is STALE and should be edited before merge).
+
+**Feature gates, all verified from evidence in the task logs plus direct re-reads:**
+- (a) `make ci` green — 133 SWE evidence + Tester's independent true-key-free repro (2261 passed, exit 0).
+- (b) headless run recorded — 138's live e2e left session `01a0272f-a45d…` (`origin: recorded`, bare-string inputs = Amendment §1 live), read back by the Tester.
+- (c) REPL recording + graceful degrade — 135's live degrade + real post-degrade Gemini turn; wrap/session_name/multi-turn unit-pinned. Residual: the [HUMAN] live REPL-turn-on-workspace checkbox stays open — same seam and adapter surface the live headless/replay proofs exercised, acceptable residual for a human to tick opportunistically.
+- (d) worker baseline replay executed — 137: replay `01a0270b-0c96…` completed, result session `origin: replay` on agent version 2, all 29 tool calls served from history, host tree untouched; Tester re-read all ids read-only.
+
+**Operator experience spot-checked directly:** `running_the_code/03_runtime.md` walks
+run → record → replay → troubleshoot with glossary-verbatim terms and honest failure lines;
+every guard/degrade/hard-fail message reads as one actionable `Decode:`/`[kitaru]` line
+(after 134's fix round, which the Tester re-proved live).
+
+**Carried items, dispositioned:**
+1. Glossary drift — FIXED by PA in this review (my surface): **Worker Task** (three input shapes per Amendment §1), **Thread (Opik)** (dead `exec_id` → per-run session id), **Observability** (dead "Kitaru Checkpoints" → Kitaru Session recording), plus **Recording Seam** (gate widening per Amendment §3). Fold into the branch before merge.
+2. Makefile `deploy`/`run-remote` + `scripts/deploy.sh` (live trap: line 333 calls the deleted bootstrap script) + the last `exec_id` docstring in `src/decode/observability/tracing.py:147` — follow-up task filed: `tasks/140-retire-dead-remote-stack-surface.md` (outside this feature's gate; plan declared `scripts/*.sh` out of scope).
+3. Worker-mode lazy session creation escaping the Seam's one-line contract — follow-up task groomed and filed: `tasks/139-worker-lazy-session-failure-one-line.md` (design decision taken: worker-gated catch at the CLI boundary; no new ADR — implements ADR-0019 §3 as amended).
+4. `test_live_gemini_fanout_smoke` flake — no action; Tester's ruling stands (live-key-only, never gates CI, strictness is deliberate).
+
+All acceptance criteria verified from user POV. Hand off to the PR Reviewer.
