@@ -122,6 +122,13 @@ MISSING_CREDENTIAL_MESSAGE = (
     f"API key (ZENPROKEY_…) to the {SECRET_NAME} secret."
 )
 
+# The Harness Home is the cwd kitaru chdirs into to spawn every claimed task, so a container that
+# cannot create it cannot run one — said in the same voice as the lines above, not as a traceback.
+HARNESS_HOME_ERROR_FORMAT = (
+    "Decode: could not create the Worker's Harness Home at {path} ({error}) — it is the working "
+    "directory every claimed replay is spawned in, so the worker was not started."
+)
+
 # Nothing was started, so nothing is draining: a plain non-zero code, no traceback.
 NOT_CONFIGURED_EXIT = 2
 
@@ -222,17 +229,29 @@ def credential_error(env: Mapping[str, str]) -> str | None:
     return None
 
 
-def ensure_harness_home(path: str) -> None:
-    """Create the Worker's working dir — the cwd every spawned replay inherits (ADR-0012 §6).
+def ensure_harness_home(path: str) -> str | None:
+    """Create the Worker's working dir, or return ONE friendly line saying why it could not.
 
-    Agent version 3's run spec names this path as its ``--working-dir``; kitaru chdirs into it to
-    spawn ``decode run``, so a missing directory is a spawn failure on every claimed task rather
-    than a worker that fails loudly at startup.
+    The cwd every spawned replay inherits (ADR-0012 §6): agent version 3's run spec names this path
+    as its ``--working-dir``; kitaru chdirs into it to spawn ``decode run``, so a missing directory
+    is a spawn failure on every claimed task rather than a worker that fails loudly at startup.
+
+    Normally a no-op re-creation — the image ``mkdir -p``s it at build time — so a failure here means
+    the container's filesystem is not what the image promised (permissions, read-only mount, full
+    disk). That reads like the credential pre-flight, not like a traceback: an operator wants the
+    path and the OS's own reason, and nothing else.
 
     Args:
         path: The in-image Harness Home.
+
+    Returns:
+        The line to print, naming the path and the OS error, or ``None`` once the directory exists.
     """
-    Path(path).mkdir(parents=True, exist_ok=True)
+    try:
+        Path(path).mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        return HARNESS_HOME_ERROR_FORMAT.format(path=path, error=error)
+    return None
 
 
 # --- the Modal surface ------------------------------------------------------------------------------
@@ -252,7 +271,8 @@ def run_worker(
 
     The whole Function is: make the Harness Home, drop the variable that would 403 every replay,
     refuse to start if this container cannot authenticate, then run the same ``kitaru worker start``
-    an operator runs on a laptop. Nothing about claiming or replaying is re-implemented here — that
+    an operator runs on a laptop. Both pre-flight refusals — an unmakeable Harness Home, a missing
+    credential — cost ONE line and :data:`NOT_CONFIGURED_EXIT`, never a traceback. Nothing about claiming or replaying is re-implemented here — that
     is the point of ADR-0020 §1.
 
     Args:
@@ -263,7 +283,10 @@ def run_worker(
     Returns:
         The worker's exit code, or :data:`NOT_CONFIGURED_EXIT` when it was never started.
     """
-    ensure_harness_home(HARNESS_HOME)
+    harness_home_error = ensure_harness_home(HARNESS_HOME)
+    if harness_home_error is not None:
+        click.echo(harness_home_error, err=True)
+        return NOT_CONFIGURED_EXIT
 
     scrub_line = agent_id_scrub_line(os.environ)
     if scrub_line is not None:

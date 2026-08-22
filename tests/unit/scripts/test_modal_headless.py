@@ -429,6 +429,54 @@ def test_a_non_zero_child_exit_is_reported_not_raised(mocker):
     assert exit_code == 3
 
 
+class _ImmediateTimer:
+    """A ``threading.Timer`` that fires the moment it is started — the kill path, without the wait."""
+
+    def __init__(self, interval, function):
+        self.interval = interval
+        self.function = function
+
+    def start(self):
+        self.function()
+
+    def cancel(self):
+        """Cancelling an already-fired timer is a no-op, exactly as it is for the real one."""
+
+
+def test_a_child_past_its_timeout_is_killed(mocker):
+    """The hang becomes a normal non-zero exit with partial output, not a Function-ceiling death."""
+    popen = _popen(mocker, lines=["thinking...\n"], returncode=-9)
+    mocker.patch("scripts.modal_headless.threading.Timer", _ImmediateTimer)
+
+    stdout, exit_code = mh.stream_subprocess(
+        ["/bin/decode"], cwd="/harness", env={}, timeout_seconds=1800
+    )
+
+    popen.return_value.kill.assert_called_once_with()
+    assert exit_code == -9
+    assert stdout == "thinking...\n"
+
+
+def test_a_timed_out_child_says_so_in_one_line(mocker, capsys):
+    """Otherwise the operator reads an unexplained exit=-9 and blames the agent for the timer."""
+    _popen(mocker, lines=[], returncode=-9)
+    mocker.patch("scripts.modal_headless.threading.Timer", _ImmediateTimer)
+
+    mh.stream_subprocess(["/bin/decode"], cwd="/harness", env={}, timeout_seconds=1800)
+
+    logged = [line for line in capsys.readouterr().err.splitlines() if line.startswith("Decode: ")]
+    assert len(logged) == 1
+    assert "1800" in logged[0]
+
+
+def test_a_child_that_finishes_in_time_is_never_reported_as_timed_out(mocker, capsys):
+    _popen(mocker, lines=["the answer\n"], returncode=0)
+
+    mh.stream_subprocess(["/bin/decode"], cwd="/harness", env={}, timeout_seconds=60)
+
+    assert capsys.readouterr().err == ""
+
+
 # ===================================================================================================
 # N parallel attempts at one task (task 143, ADR-0020 §1) — the successor of demo-multiple-attempts.sh
 # ===================================================================================================

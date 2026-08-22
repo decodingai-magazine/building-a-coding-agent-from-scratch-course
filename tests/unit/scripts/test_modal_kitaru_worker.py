@@ -272,6 +272,71 @@ def test_the_pre_flight_message_never_echoes_the_credential_it_checked():
     assert API_KEY not in str(message)
 
 
+# --- pre-flight: a Harness Home that cannot be made is a message, not a traceback (task 147) --------
+
+
+def test_a_creatable_harness_home_reports_no_error(tmp_path):
+    """The happy path is the pre-flight's silence: the dir exists afterwards and nothing is said."""
+    home = tmp_path / "harness"
+
+    assert mkw.ensure_harness_home(str(home)) is None
+    assert home.is_dir()
+
+
+def test_a_harness_home_that_cannot_be_created_is_one_friendly_line(mocker):
+    """AC1: a permission-denied ``mkdir`` reads like the credential line, not like a stack trace."""
+    mocker.patch.object(
+        mkw.Path, "mkdir", side_effect=PermissionError(13, "Permission denied", "/harness")
+    )
+
+    message = mkw.ensure_harness_home("/harness")
+
+    assert message is not None
+    assert message.startswith("Decode: ")
+    assert "\n" not in message
+    assert "/harness" in message
+    assert "Permission denied" in message
+
+
+def test_a_read_only_filesystem_names_its_own_os_error(mocker):
+    """The operator fixes the CAUSE, so the OS's own words ride along, whatever they are."""
+    mocker.patch.object(
+        mkw.Path, "mkdir", side_effect=OSError(30, "Read-only file system", "/harness")
+    )
+
+    assert "Read-only file system" in str(mkw.ensure_harness_home("/harness"))
+
+
+def test_the_worker_never_starts_when_its_harness_home_cannot_be_created(mocker):
+    """Story 1: no half-started worker — a spawn-environment failure is caught before the subprocess."""
+    mocker.patch.object(mkw, "HARNESS_HOME", "/harness")
+    mocker.patch.dict(mkw.os.environ, _configured_env(), clear=True)
+    mocker.patch.object(
+        mkw.Path, "mkdir", side_effect=PermissionError(13, "Permission denied", "/harness")
+    )
+    run = mocker.patch("scripts.modal_kitaru_worker.subprocess.run")
+
+    exit_code = mkw.run_worker.local()
+
+    assert exit_code != 0
+    run.assert_not_called()
+
+
+def test_the_failed_harness_home_is_announced_in_exactly_one_line(mocker, capsys):
+    mocker.patch.object(mkw, "HARNESS_HOME", "/harness")
+    mocker.patch.dict(mkw.os.environ, _configured_env(), clear=True)
+    mocker.patch.object(
+        mkw.Path, "mkdir", side_effect=PermissionError(13, "Permission denied", "/harness")
+    )
+    mocker.patch("scripts.modal_kitaru_worker.subprocess.run")
+
+    mkw.run_worker.local()
+
+    logged = [line for line in capsys.readouterr().err.splitlines() if line.startswith("Decode: ")]
+    assert len(logged) == 1
+    assert "/harness" in logged[0]
+
+
 # --- the Function: harness home, scrub, subprocess (all mocked) -------------------------------------
 
 

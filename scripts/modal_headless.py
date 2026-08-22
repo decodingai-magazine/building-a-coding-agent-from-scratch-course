@@ -106,6 +106,13 @@ DOCKER_MODE_MESSAGE = (
 DEFAULT_TIMEOUT_SECONDS = 1800
 FUNCTION_TIMEOUT_SECONDS = 3600
 
+# What the timer kill says for itself. Without it the operator reads an unexplained ``exit=-9`` and
+# blames the agent for what was actually ``--timeout-seconds`` (task 147).
+TIMEOUT_KILL_FORMAT = (
+    "Decode: the run passed --timeout-seconds {timeout_seconds} and its decode process was killed; "
+    "the output above is partial. Re-run with a larger --timeout-seconds if the task needs longer."
+)
+
 # Exit code for a run that never started because its sandbox mode is unrunnable here.
 SANDBOX_MODE_REJECTED_EXIT = 2
 
@@ -495,8 +502,9 @@ def stream_subprocess(
     The child's stderr is INHERITED, so decode's diagnostics stream straight into the Function log
     while stdout — the answer — is captured line by line and echoed as it arrives (a headless run is
     long; an operator watching ``modal run`` should see it move). A run past ``timeout_seconds`` is
-    killed by a timer thread, which turns a hang into a normal non-zero exit with partial output
-    instead of a container that dies at the Function ceiling with nothing to show.
+    killed by a timer thread — with ONE line saying so, since a bare ``exit=-9`` reads like an agent
+    failure — which turns a hang into a normal non-zero exit with partial output instead of a
+    container that dies at the Function ceiling with nothing to show.
     """
     process = subprocess.Popen(
         argv,
@@ -507,7 +515,13 @@ def stream_subprocess(
         text=True,
         bufsize=1,
     )
-    killer = threading.Timer(timeout_seconds, process.kill)
+    timed_out = threading.Event()
+
+    def kill_on_timeout() -> None:
+        timed_out.set()
+        process.kill()
+
+    killer = threading.Timer(timeout_seconds, kill_on_timeout)
     killer.start()
     chunks: list[str] = []
     try:
@@ -517,6 +531,8 @@ def stream_subprocess(
         exit_code = process.wait()
     finally:
         killer.cancel()
+    if timed_out.is_set():
+        click.echo(TIMEOUT_KILL_FORMAT.format(timeout_seconds=timeout_seconds), err=True)
     return "".join(chunks), exit_code
 
 
