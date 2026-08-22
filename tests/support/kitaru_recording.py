@@ -128,6 +128,25 @@ class _FakeAPIClient:
         self._stack.closed += 1
 
 
+def kitaru_api_error(status_code: int, detail: str, *, name: str = "APIError") -> Exception:
+    """An error shaped like ``kitaru.client.exceptions.APIError`` — the family the seam classifies.
+
+    Three properties are what decode actually keys on, and all three are pinned against the real
+    package by ``tests/unit/decode/test_kitaru_dependency.py``: the class lives in a ``kitaru``
+    module (which is how :func:`decode.runtime.recording.is_recording_failure` tells a recording
+    failure from an agent failure, without importing kitaru), it carries ``status_code`` (the 403
+    hint keys on it), and it stringifies as ``"<code>: <detail>"``.
+
+    Built as a type rather than hand-written so a test can raise the real subclass NAMES the
+    operator sees on stderr (``AuthorizationError``, ``ValidationError``) without restating the
+    whole family here.
+    """
+    error_class = type(name, (Exception,), {"__module__": "kitaru.client.exceptions"})
+    error = error_class(f"{status_code}: {detail}")
+    error.status_code = status_code  # type: ignore[attr-defined]
+    return error
+
+
 def install_fake_recording_stack(
     monkeypatch: Any, *, probe_error: Exception | None = None
 ) -> FakeRecordingStack:

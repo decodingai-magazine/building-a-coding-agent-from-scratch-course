@@ -27,6 +27,13 @@ module is the whole recording story:
 Probing rather than catching the first ``run()`` is deliberate: the alternative — running wrapped,
 catching the session-creation error and re-running bare — cannot tell a recording failure from an
 agent failure, and a re-run repeats whatever tool side effects the first attempt already made.
+
+The probe cannot, however, cover the whole failure surface: the adapter creates the Kitaru Session
+LAZILY, inside ``agent.run``, so a workspace that answered the probe can still refuse the session a
+moment later (a 403 on the agents route, a 422 for an unknown task). That escape is caught at the
+``decode run`` boundary instead, worker-gated, using :func:`is_recording_failure` to keep a genuine
+agent failure out of the recording story and :func:`worker_session_failure` to word it identically —
+so both halves of the window end in the same ONE line (task 139).
 """
 
 from __future__ import annotations
@@ -55,6 +62,18 @@ TASK_ID_ENV = "KITARU_TASK_ID"
 
 # How much of a failure's text rides on the one warning line before it is cut.
 _REASON_MAX_CHARS = 200
+
+# Top-level packages every kitaru-owned exception class lives in — the whole basis of
+# :func:`is_recording_failure`, matched by name so the classification costs no import.
+_KITARU_PACKAGES = frozenset({"kitaru", "kitaru_pydantic_ai"})
+
+# The one diagnosis a 403 under a Worker Task earns (running_the_code/08_evals_replays.md §7): a
+# Worker injects a TASK-scoped token, so an agents route is exactly the call it cannot make.
+_AGENT_ID_TRAP_HINT = (
+    " A 403 here is almost always KITARU_AGENT_ID set in the Kitaru Worker's own environment: a "
+    "Worker Task's token is task-scoped and cannot use agent routes — unset it and let the adapter "
+    "infer the agent from the task."
+)
 
 
 class RecordingUnavailableError(RuntimeError):
@@ -88,9 +107,64 @@ def _configured_agent_id() -> UUID | None:
     return UUID(raw) if raw else None
 
 
+def _worker_task_id() -> UUID:
+    """This Worker Task's id as a ``UUID`` — parsed HERE so a typo'd one is a setup failure.
+
+    The adapter re-reads ``KITARU_TASK_ID`` from the env inside ``agent.run`` and calls ``UUID`` on
+    it, so a malformed id would otherwise surface as a bare ``ValueError: badly formed hexadecimal
+    UUID string`` from deep inside a run — past every friendly-line guard. Raising it at wrap time
+    instead puts it on the caller's hard-fail exit, like a bad agent id (task 139).
+    """
+    raw = os.environ.get(TASK_ID_ENV, "")
+    try:
+        return UUID(raw)
+    except ValueError as error:
+        raise ValueError(f"{TASK_ID_ENV}={raw!r} is not a Kitaru task id: {error}") from error
+
+
 def _workspace_label() -> str:
     """The workspace the adapter will talk to, for the one warning line."""
     return os.environ.get(API_URL_ENV) or "the Kitaru workspace configured by your kitaru login"
+
+
+def _agent_id_trap_hint(error: BaseException) -> str:
+    """The 403 hint, when ``error`` is one — else nothing (a hint on every line is decoration)."""
+    return _AGENT_ID_TRAP_HINT if getattr(error, "status_code", None) == 403 else ""
+
+
+def is_recording_failure(error: BaseException) -> bool:
+    """True when ``error`` came out of the Kitaru stack itself rather than the agent (ADR-0019 §3).
+
+    The adapter creates the Kitaru Session LAZILY, inside ``agent.run``, so a session-creation
+    failure surfaces from the very same call as a model failure and the caller must tell the two
+    apart to keep the Worker Task's one-line contract without ever masking a genuine agent failure.
+    Every kitaru-owned exception class lives in a ``kitaru`` / ``kitaru_pydantic_ai`` module and
+    nothing the agent raises does, so the class's own module decides it — matched by NAME, never by
+    import, so the check itself cannot break the no-kitaru-import invariant. The MRO is walked so a
+    subclass declared elsewhere still counts.
+    """
+    return any(cls.__module__.split(".")[0] in _KITARU_PACKAGES for cls in type(error).__mro__)
+
+
+def _unavailable(error: BaseException, *, detail: str) -> RecordingUnavailableError:
+    """The ONE line a Worker Task's recording failure dies on: what failed, why, exit non-zero."""
+    return RecordingUnavailableError(
+        f"[kitaru] recording is unavailable for this Kitaru Worker Task: {detail} "
+        f"({one_line(error)}). Failing the run rather than producing an unrecorded — and therefore "
+        f"untrustworthy — replay.{_agent_id_trap_hint(error)}"
+    )
+
+
+def worker_session_failure(error: BaseException) -> RecordingUnavailableError:
+    """``error`` from a lazily-created Kitaru Session, re-cast as the Worker Task's one line.
+
+    The wrap-time probe cannot cover session creation (the adapter does it inside ``agent.run``), so
+    ``decode run`` classifies what escapes with :func:`is_recording_failure` and hands the recording
+    half here — same wording, same exit, as if the probe had caught it (task 139).
+    """
+    return _unavailable(
+        error, detail=f"the Kitaru Session could not be created on {_workspace_label()}"
+    )
 
 
 def one_line(error: Exception) -> str:
@@ -147,16 +221,16 @@ async def wrap_for_recording[DepsT, OutputT](
     worker = is_worker_task()
     try:
         agent_id = _configured_agent_id()
+        if worker:
+            _worker_task_id()  # the id the adapter will parse mid-run — fail on a typo now, not then
         await _probe_workspace(agent_id)
         from kitaru_pydantic_ai import KitaruAgent
 
         wrapped = KitaruAgent(agent, agent_id=agent_id, session_name=session_name)
     except Exception as error:  # broad on purpose: ANY setup failure takes one of the two exits
         if worker:
-            raise RecordingUnavailableError(
-                f"[kitaru] recording is unavailable for this Kitaru Worker Task: "
-                f"{_workspace_label()} could not be reached ({one_line(error)}). Failing the run "
-                f"rather than producing an unrecorded — and therefore untrustworthy — replay."
+            raise _unavailable(
+                error, detail=f"recording could not be set up against {_workspace_label()}"
             ) from error
         # The ONE line: what was lost, where, and why — no traceback (ADR-0019 §3). Logged for the
         # post-hoc reader AND returned for the operator watching the run right now.

@@ -470,6 +470,8 @@ def run(task: str | None, model: str | None, repo: str | None, local: bool) -> N
     Recording (ADR-0019 §3) keeps the same stderr contract: a configured-but-unreachable Kitaru
     workspace costs ONE stderr line and the run continues on the bare agent (exit 0), while under a
     Kitaru Worker Task the same failure is ONE stderr line and a non-zero exit — never a traceback.
+    That holds for a Kitaru Session the adapter fails to create mid-run too; a failure the AGENT
+    raised (a provider 503) is never reworded as a recording failure.
     """
     # Where this run's task comes from (ADR-0019 §4) — FIRST, because it finishes the argument
     # parsing Click could not: with TASK optional, "which task?" is settled before any guard reads
@@ -504,7 +506,12 @@ def run(task: str | None, model: str | None, repo: str | None, local: bool) -> N
 
     # Imported inside the subcommand so the REPL path loads no headless machinery.
     from decode.runtime import run_headless_task
-    from decode.runtime.recording import RecordingUnavailableError
+    from decode.runtime.recording import (
+        RecordingUnavailableError,
+        is_recording_failure,
+        is_worker_task,
+        worker_session_failure,
+    )
 
     logger.debug(
         "decode run starting (task=%r, model=%r, repo=%r, local=%s)",
@@ -521,6 +528,20 @@ def run(task: str | None, model: str | None, repo: str | None, local: bool) -> N
         # httpx. The traceback still lands in the log file for whoever debugs the workspace.
         logger.warning("recording unavailable for a Kitaru Worker Task; failing", exc_info=True)
         click.echo(f"Decode: {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
+    except Exception as exc:
+        # The window the Seam's wrap-time probe cannot cover (task 139): the adapter creates the
+        # Kitaru Session LAZILY, inside ``agent.run``, so a session-creation failure (a 403 on the
+        # agents route, a 422 for an unknown task) escapes from here instead. Under a Worker Task it
+        # owes the same one-line contract as the branch above. Worker-gated AND type-gated on
+        # purpose: a user-launched run degraded at the probe already, and a failure the agent itself
+        # raised — a provider 503 inside a replay — must stay exactly what it is, or the Worker's
+        # log would blame recording for a model outage.
+        if not (is_worker_task() and is_recording_failure(exc)):
+            raise
+        failure = worker_session_failure(exc)
+        logger.warning("Kitaru Session creation failed for a Worker Task; failing", exc_info=True)
+        click.echo(f"Decode: {failure}", err=True)
         raise click.exceptions.Exit(1) from exc
     click.echo(output)  # stdout: only the clean agent answer (pipe-safe)
     # The Git hand-back (ADR-0012 §8) runs inside ``run_headless_task``, right after the sandbox

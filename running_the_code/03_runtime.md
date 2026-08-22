@@ -32,6 +32,7 @@ uv run kitaru session get <SESSION_ID>          # the run, node by node
 - **`KITARU_API_URL` must be *exported*, not merely written in `.env`.** decode never reads it: the adapter's own client resolves the connection (env, else your `kitaru login` store). `set -a && . .env && set +a` is the shortcut.
 - **Off is byte-identical.** With `KITARU_AGENT_ID` empty, no kitaru module is even imported.
 - **Unreachable workspace degrades, it never blocks.** A user-launched run drops to the bare agent, prints ONE stderr line (`[kitaru] not recording this run: … continuing on the bare agent`), and still exits 0 — recording is an observer, never an availability dependency. A run spawned by a Kitaru **Worker** hard-fails instead: an unrecorded replay is a lying experiment.
+- **A Worker's hard-fail is ONE line too, wherever it happens.** The workspace can also refuse the Kitaru **Session** the adapter creates lazily *inside* the run (a 403 on the agents route, a 422 for an unknown task, a typo'd `KITARU_TASK_ID`); `decode run` turns that into the same `Decode: [kitaru] recording is unavailable for this Kitaru Worker Task: …` line and a non-zero exit, with the traceback in `.decode/logs/decode.log` only. A 403 adds the `KITARU_AGENT_ID` diagnosis ([08_evals_replays.md §7](08_evals_replays.md#7-field-notes--the-pitfalls-we-actually-hit)). A failure the **agent** raised (a provider 503) is never reworded as a recording failure — the Worker log stays honest about which half broke.
 
 ## Replay a recorded session on a Kitaru Worker
 

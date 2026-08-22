@@ -10,9 +10,13 @@ that never builds an agent.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from click.testing import CliRunner
 from pydantic import SecretStr, ValidationError
+from pydantic_ai.exceptions import ModelHTTPError
+from support.kitaru_recording import kitaru_api_error
 
 import decode.cli as cli_mod
 import decode.runtime as runtime_mod
@@ -207,6 +211,101 @@ def test_run_help_documents_the_optional_task_and_its_worker_source():
     assert result.exit_code == 0
     assert "[TASK]" in result.output  # Click renders an optional argument in brackets
     assert "KITARU_TASK_INPUTS" in result.output
+
+
+# --- the lazily-created Kitaru Session: a worker-gated one-liner too (task 139, ADR-0019 §3) ------
+#
+# ``kitaru-pydantic-ai`` creates the Kitaru Session INSIDE ``agent.run``, after the Recording Seam's
+# wrap-time probe — so a session-creation failure escapes the runner as a raw kitaru client error.
+# Under a Worker Task that owes the operator the same ONE ``Decode:`` line every other recording
+# failure gets; everywhere else, and for every failure that is the agent's own, it must propagate
+# untouched.
+
+
+def _failing_runner(monkeypatch, error: BaseException) -> None:
+    """Make the headless runner raise ``error``, as an escaping ``agent.run`` failure does."""
+
+    def _fails(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(runtime_mod, "run_headless_task", _fails)
+
+
+def test_a_worker_session_creation_failure_is_one_friendly_line(monkeypatch, _provider_ok):
+    """AC1: the reproduced 422 — ONE stderr line naming the cause, no traceback, non-zero exit."""
+    _worker_env(monkeypatch, '{"task":"say hi"}')
+    _failing_runner(
+        monkeypatch,
+        kitaru_api_error(
+            422, "Session names no agent and no task to infer one from", name="ValidationError"
+        ),
+    )
+
+    result = CliRunner().invoke(cli, ["run"])
+
+    assert result.exit_code != 0
+    assert result.stderr.startswith("Decode: [kitaru] ")
+    assert result.stderr.count("\n") == 1  # exactly ONE line
+    assert "ValidationError: 422: Session names no agent" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert result.stdout == ""  # nothing on stdout to mistake for an answer
+
+
+def test_a_worker_session_creation_failure_keeps_the_traceback_in_the_log(
+    monkeypatch, _provider_ok, caplog
+):
+    """The stderr line is short BECAUSE the full traceback went to ``.decode/logs/decode.log``."""
+    _worker_env(monkeypatch, '{"task":"say hi"}')
+    _failing_runner(monkeypatch, kitaru_api_error(422, "no such task", name="ValidationError"))
+
+    with caplog.at_level(logging.WARNING, logger="decode.cli"):
+        CliRunner().invoke(cli, ["run"])
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].exc_info is not None  # the frames the operator needs, in the log only
+
+
+def test_a_worker_403_names_the_agent_id_trap(monkeypatch, _provider_ok):
+    """The line diagnoses the misconfiguration it almost always is (08_evals_replays §7.3)."""
+    _worker_env(monkeypatch, '{"task":"say hi"}')
+    _failing_runner(
+        monkeypatch,
+        kitaru_api_error(
+            403, "Task credentials are not accepted on this route", name="AuthorizationError"
+        ),
+    )
+
+    result = CliRunner().invoke(cli, ["run"])
+
+    assert result.exit_code != 0
+    assert "KITARU_AGENT_ID" in result.stderr
+    assert result.stderr.count("\n") == 1
+
+
+def test_a_worker_agent_failure_is_never_rewritten_as_a_recording_line(monkeypatch, _provider_ok):
+    """AC3: a provider 503 inside a replay is an AGENT failure — the Worker log must say so."""
+    _worker_env(monkeypatch, '{"task":"say hi"}')
+    error = ModelHTTPError(status_code=503, model_name="gemini-2.5-flash", body="upstream down")
+    _failing_runner(monkeypatch, error)
+
+    result = CliRunner().invoke(cli, ["run"])
+
+    assert result.exit_code != 0
+    assert result.exception is error  # propagated, not swallowed
+    assert "[kitaru]" not in result.stderr
+
+
+def test_a_user_launched_kitaru_failure_still_propagates(monkeypatch, _provider_ok):
+    """AC4: the catch is worker-gated — outside a Worker Task nothing about this path changes."""
+    error = kitaru_api_error(422, "no such task", name="ValidationError")
+    _failing_runner(monkeypatch, error)
+
+    result = CliRunner().invoke(cli, ["run", "record me"])
+
+    assert result.exit_code != 0
+    assert result.exception is error
+    assert "[kitaru] recording is unavailable" not in result.stderr
 
 
 # --- the deleted surfaces: `decode replay` and `decode run --hitl` -------------------------------

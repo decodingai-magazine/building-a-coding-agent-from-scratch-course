@@ -37,6 +37,25 @@ def test_the_recording_adapter_is_importable():
     assert hasattr(module, "KitaruAgent")
 
 
+def test_the_client_error_family_is_shaped_the_way_the_seam_classifies_it():
+    """Task 139: ``is_recording_failure`` tells a session-creation failure from an agent failure.
+
+    It does that WITHOUT importing kitaru — by the exception class's own module — so the two facts
+    it stands on are pinned here against the real package: the family lives under ``kitaru``, and an
+    API error carries the ``status_code`` the 403 hint keys on. This is also the contract
+    ``support.kitaru_recording.kitaru_api_error`` fakes everywhere else in the suite.
+    """
+    from decode.runtime.recording import is_recording_failure
+
+    exceptions = importlib.import_module("kitaru.client.exceptions")
+
+    for name in ("KitaruClientError", "AuthorizationError", "ValidationError"):
+        assert getattr(exceptions, name).__module__.split(".")[0] == "kitaru"
+    error = exceptions.AuthorizationError(403, "Task credentials are not accepted on this route")
+    assert error.status_code == 403
+    assert is_recording_failure(error) is True
+
+
 def test_kitaru_agent_takes_the_constructor_arguments_the_recording_seam_passes():
     """The Recording Seam (ADR-0019 §3) builds ``KitaruAgent(agent, agent_id=…, session_name=…)``."""
     kitaru_agent = importlib.import_module("kitaru_pydantic_ai").KitaruAgent

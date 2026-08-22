@@ -216,8 +216,9 @@ uv run kitaru experiment run start cheaper-model \
 3. **`KITARU_AGENT_ID` must NOT be in the worker's env.** The worker injects a task-scoped
    token; with the agent id set, the Recording Seam probes an agents route that task tokens
    can't use → `403: Task credentials are not accepted on this route` → the run hard-fails
-   (correctly). `unset KITARU_AGENT_ID` in the worker shell; the adapter infers the agent from
-   the task. (Tracked: `tasks/139`.) Same rule on Modal, enforced twice: the
+   (correctly), in ONE `Decode: [kitaru] …` line that now names this very trap. `unset
+   KITARU_AGENT_ID` in the worker shell; the adapter infers the agent from
+   the task. Same rule on Modal, enforced twice: the
    `decode-kitaru-worker` Secret deliberately omits `KITARU_AGENT_ID` (that composition is the rule
    — [07_infra.md §1](07_infra.md#1-secrets--two-deliberately-asymmetric)), and the worker Function
    scrubs the variable defensively at startup with one logged line if one ever shows up anyway.
