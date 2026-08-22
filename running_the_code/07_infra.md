@@ -39,6 +39,11 @@ workspace is irrelevant.
 > is deleted. It is kept unrewritten because the *traps* are the lesson — TLS and `nip.io`, the
 > containerd image store, GCS/IAM, ZenML's build cache — and they cost a debugging cycle each.
 > Read it as history; run nothing from it.
+>
+> **Removed in [ADR-0020](../docs/adr/0020-remote-headless-on-modal.md) §6:** every command this
+> appendix names is now gone from the repo — `make deploy` / `make run-remote`, `scripts/deploy.sh`,
+> `scripts/demo-multiple-attempts.sh`, `docker/flow.Dockerfile`, and the `remote` dependency group;
+> git history is the archive.
 
 
 ## 1. What you MUST do by hand

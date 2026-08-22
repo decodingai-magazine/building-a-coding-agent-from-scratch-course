@@ -76,3 +76,12 @@ have been executed by the tasks above.
 Refs: ADR-0020 §7, tasks 141–145
 
 ## Log
+
+### [Tester] 2026-08-22 15:00 — Follow-up noted during task 141 QA
+
+While QA-ing task 141 (retire dead remote surface), confirmed two adjacent "Kitaru `exec_id`"
+mentions the SWE flagged as out of that task's `src/`-scoped ACs: `evals/README.md:74` and
+`evals/harness/online.py:5` both still describe the Opik thread key as "Kitaru `exec_id`" (the
+concept `src/decode/observability/tracing.py`'s docstring was already fixed to call "the decode
+session id" per ADR-0019 §1). Same one-line wording fix in both places when this task touches
+docs/evals prose — not blocking task 141's PASS, just don't let it fall through the cracks.

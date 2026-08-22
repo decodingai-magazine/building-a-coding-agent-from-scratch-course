@@ -45,14 +45,6 @@ sync-secrets:  ## Mirror .env into the Kitaru environment bucket decode-$(ENV). 
 	@[ -n "$(ENV)" ] || { echo "Usage: make sync-secrets ENV=dev|staging|prod   (one-way: .env -> the decode-<ENV> bucket)"; exit 1; }
 	uv run python scripts/sync_secrets.py --env $(ENV)
 
-deploy:  ## Provision (or re-apply) the remote runtime stack — see running_the_code/07_infra.md. Usage: make deploy [ARGS=update|down|status]
-	scripts/deploy.sh $(or $(ARGS),up)
-
-run-remote:  ## Run a headless agent on the Modal stack. Usage: make run-remote TASK="..." [REPO=<url>] [SANDBOX=modal|none]
-	@[ -n "$(TASK)" ] || { echo 'Usage: make run-remote TASK="fix the failing test" [REPO=https://github.com/you/repo.git]'; exit 1; }
-	DOCKER_BUILDKIT=1 KITARU_STACK=prod-modal DECODE_ENV=prod SANDBOX_MODE=$(or $(SANDBOX),modal) \
-		uv run --group remote decode run "$(TASK)" $(if $(REPO),--repo $(REPO),)
-
 build:  ## Build wheel + sdist into dist/.
 	uv build
 
@@ -73,4 +65,4 @@ help:  ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression sync-secrets deploy run-remote build install-cli uninstall-cli ci help
+.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression sync-secrets build install-cli uninstall-cli ci help
