@@ -521,3 +521,31 @@ the glossary updates shipped in the grooming commit as promised. One residue out
 scope: README rows 111/135 still carry pre-ADR-0019 durability marketing ("kill it, resume it";
 "durable execution, human-in-the-loop") — follow-up filed as
 `tasks/148-readme-durability-copy-replay-model.md`, not a blocker for this feature.
+
+### [PR Reviewer] 2026-08-22 — Review (feature rollup, tasks 141-146 — the modal-remote-headless delta)
+
+**VERDICT: NO BLOCKERS**
+
+Reviewed the delta `ce827f4...HEAD` (37 files, ~6,300 insertions / ~1,900 deletions) against
+ADR-0020. Walked all dimensions (performance / clean code / untested / standards / documentation
+discipline / simplicity).
+
+- Blockers: 0
+- Nits: 4 — appended to the PR #65 description and posted as a caveman-review comment:
+  1. [Clean code] `.dockerignore` is consumer-less now — 141 kept it for a `FilePatternMatcher`
+     wiring 142 never did (shipped inline `_SOURCE_IGNORE` instead); delete or wire into
+     `build_image`.
+  2. [Clean code] `scripts/modal_headless.py:102-107` — the timeout comment claims the killed
+     child "says so", but the timer kill prints nothing (`exit=-9` reads like an OOM); one line
+     or a softer comment. Rides with task 147's follow-up pass.
+  3. [Untested] `scripts/modal_headless.py::main` happy path (answer echo + exit propagation) —
+     one mocked `run_task.remote` test.
+  4. [Doc polish] `running_the_code/07_infra.md:321-322` — deletion sweep cite is ADR-0020 §2,
+     not §6.
+
+Docs discipline verified: ADR-0020 Accepted and matches the shipped surface; glossary carries
+Modal Headless App and amends Kitaru Worker / Agent Version for v3. Security walked: no token in
+any argv or format string (unit-asserted), credential helper drift-guarded, agent-id scrub never
+echoes the value. Already-dispositioned items (ZENPROKEY gate, agent v4 duplicate, tasks 147/148,
+timeout-kill test, `clone_argv` leading-dash parity) not re-raised. Pipeline may advance to
+hand-off.
