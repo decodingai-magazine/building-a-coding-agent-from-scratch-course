@@ -24,7 +24,7 @@ uv run decode
 
 Supported on **macOS, Linux, and Windows via [WSL2](https://learn.microsoft.com/windows/wsl/install)**. Native Windows (PowerShell / cmd) is untested — the TUI keybindings assume a POSIX shell.
 
-That's the whole list. Docker and `gcloud` are required for later lessons — [04_sandboxing.md](04_sandboxing.md) and [07_infra.md](07_infra.md) will walk you through their setup.
+That's the whole list. Docker is required for a later lesson — [04_sandboxing.md](04_sandboxing.md) walks you through it. (`gcloud` is not: the self-hosted stack that needed it is retired — [07_infra.md](07_infra.md).)
 
 > **✅ Checkpoint** — `uv --version` prints a version. If it says `command not found`, uv is installed but not on your PATH yet: restart your shell.
 

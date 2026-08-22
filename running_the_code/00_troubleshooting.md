@@ -2,7 +2,7 @@
 
 Every known failure in one place. Decode's startup guards check **presence only** and print one line, never a traceback — so start by matching the line you got.
 
-Setup and first-run problems are below. Two areas keep their own tables next to the feature that produces them: **sandbox modes** in [04_sandboxing.md](04_sandboxing.md#troubleshooting) and the **durable runtime** in [03_runtime.md](03_runtime.md#troubleshooting).
+Setup and first-run problems are below. Two areas keep their own tables next to the feature that produces them: **sandbox modes** in [04_sandboxing.md](04_sandboxing.md#troubleshooting) and the **headless runtime** (recording + replay) in [03_runtime.md](03_runtime.md#troubleshooting).
 
 ## Install
 

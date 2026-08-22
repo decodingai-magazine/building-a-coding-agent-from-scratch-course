@@ -1,8 +1,10 @@
-# Headless Runtime — `decode run`, durability & replay
+# Headless Runtime — `decode run`, recording & replay
 
-The REPL needs you at the keyboard. `decode run` doesn't: it runs one task to completion unattended and prints the answer on stdout (pipe-clean). Same agent, different driver — a [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs) **durable flow** checkpoints every model and tool call, so an expensive run survives a crash and resumes instead of re-paying for finished work ([ADR-0008](../docs/adr/0008-kitaru-durable-runtime.md)).
+The REPL needs you at the keyboard. `decode run` doesn't: it runs one task to completion unattended and prints the answer on stdout (pipe-clean). Same agent, different driver — a plain `asyncio.run` around the very `build_agent()` the REPL uses, with no durability layer at all: a crash is a re-run ([ADR-0019 §1](../docs/adr/0019-kitaru-replay-runtime.md)).
 
-Prerequisite: the core setup from [01_install_and_usage.md](01_install_and_usage.md). Nothing else — the local Kitaru stack runs offline, no server needed.
+What you *can* keep is the **record**. With one opt-in, every run (REPL turns included) is filed on the [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs) workspace as a **Kitaru Session** — every LLM and tool call, node by node — and a recorded Session is the thing a **Replay** re-executes later, on a Worker, with or without a change.
+
+Prerequisite: the core setup from [01_install_and_usage.md](01_install_and_usage.md). Nothing else — recording is off by default and costs nothing when it is.
 
 ## Run a task
 
@@ -10,9 +12,26 @@ Prerequisite: the core setup from [01_install_and_usage.md](01_install_and_usage
 decode run "list the python files under src and summarize what the cli module does"
 ```
 
-- **Bypass by default** — every tool runs with no approval prompt. `decode run --hitl` instead pauses the whole execution on a durable Kitaru wait for `write`/`edit`/`bash`/`ask_user`; resolve from another terminal with `kitaru executions input <exec_id> --wait <name> --value 'true'`.
-- **Offline local stack** — no Kitaru server or `kitaru init` needed. Inspect runs with `kitaru executions list` / `get <id>` / `logs <id>`; `kitaru login` starts the optional local web dashboard at `http://127.0.0.1:8383` (`kitaru logout` falls back to the server-less local database if the daemon hangs).
-- **Guards** — the same provider-key guard as the REPL; `RUNTIME_ENABLED=false` disables the subcommand with a friendly line.
+- **Bypass by default** — every tool runs inline with no approval prompt, and `ask_user` is a no-op. There is no pause and no wait: durable HITL died with the durable runtime, because upstream removed the primitive ([ADR-0019 §1](../docs/adr/0019-kitaru-replay-runtime.md)).
+- **stdout is the answer, alone.** Notices (a hand-back line, a recording warning) go to stderr; the detail is in `.decode/logs/decode.log`. So `decode run … | pbcopy` is safe.
+- **Same everything else as the REPL** — the provider-key guard, `--model` (Model Override), `--repo`/`--local` with a sandbox mode, Hand-back on completion, and Opik tracing. `RUNTIME_ENABLED=false` disables the subcommand with one friendly line.
+- **`TASK` is optional** — because a Kitaru Worker passes the prompt in the environment, not on the command line (see the replay section). With no task anywhere you get one line naming both ways to supply one.
+
+## Record runs as Kitaru Sessions (opt-in)
+
+Recording is presence-based and lives in exactly one function, the **Recording Seam** (`src/decode/runtime/recording.py`). Two variables switch it on:
+
+```bash
+export KITARU_API_URL=https://f5ee9622-kitaru.cloudinfra.zenml.io   # adapter-owned (or just `kitaru login`)
+export KITARU_AGENT_ID=<uuid of the workspace's `decode` agent>     # decode's ONE recording knob
+uv run decode run "explain what this repo does"
+uv run kitaru session get <SESSION_ID>          # the run, node by node
+```
+
+- **Both surfaces record.** The REPL wraps the same way, with `session_name` = the decode session id, so a conversation's turns group together on the workspace.
+- **`KITARU_API_URL` must be *exported*, not merely written in `.env`.** decode never reads it: the adapter's own client resolves the connection (env, else your `kitaru login` store). `set -a && . .env && set +a` is the shortcut.
+- **Off is byte-identical.** With `KITARU_AGENT_ID` empty, no kitaru module is even imported.
+- **Unreachable workspace degrades, it never blocks.** A user-launched run drops to the bare agent, prints ONE stderr line (`[kitaru] not recording this run: … continuing on the bare agent`), and still exits 0 — recording is an observer, never an availability dependency. A run spawned by a Kitaru **Worker** hard-fails instead: an unrecorded replay is a lying experiment.
 
 ## Replay a recorded session on a Kitaru Worker
 
@@ -41,21 +60,20 @@ The registered version re-creates decode's context rather than simulating it: `d
 
 Which model a replay uses is the Worker shell's `LLM_PROVIDER` / model config, so a baseline replay reproduces the recorded run only if you start the Worker with the same provider it recorded against.
 
+A **Baseline Replay** (no `--override`) is the control: it proves the Session still reproduces on the current Agent Version, which is what makes a later what-if — a model swap, a system-prompt change — attributable to the change and not to drift. Overrides, evaluators, cohorts and experiments are the operator surface documented in the `kitaru-investigation` and `kitaru-replay-experiment` skills.
+
 ## Troubleshooting
 
-### macOS: the local Kitaru server crashes mid-run
-
-A run starts fine, then floods with `RemoteDisconnected` / `Connection refused` on `127.0.0.1:8383`: the server daemon died to Apple's ObjC fork-safety abort — its log (`~/Library/Application Support/kitaru/zen_server/daemon/service.log`) ends with `objc[…]: … fork() was called … Crashing instead.` Fix either way:
-
-```bash
-uv run kitaru logout                                          # simplest: no daemon, no crash
-OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES uv run kitaru login   # or keep the dashboard
-```
-
-Prefer `logout` unless you actually want the web dashboard — `decode run`, `kitaru executions`, and `kitaru secrets` all work against the server-less local database. Confirm with `kitaru info`: `Local server: registered but unavailable` means a stale registration is still pointing at the dead daemon.
+| Symptom | What it means |
+|---|---|
+| `[kitaru] not recording this run: … is unavailable` | The seam degraded: the workspace could not be reached (or `KITARU_AGENT_ID` is not an agent on it). The run itself is fine. Check `uv run kitaru status` — it prints the resolved `server_url` and whether the stored credential is still valid; re-auth with `kitaru login <url>`. |
+| The run records nothing and says nothing | `KITARU_AGENT_ID` is empty, or `KITARU_API_URL` was set in `.env` but never exported — decode does not read that variable, the adapter's client does. |
+| A replay stays queued | No Worker is claiming it: `kitaru worker list` should show one `live`. A Worker only runs while its shell does. |
+| A replay fails at the first model request | The Worker's shell had no provider credential (the run spec attaches none, by design), or that provider is down. Restart it with `set -a && . .env && set +a && kitaru worker start`. |
+| A replay fails before the agent starts | Usually the docker daemon (the Agent Version pins `SANDBOX_MODE=docker`) or a stale `--command` path after a fresh `make install`. Re-register: `uv run python scripts/register_kitaru_agent.py`. |
 
 ## Go further
 
 - Run headless **inside a sandbox** and on any repo: [04_sandboxing.md](04_sandboxing.md) (`SANDBOX_MODE=docker decode run --repo <url> "<task>"`).
-- Run headless **in the cloud** — the whole agent on Modal, checkpoints on a self-hosted server: [07_infra.md](07_infra.md).
 - Hydrate the run's secrets from an Environment Bucket instead of `.env`: [06_credentials.md](06_credentials.md).
+- Where the workspace, the Worker and the retired self-hosted stack sit: [07_infra.md](07_infra.md).

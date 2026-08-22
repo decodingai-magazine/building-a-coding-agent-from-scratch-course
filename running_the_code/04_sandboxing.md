@@ -68,4 +68,4 @@ Everything else — provider keys, rate limits, skills, sessions — is in [00_t
 
 - The end-to-end credential walkthrough — token set, token unset, and every negative case: [06_credentials.md](06_credentials.md).
 - Run a sandboxed agent headless (`decode run --repo …`): [03_runtime.md](03_runtime.md).
-- Move the *whole agent* (not just its tools) to the cloud: [07_infra.md](07_infra.md).
+- Replay a recorded run inside this same docker Workspace, on a Kitaru Worker: [03_runtime.md](03_runtime.md#replay-a-recorded-session-on-a-kitaru-worker); where the remote pieces live now: [07_infra.md](07_infra.md).

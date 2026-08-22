@@ -1,77 +1,45 @@
-# Infra — the remote runtime stack (`decode run` on Modal, orchestrated by ZenML/Kitaru)
+# Infra — where decode's remote pieces live
 
-> **Status: deployed and verified.** `make run-remote TASK="…"` submits a headless agent to a
-> self-hosted Kitaru server, it executes in a Modal container, spawns its own Modal bash sandbox, and
-> every checkpoint lands on the server — durable, replayable, resumable from any machine.
+> **Status: there is no server to deploy any more** ([ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md)).
+> kitaru 0.22.2 removed the durable execution engine this page used to provision — `@flow`,
+> checkpoints, waits, the ZenML stack — and decode's `runtime/flow.py` + `modal_app.py` went with it.
+> What replaced it is smaller, free, and needs no GCP project: a **managed Kitaru workspace** plus a
+> **Kitaru Worker** you start in your own shell. The old build is kept below as a stale
+> [appendix](#appendix--the-retired-self-hosted-gcp-stack-stale); nothing in it runs today.
 
-> **💰 This is the only part of the course that costs real money — and it's entirely optional.**
-> Every other track (the lessons, the REPL, headless runs, sandboxing, evals) runs free and local.
-> Deploying this stack bills a GCP project ~$16/month while it's up (the VM + a static IP; exact
-> breakdown in [§5 Costs](#5-costs)) plus usage-based Modal compute. Skip it unless you specifically
-> want headless runs executing entirely in the cloud — and when you're done, `scripts/deploy.sh down`
-> deletes everything it created.
+## The shape today
 
-decode already runs its *sandboxes* on [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (`SANDBOX_MODE=modal`). This stack moves the **headless
-agent itself** there. [`scripts/deploy.sh`](../scripts/deploy.sh) provisions all of it; **§1 is the only
-part you type by hand.**
-
-## Quickstart
-
-**Do [§1](#1-what-you-must-do-by-hand) first** — the toolchain, `gcloud auth login`, `modal token set`,
-the Docker containerd toggle, and `.env`. `deploy.sh` refuses to start without them. Then:
-
-**1. Deploy** (~10-15 min; it stops once to ask you to approve the 80/443 firewall rule):
-
-```bash
-scripts/deploy.sh up
-```
-
-**2. Read the URL** — it is derived from the server's IP, so it changes every rebuild:
-
-```bash
-scripts/deploy.sh status         # the `server` row, e.g. https://34.153.164.72.nip.io
-```
-
-That one URL is both the API the CLI talks to and the dashboard you open in a browser.
-
-**3. Get the dashboard password** — user is `admin`, password was generated during `up`:
-
-```bash
-pbcopy < ~/.config/decode/kitaru-admin-password    # copies it; do NOT echo or `cat` it
-```
-
-**4. Run something:**
-
-```bash
-make run-remote TASK="run bash 'uname -a && pwd' and tell me what you see"
-```
-
-Want a **Linux x86-64** kernel and `/workspace` — that proves the `bash` ran in the Modal sandbox and
-not on your laptop. The first submit builds and pushes the flow image (3-5 min); later ones reuse it
-(~90s). Watch it land with `uv run kitaru executions list`.
-
-**Done for the day?** Tear it down (it bills while up):
-
-```bash
-scripts/deploy.sh down <your-project>
-```
-
-Everything below is the detail behind these four steps.
-
-## The shape (and why each piece exists)
-
-| Piece | What | Why this and not more |
+| Piece | What | Where it is documented |
 |---|---|---|
-| **[Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand)/ZenML server** | one `zenmldocker/kitaru` container on one GCE VM, SQLite on the boot disk, Caddy in front for TLS | The durability core: executions, checkpoint metadata, replay, HITL waits, and the [Environment Bucket](06_credentials.md). It must be reachable *from Modal*, so it cannot stay on the laptop. One VM + SQLite beats Cloud Run/GKE/MySQL for a single-user course. |
-| **Modal orchestrator stack** | ZenML's `modal` orchestrator + `modal` sandbox flavors | The flow container runs as a Modal Sandbox; decode's own bash sandboxes are spawned *from* it (nested). |
-| **GCS bucket** | artifact store (`gs://…`) | Checkpoint payloads, artifacts, uploaded code. Modal cannot read a local artifact store — remote is mandatory. |
-| **Artifact Registry repo** | container registry | The flow image is built locally at submit time and pushed here; Modal pulls it. Also mandatory-remote. |
-| **Runtime service account** | `decode-kitaru@…` | Least privilege: GCS objects + image push/pull, plus one bucket-scoped admin binding (§4). Your human account is only for the bootstrap. |
+| **Managed [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) workspace** | `https://f5ee9622-kitaru.cloudinfra.zenml.io` — recorded **Kitaru Sessions**, **Cohorts**, **Replays**, registered **Agent Versions**, and the **Environment Bucket** secret. Someone else's uptime; `uv run kitaru status` prints the URL it resolved and whether you are authenticated. | [03_runtime.md](03_runtime.md), [06_credentials.md](06_credentials.md) |
+| **Kitaru Worker** | `kitaru worker start` in *your* shell. It claims replay tasks and spawns `decode run` **on this machine** — the server executes nothing, so your credentials and your docker daemon never leave the host. | [03_runtime.md](03_runtime.md#replay-a-recorded-session-on-a-kitaru-worker) |
+| **Agent Version** | the immutable run spec the Worker spawns: `decode run` with no inline prompt, `SANDBOX_MODE=docker`, a repo clone, Harness Home outside the repo. Registered with `scripts/register_kitaru_agent.py`. | [03_runtime.md](03_runtime.md#replay-a-recorded-session-on-a-kitaru-worker) |
+| **[Modal](https://modal.com?source=decodingai&campaign=harnesseng)** | still two things, both unchanged: the remote **Sandbox** (`SANDBOX_MODE=modal`) and open-model serving. It no longer hosts the agent itself. | [04_sandboxing.md](04_sandboxing.md), [02_modal_endpoints.md](02_modal_endpoints.md) |
+| **Opik** | tracing + evals, untouched by any of this ([ADR-0014](../docs/adr/0014-opik-observability.md)). | [05_evals.md](05_evals.md) |
 
-Deliberately **not** here: ZenML Pro (~$999/mo vs ~$16/mo), server-side `kitaru deploy` (client-submit
-needs fewer concepts — `decode run` *is* the trigger), MySQL/Cloud SQL (multi-replica only).
+**"Remote" now means the *record* is remote, not the run.** A replay executes in the same place your
+laptop does — inside a docker Workspace on your machine — which is exactly what makes it a faithful
+re-run of what you recorded. The only recurring cost is provider tokens plus whatever Modal you use;
+the ~$16/month GCE VM is gone.
+
+Nothing is required to use decode: recording is opt-in, and with `KITARU_AGENT_ID` unset the whole
+workspace is irrelevant.
 
 ---
+
+## Appendix — the retired self-hosted GCP stack (stale)
+
+> **⚠️ Everything below is RETIRED and does not work.** It describes the kitaru 0.18 durable stack
+> ([ADR-0008](../docs/adr/0008-kitaru-durable-runtime.md) and
+> [ADR-0010](../docs/adr/0010-runtime-replay.md), both superseded by
+> [ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md)): a self-hosted Kitaru server on GCE that ran
+> `decode run` as a Kitaru flow inside a Modal container. `make run-remote` submits a flow that no
+> longer exists, `scripts/deploy.sh` provisions a server version decode can no longer talk to, the
+> `kitaru executions` command group is gone from the CLI, and `scripts/kitaru_bootstrap_api_key.py`
+> is deleted. It is kept unrewritten because the *traps* are the lesson — TLS and `nip.io`, the
+> containerd image store, GCS/IAM, ZenML's build cache — and they cost a debugging cycle each.
+> Read it as history; run nothing from it.
+
 
 ## 1. What you MUST do by hand
 
@@ -355,9 +323,10 @@ looking there is a dead end):
 | `~/Library/Application Support/kitaru/credentials.yaml` | the API token, sent as a bearer on every REST call. **Secret — never `cat` it into a terminal an agent can read** |
 | `.kitaru/config.yaml` (repo-local) | `active_stack_id` / `active_project_id` for this checkout; also the source-root marker (§4) |
 
-The chain that put them there: `kitaru_bootstrap_api_key.py` password-grants a JWT with the admin
-password → creates the `decode-runner` service account → writes its key to
-`~/.config/decode/kitaru-api-key` → `kitaru login <url> --api-key …` exchanges it for the stored token.
+The chain that put them there: a bootstrap script (deleted with the rest of this stack)
+password-granted a JWT with the admin password → created the `decode-runner` service account → wrote
+its key to `~/.config/decode/kitaru-api-key` → `kitaru login <url> --api-key …` exchanged it for the
+stored token.
 
 So a submit is: client REST-calls the server for the `prod-modal` stack definition → builds the flow
 image locally and pushes it to Artifact Registry → uploads the code archive to GCS → Modal pulls and
@@ -510,8 +479,8 @@ uv run --group remote zenml pipeline builds delete <id>
 ```
 
 **Headless login needs a REST bootstrap.** `kitaru login` takes `--api-key` or an interactive browser
-flow, and creating an API key needs a login first. `scripts/kitaru_bootstrap_api_key.py` breaks the
-cycle with an OAuth2 password grant.
+flow, and creating an API key needs a login first. A bootstrap script (since deleted) broke the cycle
+with an OAuth2 password grant.
 
 **Debugging a failed remote run.** The server log only carries what the flow *logged*. The container's
 traceback lives in the Modal sandbox the error names (`Modal orchestration sandbox sb-… failed`):

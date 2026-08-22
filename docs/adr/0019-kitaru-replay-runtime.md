@@ -128,6 +128,32 @@ flowchart LR
     classDef obs fill:#8d99ae,stroke:#4a5361,color:#000000
 ```
 
+## Amendments
+
+**2026-08-22 — implementation reality (tasks 134-137).** Three narrowings the Decision above did
+not anticipate; the rest stands unchanged.
+
+1. **§4, input contract — two recorded shapes are also read as a prompt.** kitaru builds a replay's
+   agent task with `inputs=baseline.inputs`, i.e. it hands the baseline Kitaru Session's own
+   recorded inputs to the Agent Version verbatim, and neither producer emits `{"task": …}`:
+   `kitaru-pydantic-ai` records `inputs = ctx.prompt` (a bare JSON string) and the Opik importer
+   records `{"input": "<prompt>", …}`. So the shipped `_task_from_inputs` accepts all three —
+   canonical `{"task", "model"}` still wins, the other two are each the recorded prompt verbatim,
+   and anything else (a list, a number, a structured `input`) still hard-fails, so a Worker replay
+   still never guesses its own prompt. Related: `RunSpec` is `{command, working_dir, env,
+   secret_ids, timeout_seconds}` — it has **no input-schema field**, so "the command carries no
+   inline prompt" is the only registration-side expression of the contract.
+2. **§4, secrets — the Agent Version attaches none.** Version 2 shipped with `secret_ids: []`:
+   provider credentials reach the spawned `decode run` through the Kitaru Worker's own shell env
+   (verified against kitaru `worker/process.py::build_process_env`, which layers the run spec on
+   top of the Worker's `os.environ`), so the documented start is `set -a && . .env && set +a &&
+   kitaru worker start`. Uploading live keys to the workspace would buy nothing here.
+   Version-attached secrets remain the alternative for a shared or unattended Worker.
+3. **§3, gate widening — a Worker Task is always recording-configured.** `recording_is_configured()`
+   returns true whenever `KITARU_TASK_ID` is present, even without `KITARU_AGENT_ID` (the adapter
+   infers the agent from the task). Otherwise a misconfigured Worker would silently produce an
+   unrecorded — and therefore worthless — replay instead of taking §3's hard-fail exit.
+
 ## Consequences
 
 - **Gained:** a live replay corpus from real REPL + headless usage; what-if replays and
