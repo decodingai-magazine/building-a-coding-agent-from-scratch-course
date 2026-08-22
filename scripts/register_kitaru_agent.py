@@ -198,7 +198,7 @@ def register_argv(
         "The paths are inside the Modal worker image, not on this machine: register --decode-bin "
         "and --harness-home verbatim, without stat-ing, resolving or creating them. Both must then "
         "be absolute. A typo surfaces only when the Worker fails to spawn its first replay, so copy "
-        "the paths from scripts/modal_headless.py (DECODE_BIN, HARNESS_HOME)."
+        "the paths from scripts/modal_image.py (DECODE_BIN, HARNESS_HOME)."
     ),
 )
 @click.option(
@@ -255,7 +255,7 @@ def main(
         return
 
     # The Worker chdirs here for every spawn, so it must exist before the first task is claimed —
-    # locally. An in-image path is created by the image build (modal_headless.IMAGE), never here:
+    # locally. An in-image path is created by the image build (modal_image.build_image), never here:
     # making /harness on the operator's laptop would be litter, and often a permission error.
     if not skip_bin_check:
         harness_home.mkdir(parents=True, exist_ok=True)

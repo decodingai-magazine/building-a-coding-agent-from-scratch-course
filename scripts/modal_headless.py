@@ -20,11 +20,13 @@ subprocess — so remote behavior cannot drift from local behavior (ADR-0020 §1
   makes the fan-out free of the warm-up run and the submit stagger its ZenML-era ancestor
   (``demo-multiple-attempts.sh``) needed: one image, built at deploy, N containers.
 
-* **The image is built in-app** (ADR-0020 §2): ``debian_slim`` + ``Image.uv_sync()`` for the locked
-  dependencies, then this repo's source baked on top and installed with ``--no-deps``. No checked-in
-  image recipe, no registry. Deps and source are separate layers, so editing decode rebuilds only
-  the last two.
-  The console script therefore exists at ONE deterministic absolute path, :data:`DECODE_BIN`.
+* **The image is built in-app** (ADR-0020 §2) by :mod:`scripts.modal_image`, shared verbatim with the
+  Modal-hosted Kitaru Worker (``scripts/modal_kitaru_worker.py``): ``debian_slim`` +
+  ``Image.uv_sync()`` for the locked dependencies, then this repo's source baked on top and installed
+  with ``--no-deps``. No checked-in image recipe, no registry. Deps and source are separate layers, so
+  editing decode rebuilds only the last two.
+  The console script therefore exists at ONE deterministic absolute path, :data:`DECODE_BIN` — the
+  same one the Worker's Agent Version is registered with.
 * **Sandbox modes: ``none`` and ``modal`` only** (ADR-0020 §3). ``none`` — the gVisor container is
   the isolation; a ``repo`` is cloned by the HARNESS into :data:`REPO_CLONE_DIR` and decode launches
   with that cwd, so decode never sees ``--repo`` and its ADR-0012 §3 guard stays intact (and nothing
@@ -59,6 +61,8 @@ from pathlib import Path
 import click
 import modal
 
+from scripts.modal_image import DECODE_BIN, HARNESS_HOME, build_image
+
 # --- the app, and the fixed layout of its image ----------------------------------------------------
 
 APP_NAME = "decode-headless"
@@ -66,50 +70,19 @@ APP_NAME = "decode-headless"
 # The Modal Secret this Function runs with (ADR-0020 §4); operator-created, never committed.
 SECRET_NAME = "decode-headless"
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-# Where the repo source is baked; the venv ``Image.uv_sync()`` builds lives at ``/.uv/.venv``, so the
-# console script installed into it is at ONE absolute path no PATH set-up can move.
-IMAGE_SOURCE_DIR = "/opt/decode"
-VENV_DIR = "/.uv/.venv"
-DECODE_BIN = f"{VENV_DIR}/bin/decode"
-
-# The Harness Home: every harness artifact (``.decode/sessions``, logs, ``.decode/sandbox``) anchors
-# here, OUTSIDE any repo checkout (ADR-0012 §6).
-HARNESS_HOME = "/harness"
-
 # The child's log file — read back after the run for the session id and the shipped branch.
 LOG_FILE = f"{HARNESS_HOME}/decode-run.log"
 
 # Where the HARNESS clones ``--repo`` in ``none`` mode (decode never sees the repo there).
 REPO_CLONE_DIR = "/scratch/repo"
 
-# Build artefacts and local state that must never be baked into the image.
-_SOURCE_IGNORE = [
-    "**/.git",
-    "**/.venv",
-    "**/.decode",
-    "**/__pycache__",
-    "**/*.pyc",
-    "**/.pytest_cache",
-    "**/.ruff_cache",
-    "**/node_modules",
-]
+# The image is built by ``scripts/modal_image.py``, shared verbatim with the Modal-hosted Kitaru
+# Worker (``scripts/modal_kitaru_worker.py``) — one build, one layout, one set of absolute paths.
+IMAGE = build_image(extra_dirs=(REPO_CLONE_DIR,))
 
-IMAGE = (
-    modal.Image.debian_slim(python_version="3.12")
-    .apt_install("git", "curl", "ca-certificates")
-    # Locked third-party deps only (uv_sync never installs the project itself) — the cached layer.
-    .uv_sync(uv_project_dir=str(REPO_ROOT))
-    # decode's own source, on top, installed without deps so the layer above is reused verbatim.
-    .add_local_dir(REPO_ROOT, IMAGE_SOURCE_DIR, copy=True, ignore=_SOURCE_IGNORE)
-    .run_commands(
-        f"/.uv/uv pip install --no-deps --python {VENV_DIR}/bin/python {IMAGE_SOURCE_DIR}"
-    )
-    .run_commands(f"mkdir -p {HARNESS_HOME} {REPO_CLONE_DIR}")
-    # ADR-0020 §4: one config surface, fed by the Secret's process env — never an Environment Bucket.
-    .env({"DECODE_ENV": "local"})
-)
+# Re-exported: the in-image paths are read from HERE by the Agent Version registration's drift guard
+# (``scripts/register_kitaru_agent.py``, task 144) — they are defined once, in ``scripts.modal_image``.
+__all__ = ["DECODE_BIN", "HARNESS_HOME"]
 
 app = modal.App(APP_NAME)
 
