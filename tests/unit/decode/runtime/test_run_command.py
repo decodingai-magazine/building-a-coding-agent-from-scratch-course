@@ -128,6 +128,87 @@ def test_run_recording_hard_failure_is_a_friendly_line_not_a_traceback(monkeypat
     assert "Traceback" not in result.stderr
 
 
+# --- the Worker Task entry: the task arrives in the env when the CLI arg is absent (ADR-0019 §4) --
+
+
+def _worker_env(monkeypatch, inputs: str | None) -> None:
+    """Put the process in Worker Task mode with ``inputs`` as the raw ``KITARU_TASK_INPUTS``."""
+    monkeypatch.setenv("KITARU_TASK_ID", "4d0a3a5e-0000-4000-8000-00000000beef")
+    if inputs is not None:
+        monkeypatch.setenv("KITARU_TASK_INPUTS", inputs)
+
+
+def test_run_without_a_task_or_a_worker_context_is_a_friendly_line(monkeypatch, _provider_ok):
+    """AC1: no arg, no Kitaru task context → ONE stderr line and a non-zero exit, no agent built."""
+    _no_runner_tripwire(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run"])
+
+    assert result.exit_code != 0
+    assert "TASK" in result.stderr
+    assert "KITARU_TASK_INPUTS" in result.stderr  # names the Worker Task channel too
+    assert "Traceback" not in result.stderr
+    assert result.stdout == ""
+
+
+def test_run_takes_its_task_from_the_worker_task_inputs(monkeypatch, _provider_ok):
+    """AC2: ``KITARU_TASK_ID`` + ``KITARU_TASK_INPUTS`` run the task with no CLI arg."""
+    _worker_env(monkeypatch, '{"task":"say hi"}')
+    captured = _recording_runner(monkeypatch, "hi there")
+
+    result = CliRunner().invoke(cli, ["run"])
+
+    assert result.exit_code == 0
+    assert captured["task"] == "say hi"
+    assert result.stdout == "hi there\n"
+
+
+def test_run_cli_task_wins_over_the_worker_task_inputs(monkeypatch, _provider_ok):
+    """AC3: an explicit TASK beats the env channel."""
+    _worker_env(monkeypatch, '{"task":"from the worker"}')
+    captured = _recording_runner(monkeypatch, "answer")
+
+    result = CliRunner().invoke(cli, ["run", "from the cli"])
+
+    assert result.exit_code == 0
+    assert captured["task"] == "from the cli"
+
+
+def test_run_worker_task_inputs_model_threads_into_the_model_override(monkeypatch, _provider_ok):
+    """AC4: ``model`` in the inputs reaches the runner exactly like ``--model`` (ADR-0019 §4)."""
+    _worker_env(monkeypatch, '{"task":"say hi","model":"gemini-2.5-pro"}')
+    captured = _recording_runner(monkeypatch, "answer")
+
+    result = CliRunner().invoke(cli, ["run"])
+
+    assert result.exit_code == 0
+    assert captured["model"] == "gemini-2.5-pro"
+
+
+def test_run_malformed_worker_task_inputs_exits_non_zero_naming_the_parse_failure(
+    monkeypatch, _provider_ok
+):
+    """AC5: a Worker replay must never guess — the parse failure is named, exit is non-zero."""
+    _worker_env(monkeypatch, "{not json")
+    _no_runner_tripwire(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run"])
+
+    assert result.exit_code != 0
+    assert "KITARU_TASK_INPUTS" in result.stderr
+    assert "JSONDecodeError" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert result.stdout == ""
+
+
+def test_run_help_documents_the_optional_task_and_its_worker_source():
+    result = CliRunner().invoke(cli, ["run", "--help"])
+
+    assert result.exit_code == 0
+    assert "[TASK]" in result.output  # Click renders an optional argument in brackets
+    assert "KITARU_TASK_INPUTS" in result.output
+
+
 # --- the deleted surfaces: `decode replay` and `decode run --hitl` -------------------------------
 
 

@@ -402,7 +402,7 @@ def cli(
 
 
 @cli.command("run")
-@click.argument("task")
+@click.argument("task", required=False)
 @click.option(
     "--model",
     "model",
@@ -427,12 +427,18 @@ def cli(
     is_flag=True,
     help="Use a fast local clone (git clone --local) when --repo is a local path.",
 )
-def run(task: str, model: str | None, repo: str | None, local: bool) -> None:
+def run(task: str | None, model: str | None, repo: str | None, local: bool) -> None:
     """Run a single TASK headlessly, then print the agent's answer (ADR-0019 §1).
 
     The autonomous counterpart to the REPL: ``decode run "<task>"`` builds the SAME agent the TUI
     does and drives it to completion in one ``asyncio.run``. Every gated tool runs inline with no
     prompt (the gate is in bypass) and ``ask_user`` is a headless no-op — there is no pause, ever.
+
+    TASK is optional because a Kitaru Worker spawns this command with the prompt in the env, not on
+    the command line: with no TASK argument, the task (and an optional model override) is read from
+    that Kitaru Worker Task's inputs — KITARU_TASK_INPUTS, shaped
+    {"task": "<prompt>", "model": "<id>"|null} — and with neither, ``decode run`` exits non-zero with
+    one line saying so (ADR-0019 §4).
 
     ``--model ID`` overrides the active provider's model id for this run; the provider itself stays
     selected by ``LLM_PROVIDER`` (no cross-provider swap). Presence, not correctness: a model id
@@ -456,6 +462,20 @@ def run(task: str, model: str | None, repo: str | None, local: bool) -> None:
     workspace costs ONE stderr line and the run continues on the bare agent (exit 0), while under a
     Kitaru Worker Task the same failure is ONE stderr line and a non-zero exit — never a traceback.
     """
+    # Where this run's task comes from (ADR-0019 §4) — FIRST, because it finishes the argument
+    # parsing Click could not: with TASK optional, "which task?" is settled before any guard reads
+    # config. Off-contract Worker inputs fail here too, and hard: a replay that guessed its own
+    # prompt would be a lying experiment. Imported inside the subcommand so the REPL path stays
+    # clear of it; the module's own kitaru import sits inside its Worker branch.
+    from decode.runtime.task_inputs import WorkerTaskInputError, resolve_task_and_model
+
+    try:
+        task, model = resolve_task_and_model(task, model)
+    except WorkerTaskInputError as exc:
+        logger.debug("no runnable task for `decode run`; refusing to start", exc_info=True)
+        click.echo(f"Decode: {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
+
     # The headless guard chain; any failure exits non-zero here, before any agent is built.
     config_error = _runtime_config_preflight(repo=repo)
     if config_error is not None:

@@ -93,8 +93,12 @@ def _workspace_label() -> str:
     return os.environ.get(API_URL_ENV) or "the Kitaru workspace configured by your kitaru login"
 
 
-def _one_line(error: Exception) -> str:
-    """``error`` as a single short line: the cause, never a multi-line HTML body or a traceback."""
+def one_line(error: Exception) -> str:
+    """``error`` as a single short line: the cause, never a multi-line HTML body or a traceback.
+
+    Shared with :mod:`decode.runtime.task_inputs`, whose Worker Task failures owe the operator the
+    same one-line-no-traceback contract this module's do.
+    """
     text = " ".join(f"{type(error).__name__}: {error}".split())
     return text if len(text) <= _REASON_MAX_CHARS else f"{text[:_REASON_MAX_CHARS]}…"
 
@@ -151,14 +155,14 @@ async def wrap_for_recording[DepsT, OutputT](
         if worker:
             raise RecordingUnavailableError(
                 f"[kitaru] recording is unavailable for this Kitaru Worker Task: "
-                f"{_workspace_label()} could not be reached ({_one_line(error)}). Failing the run "
+                f"{_workspace_label()} could not be reached ({one_line(error)}). Failing the run "
                 f"rather than producing an unrecorded — and therefore untrustworthy — replay."
             ) from error
         # The ONE line: what was lost, where, and why — no traceback (ADR-0019 §3). Logged for the
         # post-hoc reader AND returned for the operator watching the run right now.
         notice = (
             f"[kitaru] not recording this run: {_workspace_label()} is unavailable "
-            f"({_one_line(error)}); continuing on the bare agent"
+            f"({one_line(error)}); continuing on the bare agent"
         )
         logger.warning("%s", notice)
         return agent, notice

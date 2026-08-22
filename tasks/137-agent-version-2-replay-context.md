@@ -53,3 +53,19 @@ repo-clone Workspace of this repo.
 - Worker deployment automation (systemd/CI) — a manually started worker is enough here.
 
 ## Log
+
+### [SWE] 2026-08-22 04:20 — Carried finding from 136
+
+`kitaru-pydantic-ai` creates the Kitaru Session LAZILY inside `agent.run` (its own
+`capability.wrap_run`), so session creation happens AFTER — and outside — the Recording Seam's
+wrap-time reachability probe (`wrap_for_recording`, task 134). A worker-mode session-creation
+failure therefore escapes as a raw multi-frame traceback instead of the ADR-0019 §3 one-line
+contract; reproduced in 136 with both a malformed `KITARU_TASK_ID` (`ValueError: badly formed
+hexadecimal UUID string`) and a well-formed but unregistered one (`ValidationError: 422: Session
+names no agent and no task to infer one from`). Exit code stays non-zero, so a Worker still reads
+the run as failed — only the friendly-line contract is broken.
+
+This task's live replay is the first run where a REAL registered agent version exercises that path:
+surface and verify it there, then either absorb the friendly-line fix into 137 or spawn a follow-up
+task for it — do not close 137 leaving it unrecorded. Full detail:
+`tasks/done/136-worker-task-input-entry.md` (SWE Notes "Adjacent finding" + Tester "Other issues found").
