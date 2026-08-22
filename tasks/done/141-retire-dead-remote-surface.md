@@ -312,3 +312,12 @@ error: Group `remote` is not defined in the project's `dependency-groups` table 
   docker/subprocess-heavy integration suite (e.g. `tasks/done/119`, `tasks/done/103`).
 
 **VERDICT: PASS**
+
+### [PA] 2026-08-22 23:15 — Acceptance Review (feature modal-remote-headless, PR #65)
+
+**VERDICT: ACCEPT**
+
+Reader-POV walk confirms both user stories: `make help` lists no dead target, a fresh `uv sync`
+carries no GCP/ZenML stack, and `src/` names `exec_id` nowhere. The Tester's two grep rulings
+(07_infra appendix historical prose; `kitaru_plan.md`) stand as documented — both inert history,
+neither a live instruction. Task 146 closed the appendix carve-out as planned.

@@ -319,3 +319,14 @@ $ uv run pytest tests/unit/scripts/test_modal_headless.py -q -k "not attempts an
 **VERDICT: PASS**
 
 QA PASSED for #143. Hand off to PA for acceptance review.
+
+### [PA] 2026-08-22 23:15 — Acceptance Review (feature modal-remote-headless, PR #65)
+
+**VERDICT: ACCEPT**
+
+Both user stories hold: the 3-attempt fan-out finished in 59s vs 72s for one (truly parallel, no
+warm-up), the printed table matched `git ls-remote` exactly, and `--detach` returned in ~7.5s with
+work landing after the launcher exited. The live-found stale-log bug was fixed at the root
+(reset before run + last-match parser) with regression tests — exactly the discipline the warm-
+container model needs. `shipped` being stricter than "a branch was named" is the right user-facing
+truth. Copy on the guards is clear and every hint under the table is copy-paste runnable.

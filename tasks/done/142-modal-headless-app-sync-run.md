@@ -437,3 +437,15 @@ security regressions, no `print()` in library code, all new functions typed, dif
 what the task describes. Hand off to PA for acceptance review — the PA should decide whether the
 still-PENDING Kitaru-Session AC blocks acceptance or is deferred (it is explicitly `[HUMAN]` and the
 task's own scope note treats operator-gate items as consistent with ADR-0019's kitaru-out-of-CI stance).
+
+### [PA] 2026-08-22 23:15 — Acceptance Review (feature modal-remote-headless, PR #65)
+
+**VERDICT: ACCEPT** — with the one recording gate ruled a deferred OPERATOR GATE, not a blocker.
+
+All three user stories verified from the operator's POV: live none/modal proofs show real answers
+with in-container paths, the docker typo costs nothing and its message names both alternatives, and
+the Hand-back branch shipped (and was cleaned up). The unclosed AC (Kitaru Session listed) is
+blocked solely on minting a control-plane `ZENPROKEY_…` key — an org write correctly denied to
+agents, documented with options A/B/C in 07_infra §1 and marked ⏳ Pending there, never presented as
+done. Decode degrades exactly as ADR-0019 §3 prescribes under that gap. USER ACTION: mint the key
+per 07_infra §1, then run the two-line verify block — it closes this gate and 145's three.

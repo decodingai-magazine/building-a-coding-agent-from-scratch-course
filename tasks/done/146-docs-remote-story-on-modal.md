@@ -506,3 +506,18 @@ fixed by exactly the three claimed one-line edits (`README.md:159/259/311`); `gi
 other README content drifted. `grep -rn "GCP" README.md` returns nothing. Both edited tables remain
 pipe-aligned. All 6 named acceptance criteria still verified PASS. Full pre-commit suite green:
 2394/2394, 0 warnings. Hand off to PA for acceptance review.
+
+### [PA] 2026-08-22 23:15 — Acceptance Review (feature modal-remote-headless, PR #65)
+
+**VERDICT: ACCEPT**
+
+Walked 07_infra.md as the new-reader story: the shape-today table, secrets section (key names only,
+the `KITARU_AGENT_ID` asymmetry explained as the point rather than trivia), run-and-verify with
+real measured numbers, and an 18-line GCP retirement note. Every command traces to an executed AC;
+the only unexecuted ones are the ⏳ Pending operator-gate blocks, clearly marked. The 403 story
+lands in 08 §7.3 exactly where the second user story needs it. Glossary terms (Recording Seam,
+Hand-back, Harness Home, Agent Version, Modal Headless App) used verbatim throughout; ADR-0020 and
+the glossary updates shipped in the grooming commit as promised. One residue outside every task's
+scope: README rows 111/135 still carry pre-ADR-0019 durability marketing ("kill it, resume it";
+"durable execution, human-in-the-loop") — follow-up filed as
+`tasks/148-readme-durability-copy-replay-model.md`, not a blocker for this feature.

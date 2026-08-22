@@ -478,3 +478,17 @@ Staged for this commit ONLY: `scripts/modal_image.py`, `scripts/modal_kitaru_wor
 `scripts/modal_headless.py`, `scripts/register_kitaru_agent.py`,
 `tests/unit/scripts/test_modal_kitaru_worker.py`, and this task file's move into `tasks/done/`.
 The stray `tasks/done/138-…` edit the Tester flagged was left untouched and unstaged. Not pushed.
+
+### [PA] 2026-08-22 23:15 — Acceptance Review (feature modal-remote-headless, PR #65)
+
+**VERDICT: ACCEPT** — the three worker gates ruled a deferred OPERATOR GATE, not a blocker.
+
+Both stories verified as far as an agent can take them: the app deploys, the in-image layout was
+proven via `modal shell` to match agent v3's registered spec exactly, the `KITARU_AGENT_ID` scrub
+fired in a real container with a message that names the 403 trap, and the pre-flight credential
+guard fails loud instead of polling silently for a day. The three `[HUMAN]` gates all hang on one
+genuinely operator-only step — minting a control-plane `ZENPROKEY_…` key (an org write the
+permission system correctly denied) — with ready-to-run commands preserved above and in 07_infra
+§1/§3, honestly marked ⏳ Pending everywhere. USER ACTION: mint the key, load the secret, run the
+three checks (~2 minutes). Follow-up filed for the one open nit: `ensure_harness_home` raw
+`OSError` traceback → `tasks/147-worker-harness-home-friendly-oserror.md`.

@@ -539,3 +539,15 @@ in-repo — still refused, absolute in-image — still works and touches nothing
 as expected. Docker default argv remains byte-identical to the pre-task script. Full unit suite
 green (2355/2355), 0 warnings, format/lint/pre-commit green. No new security or convention
 regressions. No live kitaru calls were made this round. Hand off to PA for acceptance review.
+
+### [PA] 2026-08-22 23:15 — Acceptance Review (feature modal-remote-headless, PR #65)
+
+**VERDICT: ACCEPT**
+
+Both stories verified: the docker default stays byte-identical to the shipped v2 spec, and the v3
+registration is live on the workspace with v1/v2 untouched. The round-1 fix (reject relative
+in-image paths outright rather than `abspath`-inventing a laptop path) is the right call — a
+relative path is meaningless to a Worker that chdirs into a container, and the error message says
+exactly that. Agent **v4** (the Tester's QA-accident, byte-identical duplicate of v3) is accepted
+as harmless: versions are immutable, the incident is disclosed in this log, and 07_infra §3 tells
+operators plainly to pin `decode@3`, never "latest". No further action needed on v4.
