@@ -1,5 +1,5 @@
 ---
-status: pending
+status: done
 feature: ci-infra
 ---
 
@@ -116,3 +116,13 @@ action) — handing off rather than working around the denial.
 
 Fixing now — via the SWE/orchestrator or a human with PR-close/reopen permission, per the
 Suggested remediation section above.
+
+### [On-Call/Orchestrator] 2026-08-22 — Resolved
+
+Root cause: the PR had become `mergeable: CONFLICTING` (dependabot commits on main vs the
+branch's pyproject/uv.lock changes), and GitHub fires NO `pull_request` workflow runs for a
+conflicting PR — the workflow's only branch trigger is `pull_request`, so CI went silent with
+no error anywhere. Fix: merged origin/main into the branch (`4cd2f18`, our ADR-0019 pins kept,
+main's floor bumps folded in, re-locked, unit suite green) — CI fired immediately and passed
+(run 32586007775, 4m46s). Lesson recorded: a silent CI on a PR branch whose workflow only
+triggers on pull_request means CHECK MERGEABILITY FIRST.
