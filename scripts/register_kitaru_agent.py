@@ -1,6 +1,8 @@
 """Register the Agent Version a Kitaru Worker spawns to replay a decode Session (ADR-0019 §4).
 
     uv run python scripts/register_kitaru_agent.py [--dry-run]
+    uv run python scripts/register_kitaru_agent.py --sandbox-mode none \\
+        --decode-bin /.uv/.venv/bin/decode --harness-home /harness --skip-bin-check
 
 An operator script, not library code: it prints with ``click.echo`` and shells out to the ``kitaru``
 CLI, so what it does is exactly what an operator could type — and ``--dry-run`` prints that command
@@ -24,6 +26,18 @@ The Agent Version is decode's **replay context**, replicated rather than simulat
   the host to buy nothing. Start the Worker from a shell that has them:
 
       set -a && . .env && set +a && kitaru worker start
+
+``--sandbox-mode`` picks WHERE those replayed tool calls land, and is the only difference between
+the two Workers decode runs (ADR-0020 §5):
+
+* ``docker`` (the default) — the laptop Worker, agent v2's spec, unchanged.
+* ``none`` — the Modal-hosted Worker (task 145): the gVisor container is itself the isolation, so
+  there is no ``SANDBOX_REPO`` at all (decode refuses a repo under ``none``, ADR-0012 §3) and tool
+  calls land in the Worker's in-container Harness Home. Its ``--decode-bin`` and ``--harness-home``
+  are paths inside the worker IMAGE, so pass ``--skip-bin-check`` — the laptop cannot stat them.
+  They must be absolute: nothing resolves them here, so a relative one is both meaningless to the
+  Worker and invisible to the Harness-Home-inside-repo guard.
+* ``modal`` — the same container, but decode nests a Modal Sandbox and clones ``--repo`` into it.
 
 The agent itself is never created here: ``kitaru agent version register <agent>`` resolves an
 EXISTING agent and adds a version, so re-running this can never fork a second ``decode`` agent and
@@ -49,25 +63,65 @@ DEFAULT_HARNESS_HOME = Path.home() / ".decode-kitaru-worker"
 # process the Worker kills mid-run is indistinguishable from an agent failure in the replay record.
 DEFAULT_TIMEOUT_SECONDS = 1800
 
-_DESCRIPTION = (
-    "decode run under SANDBOX_MODE=docker over a clone of the course repo; the task arrives in "
-    "KITARU_TASK_INPUTS (ADR-0019 §4)."
-)
+# The Sandbox Modes a Worker can replay under; ``docker`` first, because it is the default.
+SANDBOX_MODES = ("docker", "none", "modal")
+DEFAULT_SANDBOX_MODE = "docker"
+
+# What `kitaru agent get decode` shows an operator, per mode — the one line that tells the laptop
+# version and the Modal-worker version apart. Every mode names its SANDBOX_MODE verbatim.
+_DESCRIPTIONS = {
+    "docker": (
+        "decode run under SANDBOX_MODE=docker over a clone of the course repo; the task arrives in "
+        "KITARU_TASK_INPUTS (ADR-0019 §4)."
+    ),
+    # No apostrophe anywhere in these: the printed argv is shlex-quoted, and one apostrophe turns a
+    # paste-able command into '"'"' noise.
+    "none": (
+        "decode run under SANDBOX_MODE=none inside the Kitaru Worker container (no repo clone — the "
+        "container is the isolation); the task arrives in KITARU_TASK_INPUTS (ADR-0020 §5)."
+    ),
+    "modal": (
+        "decode run under SANDBOX_MODE=modal over a clone of the course repo in a nested Modal "
+        "Sandbox; the task arrives in KITARU_TASK_INPUTS (ADR-0020 §5)."
+    ),
+}
 
 
-def build_run_env(*, repo: Path) -> dict[str, str]:
+def build_run_env(*, repo: Path, sandbox_mode: str = DEFAULT_SANDBOX_MODE) -> dict[str, str]:
     """The run spec's process env: the replay context, and nothing secret (ADR-0019 §4).
 
-    Three keys, each load-bearing: ``SANDBOX_MODE`` puts every tool call inside a docker Workspace,
+    Each key is load-bearing: ``SANDBOX_MODE`` picks the Workspace every tool call runs in,
     ``SANDBOX_REPO`` makes that Workspace a clone of ``repo``, and ``DECODE_ENV`` pins the config
     surface to ``local`` so the spawn cannot inherit a remote Environment Bucket from the Worker's
     shell. Provider credentials are NOT here — they ride the Worker's inherited env (module docstring).
+
+    Under ``none`` the repo is dropped entirely: decode rejects a repo when there is no sandbox to
+    clone it into (ADR-0012 §3), so shipping one would fail every spawn at pre-flight. The Worker's
+    container is the isolation and its Harness Home is the tool scope (ADR-0020 §5).
     """
-    return {
-        "SANDBOX_MODE": "docker",
-        "SANDBOX_REPO": str(repo),
-        "DECODE_ENV": "local",
-    }
+    env = {"SANDBOX_MODE": sandbox_mode}
+    if sandbox_mode != "none":
+        env["SANDBOX_REPO"] = str(repo)
+    env["DECODE_ENV"] = "local"
+    return env
+
+
+def _check_in_image_path(option: str, path: Path) -> None:
+    """Refuse a relative in-image path — ``--skip-bin-check`` can neither resolve nor check one.
+
+    Under the flag the path is registered verbatim (never stat-ed, resolved or created), so a
+    relative one has no meaning: the Worker chdirs into a container filesystem that shares no cwd
+    with the operator's shell. It is also invisible to the Harness-Home-inside-repo guard, which
+    compares a fully resolved ``repo`` against it — ``.decode/worker`` would sail through and
+    register a replay that writes into the working tree.
+    """
+    if not path.is_absolute():
+        raise click.ClickException(
+            f"{option} {path} is relative, but --skip-bin-check says it is a path inside the worker "
+            "image: in-image paths must be absolute (e.g. /harness). A relative one cannot be "
+            "checked against the repo and means nothing to the Worker, which chdirs into a "
+            "container."
+        )
 
 
 def register_argv(
@@ -77,6 +131,7 @@ def register_argv(
     harness_home: Path,
     repo: Path,
     timeout_seconds: int,
+    sandbox_mode: str = DEFAULT_SANDBOX_MODE,
 ) -> list[str]:
     """The exact ``kitaru agent version register`` argv for this host.
 
@@ -92,10 +147,10 @@ def register_argv(
     argv = ["kitaru", "agent", "version", "register", agent]
     argv += ["--command", f"{decode_bin} run"]
     argv += ["--working-dir", str(harness_home)]
-    for key, value in build_run_env(repo=repo).items():
+    for key, value in build_run_env(repo=repo, sandbox_mode=sandbox_mode).items():
         argv += ["--env", f"{key}={value}"]
     argv += ["--timeout-seconds", str(timeout_seconds)]
-    argv += ["--description", _DESCRIPTION]
+    argv += ["--description", _DESCRIPTIONS[sandbox_mode]]
     return argv
 
 
@@ -111,7 +166,7 @@ def register_argv(
     default=str(Path(__file__).resolve().parents[1]),
     show_default="this repo",
     type=click.Path(path_type=Path),
-    help="Repo cloned into the replay's docker Workspace.",
+    help="Repo cloned into the replay's Workspace; ignored under --sandbox-mode none.",
 )
 @click.option(
     "--harness-home",
@@ -127,6 +182,26 @@ def register_argv(
     help="The decode entrypoint the Worker spawns.  [default: <repo>/.venv/bin/decode]",
 )
 @click.option(
+    "--sandbox-mode",
+    default=DEFAULT_SANDBOX_MODE,
+    show_default=True,
+    type=click.Choice(SANDBOX_MODES),
+    help=(
+        "Where replayed tool calls run: docker (the laptop Worker) | none (the Modal Worker's own "
+        "container, no repo clone) | modal (a nested Modal Sandbox)."
+    ),
+)
+@click.option(
+    "--skip-bin-check",
+    is_flag=True,
+    help=(
+        "The paths are inside the Modal worker image, not on this machine: register --decode-bin "
+        "and --harness-home verbatim, without stat-ing, resolving or creating them. Both must then "
+        "be absolute. A typo surfaces only when the Worker fails to spawn its first replay, so copy "
+        "the paths from scripts/modal_headless.py (DECODE_BIN, HARNESS_HOME)."
+    ),
+)
+@click.option(
     "--timeout-seconds",
     default=DEFAULT_TIMEOUT_SECONDS,
     show_default=True,
@@ -138,18 +213,30 @@ def main(
     repo: Path,
     harness_home: Path,
     decode_bin: Path | None,
+    sandbox_mode: str,
+    skip_bin_check: bool,
     timeout_seconds: int,
     dry_run: bool,
 ) -> None:
     """Register the next version of the Kitaru agent a Worker replays decode sessions with."""
     repo = repo.expanduser().resolve()
-    harness_home = harness_home.expanduser().resolve()
-    entrypoint = (decode_bin or repo / ".venv/bin/decode").expanduser().resolve()
-    if not entrypoint.is_file():
-        raise click.ClickException(
-            f"no decode entrypoint at {entrypoint} — run `make install` in {repo}, or pass "
-            "--decode-bin."
-        )
+    harness_home = harness_home.expanduser()
+    entrypoint = (decode_bin or repo / ".venv/bin/decode").expanduser()
+    if skip_bin_check:
+        # In-image paths are registered verbatim: resolving them against the laptop's filesystem
+        # would rewrite a container path (symlinks, /tmp on macOS) into one the Worker cannot chdir
+        # into. Since they are never resolved, they must already be absolute.
+        _check_in_image_path("--harness-home", harness_home)
+        _check_in_image_path("--decode-bin", entrypoint)
+    else:
+        harness_home = harness_home.resolve()
+        entrypoint = entrypoint.resolve()
+        if not entrypoint.is_file():
+            raise click.ClickException(
+                f"no decode entrypoint at {entrypoint} — run `make install` in {repo}, pass "
+                "--decode-bin, or pass --skip-bin-check if this is a path inside the Modal worker "
+                "image."
+            )
     try:
         argv = register_argv(
             agent=agent,
@@ -157,6 +244,7 @@ def main(
             harness_home=harness_home,
             repo=repo,
             timeout_seconds=timeout_seconds,
+            sandbox_mode=sandbox_mode,
         )
     except ValueError as error:
         raise click.ClickException(str(error)) from None
@@ -166,8 +254,11 @@ def main(
         click.echo("--dry-run: nothing was registered.")
         return
 
-    # The Worker chdirs here for every spawn, so it must exist before the first task is claimed.
-    harness_home.mkdir(parents=True, exist_ok=True)
+    # The Worker chdirs here for every spawn, so it must exist before the first task is claimed —
+    # locally. An in-image path is created by the image build (modal_headless.IMAGE), never here:
+    # making /harness on the operator's laptop would be litter, and often a permission error.
+    if not skip_bin_check:
+        harness_home.mkdir(parents=True, exist_ok=True)
     completed = subprocess.run(argv, check=False)
     if completed.returncode != 0:
         raise click.ClickException(

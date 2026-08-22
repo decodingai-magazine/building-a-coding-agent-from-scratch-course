@@ -228,3 +228,346 @@ def test_the_built_spec_validates_against_the_installed_kitaru_run_spec():
     assert request.run_spec.working_dir == str(HOME)
     assert request.run_spec.env == build_run_env(repo=REPO)
     assert request.run_spec.secret_ids == []
+
+
+# --- agent version 3: the Modal-hosted Worker's run spec (ADR-0020 §5, task 144) -------------------
+#
+# The SAME script, one flag apart: `--sandbox-mode none` swaps the laptop's docker Workspace for the
+# Worker's own gVisor container. Two properties carry the difference:
+#
+# * **`none` carries NO `SANDBOX_REPO`.** decode's `--repo`-under-`none` guard (ADR-0012 §3) is not
+#   relaxed for the Worker, so a repo in the run spec would fail every spawn at pre-flight.
+# * **The paths are in-image paths.** Registration runs on the laptop, where `/harness` and the baked
+#   console script do not exist — so the local entrypoint check must be skippable.
+
+
+def test_none_mode_registers_no_sandbox_repo():
+    """AC3: decode refuses a repo under SANDBOX_MODE=none — the container IS the isolation."""
+    assert build_run_env(repo=REPO, sandbox_mode="none") == {
+        "SANDBOX_MODE": "none",
+        "DECODE_ENV": "local",
+    }
+
+
+def test_none_mode_argv_passes_exactly_two_env_options():
+    argv = _argv(sandbox_mode="none")
+
+    passed = [argv[i + 1] for i, item in enumerate(argv) if item == "--env"]
+    assert passed == ["SANDBOX_MODE=none", "DECODE_ENV=local"]
+
+
+def test_modal_mode_keeps_the_repo_clone():
+    """`modal` is the nested-Sandbox variant of the same shape: decode clones the repo natively."""
+    assert build_run_env(repo=REPO, sandbox_mode="modal") == {
+        "SANDBOX_MODE": "modal",
+        "SANDBOX_REPO": str(REPO),
+        "DECODE_ENV": "local",
+    }
+
+
+def test_the_docker_default_is_the_shipped_v2_env():
+    """The laptop spec is what it was before the flag existed — v2 replays keep working."""
+    assert build_run_env(repo=REPO, sandbox_mode="docker") == build_run_env(repo=REPO)
+
+
+@pytest.mark.parametrize("mode", ["docker", "none", "modal"])
+def test_the_description_names_the_mode_it_registers(mode):
+    """An operator reading `kitaru agent get decode` must be able to tell the versions apart."""
+    assert f"SANDBOX_MODE={mode}" in _option(_argv(sandbox_mode=mode), "--description")
+
+
+def test_a_harness_home_inside_the_repo_is_refused_in_every_mode():
+    """The guard is about where artifacts land, not about which Workspace runs the tools."""
+    for mode in ("docker", "none", "modal"):
+        with pytest.raises(ValueError, match="outside"):
+            _argv(sandbox_mode=mode, harness_home=REPO / ".decode/worker")
+
+
+def test_the_v3_spec_uses_the_modal_worker_images_own_paths():
+    """The registration and the image are one contract: both name the baked venv and /harness.
+
+    The paths are asserted against ``scripts/modal_headless.py``'s constants (task 145 reuses that
+    image builder), so moving the venv or the Harness Home in the image breaks this test instead of
+    breaking every replay the Worker claims.
+    """
+    from scripts.modal_headless import DECODE_BIN, HARNESS_HOME
+
+    argv = _argv(
+        sandbox_mode="none",
+        decode_bin=Path(DECODE_BIN),
+        harness_home=Path(HARNESS_HOME),
+    )
+
+    assert _option(argv, "--command") == f"{DECODE_BIN} run"
+    assert _option(argv, "--working-dir") == HARNESS_HOME
+
+
+def test_the_none_mode_spec_validates_against_the_installed_kitaru_run_spec():
+    """The same offline proof as v2, for the spec the Modal Worker will actually spawn."""
+    from kitaru.cli.registration import build_agent_version_request
+
+    argv = _argv(sandbox_mode="none", harness_home=Path("/harness"))
+    request = build_agent_version_request(
+        command=_option(argv, "--command"),
+        entrypoint=None,
+        description=_option(argv, "--description"),
+        display_version=None,
+        working_dir=_option(argv, "--working-dir"),
+        env=[argv[i + 1] for i, item in enumerate(argv) if item == "--env"],
+        secret_ids=None,
+        timeout_seconds=int(_option(argv, "--timeout-seconds")),
+        tools=None,
+        mcp_servers=None,
+        skills=None,
+    )
+
+    assert request.run_spec is not None
+    assert request.run_spec.working_dir == "/harness"
+    assert "SANDBOX_REPO" not in request.run_spec.env
+
+
+# --- the CLI surface for v3 ------------------------------------------------------------------------
+
+
+def test_the_sandbox_mode_flag_rejects_an_unknown_mode(tmp_path):
+    """AC1: a typo is click's usage error, not a registered version nobody can run."""
+    result = CliRunner().invoke(main, ["--sandbox-mode", "kubernetes", "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "kubernetes" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_none_mode_dry_run_prints_an_argv_with_no_sandbox_repo(tmp_path):
+    """The reproducibility contract task 145's docs paste: the exact registration argv."""
+    result = CliRunner().invoke(
+        main,
+        [
+            "--sandbox-mode",
+            "none",
+            "--decode-bin",
+            "/.uv/.venv/bin/decode",
+            "--harness-home",
+            "/harness",
+            "--skip-bin-check",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "kitaru agent version register decode" in result.output
+    assert "SANDBOX_MODE=none" in result.output
+    assert "DECODE_ENV=local" in result.output
+    assert "SANDBOX_REPO" not in result.output
+
+
+def test_container_paths_register_with_no_local_decode_binary(mocker, tmp_path):
+    """AC4: the operator registers in-image paths from a laptop where they do not exist."""
+    spawn = mocker.patch(
+        "scripts.register_kitaru_agent.subprocess.run",
+        return_value=mocker.Mock(returncode=0),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--sandbox-mode",
+            "none",
+            "--decode-bin",
+            "/.uv/.venv/bin/decode",
+            "--harness-home",
+            str(tmp_path / "home"),
+            "--skip-bin-check",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    argv = spawn.call_args.args[0]
+    assert _option(argv, "--command") == "/.uv/.venv/bin/decode run"
+
+
+def test_an_in_image_harness_home_is_registered_verbatim_and_not_created_locally(mocker, tmp_path):
+    """`/harness` belongs to the worker image (its build makes it) — creating it here is litter."""
+    spawn = mocker.patch(
+        "scripts.register_kitaru_agent.subprocess.run",
+        return_value=mocker.Mock(returncode=0),
+    )
+    home = tmp_path / "harness"
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--sandbox-mode",
+            "none",
+            "--decode-bin",
+            "/.uv/.venv/bin/decode",
+            "--harness-home",
+            str(home),
+            "--skip-bin-check",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not home.exists()
+    assert _option(spawn.call_args.args[0], "--working-dir") == str(home)
+
+
+def test_the_local_binary_check_still_guards_the_default_laptop_run(tmp_path):
+    """Without the flag, a missing entrypoint is still caught before anything is registered."""
+    result = CliRunner().invoke(
+        main,
+        [
+            "--sandbox-mode",
+            "none",
+            "--repo",
+            str(tmp_path / "repo"),
+            "--harness-home",
+            str(tmp_path / "home"),
+            "--decode-bin",
+            str(tmp_path / "nope/decode"),
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--skip-bin-check" in result.output
+
+
+def test_a_relative_harness_home_is_refused_under_skip_bin_check():
+    """--skip-bin-check never resolves the path, so a relative one would slip past the inside-repo
+    guard (resolved repo vs unresolved harness home never match) AND be meaningless to the Worker,
+    which chdirs to it in a container it does not share a cwd with."""
+    result = CliRunner().invoke(
+        main,
+        [
+            "--sandbox-mode",
+            "none",
+            "--decode-bin",
+            "/.uv/.venv/bin/decode",
+            "--harness-home",
+            ".decode/rogue-worker",
+            "--skip-bin-check",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "absolute" in result.output
+    assert "--harness-home" in result.output
+    assert "Traceback" not in result.output
+    assert "kitaru agent version register" not in result.output
+
+
+def test_a_relative_decode_bin_is_refused_under_skip_bin_check():
+    """Same reasoning for the entrypoint: an unresolvable relative binary is a spawn that fails on
+    the Worker's first task, long after the operator has walked away."""
+    result = CliRunner().invoke(
+        main,
+        [
+            "--sandbox-mode",
+            "none",
+            "--decode-bin",
+            ".venv/bin/decode",
+            "--harness-home",
+            "/harness",
+            "--skip-bin-check",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "absolute" in result.output
+    assert "--decode-bin" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_an_absolute_in_repo_harness_home_is_still_refused_under_skip_bin_check(tmp_path):
+    """The inside-repo guard is not weakened by the new absolute check — it still fires."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--sandbox-mode",
+            "none",
+            "--repo",
+            str(repo),
+            "--decode-bin",
+            "/.uv/.venv/bin/decode",
+            "--harness-home",
+            str(repo / ".decode/worker"),
+            "--skip-bin-check",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "inside the repo" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_an_absolute_in_image_path_still_registers_untouched(mocker, tmp_path):
+    """The container-path property survives the new check: /harness is registered verbatim, never
+    stat-ed, resolved or created on the operator's laptop."""
+    spawn = mocker.patch(
+        "scripts.register_kitaru_agent.subprocess.run",
+        return_value=mocker.Mock(returncode=0),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--sandbox-mode",
+            "none",
+            "--decode-bin",
+            "/.uv/.venv/bin/decode",
+            "--harness-home",
+            "/harness",
+            "--skip-bin-check",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _option(spawn.call_args.args[0], "--working-dir") == "/harness"
+    assert not Path("/harness").exists()
+
+
+def test_a_relative_harness_home_is_still_resolved_on_the_laptop_path(mocker, tmp_path):
+    """Without --skip-bin-check nothing changes: local paths stay relative-friendly, resolved
+    against the operator's cwd exactly as the shipped v2 script did."""
+    spawn = mocker.patch(
+        "scripts.register_kitaru_agent.subprocess.run",
+        return_value=mocker.Mock(returncode=0),
+    )
+    entrypoint = tmp_path / "bin/decode"
+    entrypoint.parent.mkdir(parents=True)
+    entrypoint.touch()
+    runner = CliRunner()
+
+    with runner.isolated_filesystem(temp_dir=tmp_path) as cwd:
+        result = runner.invoke(
+            main,
+            [
+                "--repo",
+                str(tmp_path / "repo"),
+                "--decode-bin",
+                str(entrypoint),
+                "--harness-home",
+                "worker-home",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert _option(spawn.call_args.args[0], "--working-dir") == str(
+        Path(cwd).resolve() / "worker-home"
+    )
+
+
+def test_skipping_the_bin_check_is_named_in_the_help_with_its_failure_mode():
+    """A typo'd in-image path cannot be caught here, so --help must say where it does surface."""
+    result = CliRunner().invoke(main, ["--help"])
+
+    assert result.exit_code == 0
+    assert "--skip-bin-check" in result.output
+    assert "--sandbox-mode" in result.output
