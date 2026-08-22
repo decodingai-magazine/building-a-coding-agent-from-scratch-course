@@ -11,9 +11,11 @@ Three properties carry the design:
 
 * **Precedence**: an explicit CLI task wins outright — kitaru is never even imported; else a Worker
   Task's inputs supply it; else ONE friendly line.
-* **A Worker replay never guesses**: malformed inputs, a missing/blank ``task``, or an unreadable
-  inputs channel raise :class:`~decode.runtime.task_inputs.WorkerTaskInputError` (→ non-zero exit),
-  because a replay that invented its own prompt is a lying experiment.
+* **A Worker replay never guesses**: malformed inputs, a payload with no recorded prompt in it, or
+  an unreadable inputs channel raise :class:`~decode.runtime.task_inputs.WorkerTaskInputError`
+  (→ non-zero exit), because a replay that invented its own prompt is a lying experiment. The three
+  payloads that DO carry a verbatim prompt — ``{"task": ...}``, an imported ``{"input": ...}`` and a
+  bare prompt string — are read, and nothing else is (task 137).
 * **The import invariant holds**: ``kitaru.task`` is imported inside the Worker branch only, so every
   user-launched path stays kitaru-free.
 """
@@ -120,6 +122,62 @@ def test_the_worker_task_is_stripped_of_surrounding_whitespace(monkeypatch, _wor
     assert resolve_task_and_model(None, None) == ("say hi", None)
 
 
+# --- the shapes a REPLAY actually delivers (task 137) ---------------------------------------------
+# A replay hands the Agent Version's command the BASELINE SESSION's own recorded inputs verbatim
+# (kitaru 0.22.2 ``replay_pipeline.py``: ``AgentTask(..., inputs=baseline.inputs)``), so the payload
+# is whatever recorded that session — never a hand-written ``{"task": ...}``.
+
+
+def test_a_recorded_prompt_string_is_the_task(monkeypatch, _worker):
+    """``kitaru-pydantic-ai`` records ``inputs = ctx.prompt``: a decode-recorded session replays as a
+    bare JSON string, and that string IS the prompt (no guessing involved)."""
+    _worker_inputs(monkeypatch, "say hi in exactly three words")
+
+    assert resolve_task_and_model(None, None) == ("say hi in exactly three words", None)
+
+
+def test_an_imported_sessions_input_key_is_the_task(monkeypatch, _worker):
+    """An Opik-imported session records ``{"input": "<prompt>", ...}`` — the shape cohort
+    ``decode-bad-request-400@1`` replays with."""
+    _worker_inputs(
+        monkeypatch,
+        {"input": "turn three live articles into a knowledge graph", "logfire.fingerprint": "abc"},
+    )
+
+    assert resolve_task_and_model(None, None) == (
+        "turn three live articles into a knowledge graph",
+        None,
+    )
+
+
+def test_the_canonical_task_key_wins_over_a_recorded_input_key(monkeypatch, _worker):
+    _worker_inputs(monkeypatch, {"task": "the canonical one", "input": "the recorded one"})
+
+    assert resolve_task_and_model(None, None) == ("the canonical one", None)
+
+
+def test_a_recorded_prompt_string_takes_the_configured_model(monkeypatch, _worker):
+    """A bare-string payload carries no ``model``, so the run keeps the configured one."""
+    _worker_inputs(monkeypatch, "say hi")
+
+    assert resolve_task_and_model(None, None) == ("say hi", None)
+
+
+def test_a_blank_recorded_prompt_string_is_a_hard_failure(monkeypatch, _worker):
+    _worker_inputs(monkeypatch, "   ")
+
+    with pytest.raises(WorkerTaskInputError, match="task"):
+        resolve_task_and_model(None, None)
+
+
+def test_a_non_string_input_key_is_a_hard_failure(monkeypatch, _worker):
+    """Widened for the recorded shapes, not for guessing: a structured ``input`` still fails."""
+    _worker_inputs(monkeypatch, {"input": {"messages": [{"role": "user", "content": "hi"}]}})
+
+    with pytest.raises(WorkerTaskInputError, match="task"):
+        resolve_task_and_model(None, None)
+
+
 # --- no task anywhere: ONE friendly line ---------------------------------------------------------
 
 
@@ -186,10 +244,12 @@ def test_an_unreadable_inputs_channel_is_a_hard_failure(monkeypatch, _worker):
 
 @pytest.mark.parametrize(
     "payload",
-    ["just a string", ["say hi"], 42],
-    ids=["string", "list", "number"],
+    [["say hi"], 42, None, True],
+    ids=["list", "number", "null", "bool"],
 )
-def test_inputs_that_are_not_an_object_are_a_hard_failure(monkeypatch, _worker, payload):
+def test_inputs_that_are_neither_an_object_nor_a_prompt_string_are_a_hard_failure(
+    monkeypatch, _worker, payload
+):
     _worker_inputs(monkeypatch, payload)
 
     with pytest.raises(WorkerTaskInputError, match="task"):
@@ -199,21 +259,21 @@ def test_inputs_that_are_not_an_object_are_a_hard_failure(monkeypatch, _worker, 
 def test_inputs_without_a_task_key_are_a_hard_failure(monkeypatch, _worker):
     _worker_inputs(monkeypatch, {"model": "gemini-2.5-pro"})
 
-    with pytest.raises(WorkerTaskInputError, match="'task'"):
+    with pytest.raises(WorkerTaskInputError, match="no runnable task"):
         resolve_task_and_model(None, None)
 
 
 def test_a_blank_task_in_the_inputs_is_a_hard_failure(monkeypatch, _worker):
     _worker_inputs(monkeypatch, {"task": "   "})
 
-    with pytest.raises(WorkerTaskInputError, match="'task'"):
+    with pytest.raises(WorkerTaskInputError, match="no runnable task"):
         resolve_task_and_model(None, None)
 
 
 def test_a_non_string_task_in_the_inputs_is_a_hard_failure(monkeypatch, _worker):
     _worker_inputs(monkeypatch, {"task": {"prompt": "say hi"}})
 
-    with pytest.raises(WorkerTaskInputError, match="'task'"):
+    with pytest.raises(WorkerTaskInputError, match="no runnable task"):
         resolve_task_and_model(None, None)
 
 

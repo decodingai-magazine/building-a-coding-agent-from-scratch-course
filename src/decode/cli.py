@@ -437,8 +437,8 @@ def run(task: str | None, model: str | None, repo: str | None, local: bool) -> N
     TASK is optional because a Kitaru Worker spawns this command with the prompt in the env, not on
     the command line: with no TASK argument, the task (and an optional model override) is read from
     that Kitaru Worker Task's inputs — KITARU_TASK_INPUTS, shaped
-    {"task": "<prompt>", "model": "<id>"|null} — and with neither, ``decode run`` exits non-zero with
-    one line saying so (ADR-0019 §4).
+    {"task": "<prompt>", "model": "<id>"|null}, or the prompt a recorded Kitaru Session carries — and
+    with neither, ``decode run`` exits non-zero with one line saying so (ADR-0019 §4).
 
     ``--model ID`` overrides the active provider's model id for this run; the provider itself stays
     selected by ``LLM_PROVIDER`` (no cross-provider swap). Presence, not correctness: a model id

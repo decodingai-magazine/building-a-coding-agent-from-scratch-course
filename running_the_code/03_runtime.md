@@ -14,17 +14,32 @@ decode run "list the python files under src and summarize what the cli module do
 - **Offline local stack** — no Kitaru server or `kitaru init` needed. Inspect runs with `kitaru executions list` / `get <id>` / `logs <id>`; `kitaru login` starts the optional local web dashboard at `http://127.0.0.1:8383` (`kitaru logout` falls back to the server-less local database if the daemon hangs).
 - **Guards** — the same provider-key guard as the REPL; `RUNTIME_ENABLED=false` disables the subcommand with a friendly line.
 
-## Replay & what-if
+## Replay a recorded session on a Kitaru Worker
 
-Every `decode run` records a checkpoint per model call and per tool call, so you can re-run any recorded execution from any anchor with the **model swapped** and see what would have happened ([ADR-0010](../docs/adr/0010-runtime-replay.md)):
+Replays run **from the top** on a Worker you start yourself — the Kitaru server schedules, your machine executes ([ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md)). Three steps, once per machine:
 
 ```bash
-decode run "…"                                              # stderr prints exec_id + a replay hint
-kitaru executions get <ID>                                  # list the checkpoint anchors
-decode replay <ID> --from decode_runtime_model_request --model gemini-2.5-pro
+# 1. Register the Agent Version the Worker spawns (adds a version; never a second agent).
+uv run python scripts/register_kitaru_agent.py --dry-run   # prints the exact kitaru command
+uv run python scripts/register_kitaru_agent.py
+
+# 2. Start a Worker from a shell that HAS your provider credentials. Kitaru layers a task's env
+#    on top of the Worker's own, so the keys reach `decode run` without ever leaving this host —
+#    which is why the registered version attaches no secret.
+set -a && . .env && set +a && kitaru worker start
+
+# 3. Replay one recorded session (baseline: no --override). --tool-policy history replays the
+#    recorded tool results instead of calling live tools; without it the server default MAY execute
+#    them for real.
+kitaru replay create <SESSION_ID> --agent decode@<VERSION> --evaluator <NAME>@<VERSION> \
+  --tool-policy '{"default":{"type":"history","scope":"baseline","on_miss":"error_result"}}'
+kitaru replay get <REPLAY_ID>        # status + result_session_id
+kitaru session get <RESULT_SESSION>  # the replayed run, node by node
 ```
 
-Upstream of `--from` serves from the original run's cache; the anchor and downstream re-execute for real. The new fork's `exec_id` prints on stderr — compare fork vs original with `kitaru executions get`. `--from` is required; a trustworthy what-if does a **baseline rerun** first (no `--model`) and diffs the fork against that. `decode replay` is bypass-only (HITL replays re-ask every wait — use `kitaru executions replay`).
+The registered version re-creates decode's context rather than simulating it: `decode run` with no inline prompt (the task arrives in `KITARU_TASK_INPUTS`), `SANDBOX_MODE=docker`, and a Workspace that is a fresh clone of this repo. Its working dir is a **Harness Home outside the repo** (`~/.decode-kitaru-worker`), so a replay's sessions, logs and Workspace never land in your working tree — watch it work with `docker ps` and `tail -f ~/.decode-kitaru-worker/.decode/logs/decode.log`.
+
+Which model a replay uses is the Worker shell's `LLM_PROVIDER` / model config, so a baseline replay reproduces the recorded run only if you start the Worker with the same provider it recorded against.
 
 ## Troubleshooting
 

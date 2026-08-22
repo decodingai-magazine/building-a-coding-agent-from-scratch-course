@@ -17,10 +17,14 @@ its Model Override) actually come from:
    both ways to supply a task.
 
 The input contract is ``{"task": "<prompt>", "model": "<id>" | null}``: ``task`` required, ``model``
-optional and mapped to the same Model Override ``--model`` sets. Anything else — malformed JSON, a
-missing/blank ``task``, a non-string ``model``, an unreadable inputs channel — is a
-:class:`WorkerTaskInputError`, never a fallback. A Worker replay that invented its own prompt would
-produce an experiment whose result means nothing, so it fails loudly instead of guessing.
+optional and mapped to the same Model Override ``--model`` sets. A **replay** does not build that
+payload — it hands the baseline Session's own recorded inputs to the Agent Version verbatim — so two
+recorded shapes are read as a prompt too: ``{"input": "<prompt>"}`` (an imported Session) and a bare
+``"<prompt>"`` string (a Session recorded by ``kitaru-pydantic-ai``, which stores ``ctx.prompt``).
+See :func:`_task_from_inputs`. Anything else — malformed JSON, a payload with no prompt in it, a
+non-string ``model``, an unreadable inputs channel — is a :class:`WorkerTaskInputError`, never a
+fallback. A Worker replay that invented its own prompt would produce an experiment whose result
+means nothing, so it fails loudly instead of guessing.
 
 ``KITARU_REPLAY_ID`` is deliberately absent here: replay plumbing is adapter-native, and decode
 reads only the task inputs (ADR-0019 §4).
@@ -47,6 +51,10 @@ NO_TASK_MESSAGE = (
 # How much of the received inputs rides on a failure line before it is cut — enough to recognise the
 # payload, short enough to stay one readable line.
 _INPUTS_MAX_CHARS = 120
+
+# Keys a recorded prompt arrives under, most canonical first: ``task`` is decode's own contract,
+# ``input`` is what an imported Session carries (see :func:`_task_from_inputs`).
+_TASK_KEYS = ("task", "input")
 
 
 class WorkerTaskInputError(RuntimeError):
@@ -112,14 +120,31 @@ def _read_worker_task_inputs() -> object:
 
 
 def _task_from_inputs(inputs: object) -> str:
-    """The required ``task`` prompt, or a :class:`WorkerTaskInputError` naming what arrived."""
+    """The run's prompt, or a :class:`WorkerTaskInputError` naming what arrived.
+
+    Three payloads carry a prompt, because three sources produce Worker Task inputs (task 137):
+
+    * ``{"task": ...}`` — the canonical contract, what a hand-created Worker Task supplies;
+    * ``{"input": ...}`` — an **imported** Session's recorded inputs (the Opik importer's key), which
+      a replay hands on verbatim: kitaru 0.22.2 builds the replay's agent task with
+      ``inputs=baseline.inputs``, so a replay never re-shapes the payload;
+    * ``"<prompt>"`` — a Session recorded by ``kitaru-pydantic-ai`` itself, which stores
+      ``inputs = ctx.prompt``, i.e. a bare JSON string.
+
+    Reading those three is not guessing — each one IS the recorded prompt, verbatim. Anything else
+    (a list, a number, a structured ``input``) still fails hard, so a replay can never invent one.
+    """
+    if isinstance(inputs, str) and inputs.strip():
+        return inputs.strip()
     if isinstance(inputs, dict):
-        task = inputs.get("task")
-        if isinstance(task, str) and task.strip():
-            return task.strip()
+        for key in _TASK_KEYS:
+            value = inputs.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     raise WorkerTaskInputError(
-        f"this Kitaru Worker Task's inputs carry no runnable 'task': expected "
-        f'{{"task": "<prompt>", "model": "<id>"|null}} in {TASK_INPUTS_ENV}, got {_summarize(inputs)}'
+        f"this Kitaru Worker Task's inputs carry no runnable task: expected "
+        f'{{"task": "<prompt>", "model": "<id>"|null}}, a recorded {{"input": "<prompt>"}} or a '
+        f"plain prompt string in {TASK_INPUTS_ENV}, got {_summarize(inputs)}"
     )
 
 
