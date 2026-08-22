@@ -2,7 +2,7 @@
 
 The production-eval story at demo scale. Everything else in the suite grades a run the harness itself
 drives; this track grades the traces decode ALREADY emitted from real REPL sessions (ADR-0014) — the
-threads Opik keys by session id / Kitaru ``exec_id`` — inside the LIVE project
+threads Opik keys by the decode session id — inside the LIVE project
 ``settings.opik_project_name`` (``decode``/``decode-<env>``), NOT ``eval_project_name``. One
 conversation-level LLM judge (:func:`make_conversation_metric`) runs over each recent thread via
 ``opik.evaluation.evaluate_threads`` and its scores are logged back onto those same live threads.

@@ -123,8 +123,8 @@ flagged exactly the 2 crash sessions out of 38, zero false positives.
 
 ## 5. Start a Worker (the thing that executes replays)
 
-Nothing runs on the server. A Worker is a process on *your* machine that claims replay /
-evaluator / importer tasks and spawns them with your credentials:
+Nothing runs on the server. A Worker is a process *you* run — on your laptop, or on Modal (both
+below) — that claims replay / evaluator / importer tasks and spawns them with your credentials:
 
 ```bash
 cd <repo root>                       # careful: the checkout nests two same-named dirs
@@ -144,6 +144,24 @@ Replays of decode spawn **agent version 2**'s run spec: `decode run` under
 `SANDBOX_MODE=docker` with a fresh repo clone in `~/.decode-kitaru-worker` — replayed tool calls
 never touch your working tree. Docker Desktop must be up. The registration is reproducible:
 `uv run python scripts/register_kitaru_agent.py --dry-run`.
+
+**Or run the Worker on Modal instead of your laptop** ([ADR-0020 §5](../docs/adr/0020-remote-headless-on-modal.md)).
+Same Worker, a gVisor container instead of your shell — replays keep going with the laptop closed. It
+spawns **agent version 3**: `SANDBOX_MODE=none`, no repo clone, in-image paths — the container itself is
+the isolation, so no Docker daemon is needed (and none exists there). Its env comes from the
+`decode-kitaru-worker` Modal Secret; full setup, including the control plane `KITARU_API_KEY` it needs,
+is in [07_infra.md §3](07_infra.md#3-the-modal-hosted-kitaru-worker):
+
+```bash
+uv run modal deploy scripts/modal_kitaru_worker.py
+uv run modal run --detach scripts/modal_kitaru_worker.py --concurrency 4 \
+  --agent-version-id 01a029bf-0ae3-7de1-b594-4bc71a7ba91a          # = agent decode@3
+```
+
+Then replay with `--agent decode@3` — pin the version, never "latest" (`latest_version` reads 4, an
+immutable QA-accident duplicate of 3). The two Workers coexist, but each can only run **its own** Agent
+Version, so scope their claims (`--agent-version-id` here, `--claim agent=<v2 id>` on the laptop) or
+they will race for tasks neither can finish.
 
 ## 6. Replay, then compare
 
@@ -199,7 +217,10 @@ uv run kitaru experiment run start cheaper-model \
    token; with the agent id set, the Recording Seam probes an agents route that task tokens
    can't use → `403: Task credentials are not accepted on this route` → the run hard-fails
    (correctly). `unset KITARU_AGENT_ID` in the worker shell; the adapter infers the agent from
-   the task. (Tracked: `tasks/139`.)
+   the task. (Tracked: `tasks/139`.) Same rule on Modal, enforced twice: the
+   `decode-kitaru-worker` Secret deliberately omits `KITARU_AGENT_ID` (that composition is the rule
+   — [07_infra.md §1](07_infra.md#1-secrets--two-deliberately-asymmetric)), and the worker Function
+   scrubs the variable defensively at startup with one logged line if one ever shows up anyway.
 4. **`Invalid arguments: --evaluator requires an argument`** on `replay create` means the flag
    is *missing*, not empty — it's required.
 5. **`replay create` has no `--wait`** — that's `session import` / `experiment run start`. Use

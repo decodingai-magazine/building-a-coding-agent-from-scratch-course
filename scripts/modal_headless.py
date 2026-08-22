@@ -1,7 +1,8 @@
 """The Modal Headless App — remote ``decode run``s, fired from a laptop (ADR-0020 §1-4).
 
-    # one synchronous run, ephemeral app, nothing to deploy first:
-    uv run modal run scripts/modal_headless.py --task "…" [--repo …] [--sandbox-mode none|modal]
+    # one synchronous run, ephemeral app, nothing to deploy first (``::main`` is REQUIRED — this file
+    # has two local entrypoints, so modal cannot pick one for you):
+    uv run modal run scripts/modal_headless.py::main --task "…" [--repo …] [--sandbox-mode none|modal]
 
     # publish the app once (the image is built HERE, and every spawn below shares it):
     uv run modal deploy scripts/modal_headless.py

@@ -56,7 +56,7 @@ Conventions: async I/O for network/DB, sync for CPU; shared models in `entities/
 | Code intelligence | `ty` (stdio LSP server) | `lsp` tool + post-edit diagnostics over hand-rolled stdio client; swappable (`pylsp`), dev-group, pre-1.0, best-effort (ADR-0007). |
 | Inference | `google-genai` (Gemini) · OpenRouter · Modal | One **LLM Gateway**; OpenRouter OpenAI-compatible. |
 | Observability | `opik` | Tracing + eval harness. |
-| Sandbox / serving | Docker (local) · `modal` (remote) — one `run` seam by `SANDBOX_MODE` | Executors: `none` (host, default) / `docker` / `modal`; docker via CLI (no SDK). gVisor/Kata free daemon-config upgrades; Firecracker non-goal (ADR-0011). |
+| Sandbox / serving | Docker (local) · `modal` (remote) — one `run` seam by `SANDBOX_MODE` | Executors: `none` (host, default) / `docker` / `modal`; docker via CLI (no SDK). gVisor/Kata free daemon-config upgrades; Firecracker non-goal (ADR-0011). Modal also **hosts the harness**: `decode-headless` (remote `decode run` + N attempts) and `decode-kitaru-worker` (replays off-laptop, agent v3) — operator scripts, in-app images, no server (ADR-0020). |
 | Recording / replay | `kitaru[cli,mcp,worker]` + `kitaru-pydantic-ai` | **Recording Seam** (`runtime/recording.py`) wraps `build_agent()` in `KitaruAgent` when configured — REPL and `decode run` alike record Kitaru Sessions on the managed workspace; **Replays** run from the top on an operator's Kitaru Worker (ADR-0019). The adapter caps `pydantic-ai <2.23`, so depend on `pydantic-ai-slim[google,openai]>=2.22,<2.23` — the slim package, never the meta one (ADR-0009 as amended by ADR-0019 §2); lift the pin when the adapter does. |
 | Datastore | SQLite | Conversation log JSONL today; compaction on it (ADR-0006). SQLite = deferred persistent-store option. |
 
@@ -75,7 +75,7 @@ Infra access **CLI-only** (no web UIs) — reproducible, spot-checkable:
 - **Git / GitHub:** `git`; `gh` for PRs, issues, Actions logs.
 - **Gemini** — primary LLM API via `google-genai` SDK; `GEMINI_API_KEY` (no CLI).
 - **OpenRouter** — OpenAI-compatible inference; `openrouter` CLI.
-- **Modal** — remote sandbox + open-model serving/inference; `modal run` / `modal deploy` / `modal token set`.
+- **Modal** — remote sandbox, open-model serving/inference, and the two harness apps (`scripts/modal_headless.py`, `scripts/modal_kitaru_worker.py`); `modal run` / `modal deploy` / `modal secret create` / `modal app logs|stop` / `modal token set`. Runbook: [`running_the_code/07_infra.md`](running_the_code/07_infra.md).
 - **Opik** — LLM tracing + evals; `opik` CLI.
 - **Kitaru** — session recording + replay on the managed workspace; `kitaru` CLI (`status` / `session` / `replay` / `worker` / `agent` / `cohort`) + `kitaru` skills/docs.
 - **Project MCP servers:** *AGENT: fill in any MCP server this project's code talks to and the config it needs.*
