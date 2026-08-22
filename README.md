@@ -309,6 +309,7 @@ Everything lives under [`running_the_code/`](running_the_code/). One core guide,
 | [05_evals.md](running_the_code/05_evals.md)                         | Benchmarks, regression probes, and online evals      |
 | [06_credentials.md](running_the_code/06_credentials.md)             | Environments & secrets, walked end-to-end            |
 | [07_infra.md](running_the_code/07_infra.md)                         | Deploying the remote runtime to GCP and Modal        |
+| [08_evals_replays.md](running_the_code/08_evals_replays.md)         | Kitaru setup, replays & the full evals loop          |
 
 ## 🤝 Sponsors
 

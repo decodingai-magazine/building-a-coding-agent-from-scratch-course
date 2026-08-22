@@ -77,3 +77,5 @@ A **Baseline Replay** (no `--override`) is the control: it proves the Session st
 - Run headless **inside a sandbox** and on any repo: [04_sandboxing.md](04_sandboxing.md) (`SANDBOX_MODE=docker decode run --repo <url> "<task>"`).
 - Hydrate the run's secrets from an Environment Bucket instead of `.env`: [06_credentials.md](06_credentials.md).
 - Where the workspace, the Worker and the retired self-hosted stack sit: [07_infra.md](07_infra.md).
+- The full evals loop — investigate, cohort, evaluator, replay, compare, experiment:
+  [08_evals_replays.md](08_evals_replays.md).
