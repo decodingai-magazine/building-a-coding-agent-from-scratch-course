@@ -325,3 +325,18 @@ every guard/degrade/hard-fail message reads as one actionable `Decode:`/`[kitaru
 4. `test_live_gemini_fanout_smoke` flake — no action; Tester's ruling stands (live-key-only, never gates CI, strictness is deliberate).
 
 All acceptance criteria verified from user POV. Hand off to the PR Reviewer.
+
+### [PR Reviewer] 2026-08-22 — Review (feature rollup, tasks 131-138 + onboarding commits)
+
+**VERDICT: NO BLOCKERS**
+
+Reviewed the full PR #65 diff vs merge-base `c2218f7`: 122 files, ~12,100 insertions / ~6,200 deletions. Walked all dimensions (performance / clean code / untested / standards / documentation discipline / simplicity).
+
+- Blockers: 0
+- Nits: 4 — appended to the PR #65 description and posted as a caveman-review comment:
+  1. [Clean code] `scripts/demo-multiple-attempts.sh:194` echoes a `decode replay` hint for the deleted command — widen task 140's sweep to cover the line (140 currently names only the file's comments).
+  2. [Clean code] `kitaru_plan.md:3` still reads "not yet implemented" — delete or archive under `tasks/done/`; ADR-0019 + tasks 131-138 are the record.
+  3. [Clean code] list-by-name→get-with-values two-step duplicated in `settings.py::_read_bucket` and `sync_secrets.py::find_secret` — cross-reference or share a helper.
+  4. [Doc polish] ADR-0019 Context "decode is on 2.33" reads stale post-downgrade — reword to past tense.
+
+Docs discipline verified: ADR-0019 (+ dated Amendments) Accepted; ADR-0008/0010 marked Superseded; glossary carries every new domain noun (Recording Seam, Kitaru Session, Kitaru Worker, Worker Task, Agent Version, Cohort, Baseline Replay). Follow-ups 139/140 pre-filed at PA acceptance were not re-raised. Pipeline may advance to hand-off.
