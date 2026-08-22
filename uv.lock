@@ -662,7 +662,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "litellm", specifier = "<1.93" },
-    { name = "opik", specifier = ">=1.9.8" },
+    { name = "opik", specifier = ">=2.2.9" },
     { name = "pre-commit", specifier = ">=4.6.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
@@ -1976,7 +1976,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.92.0"
+version = "1.91.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1992,12 +1992,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/46/ea/5522be7e0dbcaa7c3fddfd2834f387c6e8eab47c0cc65f2a74657c815af7/litellm-1.92.0.tar.gz", hash = "sha256:773adf5503ee1793289689c899394a83df8122993760d9acd782e32aa798db9d", size = 15098143, upload-time = "2026-07-12T01:15:59.828Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/2a/a544cfdf8957accd303a99923f55c9fadc3a919d4ed6feca45e73001cade/litellm-1.91.4.tar.gz", hash = "sha256:b810d4c9e63e46908f4eeb14dde76b9811ca7101bec6290eb2522abd273c076d", size = 14875903, upload-time = "2026-07-19T02:45:39.187Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/26/8061907b67aa04b7cdf2a41cbc4f8aebfbc722c909a7e4b2aea25def7053/litellm-1.92.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:9c7b2849591a35f7039dc7386a81a8e68fccb5ac2fecaa5122192c1172556b29", size = 19291180, upload-time = "2026-07-12T01:15:48.728Z" },
-    { url = "https://files.pythonhosted.org/packages/ba/6c/dc9b0b580ee8af9117abd729d1de25d74fae487a0029ca77049a09f3ad33/litellm-1.92.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:f17499155366afd1eaaeb6fd0c7b55cbd2239dcd72f2fe1f8071a969cc402fae", size = 19289559, upload-time = "2026-07-12T01:15:51.376Z" },
-    { url = "https://files.pythonhosted.org/packages/10/34/1671376f228443330471416e24ee51bc8364c0ae6155d4ec6217b70a4753/litellm-1.92.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:437a0e403136996430795ead76502103dcf74769b6909e12d3e2511061ea8ff8", size = 19291560, upload-time = "2026-07-12T01:15:54.66Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/4f/141cf1162eeee762fc839c335e3f78fc309a65f2385023479a20b09e680a/litellm-1.92.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:8f03047a73154f33c2733899e4bf9b5ed129e2e345caa305895a318452e4a807", size = 19289770, upload-time = "2026-07-12T01:15:57.136Z" },
+    { url = "https://files.pythonhosted.org/packages/37/8c/da17d91fc56532b36a27109447016d67e4618afc4447e8c4023240e920f5/litellm-1.91.4-py3-none-any.whl", hash = "sha256:d2c4bb42e99a01c8c01182a1c4aae534bcbfd7329f6ff8c634eab1e38ca58126", size = 16673648, upload-time = "2026-07-19T02:45:36.38Z" },
 ]
 
 [[package]]
@@ -2417,7 +2414,7 @@ wheels = [
 
 [[package]]
 name = "opik"
-version = "2.1.26"
+version = "2.2.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3-stubs", extra = ["bedrock-runtime"] },
@@ -2440,9 +2437,9 @@ dependencies = [
     { name = "uuid6" },
     { name = "watchfiles" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c6/bb/ccc6401bd9b4b7f1acf421f4e0f8f1aecd1458664da6deb5e74576e8f3c8/opik-2.1.26.tar.gz", hash = "sha256:eaa8485296c91f1fc21483ed99a55f85791030847e9da366f93c00158103c9fd", size = 1173966, upload-time = "2026-07-14T10:59:21.67Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/68/bc0598d8bbd6b5045ab0951cbbb80996e7a5b661fdb61dd55db74ab5d0ce/opik-2.2.9.tar.gz", hash = "sha256:675c944699680bff876c091217f840d7a7df6468180986e675b0c64a9273b72d", size = 1200845, upload-time = "2026-07-28T12:58:29.32Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/62/fd/f2a4b009338751a6d80286ecce773535a0e27402791b992745390a365a40/opik-2.1.26-py3-none-any.whl", hash = "sha256:3d4767ab094b0b8e630259f92391b402632ccad2af6eb4b7bc980a0ed8cbb5c9", size = 1860809, upload-time = "2026-07-14T10:59:20.152Z" },
+    { url = "https://files.pythonhosted.org/packages/88/a4/c9d7e2c78f69e9c3c953dad3bdc1a436dd523721bd9b76640bb9c413895f/opik-2.2.9-py3-none-any.whl", hash = "sha256:5ed6f25bc5a1b4189a4baa0e8b0876af0517c54f711ee28655d4bf7a0c5b0471", size = 1894606, upload-time = "2026-07-28T12:58:27.753Z" },
 ]
 
 [[package]]
