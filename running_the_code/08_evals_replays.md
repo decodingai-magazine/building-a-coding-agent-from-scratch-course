@@ -30,11 +30,15 @@ uv run kitaru status                                              # authenticate
 `kitaru status` is your first stop whenever anything looks off — it names the selected server,
 credential state, and the dashboard URL.
 
-CI / non-interactive machines use an API key instead of a login:
+CI / non-interactive machines use an API key instead of a login. On a **managed** workspace it must
+be a control plane key (`ZENPROKEY_…`, minting walked through in
+[07_infra.md §1](07_infra.md#1-secrets--two-deliberately-asymmetric)) — a workspace-local
+`KITKEY_…` is rejected under control-plane authentication; that prefix works only on self-hosted
+servers:
 
 ```bash
 export KITARU_API_URL=https://f5ee9622-kitaru.cloudinfra.zenml.io
-export KITARU_API_KEY=KITKEY_...
+export KITARU_API_KEY=ZENPROKEY_...
 ```
 
 ## 2. Optional: wire your coding agent into Kitaru
