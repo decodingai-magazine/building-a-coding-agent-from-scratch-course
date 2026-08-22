@@ -28,14 +28,14 @@ dependencies = [
     "python-dotenv>=1",  # explicit .env-file parsing for pydantic-settings (env_file=".env")
     "click>=8.1,<9",  # major bound only: the old <8.3 zenml cap died with kitaru 0.22 (ADR-0019)
     "rich>=13",
-    "prompt-toolkit>=3",
+    "prompt-toolkit>=3.0.53",
     # capped <2.23 by the kitaru-pydantic-ai adapter; lift when the adapter does (ADR-0019 §2)
     "pydantic-ai-slim[google,openai]>=2.22,<2.23",
     "httpx>=0.28.1",
     "markdownify>=1.2.3",
     "pyyaml>=6.0.3",
     "modal>=1.5.3",
-    "anyio>=4.14.1",
+    "anyio>=4.14.2",
     "logfire>=4.37.0",
     "kitaru[cli,mcp,worker]>=0.22.2",
     "kitaru-pydantic-ai>=0.1.0",  # recording adapter: KitaruAgent wraps build_agent() (ADR-0019 §2)
@@ -51,13 +51,13 @@ dev = [
     "pytest-mock>=3.12",
     "ruff>=0.15.21",
     "pre-commit>=4.6.0",
-    "ty>=0.0.63",
-    "opik>=1.9.8",  # eval harness (ADR-0017); dev group — evals is not shipped in the wheel
+    "ty>=0.0.73",
+    "opik>=2.2.9",  # eval harness (ADR-0017); dev group — evals is not shipped in the wheel
     # litellm is opik's transitive judge backend; pinned <1.78 because 1.92+ (what opik 2.x pulls)
     # ships a Rust bridge that needs rustc >=1.86 to build from sdist. 1.77.x is pure-python wheels,
     # so `uv sync` / `make ci` build everywhere without a Rust toolchain. Lift once opik 2.0 Test
     # Suites are needed (ADR-0017 §6) and the build env has rustc >=1.86.
-    "litellm<1.93",
+    "litellm<1.98",
 ]
 
 [tool.hatch.build.targets.wheel]
