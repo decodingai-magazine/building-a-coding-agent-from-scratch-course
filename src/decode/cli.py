@@ -171,8 +171,17 @@ def _modal_credentials_present() -> bool:
     Checks auth the way the modal CLI resolves it: the MODAL_TOKEN_ID/MODAL_TOKEN_SECRET env pair
     (read from ``os.environ`` — they belong to the modal CLI, not decode config) or ``~/.modal.toml``.
     Presence only — a bad token fails at the first sandbox call.
+
+    Third case, ADR-0020 §3: decode itself runs INSIDE a Modal container (the Modal Headless App /
+    the Modal Kitaru Worker), where neither of those exists — the container authenticates with an
+    ambient identity, and ``modal`` marks that container with its own ``MODAL_IS_REMOTE`` (see
+    ``modal.config._is_remote``). Without this branch a nested-sandbox run is rejected by its own
+    guard on a machine that is, in fact, authenticated. Still env-presence-only, still no ``modal``
+    import (ADR-0011 §1).
     """
     if os.environ.get("MODAL_TOKEN_ID") and os.environ.get("MODAL_TOKEN_SECRET"):
+        return True
+    if os.environ.get("MODAL_IS_REMOTE") == "1":
         return True
     return (Path.home() / ".modal.toml").exists()
 

@@ -862,9 +862,22 @@ def test_modal_credentials_present_true_with_modal_toml(monkeypatch, mocker, tmp
     assert cli_mod._modal_credentials_present() is True
 
 
+def test_modal_credentials_present_inside_a_modal_container(monkeypatch, mocker, tmp_path):
+    """task 142 / ADR-0020 §3: a Modal container has neither the token pair nor ~/.modal.toml — it
+    carries an ambient identity, marked by modal's own MODAL_IS_REMOTE. Without this branch a
+    nested-sandbox run on the Modal Headless App is rejected by its own guard."""
+    monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("MODAL_IS_REMOTE", "1")
+    mocker.patch("decode.cli.Path.home", return_value=tmp_path)
+
+    assert cli_mod._modal_credentials_present() is True
+
+
 def test_modal_credentials_absent_with_no_env_and_no_toml(monkeypatch, mocker, tmp_path):
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("MODAL_IS_REMOTE", raising=False)
     mocker.patch("decode.cli.Path.home", return_value=tmp_path)  # empty tmp dir → no ~/.modal.toml
 
     assert cli_mod._modal_credentials_present() is False
