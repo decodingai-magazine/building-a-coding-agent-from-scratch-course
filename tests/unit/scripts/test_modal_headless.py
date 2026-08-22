@@ -234,6 +234,30 @@ def test_a_log_without_a_session_line_yields_no_session_id():
     assert mh.session_id_from_log("nothing here") is None
 
 
+def test_the_leftover_log_of_a_re_used_container_is_cleared_before_the_run(tmp_path):
+    """Live-run regression (task 143): decode APPENDS to DECODE_LOG_FILE and Modal re-uses warm
+    containers, so attempt 1 of a fan-out reported the session id of the PREVIOUS run — a table row
+    whose session and branch belonged to two different agents."""
+    log = tmp_path / "decode-run.log"
+    log.write_text(f"DEBUG headless run starting (session_id={SESSION_ID})\n")
+
+    mh.reset_child_log(str(log))
+
+    assert not log.exists()
+
+
+def test_clearing_a_log_that_was_never_written_is_not_an_error(tmp_path):
+    mh.reset_child_log(str(tmp_path / "never-written.log"))
+
+
+def test_the_session_id_of_a_concatenated_log_is_the_LATEST_run_not_the_first():
+    """Second defence for the same regression: whatever is in the file, the run that just finished is
+    the last one logged — the same rule ``session_branch_from_log`` already follows."""
+    stale = "DEBUG headless run starting (session_id=11111111-1111-4111-8111-111111111111)\n"
+
+    assert mh.session_id_from_log(stale + LOG) == SESSION_ID
+
+
 def test_the_shipped_session_branch_is_read_back_from_the_hand_back_line():
     log = LOG + (
         "2026-08-22 10:05:00 INFO decode.runtime.headless: [handback] handed the workspace back on "
@@ -403,3 +427,330 @@ def test_a_non_zero_child_exit_is_reported_not_raised(mocker):
     _, exit_code = mh.stream_subprocess(["/bin/decode"], cwd="/harness", env={}, timeout_seconds=60)
 
     assert exit_code == 3
+
+
+# ===================================================================================================
+# N parallel attempts at one task (task 143, ADR-0020 §1) — the successor of demo-multiple-attempts.sh
+# ===================================================================================================
+#
+# One deployed image, N spawned containers, N ``decode/<session-id>`` branches to read side by side.
+# The helpers below are everything the fan-out decides BEFORE and AFTER the money is spent: what the
+# operator is allowed to ask for, what text every attempt is given, and how N payloads read as a table.
+
+
+# --- validation: a typo costs one line, never N paid runs -------------------------------------------
+
+
+def test_zero_attempts_is_rejected_with_one_friendly_line():
+    """AC2: ``--attempts 0`` is a typo, and a typo must not reach Modal."""
+    message = mh.attempts_input_error(attempts=0, repo=REPO, sandbox_mode="modal")
+
+    assert message is not None
+    assert message.startswith("Decode: ")
+    assert "\n" not in message
+
+
+def test_several_attempts_without_a_repo_are_rejected_with_one_friendly_line():
+    """AC2: attempts are compared as branches, and a run without a repo ships no branch."""
+    message = mh.attempts_input_error(attempts=3, repo=None, sandbox_mode="modal")
+
+    assert message is not None
+    assert message.startswith("Decode: ")
+    assert "\n" not in message
+    assert "--repo" in message
+
+
+def test_one_attempt_without_a_repo_is_legal():
+    """A single fire-and-forget run has nothing to compare, so it needs nothing to compare against."""
+    assert mh.attempts_input_error(attempts=1, repo=None, sandbox_mode="none") is None
+
+
+def test_a_valid_fan_out_passes_validation():
+    assert mh.attempts_input_error(attempts=3, repo=REPO, sandbox_mode="modal") is None
+
+
+def test_the_fan_out_rejects_docker_with_the_same_line_as_the_single_run():
+    """One mode guard, not two: docker is impossible on Modal however the run is launched."""
+    assert mh.attempts_input_error(attempts=3, repo=REPO, sandbox_mode="docker") == (
+        mh.DOCKER_MODE_MESSAGE
+    )
+
+
+def test_a_repo_under_none_mode_warns_that_nothing_will_ship():
+    """ADR-0020 §3: none has no Hand-back — N answers, zero branches. Warn BEFORE spending on N runs."""
+    warning = mh.attempts_input_warning(repo=REPO, sandbox_mode="none")
+
+    assert warning is not None
+    assert warning.startswith("Decode: ")
+    assert "modal" in warning
+
+
+def test_a_repo_under_modal_mode_warns_about_nothing():
+    assert mh.attempts_input_warning(repo=REPO, sandbox_mode="modal") is None
+
+
+def test_no_repo_warns_about_nothing():
+    assert mh.attempts_input_warning(repo=None, sandbox_mode="none") is None
+
+
+# --- the task text every attempt is given ----------------------------------------------------------
+
+
+def test_every_attempt_carries_the_push_ban_paragraph_verbatim():
+    """AC3: the Hand-back is the ONLY ship path, so every attempt lands as decode/<session-id>.
+
+    A model that pushes its own branch names it itself (and sometimes forgets), and the attempts stop
+    being comparable — the exact lesson the retired demo script encoded.
+    """
+    text = mh.attempt_task("refactor the parser")
+
+    assert text.startswith("refactor the parser")
+    assert text.endswith(
+        "Commit your work when you are done. Do NOT push and do NOT open a pull request."
+    )
+    assert "\n\n" in text  # its own paragraph, not glued to the operator's last sentence
+
+
+def test_the_operators_own_trailing_whitespace_does_not_double_the_blank_line():
+    assert "\n\n\n" not in mh.attempt_task("refactor the parser\n\n")
+
+
+# --- spawning: N independent calls, no stagger ------------------------------------------------------
+
+
+def test_the_fan_out_spawns_one_independent_call_per_attempt(mocker):
+    """Each attempt = its own container = its own Workspace = its own branch. No warm-up, no stagger."""
+    function = mocker.MagicMock()
+
+    calls = mh.spawn_attempts(
+        function,
+        task=TASK,
+        count=3,
+        repo=REPO,
+        sandbox_mode="modal",
+        model=None,
+        timeout_seconds=60,
+    )
+
+    assert len(calls) == 3
+    assert function.spawn.call_count == 3
+    for call in function.spawn.call_args_list:
+        assert call.kwargs["task"] == mh.attempt_task(TASK)
+        assert call.kwargs["repo"] == REPO
+        assert call.kwargs["sandbox_mode"] == "modal"
+        assert call.kwargs["timeout_seconds"] == 60
+
+
+def test_the_fan_out_spawns_against_the_deployed_function_not_an_ephemeral_one(mocker):
+    """``--detach`` is only fire-and-forget if the app OUTLIVES the launcher: spawn on the deployment.
+
+    ``modal run`` tears its ephemeral app down when the entrypoint returns, taking the spawned calls
+    with it; ``Function.from_name`` targets what ``modal deploy`` published (ADR-0020 §1).
+    """
+    from_name = mocker.patch.object(mh.modal.Function, "from_name")
+
+    mh.deployed_run_task()
+
+    from_name.assert_called_once_with(mh.APP_NAME, "run_task")
+
+
+# --- collecting: one crashed attempt must not cost the other N-1 -----------------------------------
+
+
+def _payload(**overrides) -> dict[str, object]:
+    payload = {
+        "exit_code": 0,
+        "sandbox_mode": "modal",
+        "answer": "done",
+        "answer_truncated": False,
+        "session_id": SESSION_ID,
+        "session_branch": SESSION_BRANCH,
+        "note": "",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_an_attempt_that_returns_normally_is_collected_as_its_payload(mocker):
+    call = mocker.MagicMock()
+    call.get.return_value = _payload()
+
+    assert mh.collect_attempt(call, sandbox_mode="modal") == _payload()
+
+
+def test_an_attempt_that_raises_becomes_a_failed_row_instead_of_killing_the_fan_out(mocker):
+    """N-1 finished attempts are worth real money; one exception must not take the table with it."""
+    call = mocker.MagicMock()
+    call.get.side_effect = RuntimeError("container died")
+
+    result = mh.collect_attempt(call, sandbox_mode="modal")
+
+    assert result["error"]
+    assert "container died" in str(result["note"])
+    assert result["session_branch"] is None
+
+
+# --- the comparison table ---------------------------------------------------------------------------
+
+
+def test_a_shipped_attempt_renders_its_session_its_branch_and_a_zero_exit():
+    row = mh.attempt_row(1, _payload())
+
+    assert SESSION_ID in row
+    assert SESSION_BRANCH in row
+    assert mh.SHIPPED_STATUS in row
+    assert row.startswith("1")
+
+
+def test_an_attempt_whose_branch_never_reached_origin_is_not_shipped():
+    """A branch that exists only in a container that is gone is NOT a shipped attempt (ADR-0016 §4)."""
+    row = mh.attempt_row(2, _payload(note=mh.UNPUSHED_BRANCH_NOTE))
+
+    assert mh.NOT_SHIPPED_STATUS in row
+    assert mh.SHIPPED_STATUS not in row.replace(mh.NOT_SHIPPED_STATUS, "")
+
+
+def test_an_attempt_that_shipped_nothing_at_all_is_not_shipped():
+    row = mh.attempt_row(2, _payload(session_branch=None, note=""))
+
+    assert mh.NOT_SHIPPED_STATUS in row
+
+
+def test_a_failed_attempt_renders_as_failed_with_dashes_for_the_ids():
+    row = mh.attempt_row(3, mh.failed_attempt_result(RuntimeError("boom"), sandbox_mode="modal"))
+
+    assert mh.FAILED_STATUS in row
+    assert SESSION_ID not in row
+
+
+def test_a_non_zero_exit_keeps_its_code_in_the_row():
+    row = mh.attempt_row(4, _payload(exit_code=1, session_branch=None))
+
+    assert "1" in row.split()[-1]
+
+
+def test_the_table_carries_a_header_and_one_row_per_attempt():
+    table = mh.attempts_table([_payload(), _payload(session_branch=None)])
+
+    lines = table.splitlines()
+    assert len(lines) == 4  # header + rule + 2 rows
+    assert "session" in lines[0]
+    assert lines[2].startswith("1")
+    assert lines[3].startswith("2")
+
+
+def test_the_notes_are_listed_under_the_table_not_squeezed_into_it():
+    notes = mh.attempts_notes([_payload(), _payload(note=mh.UNPUSHED_BRANCH_NOTE)])
+
+    assert len(notes) == 1
+    assert "attempt 2" in notes[0]
+    assert mh.UNPUSHED_BRANCH_NOTE in notes[0]
+
+
+# --- the copy-paste tail ----------------------------------------------------------------------------
+
+
+def test_the_tail_hands_over_the_ls_remote_and_the_branch_diffs():
+    commands = mh.compare_commands(
+        [_payload(), _payload(session_branch="decode/aaaaaaaa")], repo=REPO
+    )
+
+    joined = "\n".join(commands)
+    assert f"git ls-remote {REPO} 'refs/heads/decode/*'" in joined
+    assert f"git diff origin/HEAD..origin/{SESSION_BRANCH}" in joined
+    assert f"git diff origin/{SESSION_BRANCH}..origin/decode/aaaaaaaa" in joined
+
+
+def test_the_tail_offers_no_branch_diffs_when_nothing_shipped():
+    commands = mh.compare_commands([_payload(session_branch=None)], repo=REPO)
+
+    assert not any("git diff" in line for line in commands)
+
+
+def test_the_tail_is_empty_without_a_repo():
+    assert mh.compare_commands([_payload(session_branch=None)], repo=None) == []
+
+
+# --- detach: the ids, the log line, and out --------------------------------------------------------
+
+
+def test_detach_prints_one_function_call_id_per_attempt_and_the_log_line():
+    """AC5: fire-and-forget — the operator closes the laptop with the ids to come back to."""
+    lines = mh.detach_lines(["fc-001", "fc-002"], repo=REPO)
+
+    joined = "\n".join(lines)
+    assert "fc-001" in joined
+    assert "fc-002" in joined
+    assert f"modal app logs {mh.APP_NAME}" in joined
+    assert f"git ls-remote {REPO} 'refs/heads/decode/*'" in joined
+
+
+def test_the_detached_entrypoint_never_waits_on_a_call(mocker, capsys):
+    """The whole point: spawn, print the ids, exit — no ``.get()``, no blocking."""
+    call = mocker.MagicMock()
+    call.object_id = "fc-abc"
+    function = mocker.MagicMock()
+    function.spawn.return_value = call
+    mocker.patch.object(mh, "deployed_run_task", return_value=function)
+
+    mh.attempts(task=TASK, repo=REPO, attempts=2, sandbox_mode="modal", detach=True)
+
+    call.get.assert_not_called()
+    assert function.spawn.call_count == 2
+    assert "fc-abc" in capsys.readouterr().out
+
+
+def test_the_waiting_entrypoint_prints_the_table_and_the_tail(mocker, capsys):
+    call = mocker.MagicMock()
+    call.get.return_value = _payload()
+    function = mocker.MagicMock()
+    function.spawn.return_value = call
+    mocker.patch.object(mh, "deployed_run_task", return_value=function)
+
+    mh.attempts(task=TASK, repo=REPO, attempts=2, sandbox_mode="modal")
+
+    out = capsys.readouterr().out
+    assert SESSION_BRANCH in out
+    assert "git ls-remote" in out
+
+
+def test_the_entrypoint_rejects_a_bad_fan_out_before_spawning_anything(mocker, capsys):
+    """AC2: the validation is client-side — no deployed Function is even looked up."""
+    resolve = mocker.patch.object(mh, "deployed_run_task")
+
+    with pytest.raises(SystemExit) as exit_info:
+        mh.attempts(task=TASK, repo=None, attempts=3)
+
+    assert exit_info.value.code != 0
+    resolve.assert_not_called()
+    assert capsys.readouterr().err.strip().count("\n") == 0
+
+
+def test_the_entrypoint_exits_non_zero_when_every_attempt_failed(mocker):
+    call = mocker.MagicMock()
+    call.get.return_value = _payload(exit_code=1)
+    function = mocker.MagicMock()
+    function.spawn.return_value = call
+    mocker.patch.object(mh, "deployed_run_task", return_value=function)
+
+    with pytest.raises(SystemExit) as exit_info:
+        mh.attempts(task=TASK, repo=REPO, attempts=2, sandbox_mode="modal")
+
+    assert exit_info.value.code != 0
+
+
+def test_one_surviving_attempt_is_a_successful_fan_out():
+    assert mh.attempts_exit_code([_payload(exit_code=1), _payload()]) == 0
+
+
+def test_a_missing_deployment_is_one_friendly_line_not_a_traceback(mocker, capsys):
+    """The app must be deployed once before it can be spawned against (ADR-0020 §1)."""
+    mocker.patch.object(
+        mh, "deployed_run_task", side_effect=mh.modal.exception.NotFoundError("no such app")
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        mh.attempts(task=TASK, repo=REPO, attempts=2, sandbox_mode="modal")
+
+    assert exit_info.value.code != 0
+    assert "modal deploy" in capsys.readouterr().err

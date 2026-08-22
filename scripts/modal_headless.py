@@ -1,10 +1,24 @@
-"""The Modal Headless App — one remote ``decode run``, fired from a laptop (ADR-0020 §1-4).
+"""The Modal Headless App — remote ``decode run``s, fired from a laptop (ADR-0020 §1-4).
 
+    # one synchronous run, ephemeral app, nothing to deploy first:
     uv run modal run scripts/modal_headless.py --task "…" [--repo …] [--sandbox-mode none|modal]
+
+    # publish the app once (the image is built HERE, and every spawn below shares it):
+    uv run modal deploy scripts/modal_headless.py
+
+    # N independent attempts at ONE task → N comparable decode/<session-id> branches:
+    uv run modal run scripts/modal_headless.py::attempts \\
+        --task "…" --repo <url> --attempts 5 --sandbox-mode modal [--detach]
 
 An operator script, not library code: it lives outside the ``decode`` import graph, prints with
 ``click.echo``, and its Function runs the SAME console script a laptop runs — ``decode run`` as a
 subprocess — so remote behavior cannot drift from local behavior (ADR-0020 §1).
+
+* **``attempts`` spawns against the DEPLOYED app**, never this file's ephemeral one: ``modal run``
+  stops its ephemeral app when the entrypoint returns, which would cancel the spawned calls the
+  instant ``--detach`` printed their ids. Hence the one-time ``modal deploy`` — which is also what
+  makes the fan-out free of the warm-up run and the submit stagger its ZenML-era ancestor
+  (``demo-multiple-attempts.sh``) needed: one image, built at deploy, N containers.
 
 * **The image is built in-app** (ADR-0020 §2): ``debian_slim`` + ``Image.uv_sync()`` for the locked
   dependencies, then this repo's source baked on top and installed with ``--no-deps``. No checked-in
@@ -32,13 +46,14 @@ subprocess — so remote behavior cannot drift from local behavior (ADR-0020 §1
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import click
@@ -154,6 +169,48 @@ GIT_CREDENTIAL_HELPER_VALUE = (
 # The decode setting an operator hands the container its git credential under (ADR-0016 §2).
 GIT_TOKEN_SETTING = "SANDBOX_GIT_TOKEN"
 
+# --- N attempts at one task (ADR-0020 §1) -----------------------------------------------------------
+
+# Appended to every attempt's task, verbatim from the retired ``demo-multiple-attempts.sh``. A model
+# that ships its own work names its own branch — and sometimes forgets — so the attempts stop being
+# comparable. Banning the push leaves the Hand-back (ADR-0012 §8) as the ONLY ship path, and every
+# attempt lands identically as ``decode/<session-id>``.
+PUSH_BAN_PARAGRAPH = (
+    "Commit your work when you are done. Do NOT push and do NOT open a pull request."
+)
+
+# What one row of the comparison table can say about an attempt.
+SHIPPED_STATUS = "shipped"
+NOT_SHIPPED_STATUS = "NOT SHIPPED"
+FAILED_STATUS = "FAILED"
+
+# The attempt never returned a payload at all (the container died, the input was cancelled): a
+# sentinel exit code that cannot collide with a child's own — subprocess exit codes are 0-255 or the
+# negated signal number.
+ATTEMPT_CRASHED_EXIT = 1000
+
+_TABLE_ROW = "{index:<5}{session:<38}{branch:<18}{status:<13}{exit_code}"
+_TABLE_HEADER = _TABLE_ROW.format(
+    index="#", session="session", branch="branch", status="shipped?", exit_code="exit"
+)
+_TABLE_RULE = "-" * len(_TABLE_HEADER.rstrip())
+_TABLE_EMPTY = "—"
+
+ATTEMPTS_MIN = 1
+TOO_FEW_ATTEMPTS_FORMAT = "Decode: --attempts must be at least {minimum}, got {attempts}."
+NO_REPO_FORMAT = (
+    "Decode: --attempts {attempts} needs --repo <url> — attempts are compared as the "
+    "decode/<session-id> branches they ship, and a run without a repo ships nothing."
+)
+NONE_MODE_ATTEMPTS_WARNING = (
+    "Decode: --sandbox-mode none has no Hand-back, so these attempts will produce answers only and "
+    "no branch to compare; use --sandbox-mode modal to ship one branch per attempt."
+)
+NOT_DEPLOYED_FORMAT = (
+    "Decode: the {app_name} app is not deployed, so there is nothing to spawn — run "
+    "`uv run modal deploy scripts/modal_headless.py` once, then re-run this command ({error})."
+)
+
 # The child's session id is a DEBUG line; the Hand-back branch is an INFO one. The branch is
 # ``decode/<first 8 chars of the session id>`` — alphanumerics and dashes, so trailing prose
 # punctuation ("… on branch decode/9c2d0f1a.") is never swallowed into the name.
@@ -262,9 +319,13 @@ def decode_run_env(
 
 
 def session_id_from_log(log_text: str) -> str | None:
-    """The decode session id the child logged, or ``None`` — it names the Kitaru Session and branch."""
-    match = _SESSION_ID_PATTERN.search(log_text)
-    return match.group(1) if match else None
+    """The decode session id the child logged, or ``None`` — it names the Kitaru Session and branch.
+
+    The LAST one logged, like :func:`session_branch_from_log`: if a log ever holds two runs, the one
+    that just finished is the later of them (see :func:`reset_child_log` for why it should not).
+    """
+    matches = _SESSION_ID_PATTERN.findall(log_text)
+    return matches[-1] if matches else None
 
 
 def session_branch_from_log(log_text: str) -> str | None:
@@ -304,6 +365,152 @@ def build_result(
         "session_branch": branch,
         "note": note,
     }
+
+
+# --- pure helpers: everything a FAN-OUT of attempts is decided by ----------------------------------
+
+
+def attempts_input_error(
+    *, attempts: int, repo: str | None, sandbox_mode: str = DEFAULT_SANDBOX_MODE
+) -> str | None:
+    """ONE friendly line if this fan-out cannot be run, else ``None``.
+
+    Checked on the LAPTOP before anything is spawned: N attempts cost N agents' worth of tokens and
+    container minutes, so an unrunnable request has to die before the money, not after it. ``--repo``
+    is mandatory past one attempt because attempts are compared as the branches they ship — without a
+    repo there is nothing to compare (a single attempt is a plain fire-and-forget run and needs none).
+    """
+    mode_error = sandbox_mode_error(sandbox_mode)
+    if mode_error is not None:
+        return mode_error
+    if attempts < ATTEMPTS_MIN:
+        return TOO_FEW_ATTEMPTS_FORMAT.format(minimum=ATTEMPTS_MIN, attempts=attempts)
+    if attempts > 1 and not repo:
+        return NO_REPO_FORMAT.format(attempts=attempts)
+    return None
+
+
+def attempts_input_warning(*, repo: str | None, sandbox_mode: str) -> str | None:
+    """ONE line when the fan-out is legal but will ship nothing (``none`` + a repo, ADR-0020 §3).
+
+    Not an error — an answer-only fan-out is a real thing to want — but an operator who expected N
+    branches should learn it now rather than from an all-``NOT SHIPPED`` table N paid runs later.
+    """
+    if repo and sandbox_mode == "none":
+        return NONE_MODE_ATTEMPTS_WARNING
+    return None
+
+
+def attempt_task(task: str) -> str:
+    """The operator's task plus the push ban — the text EVERY attempt is given (see the constant)."""
+    return f"{task.rstrip()}\n\n{PUSH_BAN_PARAGRAPH}"
+
+
+def failed_attempt_result(error: BaseException, *, sandbox_mode: str) -> dict[str, object]:
+    """The stand-in payload for an attempt that never returned one, shaped like :func:`build_result`.
+
+    One attempt's exception must not cost the operator the N-1 that finished: it becomes a ``FAILED``
+    row carrying its reason, and the table still prints.
+    """
+    return {
+        "exit_code": ATTEMPT_CRASHED_EXIT,
+        "sandbox_mode": sandbox_mode,
+        "answer": "",
+        "answer_truncated": False,
+        "session_id": None,
+        "session_branch": None,
+        "note": f"the attempt never returned a result: {error}",
+        "error": True,
+    }
+
+
+def attempt_status(result: Mapping[str, object]) -> str:
+    """``shipped`` only when a Session Branch actually reached origin.
+
+    A branch with a ``note`` is one of the two lies the ids alone would tell (``none`` mode's
+    discarded clone, or a secured-but-unpushed branch that died with its container, ADR-0016 §4) — an
+    operator reads this column to decide what to `git diff`, so it must never over-promise.
+    """
+    if result.get("error"):
+        return FAILED_STATUS
+    if result.get("session_branch") and not result.get("note"):
+        return SHIPPED_STATUS
+    return NOT_SHIPPED_STATUS
+
+
+def attempt_row(index: int, result: Mapping[str, object]) -> str:
+    """One table line: attempt #, decode session id, Session Branch, shipped?, exit code."""
+    return _TABLE_ROW.format(
+        index=index,
+        session=result.get("session_id") or _TABLE_EMPTY,
+        branch=result.get("session_branch") or _TABLE_EMPTY,
+        status=attempt_status(result),
+        exit_code=result.get("exit_code"),
+    )
+
+
+def attempts_table(results: Sequence[Mapping[str, object]]) -> str:
+    """The whole comparison table — header, rule, one row per attempt, in launch order."""
+    rows = [attempt_row(index, result) for index, result in enumerate(results, start=1)]
+    return "\n".join([_TABLE_HEADER, _TABLE_RULE, *rows])
+
+
+def attempts_notes(results: Sequence[Mapping[str, object]]) -> list[str]:
+    """The per-attempt notes, under the table — the *why* behind every row that is not ``shipped``."""
+    return [
+        f"  attempt {index}: {result['note']}"
+        for index, result in enumerate(results, start=1)
+        if result.get("note")
+    ]
+
+
+def shipped_branches(results: Sequence[Mapping[str, object]]) -> list[str]:
+    """The Session Branches that actually reached origin — the only ones worth a ``git diff``."""
+    return [
+        str(result["session_branch"])
+        for result in results
+        if attempt_status(result) == SHIPPED_STATUS
+    ]
+
+
+def compare_commands(results: Sequence[Mapping[str, object]], *, repo: str | None) -> list[str]:
+    """The copy-paste tail: read the branches, then diff them against the base and each other.
+
+    A fresh ``git clone`` already carries every remote branch, so the diffs need no explicit fetch.
+    Empty without a repo — there is nothing to clone and nothing was shipped.
+    """
+    if not repo:
+        return []
+    branches = shipped_branches(results)
+    lines = [
+        "Compare them:",
+        f"  git ls-remote {repo} 'refs/heads/decode/*'",
+        f"  git clone {repo} decode-attempts && cd decode-attempts",
+    ]
+    lines += [f"  git diff origin/HEAD..origin/{branch}" for branch in branches]
+    if len(branches) >= 2:
+        lines.append("  # one attempt against another:")
+        lines.append(f"  git diff origin/{branches[0]}..origin/{branches[1]}")
+    return lines
+
+
+def detach_lines(
+    call_ids: Sequence[str], *, repo: str | None = None, app_name: str = APP_NAME
+) -> list[str]:
+    """What a fire-and-forget launch leaves the operator with: the call ids and where to look later."""
+    lines = [f"Decode: spawned {len(call_ids)} attempt(s) and stopped waiting (--detach)."]
+    lines += [f"  attempt {index}: {call_id}" for index, call_id in enumerate(call_ids, start=1)]
+    lines.append("Come back to them with:")
+    lines.append(f"  modal app logs {app_name}")
+    if repo:
+        lines.append(f"  git ls-remote {repo} 'refs/heads/decode/*'")
+    lines.append("  uv run kitaru session list --agent decode --origin recorded")
+    return lines
+
+
+def attempts_exit_code(results: Sequence[Mapping[str, object]]) -> int:
+    """0 while at least ONE attempt came home clean — the fan-out's whole promise is redundancy."""
+    return 0 if any(result.get("exit_code") == 0 for result in results) else 1
 
 
 def stream_subprocess(
@@ -376,6 +583,7 @@ def run_task(
 
     env = decode_run_env(os.environ, sandbox_mode=sandbox_mode)
     Path(HARNESS_HOME).mkdir(parents=True, exist_ok=True)
+    reset_child_log()
 
     credential_argv = git_credential_argv(os.environ)
     if credential_argv is not None:
@@ -430,6 +638,18 @@ def clone_for_none_mode(repo: str, env: Mapping[str, str], *, dest: str = REPO_C
         )
 
 
+def reset_child_log(path: str = LOG_FILE) -> None:
+    """Delete a leftover child log before a run — the ids must belong to THIS attempt.
+
+    decode appends to ``DECODE_LOG_FILE`` and Modal re-uses warm containers, so a second input in the
+    same container would otherwise read the FIRST input's ``session_id=`` line back out of the file
+    (found live: a fan-out row whose session and branch named two different agents). Best-effort: a
+    log that cannot be removed costs the ids, never the run.
+    """
+    with contextlib.suppress(OSError):
+        Path(path).unlink(missing_ok=True)
+
+
 def _read_child_log() -> str:
     """The child's log file, or ``""`` — best-effort: a missing log costs the ids, never the run."""
     try:
@@ -467,3 +687,110 @@ def main(
     click.echo(RUN_SUMMARY_FORMAT.format(**result), err=True)
     if result["exit_code"]:
         sys.exit(int(result["exit_code"]))
+
+
+def deployed_run_task() -> modal.Function:
+    """The ``run_task`` published by ``modal deploy`` — the Function the attempts are spawned on.
+
+    NOT this file's ephemeral ``run_task``: ``modal run`` tears its ephemeral app down as soon as the
+    local entrypoint returns, which would cancel every spawned call the moment ``--detach`` printed
+    their ids. The deployment outlives the launcher, which is what makes fire-and-forget real
+    (ADR-0020 §1) — and it is also the image every attempt shares, built once at deploy.
+    """
+    return modal.Function.from_name(APP_NAME, "run_task")
+
+
+def spawn_attempts(
+    function: modal.Function,
+    *,
+    task: str,
+    count: int,
+    repo: str | None,
+    sandbox_mode: str,
+    model: str | None,
+    timeout_seconds: int,
+) -> list[modal.FunctionCall]:
+    """Fire ``count`` independent ``run_task`` calls at the same task and return their handles.
+
+    No warm-up run and no stagger: the image is built once at deploy, so N cold spawns share it
+    instead of racing to build it (the two ZenML dances the retired demo script existed to survive).
+    Each call gets its own gVisor container, its own Workspace, its own ``decode/<session-id>``.
+    """
+    text = attempt_task(task)
+    return [
+        function.spawn(
+            task=text,
+            repo=repo,
+            sandbox_mode=sandbox_mode,
+            model=model,
+            timeout_seconds=timeout_seconds,
+        )
+        for _ in range(count)
+    ]
+
+
+def collect_attempt(call: modal.FunctionCall, *, sandbox_mode: str) -> Mapping[str, object]:
+    """Wait for one attempt and return its payload — or a ``FAILED`` stand-in if it never returns."""
+    try:
+        return call.get()
+    except Exception as error:  # a dead container must cost ONE row, not the whole table
+        return failed_attempt_result(error, sandbox_mode=sandbox_mode)
+
+
+@app.local_entrypoint()
+def attempts(
+    task: str,
+    repo: str | None = None,
+    attempts: int = 3,
+    sandbox_mode: str = DEFAULT_SANDBOX_MODE,
+    model: str | None = None,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    detach: bool = False,
+) -> None:
+    """Fire N independent attempts at ONE task and compare the branches they ship (ADR-0020 §1).
+
+        uv run modal deploy scripts/modal_headless.py            # once
+        uv run modal run scripts/modal_headless.py::attempts \\
+            --task "…" --repo <url> --attempts 5 --sandbox-mode modal [--detach]
+
+    Every attempt is told not to push, so the Hand-back is the only ship path and the N branches are
+    named ``decode/<session-id>`` and directly comparable. Default: wait for all N, print the table
+    and the diff commands. ``--detach``: print the N function-call ids and exit — the deployed app
+    keeps running without the laptop.
+    """
+    error = attempts_input_error(attempts=attempts, repo=repo, sandbox_mode=sandbox_mode)
+    if error is not None:
+        click.echo(error, err=True)
+        sys.exit(1)
+    warning = attempts_input_warning(repo=repo, sandbox_mode=sandbox_mode)
+    if warning is not None:
+        click.echo(warning, err=True)
+
+    try:
+        function = deployed_run_task()
+        calls = spawn_attempts(
+            function,
+            task=task,
+            count=attempts,
+            repo=repo,
+            sandbox_mode=sandbox_mode,
+            model=model,
+            timeout_seconds=timeout_seconds,
+        )
+    except modal.exception.NotFoundError as not_deployed:
+        click.echo(NOT_DEPLOYED_FORMAT.format(app_name=APP_NAME, error=not_deployed), err=True)
+        sys.exit(1)
+
+    if detach:
+        for line in detach_lines([call.object_id for call in calls], repo=repo):
+            click.echo(line)
+        return
+
+    click.echo(f"Decode: waiting for {len(calls)} attempt(s) — they run in parallel.", err=True)
+    results = [collect_attempt(call, sandbox_mode=sandbox_mode) for call in calls]
+    click.echo(attempts_table(results))
+    for line in [*attempts_notes(results), *compare_commands(results, repo=repo)]:
+        click.echo(line)
+    exit_code = attempts_exit_code(results)
+    if exit_code:
+        sys.exit(exit_code)
