@@ -205,10 +205,10 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>5</b><br/>Agents Catalog, Subagents & Parallel Fan-out</td>
-    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center"><b>5</b><br/>Subagents Are Context Engineering</td>
+    <td align="center"><a href="https://www.decodingai.com/p/subagents-are-context-engineering" target="_blank"><img src="assets/architecture_lesson_5.png" width="300" alt="Lesson 5 — subagents are context engineering"/></a><br/><i><a href="https://www.decodingai.com/p/subagents-are-context-engineering" target="_blank">Article 5</a></i></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a> · <a href="running_the_code/08_subagents.md">08_subagents.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>6</b><br/>Remote Headless Mode & Durability</td>
