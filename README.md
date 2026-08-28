@@ -200,7 +200,7 @@ For the full experience, go through the articles and videos that cover what the 
   </tr>
   <tr>
     <td align="center"><b>4</b><br/>Context Engineering for Coding Agents</td>
-    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center"><a href="https://www.decodingai.com/p/context-engineering-for-coding-agents" target="_blank"><img src="assets/architecture_lesson_4.png" width="300" alt="Lesson 4 — context engineering for coding agents"/></a><br/><i><a href="https://www.decodingai.com/p/context-engineering-for-coding-agents" target="_blank">Article 4</a></i></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
