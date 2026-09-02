@@ -35,8 +35,6 @@ env holds*. Neither feeds the other.
 The rest is a manual e2e tutorial. Every case is an **A/B**: the same command with one thing flipped, and a
 different observable. Part 4 is the automated backstop — same claims, no network, no PAT, no Kitaru.
 
-> **Clean break — the Credential Proxy is gone** (why: [ADR-0016](../docs/adr/0016-drop-credential-proxy.md); stale-key behavior: Part 2c). What replaces it is [Part 2](#part-2--the-sandbox-git-token-sandbox_git_token) — one token, direct-injected, both backends, and an honest warning that the model can read it.
-
 ## Part 0 — prerequisites
 
 ```bash
@@ -55,13 +53,6 @@ uv run kitaru login https://<your-workspace>.cloudinfra.zenml.io
 ```
 
 ## Part 1 — the config surface (`DECODE_ENV`)
-
-> **Coming from an older `.env` ([ADR-0015 §4](../docs/adr/0015-environment-bucket-secrets.md))?**
-> `RUNTIME_SECRET_NAME`, `RUNTIME_SECRET_STORE_CONFIG` and `RUNTIME_SECRET_STORE_MODEL_KEY` are **deleted**,
-> and pydantic's `extra="ignore"` means a stale line in your `.env` is **silently ignored** — decode starts
-> and never tells you the knob did nothing. Migrate: `make sync-secrets ENV=<env>` once, then
-> `DECODE_ENV=<env>` on every run. Old per-credential secrets are dead weight — delete them from the
-> workspace dashboard (`kitaru status` prints its URL); kitaru 0.22.2 ships no `secrets` CLI.
 
 `DECODE_ENV` decides **where `Settings` gets its values, and nothing else** — not session dirs, not log paths,
 not `MEMORY.md`. It is the bootstrap variable, so it is read out-of-band (your `.env` file, overlaid by the
@@ -306,4 +297,4 @@ one helper constant, one token gate, the secret in **no** argv; unset → no cre
 docker daemon or Modal credentials exist, live injection with a dummy token (no GitHub call).
 [`test_env_example_drift.py`](../tests/unit/decode/config/test_env_example_drift.py) is why
 [`.env.example`](../.env.example) cannot lie: its `KEY=` lines and the `Settings` fields must match in **both**
-directions — which also guarantees the retired proxy keys are really gone.
+directions.

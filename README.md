@@ -156,7 +156,7 @@ The code is written in Python, with the following frameworks and libraries:
 - **Session Recording & Replays:** [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand)
 - **Observability & Evals:** [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course)
 - **Sandboxing:** local Docker & remote [Modal sandboxes](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng)
-- **Deploying:** Modal — headless agents + the Kitaru Worker run there, no servers to keep up
+- **Deploying:** Modal — headless agents (fired by hand, by cron, or by webhook) + the Kitaru Worker run there, no servers to keep up
 
 Otherwise, we build all the functionality from scratch, to teach you the foundations that last, not frameworks that abstract away the hard parts.
 
@@ -308,7 +308,7 @@ Everything lives under [`running_the_code/`](running_the_code/). One core guide,
 | [04_sandboxing.md](running_the_code/04_sandboxing.md)               | Docker (local) / Modal (remote) setup for sandboxing |
 | [05_evals.md](running_the_code/05_evals.md)                         | Benchmarks, regression probes, and online evals      |
 | [06_credentials.md](running_the_code/06_credentials.md)             | Environments & secrets, walked end-to-end            |
-| [07_infra.md](running_the_code/07_infra.md)                         | Remote headless agents + Kitaru Worker on Modal      |
+| [07_infra.md](running_the_code/07_infra.md)                         | Headless agents on Modal (by hand, N attempts, cron, webhook) + the Kitaru Worker |
 | [08_evals_replays.md](running_the_code/08_evals_replays.md)         | Kitaru setup, replays & the full evals loop          |
 
 ## 🤝 Sponsors

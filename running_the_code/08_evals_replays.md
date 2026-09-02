@@ -244,7 +244,6 @@ uv run kitaru experiment run start cheaper-model \
 - [03_runtime.md](03_runtime.md) — the runtime surface itself (recording seam, degrade rules,
   worker task entry).
 - [06_credentials.md](06_credentials.md) — Environment Bucket vs replay secrets.
-- [ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md) — why decode is shaped this way (and
-  what died: durable flows, checkpoints, HITL waits).
+- [ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md) — why decode is shaped this way.
 - Kitaru docs: https://docs.zenml.io/kitaru — concepts (sessions/replays/cohorts/experiments),
   tool policies, importers, workers in production.

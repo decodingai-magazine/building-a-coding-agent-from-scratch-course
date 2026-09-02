@@ -12,9 +12,10 @@ Prerequisite: the core setup from [01_install_and_usage.md](01_install_and_usage
 decode run "list the python files under src and summarize what the cli module does"
 ```
 
-- **Bypass by default** — every tool runs inline with no approval prompt, and `ask_user` is a no-op. There is no pause and no wait: durable HITL died with the durable runtime, because upstream removed the primitive ([ADR-0019 §1](../docs/adr/0019-kitaru-replay-runtime.md)).
+- **Bypass by default** — every tool runs inline with no approval prompt, and `ask_user` is a no-op. There is no pause and no wait — unattended means unattended; a task that needs a human answer mid-run belongs in the REPL ([ADR-0019 §1](../docs/adr/0019-kitaru-replay-runtime.md)).
 - **stdout is the answer, alone.** Notices (a hand-back line, a recording warning) go to stderr; the detail is in `.decode/logs/decode.log`. So `decode run … | pbcopy` is safe.
 - **Same everything else as the REPL** — the provider-key guard, `--model` (Model Override), `--repo`/`--local` with a sandbox mode, Hand-back on completion, and Opik tracing. `RUNTIME_ENABLED=false` disables the subcommand with one friendly line.
+- **`--max-requests N` is the one knob the REPL does not have.** Nobody watches a background run, so its only stop condition would be the model's own. Past N model requests the run stops with one stderr line (`Decode: the run stopped at its request ceiling …`) and exit 1; the Hand-back still ships whatever the Workspace holds. `RUNTIME_MAX_REQUESTS` sets the default for every run; unset = unbounded, exactly like the REPL.
 - **`TASK` is optional** — because a Kitaru Worker passes the prompt in the environment, not on the command line (see the replay section). With no task anywhere you get one line naming both ways to supply one.
 
 ## Record runs as Kitaru Sessions (opt-in)
@@ -77,6 +78,6 @@ A **Baseline Replay** (no `--override`) is the control: it proves the Session st
 
 - Run headless **inside a sandbox** and on any repo: [04_sandboxing.md](04_sandboxing.md) (`SANDBOX_MODE=docker decode run --repo <url> "<task>"`).
 - Hydrate the run's secrets from an Environment Bucket instead of `.env`: [06_credentials.md](06_credentials.md).
-- Where the workspace, the Worker and the retired self-hosted stack sit: [07_infra.md](07_infra.md).
+- Run it off-laptop — by hand, N attempts, cron, webhook — and the Modal-hosted Worker: [07_infra.md](07_infra.md).
 - The full evals loop — investigate, cohort, evaluator, replay, compare, experiment:
   [08_evals_replays.md](08_evals_replays.md).

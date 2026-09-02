@@ -802,3 +802,246 @@ def test_a_missing_deployment_is_one_friendly_line_not_a_traceback(mocker, capsy
 
     assert exit_info.value.code != 0
     assert "modal deploy" in capsys.readouterr().err
+
+
+# --- the request ceiling rides through to decode run --max-requests --------------------------------
+
+
+def test_max_requests_becomes_decodes_own_flag():
+    argv = mh.decode_argv(task=TASK, sandbox_mode="none", max_requests=40)
+
+    assert argv[-2:] == ["--max-requests", "40"]
+
+
+def test_no_ceiling_means_no_flag():
+    assert "--max-requests" not in mh.decode_argv(task=TASK, sandbox_mode="none")
+
+
+def test_the_fan_out_threads_the_ceiling_into_every_attempt(mocker):
+    function = mocker.Mock()
+
+    mh.spawn_attempts(
+        function,
+        task=TASK,
+        count=2,
+        repo=REPO,
+        sandbox_mode="modal",
+        model=None,
+        timeout_seconds=60,
+        max_requests=25,
+    )
+
+    for call in function.spawn.call_args_list:
+        assert call.kwargs["max_requests"] == 25
+
+
+# --- the nightly cron: deploy-time configuration from DECODE_NIGHTLY_* ---------------------------
+
+
+def test_no_cron_env_registers_no_schedule():
+    assert mh.nightly_schedule({}) is None
+    assert mh.nightly_schedule({mh.NIGHTLY_CRON_ENV: "   "}) is None
+
+
+def test_a_cron_env_becomes_a_modal_cron():
+    schedule = mh.nightly_schedule({mh.NIGHTLY_CRON_ENV: "0 2 * * *"})
+
+    assert isinstance(schedule, mh.modal.Cron)
+    assert schedule.proto_message.cron.cron_string == "0 2 * * *"
+
+
+def test_the_job_env_ships_only_the_nightly_keys_that_are_set():
+    env = {
+        mh.NIGHTLY_CRON_ENV: "0 2 * * *",
+        mh.NIGHTLY_TASK_ENV: "review the TODOs",
+        mh.NIGHTLY_REPO_ENV: REPO,
+        mh.NIGHTLY_MODEL_ENV: "",
+        "GEMINI_API_KEY": "must-not-travel",
+    }
+
+    job = mh.nightly_job_env(env)
+
+    assert job == {mh.NIGHTLY_TASK_ENV: "review the TODOs", mh.NIGHTLY_REPO_ENV: REPO}
+    assert mh.NIGHTLY_CRON_ENV not in job  # the schedule lives on the Function, not in the env
+
+
+def test_without_a_cron_the_job_env_is_never_validated():
+    assert mh.nightly_config_error({mh.NIGHTLY_SANDBOX_MODE_ENV: "docker"}) is None
+
+
+def test_a_cron_without_a_task_is_rejected_on_the_laptop():
+    error = mh.nightly_config_error({mh.NIGHTLY_CRON_ENV: "0 2 * * *"})
+
+    assert error is not None
+    assert error.startswith("Decode:")
+    assert mh.NIGHTLY_TASK_ENV in error
+
+
+def test_a_nightly_docker_mode_is_rejected_with_the_same_line_as_every_surface():
+    env = {
+        mh.NIGHTLY_CRON_ENV: "0 2 * * *",
+        mh.NIGHTLY_TASK_ENV: TASK,
+        mh.NIGHTLY_SANDBOX_MODE_ENV: "docker",
+    }
+
+    assert mh.nightly_config_error(env) == mh.DOCKER_MODE_MESSAGE
+
+
+@pytest.mark.parametrize("value", ["0", "-3", "many"])
+def test_a_nightly_ceiling_must_be_a_positive_integer(value):
+    env = {
+        mh.NIGHTLY_CRON_ENV: "0 2 * * *",
+        mh.NIGHTLY_TASK_ENV: TASK,
+        mh.NIGHTLY_MAX_REQUESTS_ENV: value,
+    }
+
+    error = mh.nightly_config_error(env)
+
+    assert error is not None
+    assert mh.NIGHTLY_MAX_REQUESTS_ENV in error
+
+
+def test_a_complete_nightly_config_passes():
+    env = {
+        mh.NIGHTLY_CRON_ENV: "0 2 * * *",
+        mh.NIGHTLY_TASK_ENV: TASK,
+        mh.NIGHTLY_REPO_ENV: REPO,
+        mh.NIGHTLY_SANDBOX_MODE_ENV: "modal",
+        mh.NIGHTLY_MAX_REQUESTS_ENV: "80",
+        mh.NIGHTLY_TIMEOUT_ENV: "900",
+    }
+
+    assert mh.nightly_config_error(env) is None
+    assert mh.nightly_run_kwargs(env) == {
+        "task": TASK,
+        "repo": REPO,
+        "sandbox_mode": "modal",
+        "model": None,
+        "max_requests": 80,
+        "timeout_seconds": 900,
+    }
+
+
+def test_a_deployment_without_a_task_runs_nothing():
+    assert mh.nightly_run_kwargs({}) is None
+
+
+def test_the_nightly_defaults_match_a_bare_main_invocation():
+    kwargs = mh.nightly_run_kwargs({mh.NIGHTLY_TASK_ENV: TASK})
+
+    assert kwargs == {
+        "task": TASK,
+        "repo": None,
+        "sandbox_mode": mh.DEFAULT_SANDBOX_MODE,
+        "model": None,
+        "max_requests": None,
+        "timeout_seconds": mh.DEFAULT_TIMEOUT_SECONDS,
+    }
+
+
+def test_the_nightly_function_runs_the_job_in_its_own_container(mocker, monkeypatch):
+    monkeypatch.setenv(mh.NIGHTLY_TASK_ENV, TASK)
+    monkeypatch.setenv(mh.NIGHTLY_REPO_ENV, REPO)
+    monkeypatch.setenv(mh.NIGHTLY_SANDBOX_MODE_ENV, "modal")
+    run_task = mocker.patch.object(mh, "run_task")
+    run_task.local.return_value = {"exit_code": 0}
+
+    assert mh.nightly.local() == {"exit_code": 0}
+    run_task.local.assert_called_once_with(
+        task=TASK,
+        repo=REPO,
+        sandbox_mode="modal",
+        model=None,
+        max_requests=None,
+        timeout_seconds=mh.DEFAULT_TIMEOUT_SECONDS,
+    )
+
+
+def test_an_unconfigured_nightly_function_says_so_and_runs_nothing(mocker, monkeypatch, capsys):
+    monkeypatch.delenv(mh.NIGHTLY_TASK_ENV, raising=False)
+    run_task = mocker.patch.object(mh, "run_task")
+
+    result = mh.nightly.local()
+
+    run_task.local.assert_not_called()
+    assert result["exit_code"] != 0
+    assert capsys.readouterr().err.strip() == mh.NIGHTLY_UNCONFIGURED_MESSAGE
+
+
+# --- the webhook: one POST, one spawned run ---------------------------------------------------------
+
+
+def test_a_webhook_body_needs_only_a_task():
+    request = mh.WebhookRequest(task=TASK)
+
+    assert mh.webhook_request_error(request) is None
+    assert mh.webhook_spawn_kwargs(request) == {
+        "task": TASK,
+        "repo": None,
+        "sandbox_mode": mh.DEFAULT_SANDBOX_MODE,
+        "model": None,
+        "max_requests": None,
+        "timeout_seconds": mh.DEFAULT_TIMEOUT_SECONDS,
+    }
+
+
+def test_an_empty_webhook_task_is_one_friendly_line():
+    assert mh.webhook_request_error(mh.WebhookRequest(task="   ")) == mh.WEBHOOK_EMPTY_TASK_MESSAGE
+
+
+def test_a_webhook_docker_mode_is_rejected_with_the_same_line_as_every_surface():
+    request = mh.WebhookRequest(task=TASK, sandbox_mode="docker")
+
+    assert mh.webhook_request_error(request) == mh.DOCKER_MODE_MESSAGE
+
+
+def test_a_webhook_ceiling_below_one_is_rejected_by_the_schema():
+    with pytest.raises(ValueError):
+        mh.WebhookRequest(task=TASK, max_requests=0)
+
+
+def test_the_webhook_answers_with_the_call_id_and_where_to_watch():
+    request = mh.WebhookRequest(task=TASK, repo=REPO, sandbox_mode="modal")
+
+    response = mh.webhook_response("fc-123", request)
+
+    assert response["call_id"] == "fc-123"
+    assert response["status"] == "spawned"
+    assert any(mh.APP_NAME in line for line in response["watch"])
+    assert any(REPO in line for line in response["watch"])
+
+
+def test_a_repo_less_webhook_run_lists_no_branch_to_watch():
+    response = mh.webhook_response("fc-123", mh.WebhookRequest(task=TASK))
+
+    assert not any("ls-remote" in line for line in response["watch"])
+
+
+def test_the_webhook_spawns_on_run_task_and_returns_at_once(mocker):
+    run_task = mocker.patch.object(mh, "run_task")
+    run_task.spawn.return_value = mocker.Mock(object_id="fc-456")
+
+    response = mh.webhook.local(mh.WebhookRequest(task=TASK, max_requests=30))
+
+    run_task.spawn.assert_called_once()
+    assert run_task.spawn.call_args.kwargs["max_requests"] == 30
+    assert response["call_id"] == "fc-456"
+
+
+def test_the_webhook_rejects_a_bad_run_before_spawning_anything(mocker):
+    run_task = mocker.patch.object(mh, "run_task")
+    http_error = pytest.importorskip("fastapi").HTTPException
+
+    with pytest.raises(http_error) as error:
+        mh.webhook.local(mh.WebhookRequest(task=TASK, sandbox_mode="docker"))
+
+    run_task.spawn.assert_not_called()
+    assert error.value.status_code == 400
+    assert error.value.detail == mh.DOCKER_MODE_MESSAGE
+
+
+def test_the_webhook_image_carries_fastapi_the_worker_image_does_not():
+    from scripts.modal_image import extra_packages_command
+
+    assert any(package.startswith("fastapi") for package in mh.WEB_PACKAGES)
+    assert "/.uv/.venv/bin/python" in extra_packages_command(mh.WEB_PACKAGES)

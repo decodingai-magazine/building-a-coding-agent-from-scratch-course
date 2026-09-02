@@ -48,8 +48,6 @@ Hand-back (above) needs **no** credential in the sandbox — it pushes host-side
 
 > **A sandboxed process can read `$GITHUB_TOKEN`** — a prompt-injected agent too. Use a **fine-grained, repo-scoped, revocable** PAT, and revoke it when you're done. Leave the variable **unset** and the sandbox holds no credential at all — hand-back still ships your branch.
 
-decode used to hide this token behind a mitmproxy sidecar (the **Credential Proxy**). It is **deleted** ([ADR-0016](../docs/adr/0016-drop-credential-proxy.md)): it only ever worked in one of the three sandbox modes, egress was cooperative anyway (`curl --noproxy '*'` walked around it), and the machinery cost more than it protected. One mechanism now, both backends — a security story that is *true as written*.
-
 ## Troubleshooting
 
 Sandbox guards check **presence only** and fire in both the REPL and the headless pre-flight:

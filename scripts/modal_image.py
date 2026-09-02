@@ -58,7 +58,18 @@ _SOURCE_IGNORE = [
 ]
 
 
-def build_image(*, extra_dirs: Sequence[str] = ()) -> modal.Image:
+def extra_packages_command(packages: Sequence[str]) -> str:
+    """The ``uv pip install`` that puts ``packages`` into the SAME venv ``uv_sync`` built.
+
+    Not ``Image.uv_pip_install`` — that targets the container's interpreter, and the Functions run
+    on ``/.uv/.venv``'s. Same idiom as the source install one layer down.
+    """
+    return f"/.uv/uv pip install --python {VENV_DIR}/bin/python {' '.join(packages)}"
+
+
+def build_image(
+    *, extra_dirs: Sequence[str] = (), extra_packages: Sequence[str] = ()
+) -> modal.Image:
     """The image both apps run on: locked deps, this repo's source, the fixed directories.
 
     ``extra_dirs`` are created alongside :data:`HARNESS_HOME` — the headless app's harness-side repo
@@ -66,17 +77,28 @@ def build_image(*, extra_dirs: Sequence[str] = ()) -> modal.Image:
     same reason the paths are constants: a directory that only exists when some code remembered to
     create it is a directory that is missing the one time it matters.
 
+    ``extra_packages`` are pip requirements an APP needs that decode itself does not — the headless
+    app's webhook endpoint needs ``fastapi``, the Worker needs nothing. They install into the same
+    venv, between the locked deps and the source, so the expensive ``uv_sync`` layer stays shared by
+    both apps and a source edit still rebuilds only the tail.
+
     Args:
         extra_dirs: Absolute in-image directories to create besides the Harness Home.
+        extra_packages: Extra pip requirements for this app's Functions.
 
     Returns:
         The image, ready to hand to ``@app.function(image=…)``.
     """
-    return (
+    image = (
         modal.Image.debian_slim(python_version="3.12")
         .apt_install("git", "curl", "ca-certificates")
         # Locked third-party deps only (uv_sync never installs the project itself) — the cached layer.
         .uv_sync(uv_project_dir=str(REPO_ROOT))
+    )
+    if extra_packages:
+        image = image.run_commands(extra_packages_command(extra_packages))
+    return (
+        image
         # decode's own source, on top, installed without deps so the layer above is reused verbatim.
         .add_local_dir(REPO_ROOT, IMAGE_SOURCE_DIR, copy=True, ignore=_SOURCE_IGNORE)
         .run_commands(

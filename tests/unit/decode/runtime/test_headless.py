@@ -90,11 +90,78 @@ def test_no_model_override_passes_none_to_the_agent_build(monkeypatch):
     assert captured["model"] is None
 
 
+# --- the request ceiling: --max-requests / RUNTIME_MAX_REQUESTS ------------------------------------
+
+
+def test_a_run_past_its_request_ceiling_raises_usage_limit_exceeded(monkeypatch):
+    """A model that never stops calling tools is cut off at the cap — the cost story of a background run."""
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    counter = _patch_agent(monkeypatch, [_call("bash", command="echo looping")])
+
+    with pytest.raises(UsageLimitExceeded):
+        hl.run_headless_task("loop forever", max_requests=3)
+    assert counter["legs"] == 3
+
+
+def test_the_ceiling_still_reaps_and_hands_back(monkeypatch, mocker):
+    """The ``finally`` runs on a capped run too: work done up to the cap ships (ADR-0012 §8)."""
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    _patch_agent(monkeypatch, [_call("bash", command="echo looping")])
+    reap = mocker.patch.object(hl, "_reap_executor")
+    ship = mocker.patch.object(hl, "_ship_headless_workspace")
+
+    with pytest.raises(UsageLimitExceeded):
+        hl.run_headless_task("loop forever", max_requests=2)
+
+    reap.assert_called_once()
+    ship.assert_called_once()
+
+
+def test_an_unbounded_run_passes_no_usage_limits_at_all(monkeypatch):
+    """Unset at both levels → ``usage_limits=None``, byte-identical to the REPL's ``agent.run``."""
+    monkeypatch.setattr(hl.settings, "runtime_max_requests", None)
+    agent, _ = make_scripted_agent([_text("done")])
+    seen: dict[str, object] = {}
+    original_run = agent.run
+
+    async def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        return await original_run(*args, **kwargs)
+
+    monkeypatch.setattr(agent, "run", _spy)
+    monkeypatch.setattr(hl, "_build_headless_agent", lambda model=None: agent)
+
+    assert hl.run_headless_task("finish") == "done"
+    assert seen["usage_limits"] is None
+
+
+def test_the_setting_is_the_default_ceiling_and_the_flag_wins(monkeypatch):
+    monkeypatch.setattr(hl.settings, "runtime_max_requests", 7)
+
+    assert hl.resolve_max_requests(None) == 7
+    assert hl.resolve_max_requests(2) == 2
+    assert hl._usage_limits(7).request_limit == 7
+    assert hl._usage_limits(None) is None
+
+
+def test_the_setting_alone_caps_a_run(monkeypatch):
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    monkeypatch.setattr(hl.settings, "runtime_max_requests", 2)
+    counter = _patch_agent(monkeypatch, [_call("bash", command="echo looping")])
+
+    with pytest.raises(UsageLimitExceeded):
+        hl.run_headless_task("loop forever")
+    assert counter["legs"] == 2
+
+
 def test_a_deferred_tool_request_is_a_defensive_error_not_a_hang(monkeypatch):
     """Under BYPASS nothing may defer, so a deferred output is a wiring bug — it must say so."""
 
     class _DeferringAgent:
-        async def run(self, task, deps):
+        async def run(self, task, deps, usage_limits=None):
             return SimpleNamespace(output=DeferredToolRequests())
 
     monkeypatch.setattr(hl, "_build_headless_agent", lambda model=None: _DeferringAgent())
@@ -165,7 +232,7 @@ def test_ask_user_feeds_the_no_interactive_user_message_back_to_the_model(monkey
     )
 
     class _Recorder:
-        async def run(self, task, deps):
+        async def run(self, task, deps, usage_limits=None):
             result = await agent.run(task, deps=deps)
             captured.extend(
                 part.content
@@ -360,7 +427,7 @@ def test_the_executor_is_reaped_even_when_the_run_raises(monkeypatch):
     aclose = _inject_fake_executor(monkeypatch)
 
     class _BoomAgent:
-        async def run(self, task, deps):
+        async def run(self, task, deps, usage_limits=None):
             raise RuntimeError("boom from the agent run")
 
     monkeypatch.setattr(hl, "_build_headless_agent", lambda model=None: _BoomAgent())

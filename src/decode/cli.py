@@ -17,6 +17,7 @@ import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import click  # noqa: E402
+from pydantic_ai.exceptions import UsageLimitExceeded  # noqa: E402
 
 from decode.agent.context_window import resolve_context_window_detail  # noqa: E402
 from decode.agents.loader import load_primary_agent  # noqa: E402
@@ -79,6 +80,14 @@ _DEFAULT_AGENT = "build"
 _RUNTIME_DISABLED_MESSAGE = (
     "Decode: the headless runtime is disabled — set RUNTIME_ENABLED=true in your environment "
     "or .env to use `decode run` (see .env.example)."
+)
+
+# Friendly line when a headless run hits its request ceiling (``--max-requests`` /
+# ``RUNTIME_MAX_REQUESTS``): the work done so far is already handed back; only the answer is missing.
+_MAX_REQUESTS_MESSAGE = (
+    "Decode: the run stopped at its request ceiling ({detail}). Work done so far was handed back "
+    "where a sandbox repo applies; re-run with a larger --max-requests (or RUNTIME_MAX_REQUESTS) "
+    "if the task needs more."
 )
 
 
@@ -436,7 +445,18 @@ def cli(
     is_flag=True,
     help="Use a fast local clone (git clone --local) when --repo is a local path.",
 )
-def run(task: str | None, model: str | None, repo: str | None, local: bool) -> None:
+@click.option(
+    "--max-requests",
+    "max_requests",
+    default=None,
+    type=click.IntRange(min=1),
+    metavar="N",
+    help="Stop the run after N model requests (one friendly line, non-zero exit); overrides "
+    "RUNTIME_MAX_REQUESTS. Unset = unbounded. A cron or webhook run has nobody watching its bill.",
+)
+def run(
+    task: str | None, model: str | None, repo: str | None, local: bool, max_requests: int | None
+) -> None:
     """Run a single TASK headlessly, then print the agent's answer (ADR-0019 §1).
 
     The autonomous counterpart to the REPL: ``decode run "<task>"`` builds the SAME agent the TUI
@@ -457,6 +477,12 @@ def run(task: str | None, model: str | None, repo: str | None, local: bool) -> N
     In a sandbox mode ``--repo <url-or-local-path>`` clones a repo into the isolated Workspace
     (overriding ``SANDBOX_REPO``) and ``--local`` picks a fast local clone; on completion the
     Workspace ships back as a ``decode/<session-id>`` branch (ADR-0012 §3,8).
+
+    ``--max-requests N`` caps the run at N model requests (else ``RUNTIME_MAX_REQUESTS``, else
+    unbounded): past the cap the run stops with one friendly stderr line and a non-zero exit, and
+    the Hand-back still ships whatever the Workspace holds. The ceiling exists for runs nobody
+    watches — a cron job, a webhook, a CI step — whose only stop condition would otherwise be the
+    model's own.
 
     The agent's answer prints on **stdout** and nothing else does, so a piped ``decode run`` yields
     exactly the answer; diagnostics go to stderr.
@@ -514,14 +540,24 @@ def run(task: str | None, model: str | None, repo: str | None, local: bool) -> N
     )
 
     logger.debug(
-        "decode run starting (task=%r, model=%r, repo=%r, local=%s)",
+        "decode run starting (task=%r, model=%r, repo=%r, local=%s, max_requests=%r)",
         task,
         model,
         resolved_repo,
         local,
+        max_requests,
     )
     try:
-        output = run_headless_task(task, model=model, repo=resolved_repo, local=local)
+        output = run_headless_task(
+            task, model=model, repo=resolved_repo, local=local, max_requests=max_requests
+        )
+    except UsageLimitExceeded as exc:
+        # The request ceiling (``--max-requests`` / ``RUNTIME_MAX_REQUESTS``) fired: the run did
+        # real work up to the cap (the Hand-back already shipped it) but has no final answer, so
+        # stdout stays empty and the one stderr line says which cap and why (ADR-0019 §1).
+        logger.warning("decode run stopped at its request ceiling", exc_info=True)
+        click.echo(_MAX_REQUESTS_MESSAGE.format(detail=exc), err=True)
+        raise click.exceptions.Exit(1) from exc
     except RecordingUnavailableError as exc:
         # Same friendly-line-on-stderr contract as the guards above: a Kitaru Worker's captured
         # stderr should be the one line that names the failure, not 40 frames of pydantic-ai and

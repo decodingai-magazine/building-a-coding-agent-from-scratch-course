@@ -147,3 +147,49 @@ flowchart LR
 - **Test surface:** unit tests cover the scripts' pure helpers only; the e2e proof is the
   operator gate ([HUMAN] criteria in tasks 142/143/145), consistent with ADR-0019 keeping
   kitaru out of CI.
+
+## Amendments
+
+**2026-09-02 — §8 Two laptop-less triggers on the Modal Headless App; §9 a request ceiling for
+unwatched runs.** Extends §1 and §2; changes nothing in §3-§7.
+
+8. **Cron and webhook triggers, both thin callers of `run_task`.** The course's remote story
+   ("hooked to cron jobs, webhooks or any other event") had no code behind it: every remote run
+   still began with a human typing `modal run`. Two Functions close that, and neither
+   re-implements a run:
+   - **`nightly`** — `@app.function(schedule=modal.Cron(…))`. The schedule AND the job (task /
+     repo / sandbox mode / model / ceilings) are read from the laptop's `DECODE_NIGHTLY_*` env at
+     `modal deploy` and travel with the deployment — the schedule on the Function, the job as a
+     `modal.Secret.from_dict` env the container reads back under the same names. No
+     `DECODE_NIGHTLY_CRON` on the laptop → no schedule registered, so a plain `modal deploy` never
+     starts billing anyone's nights; a cron with no task, an impossible mode, or a non-numeric
+     ceiling dies on the laptop with one line, never at 2am in a container. It runs `run_task`
+     with `.local()` — same container, same Secret, same subprocess as `::main`.
+   - **`webhook`** — `@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)`. Takes
+     the same knobs as `::main` as a JSON body, `spawn`s `run_task` on the deployed app and
+     answers at once with the call id and where to watch (`modal app logs`, `kitaru session list`,
+     `git ls-remote`). Fire-and-forget by design — a webhook caller has seconds, an agent run has
+     minutes. Proxy auth (the `Modal-Key` / `Modal-Secret` pair the open-model endpoints already
+     use) keeps the printed URL from being a public "spend my tokens" button. The endpoint holds
+     NO Secret: it spawns, it does not run. FastAPI is the one package the two apps' images no
+     longer share — `build_image(extra_packages=…)` installs it into the same venv between the
+     locked-deps layer and the source layer, so the expensive layer stays shared (amends §2).
+9. **A request ceiling for runs nobody watches.** `decode run --max-requests N` (default
+   `RUNTIME_MAX_REQUESTS`, unset = unbounded, byte-identical to the REPL) bounds a headless run
+   through pydantic-ai's `UsageLimits`; past the cap the run stops with one friendly line and
+   exit 1, and the Hand-back still ships what the Workspace holds (extends ADR-0019 §1's plain
+   run). Every Modal surface — `::main`, `::attempts`, `DECODE_NIGHTLY_MAX_REQUESTS`, the webhook
+   body — passes it straight through to that flag. Modal's `--timeout-seconds` bounds wall-clock;
+   this bounds the token bill, which is the number a background run actually runs up.
+
+Also under this amendment: `running_the_code/07_infra.md` is rewritten as the runbook for the whole
+remote surface (secrets → deploy → the four triggers → the Worker), and the GCP retirement appendix
+§7 kept is deleted along with every other retired-surface note in `running_the_code/` (Credential
+Proxy, `RUNTIME_SECRET_*`, durable-flow asides) — git history is the archive.
+
+**Consequences.** Gained: the two triggers the article promised, as ~150 lines of pure helpers
+plus two Functions, unit-tested hermetically like the rest of the script. Cost: the headless image
+gains a FastAPI layer (the Worker's does not); the deploy-time env is one more thing an operator
+must export before `modal deploy` when they want a schedule. Not done (deliberately): a
+multi-project manifest (N different tasks × repos) and a chained experiment loop — both are
+launcher-side loops over `run_task`, and belong to their own tasks.

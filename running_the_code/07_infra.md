@@ -1,19 +1,17 @@
-# Infra — where decode's remote pieces live
+# Infra — the remote pieces: Modal apps + the managed Kitaru workspace
 
-> **Status: there is still no server to deploy** — but "remote" is a real place again
-> ([ADR-0020](../docs/adr/0020-remote-headless-on-modal.md)). [ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md)
-> deleted the self-hosted GCP+ZenML stack this page used to provision; what replaced it is a
-> **launch-vs-execute split**: your laptop only launches, **Modal** executes (two operator scripts,
-> zero servers, zero idle cost), and the **managed Kitaru workspace** stays the record/replay control
-> plane. The old GCP build survives only as a [retirement note](#appendix--the-retired-self-hosted-gcp-stack)
-> at the bottom; git history is its archive.
+> **There is no server to deploy.** Remote is a **launch-vs-execute split**
+> ([ADR-0020](../docs/adr/0020-remote-headless-on-modal.md)): your laptop only launches, **Modal**
+> executes (two operator scripts, zero servers, zero idle cost), and the **managed Kitaru workspace**
+> is the record/replay control plane. This page is the runbook for all of it: the two secrets, the
+> headless app and its four triggers (by hand, N attempts, cron, webhook), and the Modal-hosted Worker.
 
 ## The shape today
 
 | Piece | What | Launch it with |
 |---|---|---|
 | **Managed [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) workspace** | `https://f5ee9622-kitaru.cloudinfra.zenml.io` — recorded **Kitaru Sessions**, **Cohorts**, **Replays**, registered **Agent Versions**, the **Environment Bucket** secret. Someone else's uptime; it executes nothing. | `uv run kitaru status` · [03_runtime.md](03_runtime.md), [06_credentials.md](06_credentials.md) |
-| **Modal Headless App** (`decode-headless`) | `scripts/modal_headless.py` — a Function that runs `decode run` as a **subprocess of the same console script your laptop runs**, in a gVisor container. One synchronous run, or N fire-and-forget attempts at one task → N comparable `decode/<session-id>` branches. Sandbox `none` / `modal` only; `docker` is rejected client-side (no Docker daemon on Modal). | `uv run modal run scripts/modal_headless.py::main --task "…"` · `uv run modal deploy …` + `…::attempts` — [§2](#2-run--verify--the-headless-app) |
+| **Modal Headless App** (`decode-headless`) | `scripts/modal_headless.py` — a Function that runs `decode run` as a **subprocess of the same console script your laptop runs**, in a gVisor container. Four ways in: one synchronous run, N fire-and-forget attempts at one task → N comparable `decode/<session-id>` branches, a **nightly cron**, a **webhook**. Sandbox `none` / `modal` only; `docker` is rejected client-side (no Docker daemon on Modal). | [§2](#2-run-the-headless-app) |
 | **Modal-hosted Kitaru Worker** (`decode-kitaru-worker`) | `scripts/modal_kitaru_worker.py` — a long-running Function running `kitaru worker start`, so **replays execute off your laptop**. Claims `agent` + `evaluator` work and spawns **agent version 3**. Dies at Modal's 24 h function ceiling; you re-launch it with one command. | `uv run modal deploy scripts/modal_kitaru_worker.py` + `uv run modal run --detach …` — [§3](#3-the-modal-hosted-kitaru-worker) |
 | **Kitaru Worker on your laptop** | the other, unchanged option: `kitaru worker start` in *your* shell, spawning **agent version 2** (`SANDBOX_MODE=docker`, repo clone). The two Workers coexist — scope their claims so they don't race. | [08_evals_replays.md §5](08_evals_replays.md#5-start-a-worker-the-thing-that-executes-replays) |
 | **Agent Version** | the immutable run spec a Worker spawns. **v2** = laptop/docker; **v3** = `SANDBOX_MODE=none` with the in-image paths `/.uv/.venv/bin/decode` + `/harness` (the container *is* the isolation). Both registered by `scripts/register_kitaru_agent.py`. | [§3](#3-the-modal-hosted-kitaru-worker) |
@@ -27,6 +25,10 @@ baking source at build time: **a code change needs a re-`modal deploy` before th
 
 Nothing here is required to use decode. Recording is opt-in, remote execution is opt-in, and with
 `KITARU_AGENT_ID` unset and no Modal secret the whole page is irrelevant.
+
+**Prerequisites** (once): the core setup from [01_install_and_usage.md](01_install_and_usage.md), a Modal
+account on this machine (`uv run modal token set …` — account tokens are not decode settings), and for
+recording a `KITARU_AGENT_ID` ([03_runtime.md](03_runtime.md)).
 
 ---
 
@@ -81,12 +83,11 @@ must be a **control plane** key (`ZENPROKEY_…`): a workspace-local key is reje
 `Local API keys are rejected under control plane authentication.` The kitaru client exchanges a control
 plane key for a session token and keeps renewing it, so a worker stays authenticated for its whole life.
 
-> **⏳ Pending gate.** Everything else on this page has been executed; minting this key has not — it is
-> an org-level write to ZenML Pro. Until it exists, the headless app still runs and answers, degrading
-> with ONE `[kitaru] not recording this run: … 401: Missing bearer credential` line and exit 0 (that is
-> the Recording Seam behaving exactly as [ADR-0019 §3](../docs/adr/0019-kitaru-replay-runtime.md)
-> prescribes), and the Modal Worker refuses to start with one friendly line naming the missing variable.
-> **The same key closes both.**
+> **Not minted yet — [`tasks/153`](../tasks/153-mint-control-plane-key-close-pending-gate.md).** Until it
+> is, the headless app still runs and answers, degrading with ONE `[kitaru] not recording this run: … 401:
+> Missing bearer credential` line and exit 0 (the Recording Seam behaving exactly as
+> [ADR-0019 §3](../docs/adr/0019-kitaru-replay-runtime.md) prescribes), and the Modal Worker refuses to
+> start with one friendly line naming the missing variable. **The same key closes both.**
 
 Three ways to get one, best first:
 
@@ -121,9 +122,33 @@ uv run kitaru session list --agent decode --origin recorded --size 3      # the 
 
 ---
 
-## 2. Run & verify — the headless app
+## 2. Run the headless app
 
-### One synchronous run
+Four triggers, one Function. The first needs nothing deployed; the other three spawn against the
+**deployed** app, so deploy once first (this is also what builds the shared image — and what you must
+re-run after any change to decode's source, since the source is baked in):
+
+```bash
+uv run modal deploy scripts/modal_headless.py
+```
+
+Want, at the end of the output:
+
+```
+├── 🔨 Created function run_task.
+├── 🔨 Created function nightly.
+└── 🔨 Created web function webhook => https://<workspace>--decode-headless-webhook.modal.run 🔑
+✓ App deployed in 46.102s! 🎉
+```
+
+`run_task` is the run; `nightly` is the cron (inert until you deploy with a schedule, §2c); `webhook`
+is the POST endpoint (🔑 = proxy auth on, §2d). Every trigger takes the same knobs — `task`, `repo`,
+`sandbox-mode` (`none` | `modal`), `model`, `max-requests`, `timeout-seconds` — and every run leaves the
+same three traces: the answer in `modal app logs decode-headless`, a `decode/<session-id>` branch on
+origin (`modal` mode + `SANDBOX_GIT_TOKEN`), and a recorded Kitaru Session (`kitaru session list --agent
+decode --origin recorded`).
+
+### 2a. One synchronous run (`::main`)
 
 ```bash
 uv run modal run scripts/modal_headless.py::main \
@@ -145,6 +170,12 @@ Decode: run finished — exit=0 sandbox=none session=346fbde2-… branch=None
 Swap to `--sandbox-mode modal` and the same task reports `/workspace` instead — the bash landed in a
 **nested** Modal Sandbox, spawned by the container's own ambient Modal identity.
 
+Add `--max-requests N` to any surface on this page and it reaches `decode run --max-requests N`
+inside the container: past N model requests the run stops with one `Decode: the run stopped at its
+request ceiling …` line and exit 1, Hand-back included. `--timeout-seconds` bounds the clock; this
+bounds the token bill — the number a run nobody is watching actually runs up
+([03_runtime.md](03_runtime.md)).
+
 | `--sandbox-mode` | Where `bash` runs | What `--repo` does | Hand-back |
 |---|---|---|---|
 | `none` (default) | the gVisor container itself (`/harness`) | the **harness** clones it to `/scratch/repo` and launches decode there — decode never sees `--repo`, so its [ADR-0012 §3](../docs/adr/0012-isolated-workspace.md) guard stands | none: the clone dies with the container |
@@ -160,14 +191,12 @@ Decode: sandbox mode 'docker' cannot run on Modal — a Modal container has no D
 EXIT=1
 ```
 
-### N attempts at one task, in parallel
+### 2b. N attempts at one task, in parallel (`::attempts`)
 
-Deploy once (this is what builds the shared image), then fan out. The attempts spawn against the
-**deployed** Function, never the ephemeral one — that is what makes `--detach` real:
+The attempts spawn against the **deployed** Function, never the ephemeral one — that is what makes
+`--detach` real:
 
 ```bash
-uv run modal deploy scripts/modal_headless.py
-
 uv run modal run scripts/modal_headless.py::attempts \
   --task "add a hello line to README and commit" \
   --repo https://github.com/you/your-repo.git --attempts 3 --sandbox-mode modal
@@ -213,6 +242,82 @@ A row reads `shipped` only when the branch actually **reached origin**. A secure
 `NOT SHIPPED`, with the reason printed under the table. The run still answers and still exits 0 — the
 Hand-back fails soft ([ADR-0016 §4](../docs/adr/0016-drop-credential-proxy.md)).
 
+### 2c. A nightly cron job (`nightly`)
+
+§2a and §2b start with you typing `modal run`. This trigger and the next start without you
+([ADR-0020 Amendment §8](../docs/adr/0020-remote-headless-on-modal.md)); both are thin callers of the
+same `run_task`, so a scheduled or POSTed run is byte-for-byte a `::main` nobody had to type.
+
+The schedule and the job are **deploy-time** configuration, read from your shell by `modal deploy` and
+shipped with the deployment — no `DECODE_NIGHTLY_CRON` exported, no schedule registered, and a plain
+`modal deploy` is exactly what it was before:
+
+```bash
+DECODE_NIGHTLY_CRON="0 2 * * *" \
+DECODE_NIGHTLY_TASK="Find every TODO comment, fix the ones under 20 lines, commit each fix separately." \
+DECODE_NIGHTLY_REPO=https://github.com/you/your-repo.git \
+DECODE_NIGHTLY_SANDBOX_MODE=modal \
+DECODE_NIGHTLY_MAX_REQUESTS=120 \
+uv run modal deploy scripts/modal_headless.py
+```
+
+| Variable | Meaning |
+|---|---|
+| `DECODE_NIGHTLY_CRON` | crontab syntax, **UTC** — the switch: unset it and no schedule exists |
+| `DECODE_NIGHTLY_TASK` | the prompt; required once a cron is set (a cron with no task dies on the laptop, not at 2am) |
+| `DECODE_NIGHTLY_REPO` / `_SANDBOX_MODE` / `_MODEL` | the same knobs as `::main`'s `--repo` / `--sandbox-mode` / `--model` |
+| `DECODE_NIGHTLY_MAX_REQUESTS` / `_TIMEOUT_SECONDS` | the run's two ceilings — tokens and clock |
+
+The job travels as a `modal.Secret.from_dict` env on the `nightly` Function (a Secret is simply how a
+deploy-time env reaches a container; nothing in it is a credential), so the container reads the same
+names back. Want, right after the deploy:
+
+```
+Decode: nightly job registered — cron='0 2 * * *' (UTC) task='Find every TODO comment, …'
+```
+
+Then, each morning: `modal app logs decode-headless` for the answer, `git ls-remote <repo>
+'refs/heads/decode/*'` for the branch (`modal` mode + `SANDBOX_GIT_TOKEN`), `uv run kitaru session list
+--agent decode --origin recorded` for the recording. Modal's dashboard has a *run now* button on any
+scheduled Function if you don't want to wait for 2am. To stop the schedule, redeploy without
+`DECODE_NIGHTLY_CRON` — Modal has no pause.
+
+### 2d. A webhook (`webhook`)
+
+The deploy output names the URL (`https://<workspace>--decode-headless-webhook.modal.run`); the proxy
+token pair comes from [02_modal_endpoints.md](02_modal_endpoints.md) (`MODAL_PROXY_TOKEN_ID` /
+`_SECRET` in your `.env`). The body takes the same knobs as `::main` — only `task` is required — the
+endpoint `spawn`s the run and answers at once; the run itself takes minutes, the caller waits seconds:
+
+```bash
+curl -s -X POST "$WEBHOOK_URL" \
+  -H "Modal-Key: $MODAL_PROXY_TOKEN_ID" -H "Modal-Secret: $MODAL_PROXY_TOKEN_SECRET" \
+  -H 'content-type: application/json' \
+  -d '{"task": "add a hello line to README and commit", "repo": "https://github.com/you/your-repo.git",
+       "sandbox_mode": "modal", "max_requests": 60}'
+```
+
+Want:
+
+```json
+{"call_id": "fc-01ABC…", "sandbox_mode": "modal", "repo": "https://github.com/you/your-repo.git",
+ "status": "spawned", "watch": ["modal app logs decode-headless",
+ "uv run kitaru session list --agent decode --origin recorded",
+ "git ls-remote https://github.com/you/your-repo.git 'refs/heads/decode/*'"]}
+```
+
+- **Proxy auth is the lock.** `requires_proxy_auth=True` means a request without a valid `Modal-Key` /
+  `Modal-Secret` pair is refused at Modal's edge, before the Function runs — the same proxy token pair
+  [02_modal_endpoints.md](02_modal_endpoints.md) mints for the open-model endpoints. Without it the URL
+  would be a public "spend my tokens" button.
+- **A bad run costs nothing.** `sandbox_mode: "docker"` or an empty `task` is a `400` carrying the same
+  one-line message every other surface prints; nothing is spawned.
+- **The endpoint holds no Secret.** It spawns `run_task` on the deployed app — the run's container gets
+  the `decode-headless` Secret, the endpoint's does not.
+- **Hook it to anything that can POST**: a GitHub Actions step (`curl` with the two headers from
+  repository secrets), a ticket bot, Zapier, a Slack slash command. The answer is the same three places
+  as the cron's.
+
 ---
 
 ## 3. The Modal-hosted Kitaru Worker
@@ -256,8 +361,8 @@ Decode: neither KITARU_API_KEY nor KITARU_API_TOKEN is set in this container. A 
 key (ZENPROKEY_…) to the decode-kitaru-worker secret.
 ```
 
-**⏳ Pending the `ZENPROKEY_…` from §1**, these three checks are the gate — the commands are ready, the
-key is the only missing piece:
+With the `ZENPROKEY_…` from §1 in place ([`tasks/153`](../tasks/153-mint-control-plane-key-close-pending-gate.md)),
+these three checks are the gate:
 
 ```bash
 uv run kitaru worker list                     # want: a row 'decode-modal-worker', live: True
@@ -294,7 +399,6 @@ not engineered around.
 | Modal headless containers + nested sandboxes | usage-based only — you pay per run-second, nothing idle |
 | Modal-hosted Kitaru Worker | usage-based while it is up; the 24 h ceiling is also a cost ceiling |
 | Managed Kitaru workspace | someone else's uptime, not your bill |
-| **the ~$16/month GCE VM + static IP** | **$0 — gone, and it stays gone** |
 
 The only standing costs are provider tokens and whatever Modal you actually use. A deployed app with no
 running Function costs nothing, which is why both apps are left deployed.
@@ -306,24 +410,3 @@ running Function costs nothing, which is why both apps are left deployed.
   replay → compare, and which Worker runs it.
 - [04_sandboxing.md](04_sandboxing.md) — what `SANDBOX_MODE=modal` and the Hand-back actually do.
 - [ADR-0020](../docs/adr/0020-remote-headless-on-modal.md) — why this shape (and what it replaced).
-
----
-
-## Appendix — the retired self-hosted GCP stack
-
-**Retired. Nothing from it runs, and nothing from it is in the repo any more.**
-
-It was a self-hosted Kitaru 0.18 server on a GCE VM (static IP, Caddy + Let's Encrypt over `nip.io`,
-GCS artifact store, Artifact Registry, a ZenML `prod-modal` stack) running `decode run` as a durable
-Kitaru **flow** in a Modal container — [ADR-0008](../docs/adr/0008-kitaru-durable-runtime.md) +
-[ADR-0010](../docs/adr/0010-runtime-replay.md). It died with the engine it was built on: kitaru 0.22
-removed durable execution, and [ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md) replaced the whole
-thing with the managed workspace + Worker model above. [ADR-0020 §6](../docs/adr/0020-remote-headless-on-modal.md)
-then deleted every surface it named: `make deploy` / `make run-remote`, `scripts/deploy.sh`,
-`scripts/demo-multiple-attempts.sh`, `docker/flow.Dockerfile`, `scripts/kitaru_bootstrap_api_key.py`
-and the `remote` dependency group.
-
-Its traps were genuinely instructive — the containerd image store vs `umoci`, `nip.io` TLS, the GCS
-`buckets.get` permission, ZenML's build cache, the code-upload TOCTOU — and **git history** keeps them
-in full: `git log --oneline -- running_the_code/07_infra.md`, then
-`git show <commit>:running_the_code/07_infra.md`. Read them there; run none of them.

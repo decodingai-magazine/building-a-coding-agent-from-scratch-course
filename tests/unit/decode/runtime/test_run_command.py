@@ -91,6 +91,53 @@ def test_run_threads_the_task_and_defaults_into_the_runner(monkeypatch, _provide
     assert captured["model"] is None
     assert captured["repo"] is None
     assert captured["local"] is False
+    assert captured["max_requests"] is None
+
+
+# --- the request ceiling: --max-requests ----------------------------------------------------------
+
+
+def test_run_max_requests_flag_threads_into_the_runner(monkeypatch, _provider_ok):
+    captured = _recording_runner(monkeypatch, "answer")
+
+    result = CliRunner().invoke(cli, ["run", "--max-requests", "40", "list the files"])
+
+    assert result.exit_code == 0
+    assert captured["max_requests"] == 40
+
+
+def test_run_max_requests_must_be_a_positive_count(monkeypatch, _provider_ok):
+    _no_runner_tripwire(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["run", "--max-requests", "0", "list the files"])
+
+    assert result.exit_code != 0
+    assert "--max-requests" in result.output
+
+
+def test_run_past_the_ceiling_is_one_friendly_line_and_a_non_zero_exit(monkeypatch, _provider_ok):
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    def _capped(*_args, **_kwargs):
+        raise UsageLimitExceeded("The next request would exceed the request_limit of 3")
+
+    monkeypatch.setattr(runtime_mod, "run_headless_task", _capped)
+
+    result = CliRunner().invoke(cli, ["run", "--max-requests", "3", "loop"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""  # no answer: stdout stays pipe-clean
+    assert "Decode: the run stopped at its request ceiling" in result.stderr
+    assert "request_limit of 3" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_run_help_documents_the_max_requests_flag():
+    result = CliRunner().invoke(cli, ["run", "--help"])
+
+    assert result.exit_code == 0
+    assert "--max-requests" in result.output
+    assert "RUNTIME_MAX_REQUESTS" in result.output
 
 
 def _recording_unavailable_runner(monkeypatch) -> None:

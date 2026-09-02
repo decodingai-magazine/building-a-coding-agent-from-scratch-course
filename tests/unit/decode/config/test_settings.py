@@ -439,11 +439,22 @@ def test_stale_durable_flow_env_vars_are_silently_ignored(monkeypatch):
 
     s = Settings(_env_file=None)
 
-    retired = [
-        f for f in Settings.model_fields if f.startswith("runtime_") and f != "runtime_enabled"
-    ]
+    surviving = {"runtime_enabled", "runtime_max_requests"}
+    retired = [f for f in Settings.model_fields if f.startswith("runtime_") and f not in surviving]
     assert retired == []
     assert s.runtime_enabled is True  # the surviving gate is untouched by the stale entries
+
+
+def test_runtime_max_requests_is_unbounded_by_default_and_a_positive_count_when_set(monkeypatch):
+    """The headless request ceiling: unset = unbounded (REPL-identical); ``0`` is not a ceiling."""
+    assert Settings(_env_file=None).runtime_max_requests is None
+
+    monkeypatch.setenv("RUNTIME_MAX_REQUESTS", "200")
+    assert Settings(_env_file=None).runtime_max_requests == 200
+
+    monkeypatch.setenv("RUNTIME_MAX_REQUESTS", "0")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 # Sandboxing — config surface only; the default ``sandbox_mode="none"`` means no sandbox var is

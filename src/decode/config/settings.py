@@ -376,6 +376,12 @@ class Settings(BaseSettings):
     # (``RUNTIME_CHECKPOINT_STRATEGY`` / ``RUNTIME_WAIT_TIMEOUT_S``) died with the flow — a clean
     # break, no shim: a stale entry in a developer's ``.env`` is silently ignored.
     runtime_enabled: bool = True
+    # The default request ceiling for a headless run — the number of model requests after which
+    # ``decode run`` stops with one friendly line and a non-zero exit instead of looping on. ``None``
+    # (the default) is unbounded, byte-identical to the REPL; ``decode run --max-requests N``
+    # overrides it per run. A background run (a cron job, a webhook, a CI step) has nobody watching
+    # its token bill, which is what this ceiling is for.
+    runtime_max_requests: int | None = Field(None, gt=0)
     # --- Recording Seam (ADR-0019 §3) ---
     # The Kitaru agent (a UUID) recorded runs are filed under. Presence-based opt-in and decode's
     # ONLY recording knob: set it (together with the adapter client's own ``KITARU_API_URL`` /

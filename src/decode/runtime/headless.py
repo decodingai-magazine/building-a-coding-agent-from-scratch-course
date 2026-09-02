@@ -17,6 +17,12 @@ primitives — so a headless run is now a plain async agent run:
 * **Recording**: the Recording Seam (:mod:`decode.runtime.recording`) decides wrapped-vs-bare; when
   it degrades, this runner echoes its ONE notice line on stderr — stdout stays the answer alone
   (ADR-0019 §3).
+* **Request ceiling**: ``max_requests`` (``--max-requests``, else ``RUNTIME_MAX_REQUESTS``) bounds
+  the run's model requests through pydantic-ai's ``UsageLimits``; past it the run raises
+  :class:`~pydantic_ai.exceptions.UsageLimitExceeded`, which ``decode run`` turns into one friendly
+  line and a non-zero exit. The ``finally`` still reaps and hands back, so a capped run ships what it
+  did. Unset = unbounded, exactly like the REPL — nobody watches a background run's token bill, so the
+  cap is the operator's to set.
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import click
-from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai import Agent, DeferredToolRequests, UsageLimits
 
 from decode import observability
 from decode.agent.context_window import resolve_context_window
@@ -160,8 +166,28 @@ def _ship_headless_workspace(repo: str | None, session_id: str) -> None:
         logger.info("[handback] %s", result.message)
 
 
+def resolve_max_requests(flag: int | None) -> int | None:
+    """The run's request ceiling: the ``--max-requests`` flag, else ``RUNTIME_MAX_REQUESTS``, else none.
+
+    The flag is per run; the setting is the operator's default for every run (a cron job's, a
+    webhook's). Either is a positive count — a ``None`` at both levels leaves the run unbounded.
+    """
+    return flag if flag is not None else settings.runtime_max_requests
+
+
+def _usage_limits(max_requests: int | None) -> UsageLimits | None:
+    """The pydantic-ai limits for ``agent.run`` — ``None`` (no limits object at all) when unbounded."""
+    return UsageLimits(request_limit=max_requests) if max_requests is not None else None
+
+
 async def _run_task(
-    task: str, *, model: str | None, repo: str | None, local: bool, session_id: str
+    task: str,
+    *,
+    model: str | None,
+    repo: str | None,
+    local: bool,
+    session_id: str,
+    max_requests: int | None = None,
 ) -> str:
     """Run ONE task to completion through the bypass agent and return its final text (ADR-0019 §1)."""
     tool_scope = await _prepare_headless_tool_scope(repo, local)
@@ -180,7 +206,7 @@ async def _run_task(
     deps = _build_headless_deps(tool_scope, model)
     # One root span per run, keyed on the run's session id (a nullcontext when tracing is off).
     with observability.root_span(RUN_SPAN_NAME, thread_id=session_id, input=task) as span:
-        result = await agent.run(task, deps=deps)
+        result = await agent.run(task, deps=deps, usage_limits=_usage_limits(max_requests))
         observability.record_output(span, result.output)
     output = result.output
     if not isinstance(output, str):
@@ -193,7 +219,12 @@ async def _run_task(
 
 
 def run_headless_task(
-    task: str, *, model: str | None = None, repo: str | None = None, local: bool = False
+    task: str,
+    *,
+    model: str | None = None,
+    repo: str | None = None,
+    local: bool = False,
+    max_requests: int | None = None,
 ) -> str:
     """Run ``task`` headlessly and return the agent's final text — the whole runtime (ADR-0019 §1).
 
@@ -202,22 +233,33 @@ def run_headless_task(
     run gets a fresh session id that names BOTH its trace thread and its Hand-back Session Branch,
     and the ``finally`` reaps the sandbox executor and then hands the Workspace back — in that
     order, because the reap is what sweeps the sandbox filesystem into the Workspace the hand-back
-    ships. Both run on error too: a crashed run still ships its work.
+    ships. Both run on error too: a crashed run still ships its work — and so does a run that hit
+    its ``max_requests`` ceiling (``--max-requests``, else ``RUNTIME_MAX_REQUESTS``), which raises
+    :class:`~pydantic_ai.exceptions.UsageLimitExceeded` out of here for ``decode run`` to report.
     """
     session_id = str(uuid4())
+    max_requests = resolve_max_requests(max_requests)
     # A silent no-op without a key (ADR-0014 §4-5). An Environment-Bucket-hydrated OPIK_API_KEY is
     # already in ``settings`` — hydration is process-scoped, at singleton construction (ADR-0015 §5).
     observability.init_tracing()
     logger.debug(
-        "headless run starting (session_id=%s, model=%r, repo=%r, local=%s)",
+        "headless run starting (session_id=%s, model=%r, repo=%r, local=%s, max_requests=%r)",
         session_id,
         model,
         repo,
         local,
+        max_requests,
     )
     try:
         return asyncio.run(
-            _run_task(task, model=model, repo=repo, local=local, session_id=session_id)
+            _run_task(
+                task,
+                model=model,
+                repo=repo,
+                local=local,
+                session_id=session_id,
+                max_requests=max_requests,
+            )
         )
     finally:
         _reap_executor()
