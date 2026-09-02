@@ -885,11 +885,11 @@ async def run_app(
     # invisibly mid-first-turn. Every progress line prints BEFORE its (slow) await — a cold image
     # pull / large clone would otherwise hang silently. ``none`` skips the block — byte-identical.
     if settings.sandbox_mode != "none":
-        from decode.sandbox.workspace import prepare_workspace_or_empty
+        from decode.sandbox.workspace import is_populated, prepare_workspace_or_empty
 
         # (1) Clone host-side; the progress line prints only when a clone will actually happen (a
-        # non-empty Workspace is reused, never re-cloned). Failure degrades to an empty Workspace.
-        if repo is not None and not any(deps.cwd.iterdir()):
+        # populated Workspace is reused, never re-cloned). Failure degrades to an empty Workspace.
+        if repo is not None and not is_populated(deps.cwd):
             emit_line(f"Decode - cloning {repo} into the workspace…")
         _workspace, clone_error = prepare_workspace_or_empty(harness_home, repo=repo, local=local)
         if clone_error is not None:

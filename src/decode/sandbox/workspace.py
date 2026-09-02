@@ -23,6 +23,9 @@ from decode.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# decode's own namespace inside the Workspace (seeded skills today) — never "the user's project".
+_DECODE_SCAFFOLDING = ".decode"
+
 
 def workspace_dir(harness_home: Path) -> Path:
     """Resolve (and idempotently create) the host Workspace directory for ``harness_home``.
@@ -87,15 +90,39 @@ def prepare_workspace(harness_home: Path, *, repo: str | None = None, local: boo
 
     ``repo`` is passed through :func:`normalize_repo` first, so a browser URL clones the repo it
     obviously means instead of failing.
+
+    "Populated" is judged by :func:`is_populated`, which ignores decode's own ``.decode/``
+    scaffolding: an earlier no-repo session seeds ``.decode/skills`` into the Workspace, and that
+    leftover alone must not make a later ``--repo`` launch skip the clone (the model would then see
+    an empty tree). Because ``git clone`` refuses a non-empty target, the scaffolding is dropped
+    first — :func:`seed_skills` re-creates it at sandbox creation, so nothing is lost.
     """
     workspace = workspace_dir(harness_home)
     if repo is None:
         return workspace
-    if any(workspace.iterdir()):
+    if is_populated(workspace):
         logger.debug("[sandbox] workspace %s already populated — reusing (no clone)", workspace)
         return workspace
+    _drop_decode_scaffolding(workspace)
     _git_clone(normalize_repo(repo), workspace, local=local)
     return workspace
+
+
+def is_populated(workspace: Path) -> bool:
+    """``True`` when ``workspace`` holds anything besides decode's own ``.decode/`` scaffolding.
+
+    The one "is there a project here?" predicate, shared by :func:`prepare_workspace` and the REPL's
+    "cloning…" progress line so both agree on when a clone will happen.
+    """
+    return any(entry.name != _DECODE_SCAFFOLDING for entry in workspace.iterdir())
+
+
+def _drop_decode_scaffolding(workspace: Path) -> None:
+    """Remove ``<workspace>/.decode`` (regenerable seed) so ``git clone`` gets the empty target it needs."""
+    scaffolding = workspace / _DECODE_SCAFFOLDING
+    if scaffolding.is_dir() and not scaffolding.is_symlink():
+        shutil.rmtree(scaffolding)
+        logger.debug("[sandbox] dropped stale %s before cloning", scaffolding)
 
 
 def prepare_workspace_or_empty(
