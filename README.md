@@ -196,7 +196,7 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><b>3</b><br/>From a Raw Shell to a Sandboxed Coding Agent</td>
     <td align="center"><a href="https://www.decodingai.com/p/run-coding-agents-safely" target="_blank"><img src="assets/architecture_lesson_3.png" width="300" alt="Lesson 3 — from a raw shell to a sandboxed coding agent"/></a><br/><i><a href="https://www.decodingai.com/p/run-coding-agents-safely" target="_blank">Article 3</a></i></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>4</b><br/>Context Engineering for Coding Agents</td>
@@ -208,13 +208,13 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><b>5</b><br/>Agents Catalog, Subagents & Parallel Fan-out</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 2 — coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>6</b><br/>Remote Headless Mode, Recording & Replays</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 3 — coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_runtime.md">03_runtime.md</a> · <a href="running_the_code/04_sandboxing.md">04_sandboxing.md</a> · <a href="running_the_code/06_credentials.md">06_credentials.md</a> ·<br/><a href="running_the_code/07_infra.md">07_infra.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>7</b><br/>AI Evals Foundations: Benchmarks, Regression and Online</td>
@@ -226,7 +226,7 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><b>8</b><br/>AI Evals on Steroids via Replays</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 4 — coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_runtime.md">03_runtime.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a></td>
   </tr>
 </table>
 
@@ -256,7 +256,7 @@ Running the code costs **$0** if you stick to free tiers:
 | OpenRouter (alternative provider)                                                                                                                            | $0 on `:free` models (optional $10 credit raises the daily cap)                                                  |
 | [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)               | free tier                                                                                                        |
 | [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (recording + replays)  | free — a managed workspace, nothing to host yourself                                                             |
-| Modal — run headless agents + the Kitaru Worker remotely _(optional)_                                                                                        | usage-based, ~zero idle — see [07_infra.md](running_the_code/07_infra.md)                                        |
+| Modal — run headless agents + the Kitaru Worker remotely _(optional)_                                                                                        | usage-based, ~zero idle — see [04_deploy.md](running_the_code/04_deploy.md)                                        |
 
 _**Reading-only? Everything's free!**_
 
@@ -304,12 +304,10 @@ Everything lives under [`running_the_code/`](running_the_code/). One core guide,
 | [00_troubleshooting.md](running_the_code/00_troubleshooting.md)     | Every known failure, and its fix                     |
 | [01_install_and_usage.md](running_the_code/01_install_and_usage.md) | Start here                                           |
 | [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)     | Serving open models on Modal                         |
-| [03_runtime.md](running_the_code/03_runtime.md)                     | Runtime setup for headless mode                      |
-| [04_sandboxing.md](running_the_code/04_sandboxing.md)               | Docker (local) / Modal (remote) setup for sandboxing |
+| [03_sandboxing.md](running_the_code/03_sandboxing.md)               | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
+| [04_deploy.md](running_the_code/04_deploy.md)                       | Headless `decode run`, on Modal (by hand, N attempts, cron, webhook), recording & replay |
 | [05_evals.md](running_the_code/05_evals.md)                         | Benchmarks, regression probes, and online evals      |
-| [06_credentials.md](running_the_code/06_credentials.md)             | Environments & secrets, walked end-to-end            |
-| [07_infra.md](running_the_code/07_infra.md)                         | Headless agents on Modal (by hand, N attempts, cron, webhook) + the Kitaru Worker |
-| [08_evals_replays.md](running_the_code/08_evals_replays.md)         | Kitaru setup, replays & the full evals loop          |
+| [06_evals_replays.md](running_the_code/06_evals_replays.md)         | Kitaru setup, replays & the full evals loop          |
 
 ## 🤝 Sponsors
 

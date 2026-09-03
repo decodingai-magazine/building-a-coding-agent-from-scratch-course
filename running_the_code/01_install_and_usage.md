@@ -24,7 +24,7 @@ uv run decode
 
 Supported on **macOS, Linux, and Windows via [WSL2](https://learn.microsoft.com/windows/wsl/install)**. Native Windows (PowerShell / cmd) is untested — the TUI keybindings assume a POSIX shell.
 
-That's the whole list. Docker is required for a later lesson — [04_sandboxing.md](04_sandboxing.md) walks you through it. (`gcloud` is not: the self-hosted stack that needed it is retired — [07_infra.md](07_infra.md).)
+That's the whole list. Docker is required for a later lesson — [03_sandboxing.md](03_sandboxing.md) walks you through it. (`gcloud` is not: the self-hosted stack that needed it is retired — remote runs live on Modal, [04_deploy.md](04_deploy.md).)
 
 > **✅ Checkpoint** — `uv --version` prints a version. If it says `command not found`, uv is installed but not on your PATH yet: restart your shell.
 
@@ -223,6 +223,119 @@ Two skills (`/commit`, `/review-diff`) ship inside the package and work from any
 > **✅ Checkpoint** — type `/` and the completion menu lists the demos. An empty menu means decode was launched somewhere without a `.decode/skills/` directory.
 
 **Something not working?** Every known failure and its fix is in [00_troubleshooting.md](00_troubleshooting.md).
+
+## 6. Environments — `DECODE_ENV` and the Environment Bucket (optional)
+
+Everything so far read one file: `.env`. That is the whole story until a run leaves your laptop. `Settings` ([`config/settings.py`](../src/decode/config/settings.py)) is the **single source of truth** for every credential decode holds — nothing else reads one — so there is only ever one interesting question, **how does a value get *into* `Settings`?**, and `DECODE_ENV` is the whole answer ([ADR-0015](../docs/adr/0015-environment-bucket-secrets.md)):
+
+| `DECODE_ENV` | The source chain (highest first) |
+|---|---|
+| `local` (default) | process env → **`.env`** → defaults. Kitaru is never imported. |
+| `dev` / `staging` / `prod` | process env → **the Environment Bucket** (`decode-<env>`) → defaults. **`.env` is dropped from the chain entirely.** |
+
+One surface, two injection mechanisms, selected by one variable. Values land in `Settings` **only** — never `os.environ` — so a model-chosen `bash` never inherits one. `DECODE_ENV` decides **where `Settings` gets its values, and nothing else** — not session dirs, not log paths, not `MEMORY.md`. It is the bootstrap variable, so it is read out-of-band (your `.env` file, overlaid by the process env) *before* the chain is built.
+
+The Environment Bucket **is** a named [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs) secret on the managed workspace, read through the kitaru client API (`KitaruClient().api.secrets`) — the only secret call in the codebase. Two things it is **not**: the Modal Secrets the remote apps read ([04_deploy.md §4](04_deploy.md#4-secrets--two-deliberately-asymmetric) — those outrank `.env` in the process env, so `DECODE_ENV` stays `local` in a container), and the secrets a replay's process holds ([04_deploy.md §6](04_deploy.md#6-replay-a-recorded-session-on-a-kitaru-worker)).
+
+Every case below is an **A/B**: the same command with one thing flipped, and a different observable. 6a needs nothing beyond `.env`; 6b+ need `uv run kitaru status` to say `"authentication": "authenticated"` (else `uv run kitaru login https://<your-workspace>.cloudinfra.zenml.io`).
+
+### 6a. OFF — `local`, and the invariant that comes with it
+
+The claim: at the default env, decode does not import kitaru at all. It is a one-liner to check, and the same one-liner is the B side of the A/B:
+
+```bash
+uv run python -c "
+import sys, decode.cli
+print('kitaru imported:', any(m.split('.')[0] == 'kitaru' for m in sys.modules))
+from decode.config.settings import settings
+print('DECODE_ENV =', settings.decode_env, '| opik project =', settings.opik_project_name)"
+# → kitaru imported: False
+# → DECODE_ENV = local | opik project = decode-local
+
+DECODE_ENV=staging uv run python -c "
+import sys, decode.cli
+print('kitaru imported:', any(m.split('.')[0] == 'kitaru' for m in sys.modules))
+from decode.config.settings import settings
+print('DECODE_ENV =', settings.decode_env, '| opik project =', settings.opik_project_name)"
+# → kitaru imported: True
+# → DECODE_ENV = staging | opik project = decode-staging
+```
+
+Working: `False` at `local`, `True` at a remote env. That second import is the cost of an environment — the kitaru client and a network round trip to the workspace before the first prompt — and it is exactly why `local` is the default. (Recording is the *other* thing that imports kitaru, and it is opt-in too: [04_deploy.md §2](04_deploy.md#2-record-runs-as-kitaru-sessions-opt-in).) Note the free side-effect: the Opik project follows the environment (`decode-local` / `decode-staging`), so traces self-sort. Set `OPIK_PROJECT_NAME` explicitly and your value always wins.
+
+`local` reads `.env` and there is nothing to mirror, so the sync script refuses outright:
+
+```bash
+make sync-secrets ENV=local
+# → Error: `local` reads your .env directly — there is nothing to sync. Pick dev, staging or prod.
+```
+
+### 6b. ON — mirror `.env` into the Environment Bucket
+
+The bucket name is **derived** (`decode-<env>`); there is no override knob, so "`DECODE_ENV=staging` pointed at the prod bucket" is unrepresentable. One command writes it:
+
+```bash
+make sync-secrets ENV=staging       # → uv run python scripts/sync_secrets.py --env staging
+```
+
+```
+Mirroring .env → decode-staging (key names only; values are never printed).
+decode-staging does not exist yet — it will be created.
+Skipped (not a Settings field): MODAL_TOKEN_ID
+  + GEMINI_API_KEY
+  + OPENROUTER_API_KEY
+This REPLACES the entire contents of decode-staging with these 2 key(s) — the write swaps the secret's whole key set, it does not merge into it.
+Proceed? [y/N]:
+```
+
+Every line of that output is a design decision:
+
+- **Key names only, never values** — in the diff, the confirmation, even a kitaru error (its stderr is redacted before printing).
+- **REPLACES** — the write swaps the secret's *whole* key set (kitaru's PATCH does not merge), so the bucket is an exact **mirror** of your file; a key you delete from `.env` is gone on the next sync.
+- **Skipped** keys are not `Settings` fields (`MODAL_TOKEN_ID`, …) — read from `os.environ`, the bucket could never feed them ([02_modal_endpoints.md](02_modal_endpoints.md#authenticate-the-cli)).
+- **One-way** — `.env` → Kitaru, never back: dumping a prod bucket into a developer's working tree is the failure this design exists to prevent. `--yes` skips the prompt (CI).
+
+Confirm it landed — names only, and with the same command: re-run the sync and answer **N**. The diff it prints *is* the read of the bucket (`=` unchanged, `~` changed, `+` added, `-` dropped), and nothing is written:
+
+```bash
+make sync-secrets ENV=staging       # answer N at "Proceed? [y/N]" → "Aborted — nothing was written…"
+```
+
+### 6c. ON — run against the bucket, with the key absent from your environment
+
+```bash
+env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode run "say hi in exactly three words"
+env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode                    # the TUI, identically
+```
+
+Working: it answers. No provider key was in the process env, `.env` was not in the chain, and nothing was written to `os.environ` — the whole surface was hydrated into `Settings` from `decode-staging` at singleton construction, so the TUI and the headless flow behave identically (hydration is process-scoped, not a headless-only toggle).
+
+### 6d. Negatives — the four ways this must fail (and win)
+
+| Command | Working looks like |
+|---|---|
+| **Missing bucket** (or an unreachable workspace): `DECODE_ENV=prod uv run decode run "hi"` | ONE friendly stderr line, exit 1, **no traceback** — and it names the fix, not the missing key: *Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded (no such secret on the Kitaru workspace, or this machine cannot reach it — check `kitaru login` / KITARU_API_URL) — run `make sync-secrets ENV=prod` (see running_the_code/01_install_and_usage.md).* |
+| Same, in the **TUI**: `DECODE_ENV=prod uv run decode` | The **same** line, exit 1 — the REPL is guarded before it starts. Both surfaces or it isn't a config surface. |
+| **No backfill**: delete `GEMINI_API_KEY` from the bucket (`make sync-secrets ENV=staging` after removing it from `.env`), put it back in `.env`, then `env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode run "hi"` | `Decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example).` — it fails **loudly** even though the key is sitting right there in `.env`. That file is not in the chain at a remote env. **This is the point of having environments at all**: a provisioning gap must not be masked by a developer's laptop. |
+| **Process env wins**: `GEMINI_API_KEY=<a-real-key> DECODE_ENV=staging uv run decode run "hi"` | It answers, using *your* key — precedence is always `process env > (.env \| bucket) > defaults`. Handy for a one-off override; also the escape hatch when a bucket key is stale. |
+
+### 6e. Cleanup, and the automated backstop
+
+The `decode-staging` bucket is deleted from the workspace dashboard (`uv run kitaru status` prints its URL) — kitaru 0.22.x has no `secrets` CLI. Leaving it costs nothing as long as `DECODE_ENV` is `local`.
+
+Everything above is covered without network:
+
+```bash
+# Environment Bucket — the chain per DECODE_ENV, the no-backfill property, the captured failure.
+uv run pytest tests/unit/decode/config/test_env_bucket.py \
+              tests/unit/decode/config/test_settings.py \
+              tests/unit/decode/config/test_env_example_drift.py -v
+
+# The sync script — full-surface replace, key-names-only output, one-way, the local refusal.
+uv run pytest tests/unit/scripts/test_sync_secrets.py -v
+```
+
+[`test_env_example_drift.py`](../tests/unit/decode/config/test_env_example_drift.py) is why [`.env.example`](../.env.example) cannot lie: its `KEY=` lines and the `Settings` fields must match in **both** directions.
 
 ## Develop
 

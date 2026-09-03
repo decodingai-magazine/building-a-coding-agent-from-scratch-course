@@ -209,5 +209,5 @@ investigation. Ground rules baked into the operator prompt:
 6. Infra deletion (deploy.sh etc.) + local server bootstrap docs (`running_the_code/`).
 7. Kitaru eval wiring: agent registration, import target, first cohort + evaluator,
    experiment CI gate; new `eval-regression`.
-8. Skills/MCP refresh; test-suite migration; docs (`running_the_code/03_runtime.md`, `05_evals.md`,
-   `06_credentials.md`, `07_infra.md`).
+8. Skills/MCP refresh; test-suite migration; docs (`running_the_code/04_deploy.md`, `05_evals.md`,
+   `01_install_and_usage.md` §6, `03_sandboxing.md`).

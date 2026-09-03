@@ -314,7 +314,7 @@ def test_a_worker_session_creation_failure_keeps_the_traceback_in_the_log(
 
 
 def test_a_worker_403_names_the_agent_id_trap(monkeypatch, _provider_ok):
-    """The line diagnoses the misconfiguration it almost always is (08_evals_replays §7.3)."""
+    """The line diagnoses the misconfiguration it almost always is (06_evals_replays §7.3)."""
     _worker_env(monkeypatch, '{"task":"say hi"}')
     _failing_runner(
         monkeypatch,

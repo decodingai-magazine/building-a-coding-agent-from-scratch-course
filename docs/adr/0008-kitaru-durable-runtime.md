@@ -236,7 +236,7 @@ credentials-proxy surface is recorded as least-exampled (verify-first).
    > `RUNTIME_CREDENTIALS_PROXY_ENABLED=true` in a `.env` is now silently ignored (pydantic-settings does
    > not error on unknown vars); rename it. No compatibility alias ships — a teaching codebase is better
    > served by one name than by two that both work. `docs/glossary.md` and
-   > [`credentials.md`](../../running_the_code/06_credentials.md) (which walks an e2e test of both features, on and off)
+   > [`01_install_and_usage.md` §6](../../running_the_code/01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional) (which walks an e2e test of both features, on and off)
    > carry the user-facing version.
 
    > **Amendment (2026-07-13 — superseded by ADR-0015, the Environment Bucket).** Everything §5 and its

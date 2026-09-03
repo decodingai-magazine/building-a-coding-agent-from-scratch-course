@@ -6,7 +6,7 @@
 
 > **Modal does more than serve models here.** It also hosts decode's headless harness
 > (`decode-headless` — remote `decode run`s and N parallel attempts) and a Kitaru Worker
-> (`decode-kitaru-worker` — replays off your laptop): [07_infra.md](07_infra.md).
+> (`decode-kitaru-worker` — replays off your laptop): [04_deploy.md](04_deploy.md).
 
 ## TL;DR
 
@@ -85,6 +85,11 @@ modal token set --token-id <your-token-id> --token-secret <your-token-secret>
 
 These **account** tokens authenticate the CLI *and* the Modal Sandbox (`SANDBOX_MODE=modal`) —
 distinct from the **endpoint/proxy** tokens below, which are how `decode` *calls* your served model.
+They are read from `~/.modal.toml` / `os.environ` by the `modal` library itself, never by `Settings` —
+so they are not `.env` keys, `make sync-secrets` skips them, and an Environment Bucket can never carry them
+([01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional)).
+The proxy pair **is** a `Settings` field (`MODAL_PROXY_TOKEN_ID` / `_SECRET`): it rides `.env` or the bucket like
+any other key, and doubles as the auth on the headless app's webhook ([04_deploy.md §5d](04_deploy.md#5d-a-webhook-webhook)).
 
 ### Create the endpoint
 

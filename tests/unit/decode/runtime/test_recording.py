@@ -330,7 +330,7 @@ async def test_a_malformed_worker_task_id_hard_fails_at_the_seam(monkeypatch, _c
 
 
 async def test_a_403_under_a_worker_task_names_the_agent_id_trap(monkeypatch, _configured):
-    """The reproduced misconfiguration earns a hint, not just a status code (08_evals_replays §7.3).
+    """The reproduced misconfiguration earns a hint, not just a status code (06_evals_replays §7.3).
 
     A Kitaru Worker injects a TASK-scoped token; with ``KITARU_AGENT_ID`` also in its environment the
     seam probes an agents route that token cannot use and the replay dies on a 403. The fix is one

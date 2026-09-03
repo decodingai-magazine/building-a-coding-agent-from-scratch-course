@@ -28,7 +28,7 @@ this one just happens to sit in a gVisor container instead of on a laptop.
   supposed to carry it (ADR-0020 §4), but if one is ever added, every spawned replay would inherit
   it, the Recording Seam would probe an agents route the task-scoped token cannot use, and the run
   would hard-fail with ``403: Task credentials are not accepted on this route`` (ADR-0019 §3,
-  tasks/139, 08_evals_replays.md §7.3). The scrub is the backstop; the Secret's composition is the
+  tasks/139, 06_evals_replays.md §7.3). The scrub is the backstop; the Secret's composition is the
   rule.
 * **The worker spawns agent version 3** — ``decode run`` under ``SANDBOX_MODE=none`` with
   :data:`DECODE_BIN` and :data:`HARNESS_HOME` as its in-image paths, registered from a laptop with
@@ -309,7 +309,7 @@ def run_worker(
         err=True,
     )
     # Both streams are INHERITED, so the worker's own output IS the Function log — a silent worker is
-    # a healthy worker (08_evals_replays.md §7.7), and a claimed task's output shows up live.
+    # a healthy worker (06_evals_replays.md §7.7), and a claimed task's output shows up live.
     completed = subprocess.run(argv, cwd=HARNESS_HOME, env=env, check=False)
     click.echo(f"Decode: the Kitaru Worker exited with {completed.returncode}.", err=True)
     return completed.returncode

@@ -48,7 +48,7 @@ from anywhere else.
 4. **Clean break.** `runtime_secret_name`, `runtime_secret_store_config`, `runtime_secret_store_model_key` (and
    the long-retired alias `RUNTIME_CREDENTIALS_PROXY_ENABLED`) are **deleted**, with no shim and no fail-fast
    guard — a deliberate choice; `extra="ignore"` swallows stale entries silently. The removal is made loud in
-   `.env.example`, this ADR, and `06_credentials.md` instead. Deleting the model-key knob also deletes
+   `.env.example`, this ADR, and `01_install_and_usage.md` §6 instead. Deleting the model-key knob also deletes
    `resolve_provider_key_from_secret_store` / `SECRET_STORE_KEY` and the cli pre-flights built on them: the
    provider key now simply comes from `Settings`, hydrated by whichever mechanism is active.
    `build_agent(flow_mode=…)` **keeps** its `flow_mode` parameter — it still selects the keep-alive-free HTTP

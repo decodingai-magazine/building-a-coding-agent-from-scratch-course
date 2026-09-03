@@ -171,7 +171,7 @@ def remote() -> None:
     A remote run is ``decode run`` executed in a gVisor container on the deployed
     ``decode-headless`` app (ADR-0020): same console script, same answer on stdout, plus a recorded
     Kitaru Session and — with ``--sandbox-mode modal`` and a ``SANDBOX_GIT_TOKEN`` in the secret —
-    a ``decode/<session-id>`` branch on origin. Runbook: running_the_code/07_infra.md.
+    a ``decode/<session-id>`` branch on origin. Runbook: running_the_code/04_deploy.md.
     """
 
 

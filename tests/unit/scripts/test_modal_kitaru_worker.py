@@ -7,7 +7,7 @@ operator's replays depend on:
 
 * **``KITARU_AGENT_ID`` never survives into the worker's env.** With it set, the Recording Seam of
   every spawned replay probes an agents route the task-scoped token cannot use → ``403`` and a
-  hard-fail (ADR-0019 §3, tasks/139, 08_evals_replays.md §7.3). The secret is not supposed to carry
+  hard-fail (ADR-0019 §3, tasks/139, 06_evals_replays.md §7.3). The secret is not supposed to carry
   it; this is the backstop, and it says so in one line.
 * **Claims are scoped.** The Modal worker serves replay (``agent``) and ``evaluator`` work only —
   never ``importer``, whose jobs read export files that exist on the operator's laptop and nowhere

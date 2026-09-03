@@ -67,7 +67,7 @@ _REASON_MAX_CHARS = 200
 # :func:`is_recording_failure`, matched by name so the classification costs no import.
 _KITARU_PACKAGES = frozenset({"kitaru", "kitaru_pydantic_ai"})
 
-# The one diagnosis a 403 under a Worker Task earns (running_the_code/08_evals_replays.md §7): a
+# The one diagnosis a 403 under a Worker Task earns (running_the_code/06_evals_replays.md §7): a
 # Worker injects a TASK-scoped token, so an agents route is exactly the call it cannot make.
 _AGENT_ID_TRAP_HINT = (
     " A 403 here is almost always KITARU_AGENT_ID set in the Kitaru Worker's own environment: a "

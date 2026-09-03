@@ -54,7 +54,7 @@ All related choices for this feature, together:
    no `kitaru login` store; without it every run would degrade to unrecorded.)
    `decode-kitaru-worker`: `KITARU_API_URL` + `KITARU_API_KEY` + provider keys and deliberately
    **NO `KITARU_AGENT_ID`** — a configured agent id makes the Recording Seam probe an agents
-   route a task-scoped token cannot use → 403 hard-fail (tasks/139; 08_evals_replays §7.3); the
+   route a task-scoped token cannot use → 403 hard-fail (tasks/139; 06_evals_replays §7.3); the
    worker Function also scrubs the variable defensively. Secret creation is operator-side
    (`modal secret create …`), commands documented, values never committed. Secrets inject
    process env, which outranks `.env` in Settings precedence — so `DECODE_ENV` stays `local`
@@ -182,7 +182,7 @@ unwatched runs.** Extends §1 and §2; changes nothing in §3-§7.
    body — passes it straight through to that flag. Modal's `--timeout-seconds` bounds wall-clock;
    this bounds the token bill, which is the number a background run actually runs up.
 
-Also under this amendment: `running_the_code/07_infra.md` is rewritten as the runbook for the whole
+Also under this amendment: `running_the_code/07_infra.md` (since folded into `04_deploy.md`) is rewritten as the runbook for the whole
 remote surface (secrets → deploy → the four triggers → the Worker), and the GCP retirement appendix
 §7 kept is deleted along with every other retired-surface note in `running_the_code/` (Credential
 Proxy, `RUNTIME_SECRET_*`, durable-flow asides) — git history is the archive.
