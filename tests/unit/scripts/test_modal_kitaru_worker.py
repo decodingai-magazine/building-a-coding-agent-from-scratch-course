@@ -13,7 +13,7 @@ operator's replays depend on:
   never ``importer``, whose jobs read export files that exist on the operator's laptop and nowhere
   in the container.
 * **The in-image layout is ONE definition.** Agent version 3's registered run spec names
-  :data:`scripts.modal_image.DECODE_BIN` and :data:`scripts.modal_image.HARNESS_HOME` verbatim; a
+  :data:`decode.remote.image.DECODE_BIN` and :data:`decode.remote.image.HARNESS_HOME` verbatim; a
   drifted path here is not a red test, it is every replay failing to spawn on a machine nobody is
   watching.
 """
@@ -22,10 +22,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import modal
 import pytest
 
-from scripts import modal_headless as mh
-from scripts import modal_image as mi
+from decode.remote import app as mh
+from decode.remote import image as mi
 from scripts import modal_kitaru_worker as mkw
 
 AGENT_VERSION_ID = "01a02523-1097-77e1-aa74-c64e7593050b"
@@ -97,7 +98,7 @@ def image(mocker):
         "env",
     ):
         getattr(stub, step).return_value = stub
-    mocker.patch.object(mi.modal.Image, "debian_slim", return_value=stub)
+    mocker.patch.object(modal.Image, "debian_slim", return_value=stub)
     return stub
 
 

@@ -193,3 +193,37 @@ gains a FastAPI layer (the Worker's does not); the deploy-time env is one more t
 must export before `modal deploy` when they want a schedule. Not done (deliberately): a
 multi-project manifest (N different tasks × repos) and a chained experiment loop — both are
 launcher-side loops over `run_task`, and belong to their own tasks.
+
+**2026-09-03 — §10 The launcher moves under the `decode` CLI; the ephemeral app is dropped.**
+Amends §1 (the "operator scripts" framing for the headless app) and the Test surface note; changes
+nothing in §2-§9.
+
+10. **`decode remote …` replaces `modal run scripts/modal_headless.py::…`.** The headless app was
+    the one remote surface a user reached through a *different* CLI than the one they were
+    learning. It now lives in the package as `decode/remote/` — `headless.py` (every decision a
+    run is made of, `modal`-free), `image.py` (the shared image build, formerly
+    `scripts/modal_image.py`), `app.py` (the three Functions), `cli.py` (the Click group) — and is
+    driven by four subcommands: `decode remote deploy` (`modal deploy -m decode.remote.app`, from a
+    checkout), `decode remote run` (one synchronous run), `decode remote attempts [--detach]` (the
+    fan-out), `decode remote logs`. The knobs, the guards, the messages, the nightly env and the
+    webhook body are unchanged. Two consequences are deliberate:
+    - **Every trigger targets the deployment.** The `::main` ephemeral-app path is gone: `decode
+      remote run` resolves `Function.from_name("decode-headless", "run_task")` exactly like the
+      fan-out always did, so the laptop never builds an image and the four triggers share one code
+      path. The cost is one `decode remote deploy` before the first run (the fan-out, the cron and
+      the webhook already required it). A missing deployment or missing Modal credentials is ONE
+      friendly line, not a traceback.
+    - **The REPL pays nothing.** `decode.cli` registers the group, and the group imports no
+      `modal`: the import sits inside the helper that resolves the deployment, and the image
+      builder imports it inside `build_image()`. A unit test pins `modal` out of `sys.modules`
+      after `import decode.cli`, alongside the existing kitaru and sandbox-backend pins.
+    The Kitaru Worker stays an operator script (`scripts/modal_kitaru_worker.py`): it is
+    operator-only tooling with no user-facing verb, and it imports the image builder from
+    `decode.remote.image` now. The registration drift guard reads the in-image paths from there
+    too.
+
+**Consequences.** Gained: one CLI for the whole course, `decode --help` lists the remote surface,
+and the launcher is unit-tested through Click like `decode run` is. Cost: the deploy must run from
+a repo checkout (`uv_sync` needs the lockfile; the source layer needs `src/`) — an installed wheel
+gets one friendly line saying so. Not done (deliberately): moving the Worker under `decode remote
+worker` — no second caller yet.

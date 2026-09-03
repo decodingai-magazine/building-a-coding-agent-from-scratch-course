@@ -41,7 +41,7 @@ uv run modal secret create decode-kitaru-worker GEMINI_API_KEY="$GEMINI_API_KEY"
   KITARU_API_KEY="$KEY" --force                                   # deliberately NO KITARU_AGENT_ID
 
 # 4. verify — a recorded Modal run, a live Modal worker, one decode@3 replay
-uv run modal run scripts/modal_headless.py::main --task "say hello" --sandbox-mode none
+uv run decode remote run "say hello" --sandbox-mode none
 uv run kitaru session list --agent decode --origin recorded --size 3
 uv run modal deploy scripts/modal_kitaru_worker.py
 uv run modal run --detach scripts/modal_kitaru_worker.py --concurrency 4 --agent-version-id 01a029bf-0ae3-7de1-b594-4bc71a7ba91a

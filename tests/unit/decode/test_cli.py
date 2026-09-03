@@ -76,9 +76,10 @@ def test_cli_runs_and_exits_zero():
     assert "Decode" in result.output
 
 
-def test_run_is_the_only_subcommand():
-    """ADR-0019 §1: ``run`` is the whole headless surface — ``replay`` died with the Durable Flow."""
-    assert set(cli.commands) == {"run"}
+def test_run_and_remote_are_the_only_subcommands():
+    """ADR-0019 §1: ``run`` is the whole local headless surface (``replay`` died with the Durable
+    Flow); ``remote`` is its Modal launcher (ADR-0020)."""
+    assert set(cli.commands) == {"run", "remote"}
 
 
 def test_run_subcommand_is_registered_without_breaking_the_bare_repl(mocker):

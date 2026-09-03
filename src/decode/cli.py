@@ -27,6 +27,7 @@ from decode.config.settings import (  # noqa: E402
     settings,
 )
 from decode.permissions.types import PermissionMode  # noqa: E402
+from decode.remote.cli import remote  # noqa: E402
 from decode.tui.app import run_app  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -586,3 +587,8 @@ def run(
 
 if __name__ == "__main__":
     cli()
+
+
+# ``decode remote …`` — the Modal launch surface (ADR-0020). Registered here, defined in its own
+# package: the group imports no ``modal`` until a subcommand talks to the deployment.
+cli.add_command(remote)

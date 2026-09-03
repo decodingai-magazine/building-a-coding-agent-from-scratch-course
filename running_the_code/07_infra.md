@@ -11,7 +11,7 @@
 | Piece | What | Launch it with |
 |---|---|---|
 | **Managed [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) workspace** | `https://f5ee9622-kitaru.cloudinfra.zenml.io` — recorded **Kitaru Sessions**, **Cohorts**, **Replays**, registered **Agent Versions**, the **Environment Bucket** secret. Someone else's uptime; it executes nothing. | `uv run kitaru status` · [03_runtime.md](03_runtime.md), [06_credentials.md](06_credentials.md) |
-| **Modal Headless App** (`decode-headless`) | `scripts/modal_headless.py` — a Function that runs `decode run` as a **subprocess of the same console script your laptop runs**, in a gVisor container. Four ways in: one synchronous run, N fire-and-forget attempts at one task → N comparable `decode/<session-id>` branches, a **nightly cron**, a **webhook**. Sandbox `none` / `modal` only; `docker` is rejected client-side (no Docker daemon on Modal). | [§2](#2-run-the-headless-app) |
+| **Modal Headless App** (`decode-headless`) | `decode.remote.app` — a Function that runs `decode run` as a **subprocess of the same console script your laptop runs**, in a gVisor container. Launched from the `decode` CLI itself: `decode remote deploy` once, then `decode remote run` (one synchronous run), `decode remote attempts` (N fire-and-forget attempts at one task → N comparable `decode/<session-id>` branches), a **nightly cron**, a **webhook**. Sandbox `none` / `modal` only; `docker` is rejected client-side (no Docker daemon on Modal). | [§2](#2-run-the-headless-app) |
 | **Modal-hosted Kitaru Worker** (`decode-kitaru-worker`) | `scripts/modal_kitaru_worker.py` — a long-running Function running `kitaru worker start`, so **replays execute off your laptop**. Claims `agent` + `evaluator` work and spawns **agent version 3**. Dies at Modal's 24 h function ceiling; you re-launch it with one command. | `uv run modal deploy scripts/modal_kitaru_worker.py` + `uv run modal run --detach …` — [§3](#3-the-modal-hosted-kitaru-worker) |
 | **Kitaru Worker on your laptop** | the other, unchanged option: `kitaru worker start` in *your* shell, spawning **agent version 2** (`SANDBOX_MODE=docker`, repo clone). The two Workers coexist — scope their claims so they don't race. | [08_evals_replays.md §5](08_evals_replays.md#5-start-a-worker-the-thing-that-executes-replays) |
 | **Agent Version** | the immutable run spec a Worker spawns. **v2** = laptop/docker; **v3** = `SANDBOX_MODE=none` with the in-image paths `/.uv/.venv/bin/decode` + `/harness` (the container *is* the isolation). Both registered by `scripts/register_kitaru_agent.py`. | [§3](#3-the-modal-hosted-kitaru-worker) |
@@ -19,9 +19,9 @@
 | **Opik** | tracing + evals, untouched by any of this ([ADR-0014](../docs/adr/0014-opik-observability.md)). | [05_evals.md](05_evals.md) |
 
 **Both Modal apps build their image in code** ([ADR-0020 §2](../docs/adr/0020-remote-headless-on-modal.md)) —
-`scripts/modal_image.py`, shared verbatim by both: `debian_slim` + `uv_sync` for the locked deps, then
+`decode.remote.image`, shared verbatim by both: `debian_slim` + `uv_sync` for the locked deps, then
 this repo's source baked on top. No Dockerfile, no registry, no build cache to fight. The price of
-baking source at build time: **a code change needs a re-`modal deploy` before the next run**.
+baking source at build time: **a code change needs a re-`decode remote deploy` before the next run**.
 
 Nothing here is required to use decode. Recording is opt-in, remote execution is opt-in, and with
 `KITARU_AGENT_ID` unset and no Modal secret the whole page is irrelevant.
@@ -116,7 +116,7 @@ Then load it and re-verify:
 uv run modal secret create decode-kitaru-worker \
   KITARU_API_URL="$KITARU_API_URL" GEMINI_API_KEY="$GEMINI_API_KEY" \
   KITARU_API_KEY="<ZENPROKEY_…>" --force        # still no KITARU_AGENT_ID
-uv run modal run scripts/modal_headless.py::main --task "say hello" --sandbox-mode none
+uv run decode remote run "say hello" --sandbox-mode none
 uv run kitaru session list --agent decode --origin recorded --size 3      # the run is listed
 ```
 
@@ -124,12 +124,13 @@ uv run kitaru session list --agent decode --origin recorded --size 3      # the 
 
 ## 2. Run the headless app
 
-Four triggers, one Function. The first needs nothing deployed; the other three spawn against the
-**deployed** app, so deploy once first (this is also what builds the shared image — and what you must
-re-run after any change to decode's source, since the source is baked in):
+Four triggers, one Function, all of them against the **deployed** app — the laptop never builds an
+image or runs an ephemeral app. So deploy once first (this is also what builds the shared image — and
+what you must re-run after any change to decode's source, since the source is baked in). `decode
+remote deploy` wraps `modal deploy -m decode.remote.app` and must run from a checkout of this repo:
 
 ```bash
-uv run modal deploy scripts/modal_headless.py
+uv run decode remote deploy
 ```
 
 Want, at the end of the output:
@@ -144,19 +145,18 @@ Want, at the end of the output:
 `run_task` is the run; `nightly` is the cron (inert until you deploy with a schedule, §2c); `webhook`
 is the POST endpoint (🔑 = proxy auth on, §2d). Every trigger takes the same knobs — `task`, `repo`,
 `sandbox-mode` (`none` | `modal`), `model`, `max-requests`, `timeout-seconds` — and every run leaves the
-same three traces: the answer in `modal app logs decode-headless`, a `decode/<session-id>` branch on
+same three traces: the answer in `decode remote logs`, a `decode/<session-id>` branch on
 origin (`modal` mode + `SANDBOX_GIT_TOKEN`), and a recorded Kitaru Session (`kitaru session list --agent
 decode --origin recorded`).
 
-### 2a. One synchronous run (`::main`)
+### 2a. One synchronous run (`decode remote run`)
 
 ```bash
-uv run modal run scripts/modal_headless.py::main \
-  --task "run bash to print uname -a and pwd and report both" --sandbox-mode none
+uv run decode remote run "run bash to print uname -a and pwd and report both" --sandbox-mode none
 ```
 
-**`::main` is not optional.** The file has two local entrypoints (`main` and `attempts`), so a bare
-`modal run scripts/modal_headless.py` cannot pick one.
+The answer streams to stdout as the container produces it; the summary line lands on stderr. Not
+deployed yet? One friendly line names `decode remote deploy` and nothing is billed.
 
 Want: a **gVisor Linux** kernel and an in-container path — that is the proof the run happened on Modal
 and not on your laptop:
@@ -185,20 +185,19 @@ bounds the token bill — the number a run nobody is watching actually runs up
 The docker rejection costs nothing:
 
 ```bash
-$ uv run modal run scripts/modal_headless.py::main --task "print uname" --sandbox-mode docker ; echo EXIT=$?
-Decode: sandbox mode 'docker' cannot run on Modal — a Modal container has no Docker daemon. Use
+$ uv run decode remote run "print uname" --sandbox-mode docker ; echo EXIT=$?
+Error: Decode: sandbox mode 'docker' cannot run on Modal — a Modal container has no Docker daemon. Use
 --sandbox-mode none … or --sandbox-mode modal …
 EXIT=1
 ```
 
-### 2b. N attempts at one task, in parallel (`::attempts`)
+### 2b. N attempts at one task, in parallel (`decode remote attempts`)
 
-The attempts spawn against the **deployed** Function, never the ephemeral one — that is what makes
+The attempts spawn against the **deployed** Function, never an ephemeral one — that is what makes
 `--detach` real:
 
 ```bash
-uv run modal run scripts/modal_headless.py::attempts \
-  --task "add a hello line to README and commit" \
+uv run decode remote attempts "add a hello line to README and commit" \
   --repo https://github.com/you/your-repo.git --attempts 3 --sandbox-mode modal
 ```
 
@@ -229,10 +228,9 @@ compared as the branches they ship). Add `--detach` to print the N function-call
 laptop closed:
 
 ```bash
-uv run modal run scripts/modal_headless.py::attempts --task "…" --repo <url> \
-  --attempts 2 --sandbox-mode modal --detach
+uv run decode remote attempts "…" --repo <url> --attempts 2 --sandbox-mode modal --detach
 # come back later:
-modal app logs decode-headless
+uv run decode remote logs                      # = modal app logs decode-headless
 git ls-remote <url> 'refs/heads/decode/*'
 uv run kitaru session list --agent decode --origin recorded
 ```
@@ -244,13 +242,14 @@ Hand-back fails soft ([ADR-0016 §4](../docs/adr/0016-drop-credential-proxy.md))
 
 ### 2c. A nightly cron job (`nightly`)
 
-§2a and §2b start with you typing `modal run`. This trigger and the next start without you
+§2a and §2b start with you typing `decode remote`. This trigger and the next start without you
 ([ADR-0020 Amendment §8](../docs/adr/0020-remote-headless-on-modal.md)); both are thin callers of the
-same `run_task`, so a scheduled or POSTed run is byte-for-byte a `::main` nobody had to type.
+same `run_task`, so a scheduled or POSTed run is byte-for-byte a `decode remote run` nobody had to
+type.
 
-The schedule and the job are **deploy-time** configuration, read from your shell by `modal deploy` and
-shipped with the deployment — no `DECODE_NIGHTLY_CRON` exported, no schedule registered, and a plain
-`modal deploy` is exactly what it was before:
+The schedule and the job are **deploy-time** configuration, read from your shell by `decode remote
+deploy` and shipped with the deployment — no `DECODE_NIGHTLY_CRON` exported, no schedule registered,
+and a plain deploy is exactly what it was before:
 
 ```bash
 DECODE_NIGHTLY_CRON="0 2 * * *" \
@@ -258,14 +257,14 @@ DECODE_NIGHTLY_TASK="Find every TODO comment, fix the ones under 20 lines, commi
 DECODE_NIGHTLY_REPO=https://github.com/you/your-repo.git \
 DECODE_NIGHTLY_SANDBOX_MODE=modal \
 DECODE_NIGHTLY_MAX_REQUESTS=120 \
-uv run modal deploy scripts/modal_headless.py
+uv run decode remote deploy
 ```
 
 | Variable | Meaning |
 |---|---|
 | `DECODE_NIGHTLY_CRON` | crontab syntax, **UTC** — the switch: unset it and no schedule exists |
 | `DECODE_NIGHTLY_TASK` | the prompt; required once a cron is set (a cron with no task dies on the laptop, not at 2am) |
-| `DECODE_NIGHTLY_REPO` / `_SANDBOX_MODE` / `_MODEL` | the same knobs as `::main`'s `--repo` / `--sandbox-mode` / `--model` |
+| `DECODE_NIGHTLY_REPO` / `_SANDBOX_MODE` / `_MODEL` | the same knobs as `decode remote run`'s `--repo` / `--sandbox-mode` / `--model` |
 | `DECODE_NIGHTLY_MAX_REQUESTS` / `_TIMEOUT_SECONDS` | the run's two ceilings — tokens and clock |
 
 The job travels as a `modal.Secret.from_dict` env on the `nightly` Function (a Secret is simply how a
@@ -276,7 +275,7 @@ names back. Want, right after the deploy:
 Decode: nightly job registered — cron='0 2 * * *' (UTC) task='Find every TODO comment, …'
 ```
 
-Then, each morning: `modal app logs decode-headless` for the answer, `git ls-remote <repo>
+Then, each morning: `decode remote logs` for the answer, `git ls-remote <repo>
 'refs/heads/decode/*'` for the branch (`modal` mode + `SANDBOX_GIT_TOKEN`), `uv run kitaru session list
 --agent decode --origin recorded` for the recording. Modal's dashboard has a *run now* button on any
 scheduled Function if you don't want to wait for 2am. To stop the schedule, redeploy without
@@ -286,7 +285,7 @@ scheduled Function if you don't want to wait for 2am. To stop the schedule, rede
 
 The deploy output names the URL (`https://<workspace>--decode-headless-webhook.modal.run`); the proxy
 token pair comes from [02_modal_endpoints.md](02_modal_endpoints.md) (`MODAL_PROXY_TOKEN_ID` /
-`_SECRET` in your `.env`). The body takes the same knobs as `::main` — only `task` is required — the
+`_SECRET` in your `.env`). The body takes the same knobs as `decode remote run` — only `task` is required — the
 endpoint `spawn`s the run and answers at once; the run itself takes minutes, the caller waits seconds:
 
 ```bash
@@ -335,7 +334,7 @@ uv run kitaru agent version list decode
 
 `--skip-bin-check` means "these paths live in the worker image" — the script then never stats, resolves
 or creates them (they must be absolute for exactly that reason). The paths come from
-`scripts/modal_image.py`, so the image and the registration cannot drift apart. **Pin `decode@3` when
+`decode.remote.image`, so the image and the registration cannot drift apart. **Pin `decode@3` when
 you replay, never "latest":** `latest_version` reads 4, and version 4 is a byte-identical duplicate of 3
 created by accident during QA (Kitaru versions are immutable, so it stays).
 

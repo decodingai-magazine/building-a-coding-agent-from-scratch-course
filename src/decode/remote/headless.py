@@ -1,67 +1,25 @@
-"""The Modal Headless App — remote ``decode run``s, fired from a laptop (ADR-0020 §1-4).
+"""The Modal Headless App's pure helpers — everything one remote run is decided by (ADR-0020 §1-4).
 
-    # one synchronous run, ephemeral app, nothing to deploy first (``::main`` is REQUIRED — this file
-    # has two local entrypoints, so modal cannot pick one for you):
-    uv run modal run scripts/modal_headless.py::main --task "…" [--repo …] [--sandbox-mode none|modal]
+Modal-free on purpose: no ``modal`` import, no container, no network. This module turns one
+operator invocation into the exact ``decode run`` subprocess the container executes, and turns that
+subprocess's output back into the small payload the laptop reads. Two callers:
 
-    # publish the app once (the image is built HERE, and every spawn below shares it):
-    uv run modal deploy scripts/modal_headless.py
+* :mod:`decode.remote.app` — the Modal Functions (``run_task`` / ``nightly`` / ``webhook``) run
+  :func:`execute_run` inside the container and validate their inputs with the same guards;
+* :mod:`decode.remote.cli` — the ``decode remote`` subcommands validate on the LAPTOP, before any
+  ``.remote()`` / ``.spawn()``, so an unrunnable request costs one line and no container.
 
-    # N independent attempts at ONE task → N comparable decode/<session-id> branches:
-    uv run modal run scripts/modal_headless.py::attempts \\
-        --task "…" --repo <url> --attempts 5 --sandbox-mode modal [--detach]
+Both read the same constants, so the laptop's rejection and the container's are one message.
 
-    # no laptop at all — a nightly cron job (registered at deploy, from these env vars) …
-    DECODE_NIGHTLY_CRON="0 2 * * *" DECODE_NIGHTLY_TASK="…" [DECODE_NIGHTLY_REPO=<url>] \\
-        uv run modal deploy scripts/modal_headless.py
-    # … and a webhook any system can POST a task to (the URL is printed by ``modal deploy``):
-    curl -X POST "$WEBHOOK_URL" -H "Modal-Key: $MODAL_PROXY_TOKEN_ID" \\
-        -H "Modal-Secret: $MODAL_PROXY_TOKEN_SECRET" -H 'content-type: application/json' \\
-        -d '{"task": "…", "repo": "<url>", "sandbox_mode": "modal"}'
-
-An operator script, not library code: it lives outside the ``decode`` import graph, prints with
-``click.echo``, and its Function runs the SAME console script a laptop runs — ``decode run`` as a
-subprocess — so remote behavior cannot drift from local behavior (ADR-0020 §1).
-
-* **``attempts`` spawns against the DEPLOYED app**, never this file's ephemeral one: ``modal run``
-  stops its ephemeral app when the entrypoint returns, which would cancel the spawned calls the
-  instant ``--detach`` printed their ids. Hence the one-time ``modal deploy`` — which is also what
-  makes the fan-out free of the warm-up run and the submit stagger its ZenML-era ancestor
-  (``demo-multiple-attempts.sh``) needed: one image, built at deploy, N containers.
-
-* **The image is built in-app** (ADR-0020 §2) by :mod:`scripts.modal_image`, shared verbatim with the
-  Modal-hosted Kitaru Worker (``scripts/modal_kitaru_worker.py``): ``debian_slim`` +
-  ``Image.uv_sync()`` for the locked dependencies, then this repo's source baked on top and installed
-  with ``--no-deps``. No checked-in image recipe, no registry. Deps and source are separate layers, so
-  editing decode rebuilds only the last two.
-  The console script therefore exists at ONE deterministic absolute path, :data:`DECODE_BIN` — the
-  same one the Worker's Agent Version is registered with.
 * **Sandbox modes: ``none`` and ``modal`` only** (ADR-0020 §3). ``none`` — the gVisor container is
   the isolation; a ``repo`` is cloned by the HARNESS into :data:`REPO_CLONE_DIR` and decode launches
   with that cwd, so decode never sees ``--repo`` and its ADR-0012 §3 guard stays intact (and nothing
   ships back: the clone dies with the container). ``modal`` — ``--repo`` passes through to decode,
   which clones natively into a nested Modal Sandbox and hands ``decode/<session-id>`` back.
   ``docker`` is rejected with ONE friendly line, client-side, before a container ever starts.
-* **Secrets** ride the ``decode-headless`` :class:`modal.Secret` — provider keys, ``KITARU_API_URL`` /
-  ``KITARU_API_KEY`` / ``KITARU_AGENT_ID`` (the Recording Seam degrades gracefully without them), and
-  an optional ``SANDBOX_GIT_TOKEN``. Secret env outranks ``.env`` in Settings precedence, so
-  ``DECODE_ENV`` stays ``local`` and no Environment Bucket is used on Modal (ADR-0020 §4). Create it
-  once, values never committed::
-
-      modal secret create decode-headless GEMINI_API_KEY=… KITARU_API_URL=… KITARU_API_KEY=… \\
-          KITARU_AGENT_ID=… [SANDBOX_GIT_TOKEN=…]
-
 * **The token is never an argument.** ``SANDBOX_GIT_TOKEN`` is mirrored to ``$GITHUB_TOKEN`` and read
   at push time by the same credential helper decode itself uses (ADR-0016 §2) — no argv, no log line.
-* **Two triggers need no laptop** (ADR-0020 Amendment §8). ``nightly`` is a Modal cron: the schedule
-  and the job (task / repo / mode / ceilings) are read from ``DECODE_NIGHTLY_*`` on the laptop AT
-  DEPLOY and travel with the deployment (schedule on the Function, job as a ``Secret.from_dict``
-  env) — no env, no schedule, so a plain ``modal deploy`` never starts billing anyone's nights.
-  ``webhook`` is a POST endpoint behind Modal proxy auth that ``spawn``s ``run_task`` and returns
-  the call id at once: a CI step, a ticket bot, a Zapier hook — anything that can POST — becomes a
-  headless run. Both just call :func:`run_task`; nothing about a run is re-implemented.
-* **``--max-requests``** rides through every surface (``main`` / ``attempts`` / nightly's
-  ``DECODE_NIGHTLY_MAX_REQUESTS`` / the webhook body) to ``decode run --max-requests``: a run nobody
+* **``--max-requests``** rides through every surface to ``decode run --max-requests``: a run nobody
   watches gets a request ceiling, not just Modal's wall-clock one.
 """
 
@@ -72,22 +30,20 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import click
-import modal
 from pydantic import BaseModel, Field
 
-from scripts.modal_image import DECODE_BIN, HARNESS_HOME, build_image
+from decode.remote.image import DECODE_BIN, HARNESS_HOME
 
 # --- the app, and the fixed layout of its image ----------------------------------------------------
 
 APP_NAME = "decode-headless"
 
-# The Modal Secret this Function runs with (ADR-0020 §4); operator-created, never committed.
+# The Modal Secret the run Function runs with (ADR-0020 §4); operator-created, never committed.
 SECRET_NAME = "decode-headless"
 
 # The child's log file — read back after the run for the session id and the shipped branch.
@@ -99,17 +55,6 @@ REPO_CLONE_DIR = "/scratch/repo"
 # What the ``webhook`` endpoint needs on top of decode's own deps: Modal serves a
 # ``fastapi_endpoint`` through FastAPI, which decode does not depend on.
 WEB_PACKAGES = ("fastapi[standard]>=0.115",)
-
-# The image is built by ``scripts/modal_image.py``, shared with the Modal-hosted Kitaru Worker
-# (``scripts/modal_kitaru_worker.py``) — one build, one layout, one set of absolute paths. The
-# webhook's FastAPI is the only layer the two apps do not share; the locked-deps layer below it is.
-IMAGE = build_image(extra_dirs=(REPO_CLONE_DIR,), extra_packages=WEB_PACKAGES)
-
-# Re-exported: the in-image paths are read from HERE by the Agent Version registration's drift guard
-# (``scripts/register_kitaru_agent.py``, task 144) — they are defined once, in ``scripts.modal_image``.
-__all__ = ["DECODE_BIN", "HARNESS_HOME"]
-
-app = modal.App(APP_NAME)
 
 # --- the contract of one run -----------------------------------------------------------------------
 
@@ -163,9 +108,10 @@ UNPUSHED_BRANCH_NOTE = (
 )
 
 # The env var git and ``gh`` read, and the credential helper that feeds it to git's HTTPS transport
-# at PUSH time — copied verbatim from ``decode.sandbox.workspace`` (scripts live outside decode's
-# import graph); a unit test asserts the two never drift. The token is expanded by the helper's own
-# shell, so it is never an argv element and never a formatted log line (ADR-0016 §2).
+# at PUSH time — copied verbatim from ``decode.sandbox.workspace`` (this module must stay free of
+# the sandbox package's imports); a unit test asserts the two never drift. The token is expanded by
+# the helper's own shell, so it is never an argv element and never a formatted log line
+# (ADR-0016 §2).
 GIT_TOKEN_ENV = "GITHUB_TOKEN"
 GIT_CREDENTIAL_HELPER_VALUE = (
     '!f() { echo username=x-access-token; echo "password=$GITHUB_TOKEN"; }; f'
@@ -176,10 +122,10 @@ GIT_TOKEN_SETTING = "SANDBOX_GIT_TOKEN"
 
 # --- triggers without a laptop: the nightly cron and the webhook (ADR-0020 Amendment §8) ------------
 
-# The nightly job is DEPLOY-TIME configuration, read from the laptop's env by ``modal deploy``: the
-# schedule lands on the Function, the job's parameters travel as a ``modal.Secret.from_dict`` env
-# (so the container reads the SAME names back). Absent on the laptop → no schedule is registered and
-# the deployment is exactly what it was before this trigger existed.
+# The nightly job is DEPLOY-TIME configuration, read from the laptop's env by ``decode remote
+# deploy``: the schedule lands on the Function, the job's parameters travel as a
+# ``modal.Secret.from_dict`` env (so the container reads the SAME names back). Absent on the laptop
+# → no schedule is registered and the deployment is exactly what it was before this trigger existed.
 NIGHTLY_CRON_ENV = "DECODE_NIGHTLY_CRON"  # crontab syntax, UTC — e.g. "0 2 * * *"
 NIGHTLY_TASK_ENV = "DECODE_NIGHTLY_TASK"
 NIGHTLY_REPO_ENV = "DECODE_NIGHTLY_REPO"
@@ -207,7 +153,8 @@ NIGHTLY_UNCONFIGURED_MESSAGE = (
 )
 NIGHTLY_REGISTERED_FORMAT = "Decode: nightly job registered — cron={cron!r} (UTC) task={task!r}."
 
-# The webhook's request body: the same knobs as ``main``, as JSON. ``task`` is the only required key.
+# The webhook's request body: the same knobs as ``decode remote run``, as JSON. ``task`` is the only
+# required key.
 WEBHOOK_EMPTY_TASK_MESSAGE = 'Decode: the webhook body needs a non-empty "task".'
 
 # --- N attempts at one task (ADR-0020 §1) -----------------------------------------------------------
@@ -246,10 +193,6 @@ NO_REPO_FORMAT = (
 NONE_MODE_ATTEMPTS_WARNING = (
     "Decode: --sandbox-mode none has no Hand-back, so these attempts will produce answers only and "
     "no branch to compare; use --sandbox-mode modal to ship one branch per attempt."
-)
-NOT_DEPLOYED_FORMAT = (
-    "Decode: the {app_name} app is not deployed, so there is nothing to spawn — run "
-    "`uv run modal deploy scripts/modal_headless.py` once, then re-run this command ({error})."
 )
 
 # The child's session id is a DEBUG line; the Hand-back branch is an INFO one. The branch is
@@ -539,14 +482,12 @@ def compare_commands(results: Sequence[Mapping[str, object]], *, repo: str | Non
     return lines
 
 
-def detach_lines(
-    call_ids: Sequence[str], *, repo: str | None = None, app_name: str = APP_NAME
-) -> list[str]:
+def detach_lines(call_ids: Sequence[str], *, repo: str | None = None) -> list[str]:
     """What a fire-and-forget launch leaves the operator with: the call ids and where to look later."""
     lines = [f"Decode: spawned {len(call_ids)} attempt(s) and stopped waiting (--detach)."]
     lines += [f"  attempt {index}: {call_id}" for index, call_id in enumerate(call_ids, start=1)]
     lines.append("Come back to them with:")
-    lines.append(f"  modal app logs {app_name}")
+    lines.append("  decode remote logs")
     if repo:
         lines.append(f"  git ls-remote {repo} 'refs/heads/decode/*'")
     lines.append("  uv run kitaru session list --agent decode --origin recorded")
@@ -558,6 +499,140 @@ def attempts_exit_code(results: Sequence[Mapping[str, object]]) -> int:
     return 0 if any(result.get("exit_code") == 0 for result in results) else 1
 
 
+# --- pure helpers: everything the nightly cron and the webhook are decided by -----------------------
+
+
+def nightly_cron(env: Mapping[str, str]) -> str | None:
+    """The crontab string to register at deploy — from :data:`NIGHTLY_CRON_ENV` on the LAPTOP — or none.
+
+    Read at import time of the app module, which is deploy time; inside the container the variable
+    is absent (it is not part of the job env), which is fine: the schedule already lives on the
+    deployed Function. The app wraps it in ``modal.Cron``; this stays a string so it is testable
+    without ``modal``.
+    """
+    cron = env.get(NIGHTLY_CRON_ENV, "").strip()
+    return cron or None
+
+
+def nightly_job_env(env: Mapping[str, str]) -> dict[str, str]:
+    """The job's parameters to ship with the deployment — every :data:`NIGHTLY_JOB_ENVS` that is set.
+
+    This is what becomes the ``Secret.from_dict`` env of the nightly Function, so the container reads
+    the same names back. Values are configuration, not credentials — a Modal Secret is simply the
+    mechanism that carries a deploy-time env into a container.
+    """
+    return {name: env[name] for name in NIGHTLY_JOB_ENVS if env.get(name, "").strip()}
+
+
+def _positive_int_error(env: Mapping[str, str], name: str) -> str | None:
+    value = env.get(name, "").strip()
+    if not value:
+        return None
+    if not value.isdigit() or int(value) < 1:
+        return NIGHTLY_BAD_COUNT_FORMAT.format(env=name, value=value)
+    return None
+
+
+def nightly_config_error(env: Mapping[str, str]) -> str | None:
+    """ONE friendly line if the nightly job cannot be deployed as configured, else ``None``.
+
+    Checked on the LAPTOP at deploy, because the alternative is a schedule that fires at 2am into a
+    container that immediately exits — money and a night wasted before anyone reads the log.
+    Only enforced when a schedule is requested: without :data:`NIGHTLY_CRON_ENV` the job env is inert.
+    """
+    if nightly_cron(env) is None:
+        return None
+    if not env.get(NIGHTLY_TASK_ENV, "").strip():
+        return NIGHTLY_NO_TASK_FORMAT.format(
+            cron_env=NIGHTLY_CRON_ENV,
+            task_env=NIGHTLY_TASK_ENV,
+            repo_env=NIGHTLY_REPO_ENV,
+            mode_env=NIGHTLY_SANDBOX_MODE_ENV,
+        )
+    mode_error = sandbox_mode_error(env.get(NIGHTLY_SANDBOX_MODE_ENV, DEFAULT_SANDBOX_MODE))
+    if mode_error is not None:
+        return mode_error
+    for name in (NIGHTLY_MAX_REQUESTS_ENV, NIGHTLY_TIMEOUT_ENV):
+        count_error = _positive_int_error(env, name)
+        if count_error is not None:
+            return count_error
+    return None
+
+
+def nightly_run_kwargs(env: Mapping[str, str]) -> dict[str, object] | None:
+    """The ``run_task`` kwargs the nightly job runs with, read back from its env — or ``None``.
+
+    ``None`` means the deployment carried no task (the guard above only fires when a schedule was
+    requested, so a Function deployed without one can still be invoked by hand and must say why it
+    did nothing).
+    """
+    task = env.get(NIGHTLY_TASK_ENV, "").strip()
+    if not task:
+        return None
+    max_requests = env.get(NIGHTLY_MAX_REQUESTS_ENV, "").strip()
+    timeout = env.get(NIGHTLY_TIMEOUT_ENV, "").strip()
+    return {
+        "task": task,
+        "repo": env.get(NIGHTLY_REPO_ENV, "").strip() or None,
+        "sandbox_mode": env.get(NIGHTLY_SANDBOX_MODE_ENV, "").strip() or DEFAULT_SANDBOX_MODE,
+        "model": env.get(NIGHTLY_MODEL_ENV, "").strip() or None,
+        "max_requests": int(max_requests) if max_requests else None,
+        "timeout_seconds": int(timeout) if timeout else DEFAULT_TIMEOUT_SECONDS,
+    }
+
+
+class WebhookRequest(BaseModel):
+    """One POSTed run: the same knobs ``decode remote run`` takes on the command line, as JSON."""
+
+    task: str
+    repo: str | None = None
+    sandbox_mode: str = DEFAULT_SANDBOX_MODE
+    model: str | None = None
+    max_requests: int | None = Field(default=None, ge=1)
+    timeout_seconds: int = Field(default=DEFAULT_TIMEOUT_SECONDS, ge=1)
+
+
+def webhook_request_error(request: WebhookRequest) -> str | None:
+    """ONE friendly line if the POSTed run cannot be spawned, else ``None``.
+
+    The same mode guard as every other surface (``docker`` costs one line, no container) plus an
+    empty task — the one thing the schema cannot rule out.
+    """
+    if not request.task.strip():
+        return WEBHOOK_EMPTY_TASK_MESSAGE
+    return sandbox_mode_error(request.sandbox_mode)
+
+
+def webhook_spawn_kwargs(request: WebhookRequest) -> dict[str, object]:
+    """The ``run_task`` kwargs one webhook request spawns with."""
+    return {
+        "task": request.task.strip(),
+        "repo": request.repo,
+        "sandbox_mode": request.sandbox_mode,
+        "model": request.model,
+        "max_requests": request.max_requests,
+        "timeout_seconds": request.timeout_seconds,
+    }
+
+
+def webhook_response(call_id: str, request: WebhookRequest) -> dict[str, object]:
+    """What the webhook answers at once: the call id, the run's shape, and where to look for it."""
+    return {
+        "call_id": call_id,
+        "sandbox_mode": request.sandbox_mode,
+        "repo": request.repo,
+        "status": "spawned",
+        "watch": [
+            f"modal app logs {APP_NAME}",
+            "uv run kitaru session list --agent decode --origin recorded",
+        ]
+        + ([f"git ls-remote {request.repo} 'refs/heads/decode/*'"] if request.repo else []),
+    }
+
+
+# --- inside the container: the subprocess one run is ------------------------------------------------
+
+
 def stream_subprocess(
     argv: list[str], *, cwd: str, env: Mapping[str, str], timeout_seconds: int
 ) -> tuple[str, int]:
@@ -565,10 +640,10 @@ def stream_subprocess(
 
     The child's stderr is INHERITED, so decode's diagnostics stream straight into the Function log
     while stdout — the answer — is captured line by line and echoed as it arrives (a headless run is
-    long; an operator watching ``modal run`` should see it move). A run past ``timeout_seconds`` is
-    killed by a timer thread — with ONE line saying so, since a bare ``exit=-9`` reads like an agent
-    failure — which turns a hang into a normal non-zero exit with partial output instead of a
-    container that dies at the Function ceiling with nothing to show.
+    long; an operator watching ``decode remote run`` should see it move). A run past
+    ``timeout_seconds`` is killed by a timer thread — with ONE line saying so, since a bare
+    ``exit=-9`` reads like an agent failure — which turns a hang into a normal non-zero exit with
+    partial output instead of a container that dies at the Function ceiling with nothing to show.
     """
     process = subprocess.Popen(
         argv,
@@ -598,204 +673,6 @@ def stream_subprocess(
     if timed_out.is_set():
         click.echo(TIMEOUT_KILL_FORMAT.format(timeout_seconds=timeout_seconds), err=True)
     return "".join(chunks), exit_code
-
-
-# --- pure helpers: everything the nightly cron and the webhook are decided by -----------------------
-
-
-def nightly_schedule(env: Mapping[str, str]) -> modal.Cron | None:
-    """The cron to register at deploy — from :data:`NIGHTLY_CRON_ENV` on the LAPTOP — or none.
-
-    Read at import time, which is deploy time for ``modal deploy``; inside the container the variable
-    is absent (it is not part of the job env), which is fine: the schedule already lives on the
-    deployed Function.
-    """
-    cron = env.get(NIGHTLY_CRON_ENV, "").strip()
-    return modal.Cron(cron) if cron else None
-
-
-def nightly_job_env(env: Mapping[str, str]) -> dict[str, str]:
-    """The job's parameters to ship with the deployment — every :data:`NIGHTLY_JOB_ENVS` that is set.
-
-    This is what becomes the ``Secret.from_dict`` env of the nightly Function, so the container reads
-    the same names back. Values are configuration, not credentials — a Modal Secret is simply the
-    mechanism that carries a deploy-time env into a container.
-    """
-    return {name: env[name] for name in NIGHTLY_JOB_ENVS if env.get(name, "").strip()}
-
-
-def _positive_int_error(env: Mapping[str, str], name: str) -> str | None:
-    value = env.get(name, "").strip()
-    if not value:
-        return None
-    if not value.isdigit() or int(value) < 1:
-        return NIGHTLY_BAD_COUNT_FORMAT.format(env=name, value=value)
-    return None
-
-
-def nightly_config_error(env: Mapping[str, str]) -> str | None:
-    """ONE friendly line if the nightly job cannot be deployed as configured, else ``None``.
-
-    Checked on the LAPTOP at deploy, because the alternative is a schedule that fires at 2am into a
-    container that immediately exits — money and a night wasted before anyone reads the log.
-    Only enforced when a schedule is requested: without :data:`NIGHTLY_CRON_ENV` the job env is inert.
-    """
-    if not env.get(NIGHTLY_CRON_ENV, "").strip():
-        return None
-    if not env.get(NIGHTLY_TASK_ENV, "").strip():
-        return NIGHTLY_NO_TASK_FORMAT.format(
-            cron_env=NIGHTLY_CRON_ENV,
-            task_env=NIGHTLY_TASK_ENV,
-            repo_env=NIGHTLY_REPO_ENV,
-            mode_env=NIGHTLY_SANDBOX_MODE_ENV,
-        )
-    mode_error = sandbox_mode_error(env.get(NIGHTLY_SANDBOX_MODE_ENV, DEFAULT_SANDBOX_MODE))
-    if mode_error is not None:
-        return mode_error
-    for name in (NIGHTLY_MAX_REQUESTS_ENV, NIGHTLY_TIMEOUT_ENV):
-        count_error = _positive_int_error(env, name)
-        if count_error is not None:
-            return count_error
-    return None
-
-
-def nightly_run_kwargs(env: Mapping[str, str]) -> dict[str, object] | None:
-    """The :func:`run_task` kwargs the nightly job runs with, read back from its env — or ``None``.
-
-    ``None`` means the deployment carried no task (the guard above only fires when a schedule was
-    requested, so a Function deployed without one can still be invoked by hand and must say why it
-    did nothing).
-    """
-    task = env.get(NIGHTLY_TASK_ENV, "").strip()
-    if not task:
-        return None
-    max_requests = env.get(NIGHTLY_MAX_REQUESTS_ENV, "").strip()
-    timeout = env.get(NIGHTLY_TIMEOUT_ENV, "").strip()
-    return {
-        "task": task,
-        "repo": env.get(NIGHTLY_REPO_ENV, "").strip() or None,
-        "sandbox_mode": env.get(NIGHTLY_SANDBOX_MODE_ENV, "").strip() or DEFAULT_SANDBOX_MODE,
-        "model": env.get(NIGHTLY_MODEL_ENV, "").strip() or None,
-        "max_requests": int(max_requests) if max_requests else None,
-        "timeout_seconds": int(timeout) if timeout else DEFAULT_TIMEOUT_SECONDS,
-    }
-
-
-class WebhookRequest(BaseModel):
-    """One POSTed run: the same knobs ``main`` takes on the command line, as a JSON body."""
-
-    task: str
-    repo: str | None = None
-    sandbox_mode: str = DEFAULT_SANDBOX_MODE
-    model: str | None = None
-    max_requests: int | None = Field(default=None, ge=1)
-    timeout_seconds: int = Field(default=DEFAULT_TIMEOUT_SECONDS, ge=1)
-
-
-def webhook_request_error(request: WebhookRequest) -> str | None:
-    """ONE friendly line if the POSTed run cannot be spawned, else ``None``.
-
-    The same mode guard as every other surface (``docker`` costs one line, no container) plus an
-    empty task — the one thing the schema cannot rule out.
-    """
-    if not request.task.strip():
-        return WEBHOOK_EMPTY_TASK_MESSAGE
-    return sandbox_mode_error(request.sandbox_mode)
-
-
-def webhook_spawn_kwargs(request: WebhookRequest) -> dict[str, object]:
-    """The :func:`run_task` kwargs one webhook request spawns with."""
-    return {
-        "task": request.task.strip(),
-        "repo": request.repo,
-        "sandbox_mode": request.sandbox_mode,
-        "model": request.model,
-        "max_requests": request.max_requests,
-        "timeout_seconds": request.timeout_seconds,
-    }
-
-
-def webhook_response(call_id: str, request: WebhookRequest) -> dict[str, object]:
-    """What the webhook answers at once: the call id, the run's shape, and where to look for it."""
-    return {
-        "call_id": call_id,
-        "sandbox_mode": request.sandbox_mode,
-        "repo": request.repo,
-        "status": "spawned",
-        "watch": [
-            f"modal app logs {APP_NAME}",
-            "uv run kitaru session list --agent decode --origin recorded",
-        ]
-        + ([f"git ls-remote {request.repo} 'refs/heads/decode/*'"] if request.repo else []),
-    }
-
-
-# --- the Modal surface ------------------------------------------------------------------------------
-
-
-@app.function(
-    image=IMAGE,
-    secrets=[modal.Secret.from_name(SECRET_NAME)],
-    timeout=FUNCTION_TIMEOUT_SECONDS,
-)
-def run_task(
-    task: str,
-    repo: str | None = None,
-    sandbox_mode: str = DEFAULT_SANDBOX_MODE,
-    model: str | None = None,
-    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
-    max_requests: int | None = None,
-) -> dict[str, object]:
-    """Run ONE headless decode task in this container and return its small result payload.
-
-    The whole Function is: reject an unrunnable mode, give git the credential helper if the operator
-    handed one over, clone the repo when the harness owns the clone (``none`` mode), then run the
-    baked ``decode run`` console script as a subprocess and read its log back. Nothing about the
-    agent is re-implemented here — that is the point of ADR-0020 §1.
-    """
-    mode_error = sandbox_mode_error(sandbox_mode)
-    if mode_error is not None:
-        # Defensive twin of the local_entrypoint guard, for a direct ``.remote()`` / ``.spawn()``
-        # caller (task 143): ONE line, a non-zero code in the payload, no traceback.
-        click.echo(mode_error, err=True)
-        return build_result(
-            sandbox_mode=sandbox_mode,
-            repo=repo,
-            exit_code=SANDBOX_MODE_REJECTED_EXIT,
-            stdout=mode_error,
-            log_text="",
-        )
-
-    env = decode_run_env(os.environ, sandbox_mode=sandbox_mode)
-    Path(HARNESS_HOME).mkdir(parents=True, exist_ok=True)
-    reset_child_log()
-
-    credential_argv = git_credential_argv(os.environ)
-    if credential_argv is not None:
-        subprocess.run(credential_argv, check=True)
-
-    if sandbox_mode == "none" and repo:
-        clone_for_none_mode(repo, env)
-
-    stdout, exit_code = stream_subprocess(
-        decode_argv(
-            task=task, sandbox_mode=sandbox_mode, repo=repo, model=model, max_requests=max_requests
-        ),
-        cwd=decode_cwd(sandbox_mode=sandbox_mode, repo=repo),
-        env=env,
-        timeout_seconds=timeout_seconds,
-    )
-    result = build_result(
-        sandbox_mode=sandbox_mode,
-        repo=repo,
-        exit_code=exit_code,
-        stdout=stdout,
-        log_text=_read_child_log(),
-    )
-    click.echo(RUN_SUMMARY_FORMAT.format(**result), err=True)
-    if result["note"]:
-        click.echo(f"Decode: {result['note']}", err=True)
-    return result
 
 
 def clone_for_none_mode(repo: str, env: Mapping[str, str], *, dest: str = REPO_CLONE_DIR) -> None:
@@ -837,223 +714,74 @@ def reset_child_log(path: str = LOG_FILE) -> None:
         Path(path).unlink(missing_ok=True)
 
 
-def _read_child_log() -> str:
+def read_child_log(path: str = LOG_FILE) -> str:
     """The child's log file, or ``""`` — best-effort: a missing log costs the ids, never the run."""
     try:
-        return Path(LOG_FILE).read_text(encoding="utf-8", errors="replace")
+        return Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
 
 
-@app.local_entrypoint()
-def main(
-    task: str,
-    repo: str | None = None,
-    sandbox_mode: str = DEFAULT_SANDBOX_MODE,
-    model: str | None = None,
-    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
-    max_requests: int | None = None,
-) -> None:
-    """Fire ONE synchronous remote run and print its answer; exit with the run's own code.
-
-    The mode guard runs HERE first: ``--sandbox-mode docker`` costs one line on stderr and a non-zero
-    exit, with no container started and nothing billed (ADR-0020 §3).
-    """
-    mode_error = sandbox_mode_error(sandbox_mode)
-    if mode_error is not None:
-        click.echo(mode_error, err=True)
-        sys.exit(1)
-
-    result = run_task.remote(
-        task=task,
-        repo=repo,
-        sandbox_mode=sandbox_mode,
-        model=model,
-        timeout_seconds=timeout_seconds,
-        max_requests=max_requests,
-    )
-    click.echo(result["answer"])
-    click.echo(RUN_SUMMARY_FORMAT.format(**result), err=True)
-    if result["exit_code"]:
-        sys.exit(int(result["exit_code"]))
-
-
-def deployed_run_task() -> modal.Function:
-    """The ``run_task`` published by ``modal deploy`` — the Function the attempts are spawned on.
-
-    NOT this file's ephemeral ``run_task``: ``modal run`` tears its ephemeral app down as soon as the
-    local entrypoint returns, which would cancel every spawned call the moment ``--detach`` printed
-    their ids. The deployment outlives the launcher, which is what makes fire-and-forget real
-    (ADR-0020 §1) — and it is also the image every attempt shares, built once at deploy.
-    """
-    return modal.Function.from_name(APP_NAME, "run_task")
-
-
-def spawn_attempts(
-    function: modal.Function,
+def execute_run(
     *,
     task: str,
-    count: int,
-    repo: str | None,
-    sandbox_mode: str,
-    model: str | None,
-    timeout_seconds: int,
-    max_requests: int | None = None,
-) -> list[modal.FunctionCall]:
-    """Fire ``count`` independent ``run_task`` calls at the same task and return their handles.
-
-    No warm-up run and no stagger: the image is built once at deploy, so N cold spawns share it
-    instead of racing to build it (the two ZenML dances the retired demo script existed to survive).
-    Each call gets its own gVisor container, its own Workspace, its own ``decode/<session-id>``.
-    """
-    text = attempt_task(task)
-    return [
-        function.spawn(
-            task=text,
-            repo=repo,
-            sandbox_mode=sandbox_mode,
-            model=model,
-            timeout_seconds=timeout_seconds,
-            max_requests=max_requests,
-        )
-        for _ in range(count)
-    ]
-
-
-def collect_attempt(call: modal.FunctionCall, *, sandbox_mode: str) -> Mapping[str, object]:
-    """Wait for one attempt and return its payload — or a ``FAILED`` stand-in if it never returns."""
-    try:
-        return call.get()
-    except Exception as error:  # a dead container must cost ONE row, not the whole table
-        return failed_attempt_result(error, sandbox_mode=sandbox_mode)
-
-
-@app.local_entrypoint()
-def attempts(
-    task: str,
     repo: str | None = None,
-    attempts: int = 3,
     sandbox_mode: str = DEFAULT_SANDBOX_MODE,
     model: str | None = None,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     max_requests: int | None = None,
-    detach: bool = False,
-) -> None:
-    """Fire N independent attempts at ONE task and compare the branches they ship (ADR-0020 §1).
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Run ONE headless decode task in THIS process's container and return its small payload.
 
-        uv run modal deploy scripts/modal_headless.py            # once
-        uv run modal run scripts/modal_headless.py::attempts \\
-            --task "…" --repo <url> --attempts 5 --sandbox-mode modal [--detach]
-
-    Every attempt is told not to push, so the Hand-back is the only ship path and the N branches are
-    named ``decode/<session-id>`` and directly comparable. Default: wait for all N, print the table
-    and the diff commands. ``--detach``: print the N function-call ids and exit — the deployed app
-    keeps running without the laptop.
+    The body of the ``run_task`` Function, kept ``modal``-free so it is unit-testable on a laptop:
+    reject an unrunnable mode, give git the credential helper if the operator handed one over, clone
+    the repo when the harness owns the clone (``none`` mode), then run the baked ``decode run``
+    console script as a subprocess and read its log back. Nothing about the agent is re-implemented
+    here — that is the point of ADR-0020 §1. ``environ`` is the container's process env (the
+    Secret); it defaults to ``os.environ`` at call time.
     """
-    error = attempts_input_error(attempts=attempts, repo=repo, sandbox_mode=sandbox_mode)
-    if error is not None:
-        click.echo(error, err=True)
-        sys.exit(1)
-    warning = attempts_input_warning(repo=repo, sandbox_mode=sandbox_mode)
-    if warning is not None:
-        click.echo(warning, err=True)
-
-    try:
-        function = deployed_run_task()
-        calls = spawn_attempts(
-            function,
-            task=task,
-            count=attempts,
-            repo=repo,
-            sandbox_mode=sandbox_mode,
-            model=model,
-            timeout_seconds=timeout_seconds,
-            max_requests=max_requests,
-        )
-    except modal.exception.NotFoundError as not_deployed:
-        click.echo(NOT_DEPLOYED_FORMAT.format(app_name=APP_NAME, error=not_deployed), err=True)
-        sys.exit(1)
-
-    if detach:
-        for line in detach_lines([call.object_id for call in calls], repo=repo):
-            click.echo(line)
-        return
-
-    click.echo(f"Decode: waiting for {len(calls)} attempt(s) — they run in parallel.", err=True)
-    results = [collect_attempt(call, sandbox_mode=sandbox_mode) for call in calls]
-    click.echo(attempts_table(results))
-    for line in [*attempts_notes(results), *compare_commands(results, repo=repo)]:
-        click.echo(line)
-    exit_code = attempts_exit_code(results)
-    if exit_code:
-        sys.exit(exit_code)
-
-
-# --- triggers without a laptop (ADR-0020 Amendment §8) ----------------------------------------------
-
-# Deploy-time guard: a schedule with no task must die on the laptop, not at 2am in a container —
-# and a schedule that IS registered should say so, once, where the operator is looking.
-_nightly_error = nightly_config_error(os.environ)
-if _nightly_error is not None:
-    click.echo(_nightly_error, err=True)
-    sys.exit(1)
-if nightly_schedule(os.environ) is not None:
-    click.echo(
-        NIGHTLY_REGISTERED_FORMAT.format(
-            cron=os.environ[NIGHTLY_CRON_ENV].strip(), task=os.environ[NIGHTLY_TASK_ENV].strip()
-        ),
-        err=True,
-    )
-
-
-@app.function(
-    image=IMAGE,
-    secrets=[
-        modal.Secret.from_name(SECRET_NAME),
-        modal.Secret.from_dict(nightly_job_env(os.environ)),
-    ],
-    schedule=nightly_schedule(os.environ),
-    timeout=FUNCTION_TIMEOUT_SECONDS,
-)
-def nightly() -> dict[str, object]:
-    """The cron trigger: ONE headless run of the job this deployment was given, on its schedule.
-
-    Configured entirely at ``modal deploy`` from the laptop's ``DECODE_NIGHTLY_*`` env (see the
-    module docstring); without ``DECODE_NIGHTLY_CRON`` no schedule exists and this Function is inert.
-    It runs :func:`run_task` in THIS container (``.local()``) — same image, same Secret, same
-    subprocess — so a nightly run is byte-for-byte a ``modal run … ::main`` nobody had to type.
-    Reads its result back in ``modal app logs decode-headless`` (and, with a repo under ``modal``
-    mode, as a ``decode/<session-id>`` branch on origin).
-    """
-    kwargs = nightly_run_kwargs(os.environ)
-    if kwargs is None:
-        click.echo(NIGHTLY_UNCONFIGURED_MESSAGE, err=True)
+    base_env = os.environ if environ is None else environ
+    mode_error = sandbox_mode_error(sandbox_mode)
+    if mode_error is not None:
+        # Defensive twin of the laptop-side guard, for a direct ``.remote()`` / ``.spawn()``
+        # caller (task 143): ONE line, a non-zero code in the payload, no traceback.
+        click.echo(mode_error, err=True)
         return build_result(
-            sandbox_mode=DEFAULT_SANDBOX_MODE,
-            repo=None,
+            sandbox_mode=sandbox_mode,
+            repo=repo,
             exit_code=SANDBOX_MODE_REJECTED_EXIT,
-            stdout=NIGHTLY_UNCONFIGURED_MESSAGE,
+            stdout=mode_error,
             log_text="",
         )
-    return run_task.local(**kwargs)
 
+    env = decode_run_env(base_env, sandbox_mode=sandbox_mode)
+    Path(HARNESS_HOME).mkdir(parents=True, exist_ok=True)
+    reset_child_log()
 
-@app.function(image=IMAGE)
-@modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
-def webhook(request: WebhookRequest) -> dict[str, object]:
-    """The event trigger: POST a task, get a call id back, the run happens without you.
+    credential_argv = git_credential_argv(base_env)
+    if credential_argv is not None:
+        subprocess.run(credential_argv, check=True)
 
-    Behind Modal proxy auth (``Modal-Key`` / ``Modal-Secret`` headers — the same proxy token pair
-    the open-model endpoints use), so the URL ``modal deploy`` prints is not a public "spend my
-    tokens" button. Fire-and-forget by design: a webhook caller (CI, a ticket bot, a scheduler) has
-    seconds, an agent run has minutes, so the endpoint ``spawn``s :func:`run_task` on this deployed
-    app and answers at once with where to watch. Runs with no Secret of its own — it spawns, it
-    does not run.
-    """
-    from fastapi import HTTPException  # in the image only (WEB_PACKAGES); never on the laptop
+    if sandbox_mode == "none" and repo:
+        clone_for_none_mode(repo, env)
 
-    error = webhook_request_error(request)
-    if error is not None:
-        raise HTTPException(status_code=400, detail=error)
-    call = run_task.spawn(**webhook_spawn_kwargs(request))
-    return webhook_response(call.object_id, request)
+    stdout, exit_code = stream_subprocess(
+        decode_argv(
+            task=task, sandbox_mode=sandbox_mode, repo=repo, model=model, max_requests=max_requests
+        ),
+        cwd=decode_cwd(sandbox_mode=sandbox_mode, repo=repo),
+        env=env,
+        timeout_seconds=timeout_seconds,
+    )
+    result = build_result(
+        sandbox_mode=sandbox_mode,
+        repo=repo,
+        exit_code=exit_code,
+        stdout=stdout,
+        log_text=read_child_log(),
+    )
+    click.echo(RUN_SUMMARY_FORMAT.format(**result), err=True)
+    if result["note"]:
+        click.echo(f"Decode: {result['note']}", err=True)
+    return result

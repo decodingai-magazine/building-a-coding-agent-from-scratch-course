@@ -33,7 +33,7 @@ this one just happens to sit in a gVisor container instead of on a laptop.
 * **The worker spawns agent version 3** — ``decode run`` under ``SANDBOX_MODE=none`` with
   :data:`DECODE_BIN` and :data:`HARNESS_HOME` as its in-image paths, registered from a laptop with
   ``scripts/register_kitaru_agent.py --sandbox-mode none --skip-bin-check``. Both paths come from
-  :mod:`scripts.modal_image`, so the image and the registration cannot drift apart. Pin the version
+  :mod:`decode.remote.image`, so the image and the registration cannot drift apart. Pin the version
   when you replay — ``--agent decode@3``, never "latest": version 4 is a QA-accident duplicate of 3
   (see ``tasks/done/144-…``), and versions are immutable.
 * **Secrets** ride the ``decode-kitaru-worker`` :class:`modal.Secret` — ``KITARU_API_URL`` +
@@ -66,7 +66,7 @@ from pathlib import Path
 import click
 import modal
 
-from scripts.modal_image import DECODE_BIN, HARNESS_HOME, KITARU_BIN, build_image
+from decode.remote.image import DECODE_BIN, HARNESS_HOME, KITARU_BIN, build_image
 
 # --- the app and its image --------------------------------------------------------------------------
 
@@ -75,7 +75,7 @@ APP_NAME = "decode-kitaru-worker"
 # The Modal Secret this Function runs with (ADR-0020 §4); operator-created, never committed.
 SECRET_NAME = "decode-kitaru-worker"
 
-# The same image the Modal Headless App runs, built once in scripts/modal_image.py: the Worker spawns
+# The same image the Modal Headless App runs, built once in decode/remote/image.py: the Worker spawns
 # `decode run` from DECODE_BIN, so the two apps must not drift into two layouts.
 IMAGE = build_image()
 

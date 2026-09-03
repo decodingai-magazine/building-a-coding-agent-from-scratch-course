@@ -1,15 +1,15 @@
 """The one image both Modal apps run on, and the fixed layout inside it (ADR-0020 §2).
 
-Two apps need the same container — the Modal Headless App (``scripts/modal_headless.py``, task 142)
-and the Modal-hosted Kitaru Worker (``scripts/modal_kitaru_worker.py``, task 145) — so the build
-lives here once instead of being copy-pasted into both. It stays in ``scripts/``: this is operator
-tooling, outside the ``decode`` import graph.
+Two apps need the same container — the Modal Headless App (:mod:`decode.remote.app`) and the
+Modal-hosted Kitaru Worker (``scripts/modal_kitaru_worker.py``) — so the build lives here once
+instead of being copy-pasted into both. It is deploy-time code: imported by ``modal deploy``, never
+by the REPL or ``decode run``.
 
 The layout is the load-bearing part. The Worker spawns replays from an **Agent Version** whose run
 spec names :data:`DECODE_BIN` and :data:`HARNESS_HOME` as absolute in-image paths (registered from a
 laptop that cannot stat them — ``scripts/register_kitaru_agent.py --skip-bin-check``). A path that
 drifts here is not a test failure, it is every replay failing to spawn, hours later, on a machine
-nobody is watching. Hence: ONE definition, imported by both scripts and pinned by unit tests on both
+nobody is watching. Hence: ONE definition, imported by both apps and pinned by unit tests on both
 sides.
 
 Built in-app with :class:`modal.Image` — no Dockerfile, no registry (ADR-0020 §2):
@@ -21,16 +21,32 @@ Built in-app with :class:`modal.Image` — no Dockerfile, no registry (ADR-0020 
 
 ``uv_sync`` builds its venv at ``/.uv/.venv``, so both console scripts sit at ONE absolute path no
 ``PATH`` set-up in any shell can move: ``decode`` for the harness, ``kitaru`` for the Worker.
+
+The build needs the repo CHECKOUT (``pyproject.toml`` + ``uv.lock`` + ``src/``): :data:`REPO_ROOT`
+is resolved from this file, so an installed wheel cannot deploy — ``decode remote deploy`` says so
+in one line (:func:`repo_root_error`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import modal
+if (
+    TYPE_CHECKING
+):  # ``modal`` is imported inside ``build_image`` — deploy time only, never by the CLI.
+    import modal
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+# ``src/decode/remote/image.py`` → the checkout root, three levels up.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# What a deploy from outside a checkout says — ``uv_sync`` needs the lockfile, the source layer
+# needs ``src/``; an installed wheel has neither.
+NOT_A_CHECKOUT_FORMAT = (
+    "Decode: the Modal image is built from the decode repo checkout, and {root} holds no "
+    "pyproject.toml — run `decode remote deploy` from a clone of the repository."
+)
 
 # Where the repo source is baked, and the venv ``Image.uv_sync()`` builds beside it.
 IMAGE_SOURCE_DIR = "/opt/decode"
@@ -56,6 +72,13 @@ _SOURCE_IGNORE = [
     "**/.ruff_cache",
     "**/node_modules",
 ]
+
+
+def repo_root_error(root: Path = REPO_ROOT) -> str | None:
+    """ONE friendly line if ``root`` is not the repo checkout the image is built from, else ``None``."""
+    if (root / "pyproject.toml").is_file() and (root / "uv.lock").is_file():
+        return None
+    return NOT_A_CHECKOUT_FORMAT.format(root=root)
 
 
 def extra_packages_command(packages: Sequence[str]) -> str:
@@ -89,6 +112,8 @@ def build_image(
     Returns:
         The image, ready to hand to ``@app.function(image=…)``.
     """
+    import modal  # deploy-time only: ``decode remote deploy`` must not cost the REPL a modal import
+
     image = (
         modal.Image.debian_slim(python_version="3.12")
         .apt_install("git", "curl", "ca-certificates")
@@ -108,9 +133,11 @@ def build_image(
         # ADR-0020 §4: one config surface, fed by the Secret's process env — never an Environment
         # Bucket, so nothing here imports kitaru at settings load (ADR-0015).
         .env({"DECODE_ENV": "local"})
-        # LAST, and it has to be: both apps import THIS module, and a container's sys.path is not the
-        # laptop's — without the local ``scripts`` package on it the Function dies at import, before
+        # LAST, and it has to be: the Worker app lives in the local ``scripts`` package, and a
+        # container's sys.path is not the laptop's — without it the Function dies at import, before
         # it runs a line (``ModuleNotFoundError: No module named 'scripts'``, found on the worker's
-        # first run). Modal refuses any build step after an ``add_local_*``, so this stays the tail.
+        # first run). The headless app needs nothing here: ``decode.remote.app`` is part of the
+        # installed package. Modal refuses any build step after an ``add_local_*``, so this stays
+        # the tail.
         .add_local_python_source("scripts")
     )

@@ -1,7 +1,7 @@
 """The Modal Headless App's pure helpers — the launch surface's decisions (ADR-0020 §1-4, task 142).
 
 Hermetic: no Modal object is created, no container starts, no ``git`` / ``decode`` process runs. The
-script's whole job is to turn one operator invocation into the exact ``decode run`` subprocess the
+module's whole job is to turn one operator invocation into the exact ``decode run`` subprocess the
 container executes, so the tests drive the builders and assert the properties an operator's money
 depends on:
 
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts import modal_headless as mh
+from decode.remote import headless as mh
 
 TASK = "explain what this repo does"
 REPO = "https://github.com/iusztinpaul/decode-course.git"
@@ -52,23 +52,11 @@ def test_an_unknown_mode_is_rejected_with_one_friendly_line():
     assert "\n" not in message
 
 
-def test_the_local_entrypoint_rejects_docker_before_any_remote_call(mocker, capsys):
-    """The rejection happens on the laptop: no Function object is invoked, so nothing is billed."""
-    function = mocker.patch.object(mh, "run_task")
-
-    with pytest.raises(SystemExit) as exit_info:
-        mh.main(task=TASK, sandbox_mode="docker")
-
-    assert exit_info.value.code != 0
-    function.remote.assert_not_called()
-    assert capsys.readouterr().err.strip() == mh.DOCKER_MODE_MESSAGE
-
-
 def test_the_function_defends_the_mode_in_container_without_a_traceback(mocker):
     """A direct ``.remote()`` / ``.spawn()`` caller (task 143) gets the same line, non-zero."""
-    popen = mocker.patch("scripts.modal_headless.subprocess.Popen")
+    popen = mocker.patch("decode.remote.headless.subprocess.Popen")
 
-    result = mh.run_task.local(task=TASK, sandbox_mode="docker")
+    result = mh.execute_run(task=TASK, sandbox_mode="docker")
 
     popen.assert_not_called()
     assert result["exit_code"] != 0
@@ -371,7 +359,7 @@ def _popen(mocker, *, lines: list[str], returncode: int = 0):
     process.stdout = iter(lines)
     process.wait.return_value = returncode
     process.returncode = returncode
-    return mocker.patch("scripts.modal_headless.subprocess.Popen", return_value=process)
+    return mocker.patch("decode.remote.headless.subprocess.Popen", return_value=process)
 
 
 def test_the_child_output_is_streamed_to_the_function_log_and_returned(mocker, capsys):
@@ -401,7 +389,7 @@ def test_the_harness_clone_replaces_a_leftover_from_a_re_used_container(mocker, 
     destination.mkdir()
     (destination / "stale.txt").write_text("from the previous input")
     run = mocker.patch(
-        "scripts.modal_headless.subprocess.run", return_value=mocker.Mock(returncode=0, stderr="")
+        "decode.remote.headless.subprocess.run", return_value=mocker.Mock(returncode=0, stderr="")
     )
 
     mh.clone_for_none_mode(REPO, {}, dest=str(destination))
@@ -413,7 +401,7 @@ def test_the_harness_clone_replaces_a_leftover_from_a_re_used_container(mocker, 
 def test_a_failed_harness_clone_is_fatal(mocker, tmp_path):
     """ADR-0012 §3: nobody is watching a remote run, so an empty workspace would burn the whole run."""
     mocker.patch(
-        "scripts.modal_headless.subprocess.run",
+        "decode.remote.headless.subprocess.run",
         return_value=mocker.Mock(returncode=128, stderr="fatal: repository not found"),
     )
 
@@ -446,7 +434,7 @@ class _ImmediateTimer:
 def test_a_child_past_its_timeout_is_killed(mocker):
     """The hang becomes a normal non-zero exit with partial output, not a Function-ceiling death."""
     popen = _popen(mocker, lines=["thinking...\n"], returncode=-9)
-    mocker.patch("scripts.modal_headless.threading.Timer", _ImmediateTimer)
+    mocker.patch("decode.remote.headless.threading.Timer", _ImmediateTimer)
 
     stdout, exit_code = mh.stream_subprocess(
         ["/bin/decode"], cwd="/harness", env={}, timeout_seconds=1800
@@ -460,7 +448,7 @@ def test_a_child_past_its_timeout_is_killed(mocker):
 def test_a_timed_out_child_says_so_in_one_line(mocker, capsys):
     """Otherwise the operator reads an unexplained exit=-9 and blames the agent for the timer."""
     _popen(mocker, lines=[], returncode=-9)
-    mocker.patch("scripts.modal_headless.threading.Timer", _ImmediateTimer)
+    mocker.patch("decode.remote.headless.threading.Timer", _ImmediateTimer)
 
     mh.stream_subprocess(["/bin/decode"], cwd="/harness", env={}, timeout_seconds=1800)
 
@@ -566,45 +554,6 @@ def test_the_operators_own_trailing_whitespace_does_not_double_the_blank_line():
 # --- spawning: N independent calls, no stagger ------------------------------------------------------
 
 
-def test_the_fan_out_spawns_one_independent_call_per_attempt(mocker):
-    """Each attempt = its own container = its own Workspace = its own branch. No warm-up, no stagger."""
-    function = mocker.MagicMock()
-
-    calls = mh.spawn_attempts(
-        function,
-        task=TASK,
-        count=3,
-        repo=REPO,
-        sandbox_mode="modal",
-        model=None,
-        timeout_seconds=60,
-    )
-
-    assert len(calls) == 3
-    assert function.spawn.call_count == 3
-    for call in function.spawn.call_args_list:
-        assert call.kwargs["task"] == mh.attempt_task(TASK)
-        assert call.kwargs["repo"] == REPO
-        assert call.kwargs["sandbox_mode"] == "modal"
-        assert call.kwargs["timeout_seconds"] == 60
-
-
-def test_the_fan_out_spawns_against_the_deployed_function_not_an_ephemeral_one(mocker):
-    """``--detach`` is only fire-and-forget if the app OUTLIVES the launcher: spawn on the deployment.
-
-    ``modal run`` tears its ephemeral app down when the entrypoint returns, taking the spawned calls
-    with it; ``Function.from_name`` targets what ``modal deploy`` published (ADR-0020 §1).
-    """
-    from_name = mocker.patch.object(mh.modal.Function, "from_name")
-
-    mh.deployed_run_task()
-
-    from_name.assert_called_once_with(mh.APP_NAME, "run_task")
-
-
-# --- collecting: one crashed attempt must not cost the other N-1 -----------------------------------
-
-
 def _payload(**overrides) -> dict[str, object]:
     payload = {
         "exit_code": 0,
@@ -617,28 +566,6 @@ def _payload(**overrides) -> dict[str, object]:
     }
     payload.update(overrides)
     return payload
-
-
-def test_an_attempt_that_returns_normally_is_collected_as_its_payload(mocker):
-    call = mocker.MagicMock()
-    call.get.return_value = _payload()
-
-    assert mh.collect_attempt(call, sandbox_mode="modal") == _payload()
-
-
-def test_an_attempt_that_raises_becomes_a_failed_row_instead_of_killing_the_fan_out(mocker):
-    """N-1 finished attempts are worth real money; one exception must not take the table with it."""
-    call = mocker.MagicMock()
-    call.get.side_effect = RuntimeError("container died")
-
-    result = mh.collect_attempt(call, sandbox_mode="modal")
-
-    assert result["error"]
-    assert "container died" in str(result["note"])
-    assert result["session_branch"] is None
-
-
-# --- the comparison table ---------------------------------------------------------------------------
 
 
 def test_a_shipped_attempt_renders_its_session_its_branch_and_a_zero_exit():
@@ -729,82 +656,12 @@ def test_detach_prints_one_function_call_id_per_attempt_and_the_log_line():
     joined = "\n".join(lines)
     assert "fc-001" in joined
     assert "fc-002" in joined
-    assert f"modal app logs {mh.APP_NAME}" in joined
+    assert "decode remote logs" in joined
     assert f"git ls-remote {REPO} 'refs/heads/decode/*'" in joined
-
-
-def test_the_detached_entrypoint_never_waits_on_a_call(mocker, capsys):
-    """The whole point: spawn, print the ids, exit — no ``.get()``, no blocking."""
-    call = mocker.MagicMock()
-    call.object_id = "fc-abc"
-    function = mocker.MagicMock()
-    function.spawn.return_value = call
-    mocker.patch.object(mh, "deployed_run_task", return_value=function)
-
-    mh.attempts(task=TASK, repo=REPO, attempts=2, sandbox_mode="modal", detach=True)
-
-    call.get.assert_not_called()
-    assert function.spawn.call_count == 2
-    assert "fc-abc" in capsys.readouterr().out
-
-
-def test_the_waiting_entrypoint_prints_the_table_and_the_tail(mocker, capsys):
-    call = mocker.MagicMock()
-    call.get.return_value = _payload()
-    function = mocker.MagicMock()
-    function.spawn.return_value = call
-    mocker.patch.object(mh, "deployed_run_task", return_value=function)
-
-    mh.attempts(task=TASK, repo=REPO, attempts=2, sandbox_mode="modal")
-
-    out = capsys.readouterr().out
-    assert SESSION_BRANCH in out
-    assert "git ls-remote" in out
-
-
-def test_the_entrypoint_rejects_a_bad_fan_out_before_spawning_anything(mocker, capsys):
-    """AC2: the validation is client-side — no deployed Function is even looked up."""
-    resolve = mocker.patch.object(mh, "deployed_run_task")
-
-    with pytest.raises(SystemExit) as exit_info:
-        mh.attempts(task=TASK, repo=None, attempts=3)
-
-    assert exit_info.value.code != 0
-    resolve.assert_not_called()
-    assert capsys.readouterr().err.strip().count("\n") == 0
-
-
-def test_the_entrypoint_exits_non_zero_when_every_attempt_failed(mocker):
-    call = mocker.MagicMock()
-    call.get.return_value = _payload(exit_code=1)
-    function = mocker.MagicMock()
-    function.spawn.return_value = call
-    mocker.patch.object(mh, "deployed_run_task", return_value=function)
-
-    with pytest.raises(SystemExit) as exit_info:
-        mh.attempts(task=TASK, repo=REPO, attempts=2, sandbox_mode="modal")
-
-    assert exit_info.value.code != 0
 
 
 def test_one_surviving_attempt_is_a_successful_fan_out():
     assert mh.attempts_exit_code([_payload(exit_code=1), _payload()]) == 0
-
-
-def test_a_missing_deployment_is_one_friendly_line_not_a_traceback(mocker, capsys):
-    """The app must be deployed once before it can be spawned against (ADR-0020 §1)."""
-    mocker.patch.object(
-        mh, "deployed_run_task", side_effect=mh.modal.exception.NotFoundError("no such app")
-    )
-
-    with pytest.raises(SystemExit) as exit_info:
-        mh.attempts(task=TASK, repo=REPO, attempts=2, sandbox_mode="modal")
-
-    assert exit_info.value.code != 0
-    assert "modal deploy" in capsys.readouterr().err
-
-
-# --- the request ceiling rides through to decode run --max-requests --------------------------------
 
 
 def test_max_requests_becomes_decodes_own_flag():
@@ -817,37 +674,13 @@ def test_no_ceiling_means_no_flag():
     assert "--max-requests" not in mh.decode_argv(task=TASK, sandbox_mode="none")
 
 
-def test_the_fan_out_threads_the_ceiling_into_every_attempt(mocker):
-    function = mocker.Mock()
-
-    mh.spawn_attempts(
-        function,
-        task=TASK,
-        count=2,
-        repo=REPO,
-        sandbox_mode="modal",
-        model=None,
-        timeout_seconds=60,
-        max_requests=25,
-    )
-
-    for call in function.spawn.call_args_list:
-        assert call.kwargs["max_requests"] == 25
-
-
-# --- the nightly cron: deploy-time configuration from DECODE_NIGHTLY_* ---------------------------
-
-
 def test_no_cron_env_registers_no_schedule():
-    assert mh.nightly_schedule({}) is None
-    assert mh.nightly_schedule({mh.NIGHTLY_CRON_ENV: "   "}) is None
+    assert mh.nightly_cron({}) is None
+    assert mh.nightly_cron({mh.NIGHTLY_CRON_ENV: "   "}) is None
 
 
-def test_a_cron_env_becomes_a_modal_cron():
-    schedule = mh.nightly_schedule({mh.NIGHTLY_CRON_ENV: "0 2 * * *"})
-
-    assert isinstance(schedule, mh.modal.Cron)
-    assert schedule.proto_message.cron.cron_string == "0 2 * * *"
+def test_a_cron_env_is_read_back_as_its_crontab_string():
+    assert mh.nightly_cron({mh.NIGHTLY_CRON_ENV: " 0 2 * * * "}) == "0 2 * * *"
 
 
 def test_the_job_env_ships_only_the_nightly_keys_that_are_set():
@@ -939,38 +772,6 @@ def test_the_nightly_defaults_match_a_bare_main_invocation():
     }
 
 
-def test_the_nightly_function_runs_the_job_in_its_own_container(mocker, monkeypatch):
-    monkeypatch.setenv(mh.NIGHTLY_TASK_ENV, TASK)
-    monkeypatch.setenv(mh.NIGHTLY_REPO_ENV, REPO)
-    monkeypatch.setenv(mh.NIGHTLY_SANDBOX_MODE_ENV, "modal")
-    run_task = mocker.patch.object(mh, "run_task")
-    run_task.local.return_value = {"exit_code": 0}
-
-    assert mh.nightly.local() == {"exit_code": 0}
-    run_task.local.assert_called_once_with(
-        task=TASK,
-        repo=REPO,
-        sandbox_mode="modal",
-        model=None,
-        max_requests=None,
-        timeout_seconds=mh.DEFAULT_TIMEOUT_SECONDS,
-    )
-
-
-def test_an_unconfigured_nightly_function_says_so_and_runs_nothing(mocker, monkeypatch, capsys):
-    monkeypatch.delenv(mh.NIGHTLY_TASK_ENV, raising=False)
-    run_task = mocker.patch.object(mh, "run_task")
-
-    result = mh.nightly.local()
-
-    run_task.local.assert_not_called()
-    assert result["exit_code"] != 0
-    assert capsys.readouterr().err.strip() == mh.NIGHTLY_UNCONFIGURED_MESSAGE
-
-
-# --- the webhook: one POST, one spawned run ---------------------------------------------------------
-
-
 def test_a_webhook_body_needs_only_a_task():
     request = mh.WebhookRequest(task=TASK)
 
@@ -1015,33 +816,3 @@ def test_a_repo_less_webhook_run_lists_no_branch_to_watch():
     response = mh.webhook_response("fc-123", mh.WebhookRequest(task=TASK))
 
     assert not any("ls-remote" in line for line in response["watch"])
-
-
-def test_the_webhook_spawns_on_run_task_and_returns_at_once(mocker):
-    run_task = mocker.patch.object(mh, "run_task")
-    run_task.spawn.return_value = mocker.Mock(object_id="fc-456")
-
-    response = mh.webhook.local(mh.WebhookRequest(task=TASK, max_requests=30))
-
-    run_task.spawn.assert_called_once()
-    assert run_task.spawn.call_args.kwargs["max_requests"] == 30
-    assert response["call_id"] == "fc-456"
-
-
-def test_the_webhook_rejects_a_bad_run_before_spawning_anything(mocker):
-    run_task = mocker.patch.object(mh, "run_task")
-    http_error = pytest.importorskip("fastapi").HTTPException
-
-    with pytest.raises(http_error) as error:
-        mh.webhook.local(mh.WebhookRequest(task=TASK, sandbox_mode="docker"))
-
-    run_task.spawn.assert_not_called()
-    assert error.value.status_code == 400
-    assert error.value.detail == mh.DOCKER_MODE_MESSAGE
-
-
-def test_the_webhook_image_carries_fastapi_the_worker_image_does_not():
-    from scripts.modal_image import extra_packages_command
-
-    assert any(package.startswith("fastapi") for package in mh.WEB_PACKAGES)
-    assert "/.uv/.venv/bin/python" in extra_packages_command(mh.WEB_PACKAGES)

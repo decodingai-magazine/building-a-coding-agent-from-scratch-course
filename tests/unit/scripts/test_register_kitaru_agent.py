@@ -286,11 +286,11 @@ def test_a_harness_home_inside_the_repo_is_refused_in_every_mode():
 def test_the_v3_spec_uses_the_modal_worker_images_own_paths():
     """The registration and the image are one contract: both name the baked venv and /harness.
 
-    The paths are asserted against ``scripts/modal_headless.py``'s constants (task 145 reuses that
+    The paths are asserted against ``decode.remote.image``'s constants (both Modal apps share that
     image builder), so moving the venv or the Harness Home in the image breaks this test instead of
     breaking every replay the Worker claims.
     """
-    from scripts.modal_headless import DECODE_BIN, HARNESS_HOME
+    from decode.remote.image import DECODE_BIN, HARNESS_HOME
 
     argv = _argv(
         sandbox_mode="none",
