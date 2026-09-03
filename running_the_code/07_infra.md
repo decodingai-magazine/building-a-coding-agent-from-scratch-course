@@ -2,7 +2,7 @@
 
 > **There is no server to deploy.** Remote is a **launch-vs-execute split**
 > ([ADR-0020](../docs/adr/0020-remote-headless-on-modal.md)): your laptop only launches, **Modal**
-> executes (two operator scripts, zero servers, zero idle cost), and the **managed Kitaru workspace**
+> executes (`decode remote …` plus one operator script, zero servers, zero idle cost), and the **managed Kitaru workspace**
 > is the record/replay control plane. This page is the runbook for all of it: the two secrets, the
 > headless app and its four triggers (by hand, N attempts, cron, webhook), and the Modal-hosted Worker.
 
