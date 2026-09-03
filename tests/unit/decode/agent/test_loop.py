@@ -1363,6 +1363,9 @@ async def test_below_both_tiers_is_a_no_op(agent, tmp_path, mocker):
     emitted: list[events.Event] = []
     seed: list[ModelMessage] = [
         _user_msg("kickoff"),
+        # The call has to precede its return: pydantic-ai drops an orphan ToolReturnPart when it
+        # cleans the history, so a return without its call would vanish before compaction is asked.
+        _tool_call_msg("read", "c1"),
         _tool_return_msg("read", "c1", "ORIGINAL-TOOL-BODY " + "z " * 100),
         _user_msg("second"),
         _assistant_msg("second answer"),

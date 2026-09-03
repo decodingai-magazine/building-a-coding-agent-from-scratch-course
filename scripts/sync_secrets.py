@@ -9,22 +9,27 @@ directly. It lives outside the ``decode`` import graph, so importing kitaru here
 
 Three properties are the whole design:
 
-* **ONE full-surface call.** ``kitaru secrets set`` REPLACES the entire key set — setting one key
-  destroys the others (verified live). So the push is a single invocation carrying every key: it is a
-  **mirror** of the file, never a merge into the bucket. A partial update is not a lesser version of
-  this script; it is data loss.
+* **ONE full-surface call.** A secret's ``values`` map is written whole — ``create`` sets it,
+  ``update`` REPLACES it (kitaru's PATCH swaps the entire key set, it does not merge). So the push
+  carries every key in one call: it is a **mirror** of the file, never a merge into the bucket. A
+  partial update is not a lesser version of this script; it is data loss.
 * **Key NAMES only.** Values are never echoed and never logged, at any verbosity — not in the diff, not
   in the confirmation, not in an error. Changed-detection compares values in memory; only names print.
 * **One-way.** ``.env`` → Kitaru. There is deliberately no read-back path: dumping a bucket to disk
   would put production secrets in a developer's working tree.
+
+The transport is the kitaru 0.22.2 client (ADR-0019 §5): named secrets on the managed workspace,
+reached with the client's own ``KITARU_API_URL`` / ``KITARU_API_KEY`` conventions (else the on-disk
+``kitaru login`` store). There is no ``kitaru secrets`` CLI to shell out to any more.
 """
 
 from __future__ import annotations
 
-import subprocess
+import asyncio
 import sys
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
+from typing import Any
 
 import click
 from dotenv import dotenv_values
@@ -55,14 +60,73 @@ def syncable_keys(env_values: dict[str, str | None]) -> dict[str, str]:
     }
 
 
-def fetch_bucket(bucket: str) -> dict[str, str] | None:
-    """The bucket's current contents, or ``None`` when it does not exist yet (the create path)."""
-    from kitaru import get_secret  # lazy: only an actual sync needs kitaru
+def with_client[T](operation: Callable[[Any], Awaitable[T]]) -> T:
+    """Run ``operation`` against a fresh Kitaru client, closing it afterwards.
+
+    The client is imported lazily and constructed INSIDE the coroutine so its httpx pool binds to
+    the loop that will use it. This is the script's only kitaru entry point — one place to change
+    when the SDK moves again.
+    """
+    from kitaru.client import KitaruClient
+
+    async def run() -> T:
+        client = KitaruClient()
+        try:
+            return await operation(client)
+        finally:
+            await client.close()
+
+    return asyncio.run(run())
+
+
+async def find_secret(client: Any, bucket: str) -> Any:
+    """The workspace's secret named ``bucket``, or ``None`` — the resource has no get-by-name."""
+    from kitaru.api_models.v1.filter import FilterCondition
+    from kitaru.api_models.v1.secret import SecretListParams
+
+    page = await client.api.secrets.list(
+        SecretListParams(filter=FilterCondition(field="name", op="eq", value=bucket))
+    )
+    return next((item for item in page.items if item.name == bucket), None)
+
+
+def redact(text: str, values: Iterable[str]) -> str:
+    """Scrub every known secret value out of a string before it is shown to the operator.
+
+    A rejected write echoes the request back (FastAPI's 422 body carries the offending input), so an
+    API error cannot be printed raw. Longest-first, so a value that contains another is not
+    partially unmasked.
+    """
+    for value in sorted({v for v in values if v}, key=len, reverse=True):
+        text = text.replace(value, "***")
+    return text
+
+
+def fetch_bucket(bucket: str, known_values: Iterable[str] = ()) -> dict[str, str] | None:
+    """The bucket's current contents, or ``None`` when it does not exist yet (the create path).
+
+    A genuinely absent secret is the create path; ANY other failure (unreachable workspace, expired
+    login) is reported instead of being swallowed — a silent ``None`` there would print "it will be
+    created" and show every key as added, which is a lie about what is in the bucket. The reported
+    error is scrubbed of ``known_values`` (the file's values) all the same: names-only holds on
+    every path, and the file's values are exactly the ones a re-run expects to find in the bucket.
+    """
+
+    async def read(client: Any) -> dict[str, str] | None:
+        found = await find_secret(client, bucket)
+        if found is None:
+            return None
+        secret = await client.api.secrets.get(found.id, include_values=True)
+        return {key: value.get_secret_value() for key, value in secret.values.items()}
 
     try:
-        return dict(get_secret(bucket).values)
-    except Exception:  # broad on purpose: a missing bucket is a create, not a failure
-        return None
+        return with_client(read)
+    except Exception as exc:
+        detail = redact(f"{type(exc).__name__}: {exc}", known_values)
+        raise click.ClickException(
+            f"could not read {bucket} from the Kitaru workspace ({detail}) — "
+            "check `kitaru login` / KITARU_API_URL."
+        ) from None
 
 
 def format_diff(current: dict[str, str], desired: dict[str, str]) -> list[str]:
@@ -84,29 +148,26 @@ def format_diff(current: dict[str, str], desired: dict[str, str]) -> list[str]:
     return lines
 
 
-def redact(text: str, values: Iterable[str]) -> str:
-    """Scrub every known secret value out of a string before it is shown to the operator.
-
-    kitaru echoes the failing argv (``--KEY=value``) on error, so its stderr cannot be printed raw.
-    Longest-first, so a value that contains another is not partially unmasked.
-    """
-    for value in sorted({v for v in values if v}, key=len, reverse=True):
-        text = text.replace(value, "***")
-    return text
-
-
 def push(bucket: str, desired: dict[str, str]) -> None:
-    """Replace the bucket's whole key set in ONE ``kitaru secrets set`` call (list argv, no shell)."""
-    argv = ["kitaru", "secrets", "set", bucket, "--private"]
-    argv += [f"--{key}={value}" for key, value in desired.items()]
+    """Write the whole key set in ONE call: create the named secret, or replace its values."""
 
-    result = subprocess.run(argv, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        # Never print kitaru's raw streams — the argv (values and all) is echoed back in them.
-        detail = redact((result.stderr or result.stdout or "").strip(), desired.values())
+    async def write(client: Any) -> None:
+        from kitaru.api_models.v1.secret import SecretCreateRequest, SecretUpdateRequest
+
+        found = await find_secret(client, bucket)
+        if found is None:
+            await client.api.secrets.create(SecretCreateRequest(name=bucket, values=desired))
+        else:
+            await client.api.secrets.update(found.id, SecretUpdateRequest(values=desired))
+
+    try:
+        with_client(write)
+    except Exception as exc:
+        # Never print the raw error — a rejected write echoes the values back inside it.
+        detail = redact(f"{type(exc).__name__}: {exc}", desired.values())
         raise click.ClickException(
-            f"`kitaru secrets set {bucket}` failed (exit {result.returncode}):\n{detail}"
-        )
+            f"writing {bucket} to the Kitaru workspace failed — {detail}"
+        ) from None
 
 
 @click.command()
@@ -143,7 +204,7 @@ def main(decode_env: str, env_file: Path, yes: bool) -> None:
         )
 
     bucket = environment_bucket_name(decode_env)
-    current = fetch_bucket(bucket)
+    current = fetch_bucket(bucket, desired.values())
 
     click.echo(f"Mirroring {env_file} → {bucket} (key names only; values are never printed).")
     if current is None:
@@ -153,7 +214,7 @@ def main(decode_env: str, env_file: Path, yes: bool) -> None:
     click.echo("\n".join(format_diff(current or {}, desired)))
     click.echo(
         f"This REPLACES the entire contents of {bucket} with these {len(desired)} key(s) "
-        "— `kitaru secrets set` overwrites the whole key set."
+        "— the write swaps the secret's whole key set, it does not merge into it."
     )
 
     if not yes and not click.confirm("Proceed?", default=False):

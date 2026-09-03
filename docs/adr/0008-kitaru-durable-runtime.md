@@ -1,6 +1,6 @@
 # 0008. Kitaru durable runtime — a headless flow as a second entry path, not a wrapper around the live REPL
 
-**Status:** Accepted
+**Status:** Superseded by [0019](0019-kitaru-replay-runtime.md)
 **Date:** 2026-06-27
 
 ## Context

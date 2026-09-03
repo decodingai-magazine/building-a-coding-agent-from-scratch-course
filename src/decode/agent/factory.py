@@ -13,9 +13,9 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-import httpx
 from openai import AsyncOpenAI
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
+from pydantic_ai.agent import AgentRetries
 from pydantic_ai.models import Model
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -41,30 +41,26 @@ _BASE_INSTRUCTIONS = (
 )
 
 
-def build_agent(
-    *, flow_mode: bool = False, model: str | None = None
-) -> Agent[AgentDeps, str | DeferredToolRequests]:
+def build_agent(*, model: str | None = None) -> Agent[AgentDeps, str | DeferredToolRequests]:
     """Construct the agent on the configured LLM Provider + register the flat tools (ADR-0002 §1-3,7).
 
-    ``flow_mode`` marks a headless flow build: it selects the keep-alive-free HTTP client Kitaru's
-    per-call event loops need (ADR-0010 §3) — and nothing else. Key sourcing does NOT vary by mode:
-    the provider key always comes from ``Settings`` (ADR-0015 §4).
-    ``model`` is the Model Override (ADR-0010 §2): overrides only the active provider's model id
-    (never the provider); being a flow input is what lets Kitaru swap it on a what-if Replay.
+    One build for every caller — the REPL and the headless runner alike (ADR-0019 §1). The provider
+    key always comes from ``Settings`` (ADR-0015 §4). ``model`` is the Model Override: it overrides
+    only the active provider's model id, never the provider.
     """
-    built_model = _build_model(flow_mode=flow_mode, model=model)
+    built_model = _build_model(model=model)
     agent: Agent[AgentDeps, str | DeferredToolRequests] = Agent(
         built_model,
         deps_type=AgentDeps,
         output_type=[str, DeferredToolRequests],
-        # Gemini 2.5 sometimes returns empty/thinking-only turns after a tool call; the default
-        # output-retry budget of 1 then aborts real multi-turn runs. Give it a few attempts.
-        output_retries=3,
-        # Tools coach the model with ModelRetry (edit "old_string not found", grep "no matches");
-        # the default per-tool budget of 1 turns the SECOND consecutive nag into
-        # UnexpectedModelBehavior, killing the whole turn. The counter only resets when the tool
-        # *succeeds* — a re-read between two mis-aimed edits doesn't help — so give real headroom.
-        tool_retries=5,
+        # Per-category retry budgets, one dict since pydantic-ai 2.x (``AgentRetries``):
+        # - output: Gemini 2.5 sometimes returns empty/thinking-only turns after a tool call; the
+        #   default budget of 1 then aborts real multi-turn runs. Give it a few attempts.
+        # - tools: tools coach the model with ModelRetry (edit "old_string not found", grep "no
+        #   matches"); the default per-tool budget of 1 turns the SECOND consecutive nag into
+        #   UnexpectedModelBehavior, killing the whole turn. The counter only resets when the tool
+        #   *succeeds* — a re-read between two mis-aimed edits doesn't help — so give real headroom.
+        retries=AgentRetries(output=3, tools=5),
     )
     register_tools(agent)
     _register_instructions(agent)
@@ -75,45 +71,25 @@ def build_agent(
     return agent
 
 
-def _flow_mode_http_client() -> httpx.AsyncClient:
-    """A keep-alive-free httpx client for flow-mode (headless ``decode run`` / replay) provider calls.
-
-    Under Kitaru's ``"calls"`` strategy each model call runs in its own event loop; a pooled
-    keep-alive connection reused across loops dies with ``RuntimeError('Event loop is closed')``.
-    The 120s timeout replaces httpx's 5s default, which google-genai forwards as the request
-    deadline — Gemini rejects deadlines under its 10s minimum (400).
-    ponytail: the client is not closed; the short-lived headless process reclaims it on exit.
-    """
-    return httpx.AsyncClient(
-        limits=httpx.Limits(max_keepalive_connections=0), timeout=httpx.Timeout(120.0)
-    )
-
-
-def _build_model(*, flow_mode: bool = False, model: str | None = None) -> Model:
+def _build_model(*, model: str | None = None) -> Model:
     """Build the Pydantic AI model for ``settings.llm_provider`` — the Provider Seam (ADR-0005 §3-5).
 
-    ``model`` is the optional Model Override (ADR-0010 §2): ``model or settings.<provider>_model``
-    per branch — never the provider branch or the auth/key path; no cross-provider swap. Branch
-    facts verified against the installed SDKs: ``gemini`` uses the google-gla API-key path and never
-    passes ``vertexai=`` (its deprecation warning would fail under ``filterwarnings=["error"]``);
+    ``model`` is the optional Model Override: ``model or settings.<provider>_model`` per branch —
+    never the provider branch or the auth/key path; no cross-provider swap. Branch facts verified
+    against the installed SDKs: ``gemini`` uses the Generative-Language API-key path and never passes
+    ``vertexai=`` (its deprecation warning would fail under ``filterwarnings=["error"]``);
     ``openrouter`` / ``modal`` both ride ``OpenAIChatModel``, modal over a bespoke ``AsyncOpenAI``
     client for its per-user ``base_url`` + dual-header proxy-token auth (both-or-neither enforced
     upstream by the cli guard). ``gemini`` / ``openrouter`` source their key from ``Settings`` through
     :func:`_provider_api_key` (ADR-0015 §4); modal is deliberately not on it (a header surface, not a
-    single api_key). ``flow_mode`` selects only the keep-alive-free HTTP client (ADR-0010 §3) — never
-    the key path. The trailing :class:`ValueError` is defensive — the settings ``Literal`` blocks it
-    upstream.
+    single api_key). The trailing :class:`ValueError` is defensive — the settings ``Literal`` blocks
+    it upstream.
     """
     provider = settings.llm_provider
     if provider == "gemini":
-        # Flow mode hands Gemini a keep-alive-free client (see _flow_mode_http_client); openrouter/
-        # modal share the latent issue — wire the same client through their AsyncOpenAI when needed.
         return GoogleModel(
             model or settings.gemini_model,
-            provider=GoogleProvider(
-                api_key=_provider_api_key("gemini"),
-                http_client=_flow_mode_http_client() if flow_mode else None,
-            ),
+            provider=GoogleProvider(api_key=_provider_api_key("gemini")),
         )
     if provider == "openrouter":
         return OpenAIChatModel(
@@ -145,7 +121,7 @@ def _provider_api_key(provider: Literal["gemini", "openrouter"]) -> str:
     """Read the provider API key from ``Settings`` — the single source of truth (ADR-0015 §4).
 
     Whichever settings source is active (``.env`` locally, an Environment Bucket remotely) hydrates
-    the ``SecretStr``; the key never comes from anywhere else, in flow mode or interactively.
+    the ``SecretStr``; the key never comes from anywhere else, headless or interactively.
     """
     secret = settings.gemini_api_key if provider == "gemini" else settings.openrouter_api_key
     return secret.get_secret_value()

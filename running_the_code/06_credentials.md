@@ -16,44 +16,43 @@ A second, smaller question, kept separate: *which of those values does the **san
 opt-in — `SANDBOX_GIT_TOKEN` ([Part 2](#part-2--the-sandbox-git-token-sandbox_git_token)). Everything else
 stays in the harness process.
 
-[Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs)'s footprint is one line: the Environment Bucket **is** a Kitaru secret — the only `get_secret` seam
-in the codebase ([ADR-0015 §6](../docs/adr/0015-environment-bucket-secrets.md)). (`MODAL_PROXY_TOKEN_ID` /
-`_SECRET` are unrelated: Modal's own endpoint-auth headers — see [`02_modal_endpoints.md`](02_modal_endpoints.md).)
+[Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs)'s footprint is one seam: the Environment Bucket **is** a named Kitaru secret on the managed
+workspace, read through the kitaru 0.22.2 **client API** (`KitaruClient().api.secrets`, list-by-name → get
+with values) — the only secret call in the codebase ([ADR-0015 §6](../docs/adr/0015-environment-bucket-secrets.md),
+transport per [ADR-0019 §5](../docs/adr/0019-kitaru-replay-runtime.md)). The old local-server / `get_secret`
+story is gone with kitaru 0.18: there is no `kitaru secrets` CLI in 0.22.2, and nothing listens on
+`127.0.0.1:8383`. (`MODAL_PROXY_TOKEN_ID` / `_SECRET` are unrelated: Modal's own endpoint-auth headers — see
+[`02_modal_endpoints.md`](02_modal_endpoints.md).)
+
+**Not the same thing as a replay's secrets.** Kitaru can also attach secrets to a registered **Agent Version**
+(`kitaru agent version register --secret-id …`), which is how a Kitaru **Worker** would hand credentials to the
+process it spawns. decode's version 2 deliberately attaches **none**: the Worker layers a task's env on top of
+its own, so `set -a && . .env && set +a && kitaru worker start` already gives a replayed `decode run` the
+provider keys, without copying live keys onto the workspace ([ADR-0019 Amendments §2](../docs/adr/0019-kitaru-replay-runtime.md),
+[`03_runtime.md`](03_runtime.md)). Bucket = *how `Settings` is filled*; `--secret-id` = *what a replay's process
+env holds*. Neither feeds the other.
 
 The rest is a manual e2e tutorial. Every case is an **A/B**: the same command with one thing flipped, and a
 different observable. Part 4 is the automated backstop — same claims, no network, no PAT, no Kitaru.
-
-> **Clean break — the Credential Proxy is gone** (why: [ADR-0016](../docs/adr/0016-drop-credential-proxy.md); stale-key behavior: Part 2c). What replaces it is [Part 2](#part-2--the-sandbox-git-token-sandbox_git_token) — one token, direct-injected, both backends, and an honest warning that the model can read it.
 
 ## Part 0 — prerequisites
 
 ```bash
 cp .env.example .env                          # set GEMINI_API_KEY
-uv run kitaru secrets list                    # Parts 1b+ only: must print a (possibly empty) list, not hang
+uv run kitaru status                          # Parts 1b+ only: "authentication": "authenticated"
 docker info >/dev/null && echo "docker ok"    # Part 2 only
 ```
 
 Part 1a needs **none** of that — at `DECODE_ENV=local` (the default) decode never touches Kitaru or Docker.
 
-If `kitaru secrets list` retries `HTTPConnection(host='127.0.0.1', port=8383) … Connection refused`, stored
-auth state from an earlier `kitaru login` is pointing at a server that is no longer running. Pick either:
+If `kitaru status` reports anything but `authenticated` (or names a workspace you don't recognise), the stored
+credential is stale or points elsewhere. One command fixes both:
 
 ```bash
-uv run kitaru logout    # no server at all — the server-less local database (simplest)
-uv run kitaru login     # or bring the local server + web dashboard back up on 127.0.0.1:8383
+uv run kitaru login https://<your-workspace>.cloudinfra.zenml.io
 ```
 
-On macOS the local Kitaru server can also die mid-run with an ObjC fork-safety abort — the
-`OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` fix is in [03_runtime.md](03_runtime.md#macos-the-local-kitaru-server-crashes-mid-run).
-
 ## Part 1 — the config surface (`DECODE_ENV`)
-
-> **Coming from an older `.env` ([ADR-0015 §4](../docs/adr/0015-environment-bucket-secrets.md))?**
-> `RUNTIME_SECRET_NAME`, `RUNTIME_SECRET_STORE_CONFIG` and `RUNTIME_SECRET_STORE_MODEL_KEY` are **deleted**,
-> and pydantic's `extra="ignore"` means a stale line in your `.env` is **silently ignored** — decode starts
-> and never tells you the knob did nothing. Migrate: `make sync-secrets ENV=<env>` once, then
-> `DECODE_ENV=<env>` on every run. Old per-credential secrets are dead weight:
-> `uv run kitaru secrets delete <name>`.
 
 `DECODE_ENV` decides **where `Settings` gets its values, and nothing else** — not session dirs, not log paths,
 not `MEMORY.md`. It is the bootstrap variable, so it is read out-of-band (your `.env` file, overlaid by the
@@ -82,8 +81,10 @@ print('DECODE_ENV =', settings.decode_env, '| opik project =', settings.opik_pro
 # → DECODE_ENV = staging | opik project = decode-staging
 ```
 
-Working: `False` at `local`, `True` at a remote env. That second import is the cost of an environment — a
-ZenML stack and a network touch before the first prompt — and it is exactly why `local` is the default.
+Working: `False` at `local`, `True` at a remote env. That second import is the cost of an environment — the
+kitaru client and a network round trip to the workspace before the first prompt — and it is exactly why
+`local` is the default. (Recording is the *other* thing that imports kitaru, and it is opt-in too:
+[03_runtime.md](03_runtime.md#record-runs-as-kitaru-sessions-opt-in).)
 Note the free side-effect: the Opik project follows the environment (`decode-local` / `decode-staging`), so
 traces self-sort. Set `OPIK_PROJECT_NAME` explicitly and your value always wins.
 
@@ -109,7 +110,7 @@ decode-staging does not exist yet — it will be created.
 Skipped (not a Settings field): MODAL_TOKEN_ID
   + GEMINI_API_KEY
   + OPENROUTER_API_KEY
-This REPLACES the entire contents of decode-staging with these 2 key(s) — `kitaru secrets set` overwrites the whole key set.
+This REPLACES the entire contents of decode-staging with these 2 key(s) — the write swaps the secret's whole key set, it does not merge into it.
 Proceed? [y/N]:
 ```
 
@@ -117,18 +118,18 @@ Every line of that output is a design decision:
 
 - **Key names only, never values** — in the diff, the confirmation, even a kitaru error (its stderr is
   redacted before printing).
-- **REPLACES** — `kitaru secrets set` overwrites the *whole* key set, so the bucket is an exact **mirror**
-  of your file; a key you delete from `.env` is gone on the next sync.
+- **REPLACES** — the write swaps the secret's *whole* key set (kitaru's PATCH does not merge), so the bucket
+  is an exact **mirror** of your file; a key you delete from `.env` is gone on the next sync.
 - **Skipped** keys are not `Settings` fields (`MODAL_TOKEN_ID`, …) — read from `os.environ`, the bucket
   could never feed them.
 - **One-way** — `.env` → Kitaru, never back: dumping a prod bucket into a developer's working tree is the
   failure this design exists to prevent. `--yes` skips the prompt (CI).
 
-Confirm it landed (names only — `--show-values` exists, and you do not need it):
+Confirm it landed — names only, and with the same command: re-run the sync and answer **N**. The diff it
+prints *is* the read of the bucket (`=` unchanged, `~` changed, `+` added, `-` dropped), and nothing is written:
 
 ```bash
-uv run kitaru secrets list                    # → decode-staging: … (private)
-uv run kitaru secrets show decode-staging     # metadata + key names
+make sync-secrets ENV=staging       # answer N at "Proceed? [y/N]" → "Aborted — nothing was written…"
 ```
 
 ### 1c. ON — run against the bucket, with the key absent from your environment
@@ -147,7 +148,7 @@ headless-only toggle).
 
 | Command | Working looks like |
 |---|---|
-| **Missing bucket** (or Kitaru local server down): `DECODE_ENV=prod uv run decode run "hi"` | ONE friendly stderr line, exit 1, **no traceback** — and it names the fix, not the missing key: *Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded (it is missing, or the Kitaru local server is down) — run `make sync-secrets ENV=prod` (see running_the_code/06_credentials.md).* |
+| **Missing bucket** (or an unreachable workspace): `DECODE_ENV=prod uv run decode run "hi"` | ONE friendly stderr line, exit 1, **no traceback** — and it names the fix, not the missing key: *Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded (no such secret on the Kitaru workspace, or this machine cannot reach it — check `kitaru login` / KITARU_API_URL) — run `make sync-secrets ENV=prod` (see running_the_code/06_credentials.md).* |
 | Same, in the **TUI**: `DECODE_ENV=prod uv run decode` | The **same** line, exit 1 — the REPL is guarded before it starts. Both surfaces or it isn't a config surface. |
 | **No backfill**: delete `GEMINI_API_KEY` from the bucket (`make sync-secrets ENV=staging` after removing it from `.env`), put it back in `.env`, then `env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode run "hi"` | `Decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example).` — it fails **loudly** even though the key is sitting right there in `.env`. That file is not in the chain at a remote env. **This is the point of having environments at all**: a provisioning gap must not be masked by a developer's laptop. |
 | **Process env wins**: `GEMINI_API_KEY=<a-real-key> DECODE_ENV=staging uv run decode run "hi"` | It answers, using *your* key — precedence is always `process env > (.env \| bucket) > defaults`. Handy for a one-off override; also the escape hatch when a bucket key is stale. |
@@ -260,9 +261,11 @@ the remote sandbox's env).
 
 ```bash
 rm -rf .decode/sandbox                                # the Workspace Part 2 left behind
-uv run kitaru secrets delete decode-staging           # the bucket, if you ran Part 1b
 docker ps -a --filter ancestor=ghcr.io/astral-sh/uv:python3.12-bookworm-slim   # empty — the Worker is reaped
 ```
+
+The `decode-staging` bucket, if you ran Part 1b, is deleted from the workspace dashboard (`uv run kitaru status`
+prints its URL) — 0.22.2 has no `secrets` CLI. Leaving it costs nothing as long as `DECODE_ENV` is `local`.
 
 And revoke the PAT you handed the sandbox in 2b. It was scoped and revocable — that was the point.
 
@@ -294,4 +297,4 @@ one helper constant, one token gate, the secret in **no** argv; unset → no cre
 docker daemon or Modal credentials exist, live injection with a dummy token (no GitHub call).
 [`test_env_example_drift.py`](../tests/unit/decode/config/test_env_example_drift.py) is why
 [`.env.example`](../.env.example) cannot lie: its `KEY=` lines and the `Settings` fields must match in **both**
-directions — which also guarantees the retired proxy keys are really gone.
+directions.

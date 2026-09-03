@@ -4,6 +4,10 @@
 > figures are Modal's own **estimates** — treat them as relative, and validate with
 > `modal endpoint benchmark`. Catalogs drift; re-check the dashboard before committing GPU budget.
 
+> **Modal does more than serve models here.** It also hosts decode's headless harness
+> (`decode-headless` — remote `decode run`s and N parallel attempts) and a Kitaru Worker
+> (`decode-kitaru-worker` — replays off your laptop): [07_infra.md](07_infra.md).
+
 ## TL;DR
 
 For a ReAct coding-agent harness (LLM ⇄ tools loop, OpenAI-compatible serving), working through this

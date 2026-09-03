@@ -11,8 +11,11 @@ chain entirely so a key missing from the bucket fails loudly instead of being ba
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from collections.abc import Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal
 
@@ -84,7 +87,7 @@ def context_window_for(model_id: str) -> int | None:
 
 
 # The last Environment-Bucket load failure, or None. The ``settings`` singleton is built at IMPORT
-# time, so the source must never raise: a missing bucket (or a downed Kitaru local server) is
+# time, so the source must never raise: a missing bucket (or an unreachable Kitaru workspace) is
 # recorded here and rendered by the cli startup guards as ONE friendly line (ADR-0015 §5).
 _bucket_load_error: str | None = None
 
@@ -132,6 +135,50 @@ def _resolve_decode_env(dotenv_settings: PydanticBaseSettingsSource) -> str:
     return os.environ.get(_DECODE_ENV_VAR) or _decode_env_from_dotenv(dotenv_settings) or "local"
 
 
+def _run_blocking[T](coro: Coroutine[Any, Any, T]) -> T:
+    """Run ``coro`` to completion on a private event loop in a worker thread, and return its result.
+
+    Deliberately NOT :func:`asyncio.run`: the ``settings`` singleton is built at IMPORT time, and an
+    import that happens to run inside a live event loop (a lazy import from async code) makes
+    ``asyncio.run`` raise — which would degrade a perfectly healthy bucket into the "unavailable"
+    friendly line. A worker thread owns its own loop, so the read behaves identically either way.
+    """
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="decode-bucket") as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _read_bucket(bucket: str) -> dict[str, str]:
+    """The values of the named Kitaru secret ``bucket``, read off the managed workspace (ADR-0019 §5).
+
+    Two calls, because the 0.22.2 secrets resource has no get-by-name endpoint: list filtered by
+    ``name``, then get that id ``include_values=True``. The client resolves its own URL and
+    credentials from ``KITARU_API_URL`` / ``KITARU_API_KEY`` (else the on-disk ``kitaru login``
+    store) — decode adds no knob of its own, so there is one place to configure the workspace.
+
+    Raises on anything (no such secret, unreachable server, expired login): the single caller owns
+    the never-raises contract (ADR-0015 §5), and swallowing here would hide *which* step failed.
+    """
+    from kitaru.api_models.v1.filter import FilterCondition
+    from kitaru.api_models.v1.secret import SecretListParams
+    from kitaru.client import KitaruClient
+
+    async def read() -> dict[str, str]:
+        client = KitaruClient()
+        try:
+            page = await client.api.secrets.list(
+                SecretListParams(filter=FilterCondition(field="name", op="eq", value=bucket))
+            )
+            found = next((item for item in page.items if item.name == bucket), None)
+            if found is None:
+                raise LookupError("no secret with this name on the Kitaru workspace")
+            secret = await client.api.secrets.get(found.id, include_values=True)
+        finally:
+            await client.close()
+        return {key: value.get_secret_value() for key, value in secret.values.items()}
+
+    return _run_blocking(read())
+
+
 class EnvironmentBucketSettingsSource(PydanticBaseSettingsSource):
     """A pydantic-settings source that hydrates the whole surface from the Environment Bucket (ADR-0015 §2).
 
@@ -143,8 +190,9 @@ class EnvironmentBucketSettingsSource(PydanticBaseSettingsSource):
       is a remote environment (the restated REPL-safety invariant, ADR-0015 §5).
     * **``Settings`` object only — never ``os.environ``.** Nothing is written to the process env, so
       a model-chosen ``bash`` never inherits a bucket-sourced secret.
-    * **Never raises.** The singleton is built at import; a missing bucket / a downed Kitaru local
-      server is captured in :func:`bucket_load_error` and surfaced by the cli as one friendly line.
+    * **Never raises.** The singleton is built at import; a missing bucket / an unreachable or
+      unauthenticated Kitaru workspace is captured in :func:`bucket_load_error` and surfaced by the
+      cli as one friendly line.
     """
 
     def __init__(self, settings_cls: type[BaseSettings], decode_env: str) -> None:
@@ -168,9 +216,9 @@ class EnvironmentBucketSettingsSource(PydanticBaseSettingsSource):
 
         bucket = environment_bucket_name(self.decode_env)
         try:
-            from kitaru import get_secret  # lazy: a remote env is the only importer of kitaru here
-
-            values = get_secret(bucket).values
+            values = _read_bucket(
+                bucket
+            )  # lazily imports the kitaru client — see :func:`_read_bucket`
         except Exception as exc:  # broad on purpose: an import-time crash is never acceptable here
             _bucket_load_error = f"{bucket}: {exc}"
             logger.debug("environment bucket %r could not be loaded: %s", bucket, exc)
@@ -322,17 +370,26 @@ class Settings(BaseSettings):
     # Per-request best-effort wall-clock timeout (seconds); ``initialize`` is bounded too.
     lsp_request_timeout_s: float = Field(10.0, gt=0)
 
-    # --- Kitaru durable runtime (ADR-0008) ---
+    # --- Headless runtime (ADR-0019 §1) ---
     # ``runtime_enabled`` master-gates the WHOLE headless feature: ``False`` → ``decode run`` exits
-    # with a friendly line and never builds a Durable Flow.
+    # with a friendly line and never builds an agent. The durable-flow knobs
+    # (``RUNTIME_CHECKPOINT_STRATEGY`` / ``RUNTIME_WAIT_TIMEOUT_S``) died with the flow — a clean
+    # break, no shim: a stale entry in a developer's ``.env`` is silently ignored.
     runtime_enabled: bool = True
-    # Checkpoint granularity. ``"calls"`` (default) makes every run replay-ready — each model/tool
-    # call is its own Checkpoint (loop-safe on gemini via the keep-alive-free flow-mode HTTP client,
-    # ADR-0010 §3). ``"turn"`` is a cheaper opt-out but replayable only whole. HITL always forces
-    # ``"calls"`` (``flow.py``).
-    runtime_checkpoint_strategy: Literal["turn", "calls"] = "calls"
-    # The durable Wait (HITL) poll timeout (seconds); matches Kitaru's local 600s default.
-    runtime_wait_timeout_s: float = Field(600.0, gt=0)
+    # The default request ceiling for a headless run — the number of model requests after which
+    # ``decode run`` stops with one friendly line and a non-zero exit instead of looping on. ``None``
+    # (the default) is unbounded, byte-identical to the REPL; ``decode run --max-requests N``
+    # overrides it per run. A background run (a cron job, a webhook, a CI step) has nobody watching
+    # its token bill, which is what this ceiling is for.
+    runtime_max_requests: int | None = Field(None, gt=0)
+    # --- Recording Seam (ADR-0019 §3) ---
+    # The Kitaru agent (a UUID) recorded runs are filed under. Presence-based opt-in and decode's
+    # ONLY recording knob: set it (together with the adapter client's own ``KITARU_API_URL`` /
+    # ``KITARU_API_KEY`` **process** env) and a run is wrapped in ``kitaru_pydantic_ai.KitaruAgent``;
+    # empty → the bare agent, and no kitaru module is ever imported. Deliberately NOT paired with
+    # url/key settings of decode's own: the adapter client resolves those itself, so there is exactly
+    # one place to configure the workspace (a second one would drift).
+    kitaru_agent_id: str = ""
     # Secrets are NOT a runtime knob any more: the retired ``RUNTIME_SECRET_*`` family is deleted,
     # with no shim — config comes from ``DECODE_ENV`` (above), in the TUI and headless alike, and a
     # stale entry in a developer's ``.env`` is silently ignored (ADR-0015 §4; loud in .env.example).

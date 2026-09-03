@@ -111,7 +111,7 @@ def test_init_tracing_disables_the_logfire_console_exporter(fake_opik_key, mock_
 
     Regression pin. ``send_to_logfire=False`` only disables cloud egress; logfire's DEFAULT console
     setting installs a ``ShowParentsConsoleSpanExporter`` straight to stdout, which flooded the TUI
-    with a raw span trace (timestamps, ``_MAIN_AGENT run``, ``running tool: grep``) *through* the
+    with a raw span trace (timestamps, ``invoke_agent``, ``running tool: grep`` messages) *through* the
     ``patch_stdout()`` the prompt is pinned under. decode renders events through its OWN event bus.
     """
     init_tracing()

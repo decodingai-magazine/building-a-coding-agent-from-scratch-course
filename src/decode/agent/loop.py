@@ -55,6 +55,7 @@ from decode.permissions.rules import subject_for
 from decode.tools import tool_kind
 
 if TYPE_CHECKING:
+    from pydantic_ai.agent import AbstractAgent
     from pydantic_ai.models import Model
 
     from decode.context.session_log import SessionLog
@@ -65,7 +66,7 @@ logger = logging.getLogger(__name__)
 def _leg_input_tokens(messages: list[ModelMessage]) -> int:
     """Input-token occupancy of a leg: the LAST populated ``ModelResponse.usage`` (ADR-0018 §2).
 
-    Under pydantic-ai 1.95.1 (ADR-0009) ``RunUsage`` is CUMULATIVE across every request in a leg
+    Under pydantic-ai 2.22 (ADR-0019 §2) ``RunUsage`` is CUMULATIVE across every request in a leg
     (one request per tool round), so summing it overcounts ~Nx for an N-round turn. The true
     context size is the last response's own per-request ``RequestUsage``: walk ``messages``
     BACKWARDS and take the first :class:`ModelResponse` whose ``usage.input_tokens > 0`` — later
@@ -94,7 +95,10 @@ class AgentTurnHandler:
 
     def __init__(
         self,
-        agent: Agent[AgentDeps, str | DeferredToolRequests],
+        # ``AbstractAgent``, not ``Agent``: the handler only ever calls ``iter()``, and the REPL may
+        # hand it a pydantic-ai ``WrapperAgent`` — today the Recording Seam's ``KitaruAgent``
+        # (ADR-0019 §3). Nothing else about the loop changes for a wrapped agent.
+        agent: AbstractAgent[AgentDeps, str | DeferredToolRequests],
         *,
         deps: AgentDeps,
         session_log: SessionLog | None = None,

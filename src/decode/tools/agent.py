@@ -153,7 +153,7 @@ _CHILD_FAILED_NOTE = "This subagent failed before producing a report."
 def _read_any_code(result: AgentRunResult[str | DeferredToolRequests]) -> bool:
     """Whether the child called ANY tool — a ``ToolCallPart`` in any ``ModelResponse`` of its transcript.
 
-    ``AgentRunResult.all_messages()`` is the child's full transcript (pydantic-ai 1.95 ``run.py:461``).
+    ``AgentRunResult.all_messages()`` is the child's full transcript (pydantic-ai 2.22 ``run.py``).
     No tool call means the child never opened a file: whatever it reported came from model memory.
     """
     return any(

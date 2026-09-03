@@ -1,6 +1,6 @@
 # 0010. Kitaru-powered replay for the headless `decode run` — reuse native replay, build only the enablers
 
-**Status:** Accepted
+**Status:** Superseded by [0019](0019-kitaru-replay-runtime.md)
 **Date:** 2026-07-02
 
 ## Context

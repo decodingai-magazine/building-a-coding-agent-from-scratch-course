@@ -48,8 +48,6 @@ Hand-back (above) needs **no** credential in the sandbox — it pushes host-side
 
 > **A sandboxed process can read `$GITHUB_TOKEN`** — a prompt-injected agent too. Use a **fine-grained, repo-scoped, revocable** PAT, and revoke it when you're done. Leave the variable **unset** and the sandbox holds no credential at all — hand-back still ships your branch.
 
-decode used to hide this token behind a mitmproxy sidecar (the **Credential Proxy**). It is **deleted** ([ADR-0016](../docs/adr/0016-drop-credential-proxy.md)): it only ever worked in one of the three sandbox modes, egress was cooperative anyway (`curl --noproxy '*'` walked around it), and the machinery cost more than it protected. One mechanism now, both backends — a security story that is *true as written*.
-
 ## Troubleshooting
 
 Sandbox guards check **presence only** and fire in both the REPL and the headless pre-flight:
@@ -68,4 +66,4 @@ Everything else — provider keys, rate limits, skills, sessions — is in [00_t
 
 - The end-to-end credential walkthrough — token set, token unset, and every negative case: [06_credentials.md](06_credentials.md).
 - Run a sandboxed agent headless (`decode run --repo …`): [03_runtime.md](03_runtime.md).
-- Move the *whole agent* (not just its tools) to the cloud: [07_infra.md](07_infra.md).
+- Replay a recorded run inside this same docker Workspace, on a Kitaru Worker: [03_runtime.md](03_runtime.md#replay-a-recorded-session-on-a-kitaru-worker); where the remote pieces live now: [07_infra.md](07_infra.md).

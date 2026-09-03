@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kitaru Replay Experiment"
+  short_description: "Run safe, bounded Kitaru replay comparisons"
+  default_prompt: "Use $kitaru-replay-experiment to compare one candidate against an accepted Kitaru cohort."

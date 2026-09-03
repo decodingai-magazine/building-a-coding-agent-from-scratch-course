@@ -11,20 +11,10 @@ os.environ["DECODE_LOG_FILE"] = ""
 import pytest
 from pydantic import SecretStr
 
-# Headless-Runtime test fixtures are registered HERE, at the rootdir conftest, on purpose: under
-# ``--import-mode=importlib`` a per-package ``conftest`` is reliably applied only when its tests are
-# collected contiguously, so a non-runtime file collected between two runtime files (e.g. under
-# ``pytest-randomly``) de-associated ``tests/unit/decode/runtime/conftest.py`` from the second file —
-# its autouse Kitaru-store isolation stopped running and a ``create_secret`` fell through to the
-# developer's real ZenML store (task 065). The rootdir conftest is the only ancestor always in scope
-# for every collected test, so its fixtures apply in any order. ``isolated_kitaru_store`` is autouse
-# but gated to the unit runtime package (a no-op importing nothing elsewhere); see the module.
+# The Kitaru/ZenML store-isolation fixtures that used to be registered here died with the durable
+# runtime (ADR-0019 §1): the headless runner boots no local stack, so there is no global store to
+# redirect and no durable wait to resolve.
 from support.git_env import GIT_HOOK_ENV_VARS
-from support.runtime_fixtures import (  # noqa: F401 — re-exported so pytest registers them
-    env_bucket_name,
-    inline_wait_resolver,
-    isolated_kitaru_store,
-)
 
 
 @pytest.fixture(autouse=True)
@@ -145,6 +135,31 @@ def _default_decode_env(monkeypatch):
     from decode.config.settings import settings
 
     monkeypatch.setattr(settings, "decode_env", "local", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_kitaru_recording(monkeypatch):
+    """Hermeticity guard — no test may record a Kitaru session (ADR-0019 §3, task 134).
+
+    Recording is presence-based, so ``KITARU_AGENT_ID`` (a ``Settings`` field, possibly loaded from a
+    developer's ``.env`` at import time) plus an exported ``KITARU_API_URL`` is a *behavioral switch*:
+    the Recording Seam would wrap every agent the suite builds and probe a real workspace over the
+    network. ``KITARU_TASK_ID`` is worse — it flips the seam from degrade to hard-fail AND makes
+    ``decode run`` take its task from ``KITARU_TASK_INPUTS`` (ADR-0019 §4, task 136), so an operator
+    who ran a Kitaru Worker in the same shell would see failures — or a task — no one else gets. Same
+    class of leak as :func:`_no_real_provider_key` / :func:`_default_sandbox_mode`.
+
+    The env vars are deleted (which also scrubs them for the subprocesses tests spawn, keeping the
+    "no kitaru import unless configured" invariant checks honest) and the singleton field is blanked.
+    The recording tests set their own values with ``monkeypatch`` (which runs after this fixture, so
+    they win).
+    """
+    for name in ("KITARU_AGENT_ID", "KITARU_API_URL", "KITARU_TASK_ID", "KITARU_TASK_INPUTS"):
+        monkeypatch.delenv(name, raising=False)
+
+    from decode.config.settings import settings
+
+    monkeypatch.setattr(settings, "kitaru_agent_id", "", raising=False)
 
 
 @pytest.fixture(autouse=True)

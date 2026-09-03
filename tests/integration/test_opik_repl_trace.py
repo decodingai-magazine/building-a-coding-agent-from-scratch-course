@@ -7,7 +7,7 @@ exporter (``capfire``). It proves the whole trace tree a turn produces, end to e
 network:
 
 * one ``chat_turn`` root span per turn, carrying ``thread_id`` = the session id, with the pydantic-ai
-  ``chat`` (model-request) + ``running tool`` spans nested under it;
+  ``chat`` (model-request) + ``execute_tool`` spans nested under it;
 * a leaf ``chat`` span carries token usage (``gen_ai.usage.input_tokens`` > 0);
 * a gated tool's approve/resume leg stays in the SAME root span (one trace spans the pause + resume);
 * two turns emit two roots sharing the ``thread_id``;
@@ -200,7 +200,8 @@ def _model_spans(spans: list[dict]) -> list[dict]:
 
 
 def _tool_spans(spans: list[dict]) -> list[dict]:
-    return [s for s in spans if s["name"] == "running tool"]
+    """The tool-call spans — ``execute_tool <name>`` under pydantic-ai 2.x instrumentation."""
+    return [s for s in spans if s["name"].startswith("execute_tool")]
 
 
 async def test_single_turn_is_one_chat_turn_root_with_nested_model_and_tool_spans(
@@ -233,7 +234,7 @@ async def test_single_turn_is_one_chat_turn_root_with_nested_model_and_tool_span
     model_spans = _model_spans(spans)
     tool_spans = _tool_spans(spans)
     assert model_spans, [s["name"] for s in spans]
-    assert tool_spans, "the read tool must produce a 'running tool' span"
+    assert tool_spans, "the read tool must produce an 'execute_tool' span"
     # Everything the turn produced nests under the one root: same trace, and not a root itself.
     for span in model_spans + tool_spans:
         assert span["context"]["trace_id"] == trace_id
