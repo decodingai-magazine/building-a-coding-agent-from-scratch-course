@@ -12,7 +12,7 @@ Budget: ~20 minutes. Needs 06 done once (a recorded Session, an evaluator) and M
 |---|---|---|
 | Process | `kitaru worker start` in your shell | `scripts/modal_kitaru_worker.py` — a long-running Function running `kitaru worker start`; app `decode-kitaru-worker` |
 | Spawns | **agent version 2**: `SANDBOX_MODE=docker`, repo clone, Harness Home `~/.decode-kitaru-worker` | **agent version 3**: `SANDBOX_MODE=none`, in-image paths `/.uv/.venv/bin/decode` + `/harness` — the container is the isolation; no Docker daemon exists there |
-| Environment | sourced `.env` | the `decode-kitaru-worker` Modal Secret |
+| Environment | sourced `.env` | the `decode-kitaru-worker` Modal Secret (+ the `decode-prod` bucket at `DECODE_ENV=prod`, §2c) |
 | Claims | `agent` + `evaluator` + `importer` | `agent` + `evaluator` — never `importer` (export files exist only on your machine) |
 | Lifetime | while the shell lives | Modal's **24 h** function ceiling; one command re-launches |
 
@@ -29,6 +29,7 @@ Image = the headless app's (`decode.remote.image`, shared verbatim), so version 
 | Modal account tokens | `uv run modal token set …` — [04_deploy.md §2a](04_deploy.md#2a-prerequisites) |
 | A recorded Session + an evaluator | [06_evals_replays.md §3–4](06_evals_replays.md#3-get-sessions-in--record-new-import-old) |
 | A control plane API key (`ZENPROKEY_…`) | §2b |
+| The `decode-prod` bucket, for `DECODE_ENV=prod` | `make sync-secrets ENV=prod` — [06 §9](06_evals_replays.md#9-environments--decode_env-and-the-environment-bucket-optional) |
 
 ### 2b. Mint the container credential (a `ZENPROKEY_…`)
 
@@ -59,33 +60,43 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/
 
 Put it in `.env` as `KITARU_API_KEY=ZENPROKEY_…`.
 
-### 2c. The `decode-kitaru-worker` Secret
+### 2c. `DECODE_ENV=prod` for both Modal apps
 
-Same `DECODE_ENV` rule as the headless Secret ([04 §2b](04_deploy.md#2b-the-decode-headless-secret)): `prod` reads provider keys from the `decode-prod` bucket, unset (`local`) means the Secret carries them.
+A container has no `.env`; its environment is a Modal Secret, and the Secret's `DECODE_ENV` picks the config surface ([ADR-0020 §11](../docs/adr/0020-remote-headless-on-modal.md), [06 §9](06_evals_replays.md#9-environments--decode_env-and-the-environment-bucket-optional)):
+
+| `DECODE_ENV` in the Secret | Where `Settings` reads from | Sandbox app / Opik project |
+|---|---|---|
+| unset (`local`) | the Secret itself — must carry every key ([04 §2b](04_deploy.md#2b-the-decode-headless-secret)) | `decode-sandbox-local` / `decode-local` |
+| `prod` (or `staging`, `dev`) | the `decode-<env>` Environment Bucket; the Secret carries only the bootstrap | `decode-sandbox-prod` / `decode-prod` |
+
+Mirror `.env` into the bucket once, then recreate both Secrets with the bootstrap only. The `ZENPROKEY_…` from §2b is what lets a container read the bucket:
 
 ```bash
+make sync-secrets ENV=prod            # provider keys, KITARU_AGENT_ID, SANDBOX_GIT_TOKEN → decode-prod
 set -a && . ./.env && set +a
+
+uv run modal secret create decode-headless \
+  DECODE_ENV=prod \
+  KITARU_API_URL="$KITARU_API_URL" \
+  KITARU_API_KEY="$KITARU_API_KEY" --force
 
 uv run modal secret create decode-kitaru-worker \
   DECODE_ENV=prod \
   KITARU_API_URL="$KITARU_API_URL" \
-  KITARU_API_KEY="$KITARU_API_KEY"          # deliberately NO KITARU_AGENT_ID
-# local instead: drop DECODE_ENV, add GEMINI_API_KEY="$GEMINI_API_KEY"
+  KITARU_API_KEY="$KITARU_API_KEY" --force   # deliberately NO KITARU_AGENT_ID
 
 uv run modal secret list
 ```
 
-| Key | Required | Why |
-|---|---|---|
-| `KITARU_API_URL` | ✅ | workspace to claim from |
-| `KITARU_API_KEY` | ✅ | the `ZENPROKEY_…` from §2b — claims tasks and, at `prod`, reads the bucket |
-| `DECODE_ENV` | `prod` / unset | replayed runs hydrate from `decode-<env>` ([ADR-0020 §11](../docs/adr/0020-remote-headless-on-modal.md)); nested sandbox app `decode-sandbox-<env>` |
-| `GEMINI_API_KEY` — or your provider's | at `local` only | the run spec attaches no secret (06 §5); at `prod` it comes from the bucket |
-| `KITARU_AGENT_ID` | ❌ **never** | a Worker Task's token is task-scoped; the Recording Seam ignores a configured id under a Worker Task (so a bucket carrying it is harmless), and the Function scrubs it from the env at startup — the Secret still omits it by composition. |
+| Key | `decode-headless` | `decode-kitaru-worker` | Why |
+|---|---|---|---|
+| `DECODE_ENV` | `prod` | `prod` | hydrate from `decode-prod`; names the nested sandbox app and the Opik project |
+| `KITARU_API_URL` | ✅ | ✅ | the workspace: bucket source for both, claim source for the Worker |
+| `KITARU_API_KEY` | ✅ | ✅ | the `ZENPROKEY_…` from §2b |
+| `KITARU_AGENT_ID` | via the bucket | ❌ **never** in the Secret | the headless app records user-launched runs under it. A Worker Task's token is task-scoped; the Recording Seam ignores a configured id under a Worker Task (so the bucket carrying it is harmless), and the Function scrubs it from the env at startup — the Secret still omits it by composition. |
+| provider keys, `SANDBOX_GIT_TOKEN` | via the bucket | via the bucket | the run spec attaches no secret (06 §5); at `prod` the bucket is the Worker's provider source |
 
-(`decode-headless` *does* carry the agent id — in its bucket at `prod`, in the Secret at `local`: it records user-launched runs and never spawns replays.)
-
-Update with `--force` on the same command (pass every key again).
+No redeploy after a Secret change: it is read when a container starts. Until `tasks/153` is closed keep `DECODE_ENV` out of both Secrets — a `prod` container that cannot load the bucket exits 1 at startup.
 
 ### 2d. Register agent version 3
 
@@ -171,6 +182,9 @@ The Worker dies at Modal's **24 h** ceiling; re-launch with the `modal run --det
 | Symptom | Fix |
 |---|---|
 | Worker exits at once naming `KITARU_API_KEY` | §2b, then `modal secret create … --force`. |
+| `Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded …` (either app) | no bucket (`make sync-secrets ENV=prod`), or the Secret's `KITARU_API_KEY` is missing / not a `ZENPROKEY_…`. |
+| `Decode: set GEMINI_API_KEY in your environment` in a `prod` run | the bucket lacks it — `make sync-secrets ENV=prod`. |
+| Runs land in `decode-sandbox-local` / `decode-local` | `DECODE_ENV` unset in the Secret — set it to `prod` (§2c). |
 | `Local API keys are rejected under control plane authentication.` | `KITKEY_…` in the Secret; needs `ZENPROKEY_…`. |
 | No `decode-modal-worker` in `kitaru worker list` | not started, or hit the 24 h ceiling — `modal app logs decode-kitaru-worker`, relaunch. |
 | `decode@3` replay stays queued | Modal Worker down, or started with a different `--agent-version-id`. |

@@ -2,7 +2,7 @@
 
 > **Snapshot:** 2026-06-26, from Modal's **Auto Endpoints** "Create Endpoint" flow. Benchmark figures are Modal's own **estimates** — relative only; validate with `modal endpoint benchmark`. Re-check the dashboard before committing GPU budget.
 
-> Modal also hosts decode's headless harness (`decode-headless`, [04_deploy.md](04_deploy.md)) and a Kitaru Worker (`decode-kitaru-worker`, [07_evals_replays_deploy.md](07_evals_replays_deploy.md)).
+> Modal also hosts decode's headless harness ([04_deploy.md](04_deploy.md)) and, later, its replay worker ([07_evals_replays_deploy.md](07_evals_replays_deploy.md)).
 
 ## TL;DR
 
@@ -52,7 +52,7 @@ modal token set --token-id <your-token-id> --token-secret <your-token-secret>
 # or set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET (see .env.example)
 ```
 
-These **account** tokens authenticate the CLI and the Modal Sandbox (`SANDBOX_MODE=modal`). Read from `~/.modal.toml` / `os.environ` by the `modal` library, never by `Settings` — not `.env` keys, skipped by `make sync-secrets`, never in an Environment Bucket ([01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional)). The **proxy** pair below *is* a `Settings` field (`MODAL_PROXY_TOKEN_ID` / `_SECRET`): rides `.env` or the bucket, and doubles as the headless webhook's auth ([04_deploy.md §4](04_deploy.md#4-run-a-task-from-a-webhook)).
+These **account** tokens authenticate the CLI and the Modal Sandbox (`SANDBOX_MODE=modal`). Read from `~/.modal.toml` / `os.environ` by the `modal` library, never by `Settings` — not `.env` keys. The **proxy** pair below *is* a `Settings` field (`MODAL_PROXY_TOKEN_ID` / `_SECRET`): rides `.env`, and doubles as the headless webhook's auth ([04_deploy.md §4](04_deploy.md#4-run-a-task-from-a-webhook)).
 
 ### Create the endpoint
 

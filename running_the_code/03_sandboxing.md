@@ -54,7 +54,7 @@ Both backends chain the same git credential-helper (`x-access-token:$GITHUB_TOKE
 
 > **⚠️ A sandboxed process CAN read `$GITHUB_TOKEN`** ([ADR-0016](../docs/adr/0016-drop-credential-proxy.md), *Consequences*). A prompt-injected agent can `echo $GITHUB_TOKEN`. Mitigation is policy: a **fine-grained, repo-scoped, revocable** PAT, revoked when done. Stronger property: leave `SANDBOX_GIT_TOKEN` unset, use host-side hand-back.
 
-Token source = the one config surface: `.env` at `local`, the Environment Bucket at a remote `DECODE_ENV` ([01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional)). `DECODE_ENV=staging SANDBOX_MODE=docker decode run --repo …` works with the token absent from your shell.
+Token source = `Settings`, i.e. `.env` — or, at a remote `DECODE_ENV`, the environment's secret store ([06 §9](06_evals_replays.md#9-environments--decode_env-and-the-environment-bucket-optional)), so the token never has to be in your shell.
 
 > **Where a tool call runs.** Only `bash` and the file/search tools run in the Worker. **`web_fetch` runs host-side** (plain `httpx` in the decode process, [`tools/web.py`](../src/decode/tools/web.py)) — host network, no sandbox env. To exercise the sandbox, say **"use the bash tool"** and check the log for `running tool: bash`.
 
@@ -155,5 +155,5 @@ Everything else: [00_troubleshooting.md](00_troubleshooting.md).
 ## Go further
 
 - Headless in a sandbox (`decode run --repo …`), then on Modal where `SANDBOX_MODE=modal` is a *nested* sandbox and `SANDBOX_GIT_TOKEN` rides a Modal Secret: [04_deploy.md](04_deploy.md).
-- Replay a recorded run inside this docker Workspace on a Kitaru Worker: [06_evals_replays.md §5](06_evals_replays.md#5-start-a-worker-on-your-laptop-the-thing-that-executes-replays).
-- Token from an Environment Bucket: [01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional).
+- Replay a recorded run inside this same docker Workspace: [06_evals_replays.md §5](06_evals_replays.md#5-start-a-worker-on-your-laptop-the-thing-that-executes-replays).
+- Feed the token from a remote environment instead of `.env`: [06 §9](06_evals_replays.md#9-environments--decode_env-and-the-environment-bucket-optional).

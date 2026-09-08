@@ -133,7 +133,7 @@ It prints one `starting: {...}` line, then polls silently (2s). Verify from anot
 uv run kitaru worker list            # yours, live: True
 ```
 
-**A replay's secrets = the Worker's env.** decode's Agent Versions attach no secret (`--secret-id`); a Worker layers a task's env on top of its own, so the sourced `.env` is what the replayed `decode run` sees, and no live key is copied onto the workspace ([ADR-0019 Amendments §2](../docs/adr/0019-kitaru-replay-runtime.md)). Not the Environment Bucket ([01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional)) — that fills `Settings` at a remote `DECODE_ENV`; unrelated. Consequence: a baseline replay reproduces the recorded run only if the Worker shell has the same `LLM_PROVIDER` / model config it recorded against.
+**A replay's secrets = the Worker's env.** decode's Agent Versions attach no secret (`--secret-id`); a Worker layers a task's env on top of its own, so the sourced `.env` is what the replayed `decode run` sees, and no live key is copied onto the workspace ([ADR-0019 Amendments §2](../docs/adr/0019-kitaru-replay-runtime.md)). Not the Environment Bucket (§9) — that fills `Settings` at a remote `DECODE_ENV`; unrelated. Consequence: a baseline replay reproduces the recorded run only if the Worker shell has the same `LLM_PROVIDER` / model config it recorded against.
 
 **Worker on Modal instead:** [07_evals_replays_deploy.md](07_evals_replays_deploy.md). It spawns agent version 3, and each Worker can only run its own version.
 
@@ -181,7 +181,7 @@ uv run kitaru experiment run start cheaper-model \
 
 1. **`.env` sourced in the wrong directory.** The checkout nests two same-named dirs; sourcing in the outer one starts the worker keyless. Symptom: `Decode: set GEMINI_API_KEY in your environment`. `pwd` first.
 2. **Worker env ≠ your shell env.** Provider keys reach the replayed decode only through the worker's own environment (agent v2 ships `secret_ids: []`). Export keys *before* `kitaru worker start`.
-3. **`KITARU_AGENT_ID` under a Worker Task.** The worker injects a task-scoped token; probing an agents route with it → `403: Task credentials are not accepted on this route`. The Recording Seam now ignores a configured agent id whenever `KITARU_TASK_ID` is set ([ADR-0020 §11](../docs/adr/0020-remote-headless-on-modal.md)), so a sourced `.env` or a bucket carrying it no longer breaks a replay. Still `unset KITARU_AGENT_ID` in the worker shell out of hygiene; on Modal the Worker Secret omits it ([07 §2c](07_evals_replays_deploy.md#2c-the-decode-kitaru-worker-secret)). A 403 now means the Worker's own credential was refused.
+3. **`KITARU_AGENT_ID` under a Worker Task.** The worker injects a task-scoped token; probing an agents route with it → `403: Task credentials are not accepted on this route`. The Recording Seam now ignores a configured agent id whenever `KITARU_TASK_ID` is set ([ADR-0020 §11](../docs/adr/0020-remote-headless-on-modal.md)), so a sourced `.env` or a bucket carrying it no longer breaks a replay. Still `unset KITARU_AGENT_ID` in the worker shell out of hygiene; on Modal the Worker Secret omits it ([07 §2c](07_evals_replays_deploy.md#2c-decode_envprod-for-both-modal-apps)). A 403 now means the Worker's own credential was refused.
 4. **`Invalid arguments: --evaluator requires an argument`** on `replay create` = the flag is missing; it's required.
 5. **`replay create` has no `--wait`** — use `kitaru job watch <job-id>`. (`--wait` exists on `session import` / `experiment run start`.)
 6. **Import payload over 50 MiB** → split by thread group.
@@ -199,10 +199,116 @@ uv run kitaru experiment run start cheaper-model \
 | Replay fails before the agent starts | docker daemon down (v2 pins `SANDBOX_MODE=docker`) or stale `--command` path after `make install`. Re-register: `uv run python scripts/register_kitaru_agent.py`. |
 | `403: Task credentials are not accepted on this route` | `unset KITARU_AGENT_ID` in the Worker shell (§7.3). |
 
+## 9. Environments — `DECODE_ENV` and the Environment Bucket (optional)
+
+`Settings` ([`config/settings.py`](../src/decode/config/settings.py)) is the single source of truth for every credential. `DECODE_ENV` decides where it reads from ([ADR-0015](../docs/adr/0015-environment-bucket-secrets.md)):
+
+| `DECODE_ENV` | Source chain (highest first) |
+|---|---|
+| `local` (default) | process env → **`.env`** → defaults. Kitaru never imported. |
+| `dev` / `staging` / `prod` | process env → **Environment Bucket** (`decode-<env>`) → defaults. **`.env` dropped from the chain entirely.** |
+
+Values land in `Settings` only, never `os.environ` — a model-run `bash` never inherits one. `DECODE_ENV` affects nothing else (not session dirs, logs, `MEMORY.md`).
+
+The Environment Bucket is a named [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs) secret on the managed workspace, read via `KitaruClient().api.secrets`. On Modal the same variable rides the Modal Secret ([07_evals_replays_deploy.md §2c](07_evals_replays_deploy.md#2c-decode_envprod-for-both-modal-apps)): `DECODE_ENV=prod` there and the container hydrates from `decode-prod` exactly like a laptop would. Not a replay's secrets (§5).
+
+9a needs only `.env`; 9b+ need `uv run kitaru status` → `"authentication": "authenticated"` (else `uv run kitaru login https://<your-workspace>.cloudinfra.zenml.io`).
+
+### 9a. OFF — `local`, and the invariant that comes with it
+
+At `local`, decode imports no kitaru module:
+
+```bash
+uv run python -c "
+import sys, decode.cli
+print('kitaru imported:', any(m.split('.')[0] == 'kitaru' for m in sys.modules))
+from decode.config.settings import settings
+print('DECODE_ENV =', settings.decode_env, '| opik project =', settings.opik_project_name)"
+# → kitaru imported: False
+# → DECODE_ENV = local | opik project = decode-local
+
+DECODE_ENV=staging uv run python -c "
+import sys, decode.cli
+print('kitaru imported:', any(m.split('.')[0] == 'kitaru' for m in sys.modules))
+from decode.config.settings import settings
+print('DECODE_ENV =', settings.decode_env, '| opik project =', settings.opik_project_name)"
+# → kitaru imported: True
+# → DECODE_ENV = staging | opik project = decode-staging
+```
+
+A remote env costs the kitaru client + a network round trip before the first prompt — why `local` is the default. Recording (§3) is the other opt-in kitaru import. Side-effect: the Opik project follows the environment (`decode-local` / `decode-staging`); `OPIK_PROJECT_NAME` always wins when set.
+
+`local` has nothing to mirror:
+
+```bash
+make sync-secrets ENV=local
+# → Error: `local` reads your .env directly — there is nothing to sync. Pick dev, staging or prod.
+```
+
+### 9b. ON — mirror `.env` into the Environment Bucket
+
+Bucket name is derived (`decode-<env>`), no override knob.
+
+```bash
+make sync-secrets ENV=staging       # → uv run python scripts/sync_secrets.py --env staging
+```
+
+```
+Mirroring .env → decode-staging (key names only; values are never printed).
+decode-staging does not exist yet — it will be created.
+Skipped (not a Settings field): MODAL_TOKEN_ID
+  + GEMINI_API_KEY
+  + OPENROUTER_API_KEY
+This REPLACES the entire contents of decode-staging with these 2 key(s) — the write swaps the secret's whole key set, it does not merge into it.
+Proceed? [y/N]:
+```
+
+- **Key names only, never values** — diff, confirmation, even redacted kitaru errors.
+- **REPLACES** — the whole key set; the bucket is an exact mirror of `.env`. A key deleted from `.env` is gone on the next sync.
+- **Skipped** = not a `Settings` field (`MODAL_TOKEN_ID`, …): read from `os.environ`, the bucket can't feed them ([02_modal_endpoints.md](02_modal_endpoints.md#authenticate-the-cli)).
+- **One-way** — `.env` → Kitaru, never back. `--yes` skips the prompt (CI).
+
+Read the bucket back: re-run the sync and answer **N**. The printed diff (`=` unchanged, `~` changed, `+` added, `-` dropped) is the read; nothing is written.
+
+### 9c. ON — run against the bucket, with the key absent from your environment
+
+```bash
+env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode run "say hi in exactly three words"
+env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode                    # the TUI, identically
+```
+
+Working: it answers. No provider key in the process env, `.env` not in the chain, nothing written to `os.environ` — `Settings` hydrated from `decode-staging` at singleton construction. TUI and headless behave identically.
+
+### 9d. Negatives — the four ways this must fail (and win)
+
+| Command | Working looks like |
+|---|---|
+| **Missing bucket** (or unreachable workspace): `DECODE_ENV=prod uv run decode run "hi"` | ONE stderr line, exit 1, no traceback: *Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded (no such secret on the Kitaru workspace, or this machine cannot reach it — check `kitaru login` / KITARU_API_URL) — run `make sync-secrets ENV=prod` (see running_the_code/06_evals_replays.md).* |
+| Same, in the **TUI**: `DECODE_ENV=prod uv run decode` | the same line, exit 1 — the REPL is guarded before it starts. |
+| **No backfill**: remove `GEMINI_API_KEY` from `.env`, `make sync-secrets ENV=staging`, put it back in `.env`, then `env -u GEMINI_API_KEY DECODE_ENV=staging uv run decode run "hi"` | `Decode: set GEMINI_API_KEY in your environment or .env to start (see .env.example).` — fails loudly although the key is in `.env`: that file is not in the chain at a remote env. A provisioning gap is never masked by a developer's laptop. |
+| **Process env wins**: `GEMINI_API_KEY=<a-real-key> DECODE_ENV=staging uv run decode run "hi"` | answers with *your* key — precedence is always `process env > (.env \| bucket) > defaults`. |
+
+### 9e. Cleanup, and the automated backstop
+
+Delete `decode-staging` from the workspace dashboard (`uv run kitaru status` prints the URL) — kitaru 0.22.x has no `secrets` CLI. Leaving it costs nothing at `DECODE_ENV=local`.
+
+Same claims, no network:
+
+```bash
+# Environment Bucket — the chain per DECODE_ENV, the no-backfill property, the captured failure.
+uv run pytest tests/unit/decode/config/test_env_bucket.py \
+              tests/unit/decode/config/test_settings.py \
+              tests/unit/decode/config/test_env_example_drift.py -v
+
+# The sync script — full-surface replace, key-names-only output, one-way, the local refusal.
+uv run pytest tests/unit/scripts/test_sync_secrets.py -v
+```
+
+[`test_env_example_drift.py`](../tests/unit/decode/config/test_env_example_drift.py): `.env.example` `KEY=` lines and `Settings` fields must match in both directions.
+
 ## Go further
 
 - [07_evals_replays_deploy.md](07_evals_replays_deploy.md) — the Worker on Modal.
-- [04_deploy.md](04_deploy.md) — headless harness on Modal; its Secret can carry the recording keys.
-- [01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional) — the Environment Bucket.
+- [04_deploy.md](04_deploy.md) — headless harness on Modal; recording keys for it: [07 §2c](07_evals_replays_deploy.md#2c-decode_envprod-for-both-modal-apps).
 - [ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md).
 - Kitaru docs: https://docs.zenml.io/kitaru — sessions/replays/cohorts/experiments, tool policies, importers, workers in production.
