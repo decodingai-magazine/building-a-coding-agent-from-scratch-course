@@ -22,7 +22,11 @@ module is the whole recording story:
 * **Hard fail, Worker-spawned.** With ``KITARU_TASK_ID`` in the env the process is executing a Kitaru
   Worker Task, where an unrecorded run would be a lying experiment. The same failure raises
   :class:`RecordingUnavailableError` instead, and the process exits non-zero. Recording is then
-  mandatory even without ``KITARU_AGENT_ID``, because the adapter infers the agent from the task.
+  mandatory even without ``KITARU_AGENT_ID``, because the adapter infers the agent from the task —
+  and a configured ``KITARU_AGENT_ID`` is **ignored** there: a Worker Task's token is task-scoped
+  and cannot use agent routes, so probing the agent would 403 a healthy replay. The id can reach
+  ``Settings`` from an Environment Bucket at a remote ``DECODE_ENV`` (ADR-0020 §11), where no env
+  scrub can catch it, so the seam is the one place this can be enforced.
 
 Probing rather than catching the first ``run()`` is deliberate: the alternative — running wrapped,
 catching the session-creation error and re-running bare — cannot tell a recording failure from an
@@ -68,11 +72,13 @@ _REASON_MAX_CHARS = 200
 _KITARU_PACKAGES = frozenset({"kitaru", "kitaru_pydantic_ai"})
 
 # The one diagnosis a 403 under a Worker Task earns (running_the_code/06_evals_replays.md §7): a
-# Worker injects a TASK-scoped token, so an agents route is exactly the call it cannot make.
+# Worker injects a TASK-scoped token, so an agents route is exactly the call it cannot make. The
+# seam itself never uses a configured KITARU_AGENT_ID under a Worker Task, so a 403 now points at
+# the Worker's own credential rather than at the id.
 _AGENT_ID_TRAP_HINT = (
-    " A 403 here is almost always KITARU_AGENT_ID set in the Kitaru Worker's own environment: a "
-    "Worker Task's token is task-scoped and cannot use agent routes — unset it and let the adapter "
-    "infer the agent from the task."
+    " A 403 here means the Worker Task's task-scoped token was refused on this route. decode "
+    "ignores KITARU_AGENT_ID under a Worker Task, so check the Kitaru Worker's own credential "
+    "(KITARU_API_KEY / your kitaru login) and the workspace URL instead."
 )
 
 
@@ -100,9 +106,15 @@ def recording_is_configured() -> bool:
 def _configured_agent_id() -> UUID | None:
     """The configured Kitaru agent as a ``UUID``, or ``None`` to let a Worker Task infer it.
 
+    Under a Worker Task the configured id is ignored outright, whatever set it (the Worker's env or
+    an Environment Bucket at a remote ``DECODE_ENV``): the task carries the agent, and the
+    task-scoped token cannot use agent routes, so honouring the id would 403 a healthy replay.
+
     Raises ``ValueError`` on a malformed id — a recording setup failure like any other, handled by
     the caller's degrade / hard-fail split rather than by a second error path here.
     """
+    if is_worker_task():
+        return None
     raw = settings.kitaru_agent_id.strip()
     return UUID(raw) if raw else None
 

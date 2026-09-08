@@ -113,15 +113,20 @@ def test_the_harness_clone_is_a_plain_git_clone():
     assert mh.clone_argv(REPO, mh.REPO_CLONE_DIR) == ["git", "clone", REPO, mh.REPO_CLONE_DIR]
 
 
-# --- the child env: one config surface, no bucket, no stray repo -----------------------------------
+# --- the child env: the Secret picks the environment, no stray repo --------------------------------
 
 
-def test_the_child_env_pins_the_mode_the_config_surface_and_the_log_file():
+def test_the_child_env_pins_the_mode_and_the_log_file():
     env = mh.decode_run_env({}, sandbox_mode="modal", log_file="/harness/decode-run.log")
 
     assert env["SANDBOX_MODE"] == "modal"
-    assert env["DECODE_ENV"] == "local"  # ADR-0020 §4: secret env, never an Environment Bucket
     assert env["DECODE_LOG_FILE"] == "/harness/decode-run.log"
+
+
+def test_the_child_env_leaves_decode_env_to_the_secret():
+    """ADR-0020 §11: the Secret's DECODE_ENV rides through untouched; absent, Settings defaults to local."""
+    assert "DECODE_ENV" not in mh.decode_run_env({}, sandbox_mode="none")
+    assert mh.decode_run_env({"DECODE_ENV": "prod"}, sandbox_mode="none")["DECODE_ENV"] == "prod"
 
 
 def test_the_child_env_keeps_the_secrets_the_container_was_given():

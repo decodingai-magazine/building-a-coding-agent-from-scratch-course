@@ -227,3 +227,39 @@ and the launcher is unit-tested through Click like `decode run` is. Cost: the de
 a repo checkout (`uv_sync` needs the lockfile; the source layer needs `src/`) — an installed wheel
 gets one friendly line saying so. Not done (deliberately): moving the Worker under `decode remote
 worker` — no second caller yet.
+
+**2026-09-08 — §11 The Modal Secret picks `DECODE_ENV`; `local` is no longer pinned in-container.**
+Supersedes §4's "`DECODE_ENV=local` in every container"; §4's two-Secret split and the
+no-`KITARU_AGENT_ID` rule for the Worker Secret stand.
+
+11. **`DECODE_ENV` comes from the Secret, like every other variable.** §4 pinned `local` in two
+    places — the shared image's env and `decode_run_env` for the headless child — so a container
+    never touched an Environment Bucket. The cost showed up in the names: every remote run's
+    nested sandbox landed in `decode-sandbox-local` and every trace in `decode-local`, next to
+    laptop experiments, because both derive from `settings.decode_env`. Both pins are deleted.
+    - **Unset in the Secret → `local`**, Settings' default: the Secret's process env is the whole
+      config surface, byte-identical to before.
+    - **`DECODE_ENV=prod` / `staging` in the Secret** → the container behaves exactly like a laptop
+      at that env (ADR-0015): `.env` (absent anyway) is out of the chain, Settings hydrates from the
+      `decode-<env>` bucket, a missing bucket is ONE friendly line and exit 1, process env still
+      wins. The Secret shrinks to the bootstrap — `DECODE_ENV`, `KITARU_API_URL`, `KITARU_API_KEY`
+      — and provider keys, `KITARU_AGENT_ID`, `SANDBOX_GIT_TOKEN` live in the bucket, mirrored by
+      `make sync-secrets ENV=<env>`. The nested sandbox app becomes `decode-sandbox-<env>`, the
+      Opik project `decode-<env>`.
+    - **The Recording Seam ignores a configured `KITARU_AGENT_ID` under a Worker Task.** A
+      `decode-prod` bucket mirrored from `.env` carries the agent id, so a Worker at `prod` would
+      hydrate it into Settings — past the Worker Function's env scrub — and every replay would die
+      on the §4 403 trap. `_configured_agent_id()` now returns `None` whenever `KITARU_TASK_ID` is
+      set, whatever set the id: the task carries the agent, and the task-scoped token cannot use
+      agent routes. The env scrub in `scripts/modal_kitaru_worker.py` stays as a backstop; the
+      Worker Secret still omits the id as a matter of composition. The 403 hint now points at the
+      Worker's own credential, since the id can no longer be the cause.
+    - **Prerequisite:** a container reads the bucket with `KITARU_API_KEY` — on the managed
+      workspace a control plane `ZENPROKEY_…` (tasks/153). Until it is minted, keep `DECODE_ENV`
+      out of both Secrets (→ `local`) or every remote run fails at startup on the bucket load.
+
+**Consequences.** Gained: Modal is a real remote environment — one `sync-secrets`, one
+bootstrap Secret, names that say where a run happened. Cost: `DECODE_ENV=prod` makes the workspace
+an availability dependency of the *harness* at startup (the bucket load), which `local` never was;
+that is ADR-0015's contract, now honoured on Modal too. Not done: a per-environment Secret name
+(`decode-headless-<env>`) — one deployment per Modal workspace is the course's shape.

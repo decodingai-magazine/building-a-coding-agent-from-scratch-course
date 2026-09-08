@@ -28,14 +28,15 @@ never runs an ephemeral app. Every decision a run is made of lives in :mod:`deco
   so editing decode rebuilds only the last two — and a code change needs a re-deploy before the
   next run. The console script therefore exists at ONE deterministic absolute path,
   :data:`DECODE_BIN` — the same one the Worker's Agent Version is registered with.
-* **Secrets** ride the ``decode-headless`` :class:`modal.Secret` — provider keys, ``KITARU_API_URL`` /
-  ``KITARU_API_KEY`` / ``KITARU_AGENT_ID`` (the Recording Seam degrades gracefully without them), and
-  an optional ``SANDBOX_GIT_TOKEN``. Secret env outranks ``.env`` in Settings precedence, so
-  ``DECODE_ENV`` stays ``local`` and no Environment Bucket is used on Modal (ADR-0020 §4). Create it
-  once, values never committed::
+* **Secrets** ride the ``decode-headless`` :class:`modal.Secret`, and the Secret's ``DECODE_ENV``
+  picks the config surface (ADR-0020 §11). ``DECODE_ENV=prod`` (or ``staging``): the Secret carries
+  the bootstrap only — ``DECODE_ENV`` + ``KITARU_API_URL`` + ``KITARU_API_KEY`` — and Settings
+  hydrates everything else (provider keys, ``KITARU_AGENT_ID``, ``SANDBOX_GIT_TOKEN``) from the
+  ``decode-<env>`` Environment Bucket, so the nested sandbox app is ``decode-sandbox-<env>`` and the
+  Opik project ``decode-<env>``. ``DECODE_ENV`` unset (``local``): the Secret IS the config surface
+  and must carry every key itself. Create it once, values never committed::
 
-      modal secret create decode-headless GEMINI_API_KEY=… KITARU_API_URL=… KITARU_API_KEY=… \\
-          KITARU_AGENT_ID=… [SANDBOX_GIT_TOKEN=…]
+      modal secret create decode-headless DECODE_ENV=prod KITARU_API_URL=… KITARU_API_KEY=…
 
 * **Two triggers need no laptop** (ADR-0020 Amendment §8). ``nightly`` is a Modal cron: the schedule
   and the job (task / repo / mode / ceilings) are read from ``DECODE_NIGHTLY_*`` on the laptop AT

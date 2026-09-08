@@ -34,23 +34,42 @@ No extra install: `modal` ships with decode's dependencies.
 
 ### 2b. The `decode-headless` Secret
 
-The container has no `.env`; its whole environment is one Modal Secret, `decode-headless`. Secret env outranks `.env` in `Settings`, so `DECODE_ENV` stays `local` and no Environment Bucket is involved. Create once — values from your shell, never committed:
+The container has no `.env`; its environment is one Modal Secret, `decode-headless`. The Secret's `DECODE_ENV` picks the config surface ([ADR-0020 §11](../docs/adr/0020-remote-headless-on-modal.md)):
+
+| `DECODE_ENV` in the Secret | Where `Settings` reads from | Sandbox app / Opik project |
+|---|---|---|
+| unset (`local`) | the Secret itself — it must carry every key | `decode-sandbox-local` / `decode-local` |
+| `prod` (or `staging`, `dev`) | the `decode-<env>` Environment Bucket ([01 §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional)); the Secret carries only the bootstrap | `decode-sandbox-prod` / `decode-prod` |
+
+**`prod` (recommended for a deployment).** Mirror `.env` into the bucket, then a three-key Secret:
 
 ```bash
+make sync-secrets ENV=prod            # provider keys, KITARU_AGENT_ID, SANDBOX_GIT_TOKEN → decode-prod
 set -a && . ./.env && set +a
 
 uv run modal secret create decode-headless \
-  GEMINI_API_KEY="$GEMINI_API_KEY" \
-  SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN"
+  DECODE_ENV=prod \
+  KITARU_API_URL="$KITARU_API_URL" \
+  KITARU_API_KEY="$KITARU_API_KEY"    # ZENPROKEY_… — the container reads the bucket with it
 
 uv run modal secret list              # values are write-only
 ```
 
-| Key | Required | Why |
-|---|---|---|
-| `GEMINI_API_KEY` — or your provider's | ✅ | Another provider = its keys + `LLM_PROVIDER` (`OPENROUTER_API_KEY`; or `MODAL_ENDPOINT_URL` + `MODAL_ENDPOINT_MODEL` + the proxy token pair, [02_modal_endpoints.md](02_modal_endpoints.md)) |
-| `SANDBOX_GIT_TOKEN` | optional | only `--sandbox-mode modal` runs ship branches; without it the run still answers |
-| `KITARU_API_URL` / `KITARU_API_KEY` / `KITARU_AGENT_ID` | optional | record every remote run as a Kitaru Session — [06_evals_replays.md §3](06_evals_replays.md#3-get-sessions-in--record-new-import-old). Absent: one stderr line, run still exits 0. |
+`KITARU_API_KEY` must be a control plane key (`ZENPROKEY_…`) on the managed workspace — minting in [07 §2b](07_evals_replays_deploy.md#2b-mint-the-container-credential-a-zenprokey_), pending [`tasks/153`](../tasks/153-mint-control-plane-key-close-pending-gate.md). Without it a `prod` container cannot load the bucket and every run exits 1 at startup — use `local` until it is minted.
+
+**`local` (no bucket, no Kitaru key needed).** Every key in the Secret:
+
+```bash
+uv run modal secret create decode-headless \
+  GEMINI_API_KEY="$GEMINI_API_KEY" \
+  SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN"
+```
+
+| Key | Why |
+|---|---|
+| `GEMINI_API_KEY` — or your provider's | Another provider = its keys + `LLM_PROVIDER` (`OPENROUTER_API_KEY`; or `MODAL_ENDPOINT_URL` + `MODAL_ENDPOINT_MODEL` + the proxy token pair, [02_modal_endpoints.md](02_modal_endpoints.md)) |
+| `SANDBOX_GIT_TOKEN` *(optional)* | only `--sandbox-mode modal` runs ship branches |
+| `KITARU_API_URL` / `KITARU_API_KEY` / `KITARU_AGENT_ID` *(optional)* | record every remote run as a Kitaru Session — [06 §3](06_evals_replays.md#3-get-sessions-in--record-new-import-old). Absent: one stderr line, run still exits 0. |
 
 Update with `--force` on the same command (replaces the whole Secret — pass every key again).
 
@@ -227,7 +246,9 @@ uv run modal app stop decode-headless
 |---|---|
 | `Decode: the decode-headless app is not deployed …` | `uv run decode remote deploy` (also after `modal app stop`). Nothing was billed. |
 | `Decode: Modal credentials are missing or rejected …` | `uv run modal token set …`. `.env` does nothing for these. |
-| `Decode: set GEMINI_API_KEY in your environment` in the run's log | the Secret lacks the active provider's key — recreate with `--force`. |
+| `Decode: set GEMINI_API_KEY in your environment` in the run's log | `local`: the Secret lacks the provider key — recreate with `--force`. `prod`: the bucket lacks it — `make sync-secrets ENV=prod`. |
+| `Decode: DECODE_ENV=prod but the environment bucket 'decode-prod' could not be loaded …` | no bucket (`make sync-secrets ENV=prod`), or the Secret's `KITARU_API_KEY` is missing / not a `ZENPROKEY_…`. |
+| Runs land in `decode-sandbox-local` / `decode-local` | `DECODE_ENV` unset in the Secret — set it to `prod` (§2b). No redeploy: the Secret is read when a container starts, so the next run picks it up. |
 | A remote run behaves like last week's code | re-run `decode remote deploy`. |
 | `sandbox mode 'docker' cannot run on Modal` | use `none` or `modal`. |
 | Attempts read `NOT SHIPPED` | `none` mode discards its clone; `modal` mode needs a `SANDBOX_GIT_TOKEN` that can push to that repo. |

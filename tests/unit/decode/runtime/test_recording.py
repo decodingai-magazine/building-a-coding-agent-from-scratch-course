@@ -203,6 +203,23 @@ async def test_a_worker_task_probes_reachability_without_an_agent_id(monkeypatch
     assert wrapped.agent_id is None  # inferred from the task's agent version
 
 
+async def test_a_worker_task_ignores_a_configured_agent_id(monkeypatch, _configured):
+    """A bucket-hydrated (or env-set) KITARU_AGENT_ID must not make a Worker Task probe agent routes.
+
+    The task-scoped token cannot use them (the 403 trap, 06_evals_replays §7.3), and at a remote
+    ``DECODE_ENV`` the id reaches Settings from the Environment Bucket where no env scrub applies —
+    so the seam itself drops it under a Worker Task (ADR-0020 §11).
+    """
+    stack = install_fake_recording_stack(monkeypatch)
+    monkeypatch.setenv("KITARU_TASK_ID", str(uuid.uuid4()))
+
+    wrapped, notice = await rec.wrap_for_recording(_StubAgent())
+
+    assert notice is None
+    assert stack.probe_calls == [("info.get", None)]
+    assert wrapped.agent_id is None
+
+
 # --- configured + unreachable, user-launched: degrade with ONE warning ---------------------------
 
 

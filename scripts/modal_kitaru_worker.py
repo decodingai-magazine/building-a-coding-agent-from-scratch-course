@@ -37,11 +37,12 @@ this one just happens to sit in a gVisor container instead of on a laptop.
   when you replay — ``--agent decode@3``, never "latest": version 4 is a QA-accident duplicate of 3
   (see ``tasks/done/144-…``), and versions are immutable.
 * **Secrets** ride the ``decode-kitaru-worker`` :class:`modal.Secret` — ``KITARU_API_URL`` +
-  ``KITARU_API_KEY`` + provider keys, and deliberately NO ``KITARU_AGENT_ID``. Secret env outranks
-  ``.env`` in Settings precedence, so ``DECODE_ENV`` stays ``local`` (ADR-0020 §4). Create it once,
-  values never committed::
+  ``KITARU_API_KEY``, deliberately NO ``KITARU_AGENT_ID``, and ``DECODE_ENV`` to pick the config
+  surface (ADR-0020 §11): at ``prod`` / ``staging`` the replayed ``decode run`` hydrates provider
+  keys from the ``decode-<env>`` Environment Bucket; unset (``local``) the Secret must carry them.
+  Create it once, values never committed::
 
-      modal secret create decode-kitaru-worker KITARU_API_URL=… KITARU_API_KEY=… GEMINI_API_KEY=…
+      modal secret create decode-kitaru-worker DECODE_ENV=prod KITARU_API_URL=… KITARU_API_KEY=…
 
   ``KITARU_API_KEY`` must be a **control plane** key (``ZENPROKEY_…``) on a managed workspace: a
   container has no ``kitaru login`` store, and a workspace-local key is rejected server-side under
@@ -205,6 +206,10 @@ def worker_env(base_env: Mapping[str, str]) -> dict[str, str]:
         A copy without :data:`AGENT_ID_ENV`. Everything else — provider keys, the workspace URL and
         credential, ``DECODE_ENV`` — is exactly what the Secret handed the container, because the
         worker layers a spawned task's env on top of its own (``kitaru/worker/process.py``).
+
+        The scrub is a backstop only: the Recording Seam ignores a configured agent id under a
+        Worker Task regardless of where it came from — including an Environment Bucket at a remote
+        ``DECODE_ENV``, which no env scrub could reach (ADR-0020 §11).
     """
     return {key: value for key, value in base_env.items() if key != AGENT_ID_ENV}
 

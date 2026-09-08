@@ -284,19 +284,23 @@ def git_credential_argv(env: Mapping[str, str]) -> list[str] | None:
 def decode_run_env(
     base_env: Mapping[str, str], *, sandbox_mode: str, log_file: str = LOG_FILE
 ) -> dict[str, str]:
-    """The child's process env: the container's secrets plus this run's four decisions.
+    """The child's process env: the container's secrets plus this run's three decisions.
 
-    ``SANDBOX_MODE`` selects the tool-execution seam, ``DECODE_ENV=local`` pins the config surface to
-    the Secret's process env (ADR-0020 §4), ``DECODE_LOG_FILE`` puts the child's log where this
-    Function reads the session id back out of it, and ``LOG_LEVEL`` defaults to DEBUG because that is
-    the level the session-id line is logged at (an operator-set level still wins).
+    ``SANDBOX_MODE`` selects the tool-execution seam, ``DECODE_LOG_FILE`` puts the child's log where
+    this Function reads the session id back out of it, and ``LOG_LEVEL`` defaults to DEBUG because
+    that is the level the session-id line is logged at (an operator-set level still wins).
+
+    ``DECODE_ENV`` is deliberately NOT set here: it is the Secret's to decide (ADR-0020 §11). Absent
+    from the Secret, Settings defaults to ``local`` and the Secret's process env is the whole config
+    surface; ``prod`` / ``staging`` makes the child hydrate from the ``decode-<env>`` Environment
+    Bucket, names the nested sandbox app ``decode-sandbox-<env>`` and the Opik project
+    ``decode-<env>``.
 
     ``SANDBOX_REPO`` is dropped in BOTH modes: a repo belongs to this invocation's ``--repo`` flag,
     and one left in the Secret would silently trip decode's ``--repo``-under-``none`` guard.
     """
     env = {key: value for key, value in base_env.items() if key != "SANDBOX_REPO"}
     env["SANDBOX_MODE"] = sandbox_mode
-    env["DECODE_ENV"] = "local"
     env["DECODE_LOG_FILE"] = log_file
     env["LOG_LEVEL"] = base_env.get("LOG_LEVEL") or "DEBUG"
     env["GIT_TERMINAL_PROMPT"] = "0"  # a missing credential fails fast instead of hanging

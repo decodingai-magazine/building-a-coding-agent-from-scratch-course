@@ -130,9 +130,9 @@ def build_image(
             f"/.uv/uv pip install --no-deps --python {VENV_DIR}/bin/python {IMAGE_SOURCE_DIR}"
         )
         .run_commands(f"mkdir -p {' '.join([HARNESS_HOME, *extra_dirs])}")
-        # ADR-0020 §4: one config surface, fed by the Secret's process env — never an Environment
-        # Bucket, so nothing here imports kitaru at settings load (ADR-0015).
-        .env({"DECODE_ENV": "local"})
+        # No ``DECODE_ENV`` baked in: the Modal Secret decides the environment (ADR-0020 §11). Unset,
+        # Settings defaults to ``local`` and reads the Secret's process env; ``prod`` / ``staging``
+        # reads the ``decode-<env>`` Environment Bucket, exactly like a laptop would.
         # LAST, and it has to be: the Worker app lives in the local ``scripts`` package, and a
         # container's sys.path is not the laptop's — without it the Function dies at import, before
         # it runs a line (``ModuleNotFoundError: No module named 'scripts'``, found on the worker's

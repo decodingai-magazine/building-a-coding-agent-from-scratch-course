@@ -61,13 +61,16 @@ Put it in `.env` as `KITARU_API_KEY=ZENPROKEY_…`.
 
 ### 2c. The `decode-kitaru-worker` Secret
 
+Same `DECODE_ENV` rule as the headless Secret ([04 §2b](04_deploy.md#2b-the-decode-headless-secret)): `prod` reads provider keys from the `decode-prod` bucket, unset (`local`) means the Secret carries them.
+
 ```bash
 set -a && . ./.env && set +a
 
 uv run modal secret create decode-kitaru-worker \
+  DECODE_ENV=prod \
   KITARU_API_URL="$KITARU_API_URL" \
-  KITARU_API_KEY="$KITARU_API_KEY" \
-  GEMINI_API_KEY="$GEMINI_API_KEY"          # deliberately NO KITARU_AGENT_ID
+  KITARU_API_KEY="$KITARU_API_KEY"          # deliberately NO KITARU_AGENT_ID
+# local instead: drop DECODE_ENV, add GEMINI_API_KEY="$GEMINI_API_KEY"
 
 uv run modal secret list
 ```
@@ -75,11 +78,12 @@ uv run modal secret list
 | Key | Required | Why |
 |---|---|---|
 | `KITARU_API_URL` | ✅ | workspace to claim from |
-| `KITARU_API_KEY` | ✅ | the `ZENPROKEY_…` from §2b |
-| `GEMINI_API_KEY` — or your provider's | ✅ | the run spec attaches no secret (06 §5); the Worker's env is what the replayed `decode run` sees |
-| `KITARU_AGENT_ID` | ❌ **never** | the Worker injects a task-scoped token; with an agent id in the env the Recording Seam probes an agents route that token cannot use → `403: Task credentials are not accepted on this route` ([06 §7.3](06_evals_replays.md#7-field-notes--the-pitfalls-we-actually-hit)). The Function also scrubs it at startup with one logged line — backstop, not the rule. |
+| `KITARU_API_KEY` | ✅ | the `ZENPROKEY_…` from §2b — claims tasks and, at `prod`, reads the bucket |
+| `DECODE_ENV` | `prod` / unset | replayed runs hydrate from `decode-<env>` ([ADR-0020 §11](../docs/adr/0020-remote-headless-on-modal.md)); nested sandbox app `decode-sandbox-<env>` |
+| `GEMINI_API_KEY` — or your provider's | at `local` only | the run spec attaches no secret (06 §5); at `prod` it comes from the bucket |
+| `KITARU_AGENT_ID` | ❌ **never** | a Worker Task's token is task-scoped; the Recording Seam ignores a configured id under a Worker Task (so a bucket carrying it is harmless), and the Function scrubs it from the env at startup — the Secret still omits it by composition. |
 
-(`decode-headless` *does* carry the agent id: it records user-launched runs and never spawns replays.)
+(`decode-headless` *does* carry the agent id — in its bucket at `prod`, in the Secret at `local`: it records user-launched runs and never spawns replays.)
 
 Update with `--force` on the same command (pass every key again).
 
@@ -171,7 +175,7 @@ The Worker dies at Modal's **24 h** ceiling; re-launch with the `modal run --det
 | No `decode-modal-worker` in `kitaru worker list` | not started, or hit the 24 h ceiling — `modal app logs decode-kitaru-worker`, relaunch. |
 | `decode@3` replay stays queued | Modal Worker down, or started with a different `--agent-version-id`. |
 | `decode@2` replay fails on the Modal Worker | no Docker daemon in a container — scope claims (§3), re-create with `--agent decode@3`. |
-| `403: Task credentials are not accepted on this route` | `KITARU_AGENT_ID` in the Secret — remove it (`--force`). |
+| `403: Task credentials are not accepted on this route` | the Worker's `KITARU_API_KEY` was refused — re-mint (§2b), recreate the Secret with `--force`. |
 | `ModuleNotFoundError` / command not found in the replay | re-`modal deploy`; re-check §2d paths against `decode.remote.image`. |
 
 ## Go further

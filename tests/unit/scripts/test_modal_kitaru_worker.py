@@ -49,6 +49,11 @@ def _configured_env(**overrides: str) -> dict[str, str]:
 # --- the image and its layout: one build, shared with the headless app -----------------------------
 
 
+def test_the_worker_env_passes_the_secrets_decode_env_through():
+    """ADR-0020 §11: DECODE_ENV=prod in the Secret reaches every spawned replay unchanged."""
+    assert mkw.worker_env(_configured_env(DECODE_ENV="prod"))["DECODE_ENV"] == "prod"
+
+
 def test_both_modal_apps_run_the_same_in_image_decode_entrypoint():
     """AC4: the path agent v3 is registered with is ONE constant, not two that agree today."""
     assert mkw.DECODE_BIN is mi.DECODE_BIN

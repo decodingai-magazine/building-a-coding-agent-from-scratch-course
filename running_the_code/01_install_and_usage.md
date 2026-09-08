@@ -208,7 +208,7 @@ Problems: [00_troubleshooting.md](00_troubleshooting.md).
 
 Values land in `Settings` only, never `os.environ` — a model-run `bash` never inherits one. `DECODE_ENV` affects nothing else (not session dirs, logs, `MEMORY.md`).
 
-The Environment Bucket is a named [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs) secret on the managed workspace, read via `KitaruClient().api.secrets`. Not the Modal Secrets the remote apps read ([04_deploy.md §2b](04_deploy.md#2b-the-decode-headless-secret), [07_evals_replays_deploy.md §2c](07_evals_replays_deploy.md#2c-the-decode-kitaru-worker-secret) — those outrank `.env` in the process env, so `DECODE_ENV` stays `local` in a container), and not a replay's secrets ([06_evals_replays.md §5](06_evals_replays.md#5-start-a-worker-on-your-laptop-the-thing-that-executes-replays)).
+The Environment Bucket is a named [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs) secret on the managed workspace, read via `KitaruClient().api.secrets`. On Modal the same variable rides the Modal Secret ([04_deploy.md §2b](04_deploy.md#2b-the-decode-headless-secret), [07_evals_replays_deploy.md §2c](07_evals_replays_deploy.md#2c-the-decode-kitaru-worker-secret)): `DECODE_ENV=prod` there and the container hydrates from `decode-prod` exactly like a laptop would. Not a replay's secrets ([06_evals_replays.md §5](06_evals_replays.md#5-start-a-worker-on-your-laptop-the-thing-that-executes-replays)).
 
 6a needs only `.env`; 6b+ need `uv run kitaru status` → `"authentication": "authenticated"` (else `uv run kitaru login https://<your-workspace>.cloudinfra.zenml.io`).
 
