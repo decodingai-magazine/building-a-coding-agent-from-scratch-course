@@ -1,145 +1,96 @@
 # Evaluating decode
 
-decode has tracing ([ADR-0014](../docs/adr/0014-opik-observability.md)) but tracing alone can't answer *"did
-this change make the agent better or worse?"*. The **eval suite** ([ADR-0017](../docs/adr/0017-decode-eval-suite.md))
-does, in four tracks over one shared [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) harness. It lives in top-level [`evals/`](../evals/) —
-course material *about* the agent, never shipped in the wheel — and reads its config off the same
-`Settings` surface as decode itself.
+Tracing ([ADR-0014](../docs/adr/0014-opik-observability.md)) can't answer *"did this change make the agent better or worse?"*. The **eval suite** ([ADR-0017](../docs/adr/0017-decode-eval-suite.md)) does: four tracks over one shared [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) harness, in top-level [`evals/`](../evals/) (course material, never shipped in the wheel), reading config from the same `Settings` as decode.
 
-| Track | Answers | How it's graded | Run it with |
+| Track | Answers | Graded by | Run |
 |---|---|---|---|
 | **Demo Skills** | "does it *impress*?" | a human watching | `/demo-N-...` in the REPL |
 | **Benchmark** | "does it *work*?" | hidden `verify.sh` oracles | `make eval-benchmark` |
-| **Regression probes** | "does it work the *way we designed*?" | code metrics + a threshold gate | `make eval-regression` |
-| **Online eval** | "is *live* traffic still good?" | a judge over already-emitted traces | `python -m evals online` |
+| **Regression probes** | "does it work the *way we designed*?" | code metrics + threshold gate | `make eval-regression` |
+| **Online eval** | "is *live* traffic still good?" | a judge over emitted traces | `python -m evals online` |
 
-The `evals/` package overview is [`evals/README.md`](../evals/README.md).
+Package overview: [`evals/README.md`](../evals/README.md).
 
-> **Keys & cost.** The benchmark and regression tracks run the real agent and store an Opik
-> experiment, so they need `OPIK_API_KEY` **plus the active provider's key** (`gemini` →
-> `GEMINI_API_KEY`, `openrouter` → `OPENROUTER_API_KEY`, `modal` → `MODAL_ENDPOINT_URL`). They cost
-> real money and are **never** part of `make ci` — the cadence is deliberately manual
-> ([ADR-0017 §9](../docs/adr/0017-decode-eval-suite.md)). Without the keys every target **skips friendly**:
-> one line naming what to set, exit 0, no traceback. Eval runs log under `EVAL_PROJECT_NAME`
-> (`decode-evals`) so they never pollute the live-REPL tracing project.
+> **Keys & cost.** Benchmark and regression run the real agent and store an Opik experiment: need `OPIK_API_KEY` **plus the active provider's key** (`gemini` → `GEMINI_API_KEY`, `openrouter` → `OPENROUTER_API_KEY`, `modal` → `MODAL_ENDPOINT_URL`). They cost money and are **never** in `make ci` ([ADR-0017 §9](../docs/adr/0017-decode-eval-suite.md)). Without keys every target skips: one line, exit 0. Eval runs log under `EVAL_PROJECT_NAME` (`decode-evals`), apart from the live project.
 
 ## 1. Demo Skills — the human-judged showcase
 
-Six [Skills](../docs/glossary.md) under `.decode/skills/demo-N-*/`, each a scripted showcase you trigger by
-name in the REPL (no Opik, no keys beyond your provider — a person is the judge):
+Six [Skills](../docs/glossary.md) under `.decode/skills/demo-N-*/`, triggered by name in the REPL (no Opik, only your provider key):
 
 ```bash
-decode                          # start the REPL in the repo root
-/demo-1-terminal-arcade         # then just type the skill name
+decode                          # from the repo root
+/demo-1-terminal-arcade
 ```
 
-| Skill | What it shows off |
+| Skill | Shows off |
 |---|---|
 | `/demo-1-terminal-arcade` | a playable stdlib-`curses` Snake game in one file |
 | `/demo-2-bug-hunt` | hunt + fix two seeded bugs until the suite goes green |
 | `/demo-3-repo-pulse` | live GitHub API data → a single-file dashboard with charts |
-| `/demo-4-review-swarm` | fan out three parallel Explore [Subagents](../docs/glossary.md) into one verdict |
-| `/demo-5-sandbox-feature-pr` | the meta "decode improves decode" [Sandbox](../docs/glossary.md) + Hand-back → draft PR flow |
-| `/demo-6-article-kg` | web articles fetched and rendered into an interactive knowledge graph |
+| `/demo-4-review-swarm` | three parallel Explore [Subagents](../docs/glossary.md) → one verdict |
+| `/demo-5-sandbox-feature-pr` | "decode improves decode": [Sandbox](../docs/glossary.md) + Hand-back → draft PR |
+| `/demo-6-article-kg` | web articles → interactive knowledge graph |
 
-Each `SKILL.md` carries its own instructions; run one, watch the transcript, judge it yourself.
+Each `SKILL.md` carries its own instructions.
 
 ## 2. Benchmark — `make eval-benchmark`
 
-The outcome benchmark: each task runs the real agent in a fresh isolated Workspace, then a **hidden**
-`verify.sh` oracle grades PASS/FAIL (the agent can never grep its own grader). One `make eval-benchmark`
-run is one Opik experiment under `EVAL_PROJECT_NAME`.
+Each task runs the real agent in a fresh Workspace; a **hidden** `verify.sh` oracle grades PASS/FAIL (the agent can't grep its grader). One run = one Opik experiment under `EVAL_PROJECT_NAME`.
 
 ```bash
-make eval-benchmark                                   # the whole suite, docker sandbox, 1 trial
-make eval-benchmark ARGS='--difficulty easy'          # one difficulty tier
-make eval-benchmark ARGS='--task 017-flaky-test-hunt' # a single task
+make eval-benchmark                                   # whole suite, docker sandbox, 1 trial
+make eval-benchmark ARGS='--difficulty easy'
+make eval-benchmark ARGS='--task 017-flaky-test-hunt'
 make eval-benchmark ARGS='--trials 5'                 # 5 runs per task → reliability aggregates
-make eval-benchmark ARGS='--sandbox modal'            # execute each run on the remote modal rung
+make eval-benchmark ARGS='--sandbox modal'
 make eval-benchmark ARGS='--trials 3 --sandbox modal --nb-samples 4'
 ```
 
-Flags reach `python -m evals benchmark` verbatim through `ARGS=`:
+`ARGS=` reaches `python -m evals benchmark` verbatim:
 
 | Flag | Effect |
 |---|---|
-| `--task <id>` | run only that benchmark task |
-| `--difficulty easy\|medium\|hard` | run only that tier |
-| `--sandbox docker\|modal` | which sandbox rung each run executes in (default `docker`) |
-| `--nb-samples <n>` | cap the number of dataset items sampled |
-| `--trials <k>` | runs per task (Opik `trial_count`) — drives the reliability aggregates |
+| `--task <id>` | only that task |
+| `--difficulty easy\|medium\|hard` | only that tier |
+| `--sandbox docker\|modal` | sandbox rung per run (default `docker`) |
+| `--nb-samples <n>` | cap dataset items |
+| `--trials <k>` | runs per task (Opik `trial_count`) |
 
-**Trials + aggregates.** With `--trials k` the harness computes, as pure post-hoc functions over the
-run's results, **pass@1** (single-shot success), **pass@k** (succeeds at least once in k), **pass^k**
-(succeeds *every* one of k — the reliability bar), a **flakiness rate**, and **cost** figures
-(success-per-dollar from recorded token usage). They print as a Rich summary table and attach to the
-experiment row, tagged with the agent model, provider, and git sha ([ADR-0017 §8](../docs/adr/0017-decode-eval-suite.md)).
-The task-folder format and the oracle-honesty harness are [`evals/benchmark/tasks/README.md`](../evals/benchmark/tasks/README.md).
+**Aggregates** with `--trials k`: **pass@1**, **pass@k** (≥1 success in k), **pass^k** (all k succeed — the reliability bar), **flakiness rate**, **cost** (success-per-dollar from token usage). Printed as a Rich table, attached to the experiment row, tagged with model, provider, git sha ([ADR-0017 §8](../docs/adr/0017-decode-eval-suite.md)). Task format + oracle-honesty harness: [`evals/benchmark/tasks/README.md`](../evals/benchmark/tasks/README.md).
 
 ## 3. Regression probes — `make eval-regression`
 
-A probe asks *"did it work the way we designed?"* — the right tool, a minimal diff, the permission
-gate respected, compaction survived. Probes run **host-native** (`none` mode, temp dirs — no docker),
-so the suite is fast enough to be a **per-feature-branch pre-merge ritual**. The Makefile target is
-exactly that ritual — sync the probe dataset, then run the threshold gate:
+A probe checks design intent — right tool, minimal diff, permission gate respected, compaction survived. Probes run host-native (`none` mode, temp dirs), fast enough for a per-branch pre-merge ritual:
 
 ```bash
 make eval-regression        # == python -m evals sync --no-benchmark --regression && pytest evals/regression/test_thresholds.py
+python -m evals regression                          # every probe as one Opik experiment
+python -m evals regression --probe smoke-read-tool  # a single probe
 ```
 
-You can also drive the pieces directly (both need the keys above):
+**Threshold gate.** [`evals/regression/test_thresholds.py`](../evals/regression/test_thresholds.py) is a pytest module outside `testpaths` — plain `pytest` and `make ci` never collect it. Enforces an absolute per-metric floor as the hard gate (tool-discipline ≥ 0.8, judges ≥ 0.7) and a baseline compare as a soft signal (WARNs on per-metric regression vs the previous experiment, never fails). Pointing CI at it later is a one-line workflow change ([ADR-0017 §9](../docs/adr/0017-decode-eval-suite.md)); manual today because it costs money.
 
-```bash
-python -m evals regression                          # run every probe as one Opik experiment
-python -m evals regression --probe smoke-read-tool  # run a single probe
-```
+**Two regression surfaces** ([ADR-0017 §6](../docs/adr/0017-decode-eval-suite.md)):
 
-**The threshold gate.** [`evals/regression/test_thresholds.py`](../evals/regression/test_thresholds.py)
-is a pytest module kept **outside** `testpaths` on purpose — plain `pytest` and `make ci` never collect
-it. It runs the probe suite once and enforces two things: an **absolute per-metric floor** as the *hard*
-gate (tool-discipline ≥ 0.8, judges ≥ 0.7 — any metric below fails the run) and a **baseline compare**
-as a *soft* signal (fetches the previous experiment by name and WARNs on per-metric regressions, never
-fails — usable on day one with no baseline). It's a normal pytest file, so **pointing CI at it later is
-a one-line workflow change** ([ADR-0017 §9](../docs/adr/0017-decode-eval-suite.md)); today it stays manual
-because it costs money.
+- (a) `python -m evals regression` — deterministic **code metrics** over a numeric threshold;
+- (b) `python -m evals suite` — an **Opik 2.0 Test Suite** of natural-language assertions (*"the response never invents a file that does not exist"*) checked by an LLM judge, gated on `pass_rate`.
 
-**Two regression surfaces, on purpose.** The contrast *is* the teaching point
-([ADR-0017 §6](../docs/adr/0017-decode-eval-suite.md)):
-
-- surface (a) — `python -m evals regression` — deterministic **code metrics** over a numeric threshold;
-- surface (b) — `python -m evals suite` — an **Opik 2.0 Test Suite** of natural-language assertions
-  (*"the response never invents a file that does not exist"*) an LLM judge checks, gated on `pass_rate`.
-
-Deterministic numbers catch exact regressions cheaply; NL assertions catch "the answer got worse in a
-way no single number captures". Neither replaces the other.
-
-> **Version honesty.** The Test Suites API is **Opik 2.0**, but this repo is pinned to `opik==1.9.8`
-> (Opik 2.x pulls a `litellm` whose Rust bridge needs a newer `rustc` than the build host has). So
-> `python -m evals suite` is written against the documented 2.0 API and **guarded**: on the pinned
-> Opik it exits with a clear version-gate message, and the surface activates unchanged the moment the
-> `opik` pin is lifted. Full detail: [`evals/regression/README.md`](../evals/regression/README.md).
+> **Version honesty.** Test Suites is Opik 2.0; this repo pins `opik==1.9.8` (Opik 2.x pulls a `litellm` needing a newer `rustc`). `python -m evals suite` is written against the 2.0 API and guarded: on the pinned Opik it exits with a version-gate message; activates unchanged when the pin lifts. Detail: [`evals/regression/README.md`](../evals/regression/README.md).
 
 ## 4. Online eval — `python -m evals online`
 
-The production-eval story: every other track *drives* the agent, but online eval grades the
-[Traces](../docs/glossary.md) decode **already emitted** from real REPL sessions and `decode run` invocations,
-scored **in place** in the live Opik project (never `EVAL_PROJECT_NAME` — grading real traffic where it
-lands is the whole point).
+Grades [Traces](../docs/glossary.md) decode **already emitted** from real REPL sessions and `decode run`, scored in place in the live Opik project (never `EVAL_PROJECT_NAME`):
 
 ```bash
-python -m evals online                                          # score every thread in the live project
-python -m evals online --filter 'start_time > "2026-07-01T00:00:00Z"'   # scope to recent threads
+python -m evals online                                          # every thread in the live project
+python -m evals online --filter 'start_time > "2026-07-01T00:00:00Z"'
 ```
 
-The full walkthrough — writing the online rule's scoring prompt *qualitatively*, and why
-this track inverts the "keep evals off the live project" rule — is the online section of
-[`evals/README.md`](../evals/README.md).
+Writing the online rule's scoring prompt, and why this track inverts the "keep evals off the live project" rule: online section of [`evals/README.md`](../evals/README.md).
 
 ## Config knobs
 
-Both eval env vars live in the **Evals** block of [`.env.example`](../.env.example):
+**Evals** block of [`.env.example`](../.env.example):
 
-- `EVAL_JUDGE_MODEL` — the LiteLLM model string for the G-Eval / conversation judges; empty derives it
-  from `LLM_PROVIDER` (so judges follow decode's own provider).
-- `EVAL_PROJECT_NAME` — the Opik project eval runs log under (default `decode-evals`), kept apart from
-  the live-REPL project so eval and production traces never mix.
+- `EVAL_JUDGE_MODEL` — LiteLLM model string for the G-Eval / conversation judges; empty derives from `LLM_PROVIDER`.
+- `EVAL_PROJECT_NAME` — Opik project for eval runs (default `decode-evals`), kept apart from the live project.
