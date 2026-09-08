@@ -76,7 +76,7 @@ Infra access **CLI-only** (no web UIs) — reproducible, spot-checkable:
 - **Git / GitHub:** `git`; `gh` for PRs, issues, Actions logs.
 - **Gemini** — primary LLM API via `google-genai` SDK; `GEMINI_API_KEY` (no CLI).
 - **OpenRouter** — OpenAI-compatible inference; `openrouter` CLI.
-- **Modal** — remote sandbox, open-model serving/inference, and the two harness apps: the Modal Headless App (`decode.remote.app`, driven by `decode remote deploy|run|attempts|logs`) and the Kitaru Worker (`scripts/modal_kitaru_worker.py`); `modal run` / `modal deploy` / `modal secret create` / `modal app logs|stop` / `modal token set`. Runbook: [`running_the_code/04_deploy.md`](running_the_code/04_deploy.md).
+- **Modal** — remote sandbox, open-model serving/inference, and the two harness apps: the Modal Headless App (`decode.remote.app`, driven by `decode remote deploy|run|attempts|logs`) and the Kitaru Worker (`scripts/modal_kitaru_worker.py`); `modal run` / `modal deploy` / `modal secret create` / `modal app logs|stop` / `modal token set`. Runbooks: [`running_the_code/04_deploy.md`](running_the_code/04_deploy.md) (headless app), [`running_the_code/07_evals_replays_deploy.md`](running_the_code/07_evals_replays_deploy.md) (Kitaru Worker).
 - **Opik** — LLM tracing + evals; `opik` CLI.
 - **Kitaru** — session recording + replay on the managed workspace; `kitaru` CLI (`status` / `session` / `replay` / `worker` / `agent` / `cohort`) + `kitaru` skills/docs.
 - **Project MCP servers:** *AGENT: fill in any MCP server this project's code talks to and the config it needs.*
@@ -135,7 +135,7 @@ Manual e2e QA playbook — what to type at each surface and what "working" looks
 
 # Kitaru replay & what-if (operator surface)
 
-Recording and replay are an **operator** surface, not a code path: nothing here runs in CI (ADR-0019, "Test surface"). The managed workspace is `https://f5ee9622-kitaru.cloudinfra.zenml.io` (`kitaru status` names it); runbook: [`running_the_code/04_deploy.md`](running_the_code/04_deploy.md).
+Recording and replay are an **operator** surface, not a code path: nothing here runs in CI (ADR-0019, "Test surface"). The managed workspace is `https://f5ee9622-kitaru.cloudinfra.zenml.io` (`kitaru status` names it); runbooks: [`running_the_code/06_evals_replays.md`](running_the_code/06_evals_replays.md) (laptop), [`running_the_code/07_evals_replays_deploy.md`](running_the_code/07_evals_replays_deploy.md) (Modal-hosted Worker).
 
 - **Record** — export `KITARU_API_URL` + set `KITARU_AGENT_ID`, then any REPL turn or `decode run` files a **Kitaru Session** (`kitaru session get <id>` shows it node by node); freeze a set of them as a **Cohort** (`decode-bad-request-400@1`).
 - **Replay** — `kitaru replay create <session-id> --agent decode@<version>` re-runs a Session **from the top** on a **Kitaru Worker** you start yourself (`kitaru worker start` — the server executes nothing). No override = **Baseline Replay**, the control; overrides (model / system prompt / prompt / params) + `--tool-policy` make it a what-if.

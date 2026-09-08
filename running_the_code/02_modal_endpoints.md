@@ -6,7 +6,8 @@
 
 > **Modal does more than serve models here.** It also hosts decode's headless harness
 > (`decode-headless` — remote `decode run`s and N parallel attempts) and a Kitaru Worker
-> (`decode-kitaru-worker` — replays off your laptop): [04_deploy.md](04_deploy.md).
+> (`decode-kitaru-worker` — replays off your laptop): [04_deploy.md](04_deploy.md) and
+> [07_evals_replays_deploy.md](07_evals_replays_deploy.md).
 
 ## TL;DR
 
@@ -89,7 +90,7 @@ They are read from `~/.modal.toml` / `os.environ` by the `modal` library itself,
 so they are not `.env` keys, `make sync-secrets` skips them, and an Environment Bucket can never carry them
 ([01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional)).
 The proxy pair **is** a `Settings` field (`MODAL_PROXY_TOKEN_ID` / `_SECRET`): it rides `.env` or the bucket like
-any other key, and doubles as the auth on the headless app's webhook ([04_deploy.md §5d](04_deploy.md#5d-a-webhook-webhook)).
+any other key, and doubles as the auth on the headless app's webhook ([04_deploy.md §4](04_deploy.md#4-run-a-task-from-a-webhook)).
 
 ### Create the endpoint
 

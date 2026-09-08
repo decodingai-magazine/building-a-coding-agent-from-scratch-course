@@ -2,7 +2,7 @@
 
 Every known failure in one place. Decode's startup guards check **presence only** and print one line, never a traceback — so start by matching the line you got.
 
-Setup and first-run problems are below. Two areas keep their own tables next to the feature that produces them: **sandbox modes** in [03_sandboxing.md](03_sandboxing.md#troubleshooting) and the **headless runtime** (local, Modal, recording + replay) in [04_deploy.md](04_deploy.md#8-troubleshooting).
+Setup and first-run problems are below. Two areas keep their own tables next to the feature that produces them: **sandbox modes** in [03_sandboxing.md](03_sandboxing.md#troubleshooting) and the **headless harness on Modal** in [04_deploy.md](04_deploy.md#7-troubleshooting), **recording + laptop replays** in [06_evals_replays.md](06_evals_replays.md#8-troubleshooting) and the **Modal-hosted Kitaru Worker** in [07_evals_replays_deploy.md](07_evals_replays_deploy.md#6-troubleshooting).
 
 ## Install
 

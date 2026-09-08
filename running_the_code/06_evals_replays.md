@@ -1,12 +1,14 @@
-# Kitaru Evals & Replays — from zero to a compared experiment
+# Kitaru Evals & Replays — run it locally, from zero to a compared experiment
 
-[04_deploy.md](04_deploy.md) covers the mechanics: `decode run`, the Recording Seam, one replay.
-This file is the *operator journey* — setting Kitaru up from scratch and walking the full
-evidence loop on your own traffic: **record → investigate → cohort → evaluator → replay →
-compare**. Everything below was executed for real against the managed workspace; the pitfalls at
-the end are the ones actually hit.
+[05_evals.md](05_evals.md) grades the agent with benchmarks and probes you *drive*. This page is
+the other half: **replay-based evals** on your *own* traffic, with
+**[Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs)**
+run entirely from your laptop — setting it up from scratch and walking the full evidence loop:
+**record → investigate → cohort → evaluator → replay → compare**. Everything below was executed for
+real against the managed workspace; the pitfalls at the end are the ones actually hit.
 
-Budget: ~30 minutes, one provider key, Docker Desktop for the replay step.
+Budget: ~30 minutes, one provider key, Docker Desktop for the replay step. Moving the replay Worker
+off your laptop is the next page, [07_evals_replays_deploy.md](07_evals_replays_deploy.md).
 
 ## 0. What you're building
 
@@ -16,6 +18,10 @@ freeze into **Cohorts**, **Evaluators** turn criteria into repeatable verdicts, 
 re-execute a session from the top on a **Kitaru Worker** in *your* environment — optionally with
 one change (model, prompt, params) — so you can compare before/after with the same evaluator on
 both sides. Nothing executes on the server ([ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md)).
+
+The **managed workspace** is `https://f5ee9622-kitaru.cloudinfra.zenml.io` — someone else's uptime,
+free for the course, nothing to host. It holds the recorded Sessions, Cohorts, Replays and registered
+Agent Versions; it executes nothing.
 
 ## 1. Set up the CLI and log in
 
@@ -32,9 +38,9 @@ credential state, and the dashboard URL.
 
 CI / non-interactive machines use an API key instead of a login. On a **managed** workspace it must
 be a control plane key (`ZENPROKEY_…`, minting walked through in
-[04_deploy.md §4](04_deploy.md#4-secrets--two-deliberately-asymmetric)) — a workspace-local
-`KITKEY_…` is rejected under control-plane authentication; that prefix works only on self-hosted
-servers:
+[07_evals_replays_deploy.md §2b](07_evals_replays_deploy.md#2b-mint-the-container-credential-a-zenprokey_)) —
+a workspace-local `KITKEY_…` is rejected under control-plane authentication; that prefix works only
+on self-hosted servers:
 
 ```bash
 export KITARU_API_URL=https://f5ee9622-kitaru.cloudinfra.zenml.io
@@ -65,17 +71,37 @@ Modes: `read-only` → `standard` (create cohorts, investigations, runs) → `de
 
 ## 3. Get sessions in — record new, import old
 
-**Record new runs** (the adapter path — full replay fidelity). One knob plus the connection:
+**Record new runs** (the adapter path — full replay fidelity). Recording is presence-based and lives
+in exactly one function, the **Recording Seam** (`src/decode/runtime/recording.py`). Two variables
+switch it on:
 
 ```bash
-export KITARU_API_URL=https://f5ee9622-kitaru.cloudinfra.zenml.io
-export KITARU_AGENT_ID=<uuid printed by `kitaru agent get decode`>
+export KITARU_API_URL=https://f5ee9622-kitaru.cloudinfra.zenml.io   # adapter-owned (or just `kitaru login`)
+export KITARU_AGENT_ID=<uuid printed by `kitaru agent get decode`>  # decode's ONE recording knob
 uv run decode run "say hi in exactly three words"
 uv run kitaru session list --agent decode --origin recorded --size 3
+uv run kitaru session get <SESSION_ID>                              # the run, node by node
 ```
 
-REPL turns record too (grouped by decode session id). Details and failure modes in
-[04_deploy.md §2](04_deploy.md#2-record-runs-as-kitaru-sessions-opt-in).
+- **Both surfaces record.** The REPL wraps the same way, with `session_name` = the decode session id,
+  so a conversation's turns group together on the workspace. A remote run on Modal records too, when
+  the same three keys ride its Secret ([04_deploy.md §2b](04_deploy.md#2b-the-decode-headless-secret)).
+- **`KITARU_API_URL` must be *exported*, not merely written in `.env`.** decode never reads it: the
+  adapter's own client resolves the connection (env, else your `kitaru login` store).
+  `set -a && . .env && set +a` is the shortcut.
+- **Off is byte-identical.** With `KITARU_AGENT_ID` empty, no kitaru module is even imported.
+- **Unreachable workspace degrades, it never blocks.** A user-launched run drops to the bare agent,
+  prints ONE stderr line (`[kitaru] not recording this run: … continuing on the bare agent`), and
+  still exits 0 — recording is an observer, never an availability dependency. A run spawned by a
+  Kitaru **Worker** hard-fails instead: an unrecorded replay is a lying experiment
+  ([ADR-0019 §3](../docs/adr/0019-kitaru-replay-runtime.md)).
+- **A Worker's hard-fail is ONE line too, wherever it happens.** The workspace can also refuse the
+  Session the adapter creates lazily *inside* the run (a 403 on the agents route, a 422 for an
+  unknown task, a typo'd `KITARU_TASK_ID`); `decode run` turns that into the same
+  `Decode: [kitaru] recording is unavailable for this Kitaru Worker Task: …` line and a non-zero
+  exit, with the traceback in `.decode/logs/decode.log` only. A 403 adds the `KITARU_AGENT_ID`
+  diagnosis (§7.3). A failure the **agent** raised (a provider 503) is never reworded as a recording
+  failure — the Worker log stays honest about which half broke.
 
 **Import history** (the importer path — backfill from Opik). This repo registered a custom
 importer `opik@1` (`importers/opik_importer.py`) that converts an Opik REST export
@@ -91,7 +117,7 @@ uv run kitaru session import export.json \
 
 Payloads cap at 50 MiB — split by *thread group* (a conversation must never straddle two files).
 Imports are deduplicated on `provider + external_id`, so re-running the same export skips
-instead of duplicating. An import is a job executed by a **worker** (step 5) — start one first.
+instead of duplicating. An import is a job executed by a **worker** (§5) — start one first.
 
 ## 4. Judge, freeze, and encode a behavior
 
@@ -125,10 +151,30 @@ This repo's worked example: cohort `decode-bad-request-400@1` (a reviewed malfor
 crash) + evaluator `decode-bad-request-400@1` (`evaluators/decode_bad_request_400.py`) — it
 flagged exactly the 2 crash sessions out of 38, zero false positives.
 
-## 5. Start a Worker (the thing that executes replays)
+## 5. Start a Worker on your laptop (the thing that executes replays)
 
-Nothing runs on the server. A Worker is a process *you* run — on your laptop, or on Modal (both
-below) — that claims replay / evaluator / importer tasks and spawns them with your credentials:
+Nothing runs on the server. A Worker is a process *you* run that claims replay / evaluator /
+importer tasks and spawns them with your credentials. Replays run **from the top**: the Kitaru server
+schedules, the Worker executes ([ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md)).
+
+**What a Worker spawns is an Agent Version** — the immutable run spec registered on the workspace.
+Register the laptop one once per machine (it adds a *version* to the existing `decode` agent, never a
+second agent):
+
+```bash
+uv run python scripts/register_kitaru_agent.py --dry-run   # prints the exact `kitaru agent version register` argv
+uv run python scripts/register_kitaru_agent.py             # registers agent version 2
+uv run kitaru agent version list decode
+```
+
+**Agent version 2** re-creates decode's context rather than simulating it: `decode run` with no
+inline prompt (the task arrives in `KITARU_TASK_INPUTS`), `SANDBOX_MODE=docker`, and a Workspace
+that is a fresh clone of this repo. Its working dir is a **Harness Home outside the repo**
+(`~/.decode-kitaru-worker`), so a replay's sessions, logs and Workspace never land in your working
+tree — watch it work with `docker ps` and `tail -f ~/.decode-kitaru-worker/.decode/logs/decode.log`.
+Docker Desktop must be up.
+
+Then start the Worker from a shell that **has your provider credentials**:
 
 ```bash
 cd <repo root>                       # careful: the checkout nests two same-named dirs
@@ -144,30 +190,25 @@ interval); output appears when it claims a task. Verify from another terminal:
 uv run kitaru worker list            # yours, live: True
 ```
 
-Replays of decode spawn **agent version 2**'s run spec: `decode run` under
-`SANDBOX_MODE=docker` with a fresh repo clone in `~/.decode-kitaru-worker` — replayed tool calls
-never touch your working tree. Docker Desktop must be up. The registration is reproducible:
-`uv run python scripts/register_kitaru_agent.py --dry-run`.
+**A replay's secrets are the Worker's env, not the Environment Bucket.** Kitaru can attach secrets
+to a registered Agent Version (`--secret-id …`); decode's versions deliberately attach **none**.
+A Worker layers a task's env on top of its own, so the Worker shell's sourced `.env` is what a
+replayed `decode run` sees, and no live key is ever copied onto the workspace
+([ADR-0019 Amendments §2](../docs/adr/0019-kitaru-replay-runtime.md)). The Bucket
+([01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional))
+is *how `Settings` is filled* at a remote `DECODE_ENV`; neither feeds the other. Which model a
+replay uses is therefore the Worker shell's `LLM_PROVIDER` / model config — a baseline replay
+reproduces the recorded run only if you start the Worker with the same provider it recorded against.
 
-**Or run the Worker on Modal instead of your laptop** ([ADR-0020 §5](../docs/adr/0020-remote-headless-on-modal.md)).
-Same Worker, a gVisor container instead of your shell — replays keep going with the laptop closed. It
-spawns **agent version 3**: `SANDBOX_MODE=none`, no repo clone, in-image paths — the container itself is
-the isolation, so no Docker daemon is needed (and none exists there). Its env comes from the
-`decode-kitaru-worker` Modal Secret; full setup, including the control plane `KITARU_API_KEY` it needs,
-is in [04_deploy.md §6b](04_deploy.md#6b-on-modal-agent-version-3):
-
-```bash
-uv run modal deploy scripts/modal_kitaru_worker.py
-uv run modal run --detach scripts/modal_kitaru_worker.py --concurrency 4 \
-  --agent-version-id 01a029bf-0ae3-7de1-b594-4bc71a7ba91a          # = agent decode@3
-```
-
-Then replay with `--agent decode@3` — pin the version, never "latest" (`latest_version` reads 4, an
-immutable QA-accident duplicate of 3). The two Workers coexist, but each can only run **its own** Agent
-Version, so scope their claims (`--agent-version-id` here, `--claim agent=<v2 id>` on the laptop) or
-they will race for tasks neither can finish.
+**Or run the Worker on Modal instead of your laptop** — same Worker, a container instead of your
+shell, replays keep going with the laptop closed: [07_evals_replays_deploy.md](07_evals_replays_deploy.md).
+It spawns **agent version 3**, not 2, and the two Workers can only run their **own** version.
 
 ## 6. Replay, then compare
+
+A **Baseline Replay** (no `--override`) is the control: it proves the Session still reproduces on
+the current Agent Version, which is what makes a later what-if — a model swap, a system-prompt
+change — attributable to the change and not to drift.
 
 ```bash
 uv run kitaru replay create <BASELINE_SESSION_ID> \
@@ -176,7 +217,8 @@ uv run kitaru replay create <BASELINE_SESSION_ID> \
   --tool-policy '{"default":{"type":"history","scope":"baseline","on_miss":"error_result"}}' \
   --evaluate-baselines
 uv run kitaru job watch <JOB_ID>     # from the create output; settles in seconds-to-minutes
-uv run kitaru replay get <REPLAY_ID>
+uv run kitaru replay get <REPLAY_ID> # status + result_session_id
+uv run kitaru session get <RESULT_SESSION_ID>   # the replayed run, node by node
 ```
 
 - `--evaluator` is **required** — a replay without a metric is just a rerun.
@@ -206,7 +248,8 @@ uv run kitaru experiment run start cheaper-model \
   --cohort-version <ID> --agent decode@2 --evaluate-baselines --wait
 ```
 
-`--wait` exits non-zero on failure, so the same command is a CI gate.
+`--wait` exits non-zero on failure, so the same command is a CI gate. Designing and interpreting a
+what-if is the `kitaru-replay-experiment` skill.
 
 ## 7. Field notes — the pitfalls we actually hit
 
@@ -221,11 +264,8 @@ uv run kitaru experiment run start cheaper-model \
    token; with the agent id set, the Recording Seam probes an agents route that task tokens
    can't use → `403: Task credentials are not accepted on this route` → the run hard-fails
    (correctly), in ONE `Decode: [kitaru] …` line that now names this very trap. `unset
-   KITARU_AGENT_ID` in the worker shell; the adapter infers the agent from
-   the task. Same rule on Modal, enforced twice: the
-   `decode-kitaru-worker` Secret deliberately omits `KITARU_AGENT_ID` (that composition is the rule
-   — [04_deploy.md §4](04_deploy.md#4-secrets--two-deliberately-asymmetric)), and the worker Function
-   scrubs the variable defensively at startup with one logged line if one ever shows up anyway.
+   KITARU_AGENT_ID` in the worker shell; the adapter infers the agent from the task. Same rule on
+   Modal, enforced twice ([07_evals_replays_deploy.md §2c](07_evals_replays_deploy.md#2c-the-decode-kitaru-worker-secret)).
 4. **`Invalid arguments: --evaluator requires an argument`** on `replay create` means the flag
    is *missing*, not empty — it's required.
 5. **`replay create` has no `--wait`** — that's `session import` / `experiment run start`. Use
@@ -239,11 +279,24 @@ uv run kitaru experiment run start cheaper-model \
    model was gone. A spawn/import error (`ModuleNotFoundError`, command-not-found) is the one
    that means your setup is broken.
 
+## 8. Troubleshooting
+
+| Symptom | What it means |
+|---|---|
+| `[kitaru] not recording this run: … is unavailable` | The seam degraded: the workspace could not be reached (or `KITARU_AGENT_ID` is not an agent on it). The run itself is fine. Check `uv run kitaru status` — it prints the resolved `server_url` and whether the stored credential is still valid; re-auth with `kitaru login <url>`. |
+| The run records nothing and says nothing | `KITARU_AGENT_ID` is empty, or `KITARU_API_URL` was set in `.env` but never exported — decode does not read that variable, the adapter's client does. |
+| A replay stays queued | No Worker is claiming it: `kitaru worker list` should show one `live`. A laptop Worker only runs while its shell does. Also check the Agent Version: a v2 replay needs the laptop Worker, a v3 replay the Modal one ([07_evals_replays_deploy.md](07_evals_replays_deploy.md)). |
+| A replay fails at the first model request | The Worker's shell had no provider credential (the run spec attaches none, by design), or that provider is down. Restart it with `set -a && . .env && set +a && kitaru worker start`. |
+| A replay fails before the agent starts | Usually the docker daemon (agent v2 pins `SANDBOX_MODE=docker`) or a stale `--command` path after a fresh `make install`. Re-register: `uv run python scripts/register_kitaru_agent.py`. |
+| `403: Task credentials are not accepted on this route` | `KITARU_AGENT_ID` in the Worker's env — `unset` it in the Worker shell (§7.3). |
+
 ## Go further
 
-- [04_deploy.md](04_deploy.md) — the runtime surface itself (recording seam, degrade rules,
-  worker task entry).
-- [01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional) — the Environment Bucket (vs a replay's secrets: [04_deploy.md §6](04_deploy.md#6-replay-a-recorded-session-on-a-kitaru-worker)).
+- [07_evals_replays_deploy.md](07_evals_replays_deploy.md) — the same Worker on Modal, so replays
+  run with your laptop closed.
+- [04_deploy.md](04_deploy.md) — the headless harness on Modal; its `decode-headless` Secret can
+  carry the recording keys so remote runs land here as Sessions too.
+- [01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional) — the Environment Bucket (vs a replay's secrets, §5).
 - [ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md) — why decode is shaped this way.
 - Kitaru docs: https://docs.zenml.io/kitaru — concepts (sessions/replays/cohorts/experiments),
   tool policies, importers, workers in production.

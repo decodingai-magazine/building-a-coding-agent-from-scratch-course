@@ -214,7 +214,7 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><b>6</b><br/>Remote Headless Mode, Recording & Replays</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 3 — coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a> · <a href="running_the_code/07_evals_replays_deploy.md">07_evals_replays_deploy.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>7</b><br/>AI Evals Foundations: Benchmarks, Regression and Online</td>
@@ -226,7 +226,7 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><b>8</b><br/>AI Evals on Steroids via Replays</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 4 — coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a> · <a href="running_the_code/07_evals_replays_deploy.md">07_evals_replays_deploy.md</a></td>
   </tr>
 </table>
 
@@ -256,7 +256,7 @@ Running the code costs **$0** if you stick to free tiers:
 | OpenRouter (alternative provider)                                                                                                                            | $0 on `:free` models (optional $10 credit raises the daily cap)                                                  |
 | [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)               | free tier                                                                                                        |
 | [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (recording + replays)  | free — a managed workspace, nothing to host yourself                                                             |
-| Modal — run headless agents + the Kitaru Worker remotely _(optional)_                                                                                        | usage-based, ~zero idle — see [04_deploy.md](running_the_code/04_deploy.md)                                        |
+| Modal — run headless agents + the Kitaru Worker remotely _(optional)_                                                                                        | usage-based, ~zero idle — see [04_deploy.md](running_the_code/04_deploy.md) + [07_evals_replays_deploy.md](running_the_code/07_evals_replays_deploy.md) |
 
 _**Reading-only? Everything's free!**_
 
@@ -305,9 +305,10 @@ Everything lives under [`running_the_code/`](running_the_code/). One core guide,
 | [01_install_and_usage.md](running_the_code/01_install_and_usage.md) | Start here                                           |
 | [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)     | Serving open models on Modal                         |
 | [03_sandboxing.md](running_the_code/03_sandboxing.md)               | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
-| [04_deploy.md](running_the_code/04_deploy.md)                       | Headless `decode run`, on Modal (by hand, N attempts, cron, webhook), recording & replay |
+| [04_deploy.md](running_the_code/04_deploy.md)                       | The headless harness on Modal — CLI, webhook, cron        |
 | [05_evals.md](running_the_code/05_evals.md)                         | Benchmarks, regression probes, and online evals      |
-| [06_evals_replays.md](running_the_code/06_evals_replays.md)         | Kitaru setup, replays & the full evals loop          |
+| [06_evals_replays.md](running_the_code/06_evals_replays.md)         | Kitaru on your laptop: record, replay & the full evals loop |
+| [07_evals_replays_deploy.md](running_the_code/07_evals_replays_deploy.md) | The Kitaru Worker on Modal — replays off-laptop |
 
 ## 🤝 Sponsors
 

@@ -195,5 +195,5 @@ Everything else — provider keys, rate limits, skills, sessions — is in [00_t
 ## Go further
 
 - Run a sandboxed agent headless (`decode run --repo …`), then off-laptop on Modal, where `SANDBOX_MODE=modal` becomes a *nested* sandbox and `SANDBOX_GIT_TOKEN` rides a Modal Secret: [04_deploy.md](04_deploy.md).
-- Replay a recorded run inside this same docker Workspace, on a Kitaru Worker: [04_deploy.md §6](04_deploy.md#6-replay-a-recorded-session-on-a-kitaru-worker).
+- Replay a recorded run inside this same docker Workspace, on a Kitaru Worker: [06_evals_replays.md §5](06_evals_replays.md#5-start-a-worker-on-your-laptop-the-thing-that-executes-replays).
 - Feed the token from an Environment Bucket instead of `.env`: [01_install_and_usage.md §6](01_install_and_usage.md#6-environments--decode_env-and-the-environment-bucket-optional).
