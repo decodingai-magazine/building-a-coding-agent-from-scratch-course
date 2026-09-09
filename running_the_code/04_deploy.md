@@ -47,7 +47,7 @@ echo 'DECODE_ENV=prod' >> .env      # or, for this shell only:  export DECODE_EN
 ```
 
 The blocks below never hardcode the suffix: the Secret name is built from `$DECODE_ENV`, so the Secret you
-create and the app you deploy cannot disagree. The guard is *inside* the name — `${DECODE_ENV:?…}` — which
+create and the app you deploy cannot disagree. The guard is _inside_ the name — `${DECODE_ENV:?…}` — which
 makes the `create` itself refuse to run when the variable is empty or unset, instead of quietly writing a
 Secret called `decode-headless-`. (A guard on its own line would not do that: pasted into an interactive
 shell, a failed `:?` prints its message and the shell runs the next line anyway.) `local` is what decode
@@ -199,7 +199,7 @@ git ls-remote https://github.com/decodingai-magazine/building-a-coding-agent-fro
 
 ```bash
 uv run decode remote attempts "add a hello line to README and commit" \
-  --repo https://github.com/you/your-repo.git --attempts 3 --sandbox-mode modal
+  --repo https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course --attempts 3 --sandbox-mode modal
 ```
 
 Each attempt's task gets _"Commit your work when you are done. Do NOT push and do NOT open a pull request."_ appended, so the Hand-back is the only ship path and the N branches stay comparable. Want:
@@ -211,7 +211,7 @@ Each attempt's task gets _"Commit your work when you are done. Do NOT push and d
 2    676f965f-b240-4975-a2dd-61a0ebb7c83b  decode/676f965f   shipped      0
 3    a82766aa-594b-4c32-b5ef-e9da8fd24096  decode/a82766aa   shipped      0
 Compare them:
-  git ls-remote https://github.com/you/your-repo.git 'refs/heads/decode/*'
+  git ls-remote https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course 'refs/heads/decode/*'
   git diff origin/decode/3f662b01..origin/decode/676f965f
 ```
 
@@ -233,22 +233,29 @@ git ls-remote <url> 'refs/heads/decode/*'
 URL from the deploy output. Body = the `decode remote run` knobs as JSON; only `task` is required. The endpoint spawns the run and returns at once.
 
 ```bash
-export WEBHOOK_URL="https://<workspace>--decode-headless-${DECODE_ENV:?}-webhook.modal.run"
+export WEBHOOK_URL=<your_webhook_url>
 set -a && . ./.env && set +a         # MODAL_PROXY_TOKEN_ID / MODAL_PROXY_TOKEN_SECRET
 
 curl -s -X POST "$WEBHOOK_URL" \
   -H "Modal-Key: $MODAL_PROXY_TOKEN_ID" -H "Modal-Secret: $MODAL_PROXY_TOKEN_SECRET" \
   -H 'content-type: application/json' \
-  -d '{"task": "add a hello line to README and commit", "repo": "https://github.com/you/your-repo.git",
+  -d '{"task": "add a hello line to README and commit", "repo": "https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course",
        "sandbox_mode": "modal", "max_requests": 60}'
 ```
 
 Want:
 
 ```json
-{"call_id": "fc-01ABC…", "sandbox_mode": "modal", "repo": "https://github.com/you/your-repo.git",
- "status": "spawned", "watch": ["modal app logs decode-headless-prod", …,
- "git ls-remote https://github.com/you/your-repo.git 'refs/heads/decode/*'"]}
+{
+  "call_id": "fc-01M231EV2K80GW2V5XKY2GVXSS",
+  "sandbox_mode": "modal",
+  "repo": "https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course",
+  "status": "spawned",
+  "watch": [
+    "modal app logs decode-headless-prod",
+    "git ls-remote https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course 'refs/heads/decode/*'"
+  ]
+}
 ```
 
 Then `uv run decode remote logs` for the answer, `git ls-remote` for the branch.
@@ -267,7 +274,7 @@ Schedule and job are read from your shell **at deploy** and ship with the deploy
 ```bash
 DECODE_NIGHTLY_CRON="0 2 * * *" \
 DECODE_NIGHTLY_TASK="Find every TODO comment, fix the ones under 20 lines, commit each fix separately." \
-DECODE_NIGHTLY_REPO=https://github.com/you/your-repo.git \
+DECODE_NIGHTLY_REPO=https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course \
 DECODE_NIGHTLY_SANDBOX_MODE=modal \
 DECODE_NIGHTLY_MAX_REQUESTS=120 \
 uv run decode remote deploy
