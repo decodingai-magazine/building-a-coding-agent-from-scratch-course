@@ -297,12 +297,12 @@ One Python package; each module maps to one part of the architecture:
 
 ## 🚀 Running the Code
 
-Everything lives under [`running_the_code/`](running_the_code/). One core guide, plus one focused guide per side quest:
+Everything lives under [`running_the_code/`](running_the_code/). Follow them in order; each ends with a link to the next:
 
 | Guide                                                               | What's inside                                        |
 | ------------------------------------------------------------------- | ---------------------------------------------------- |
 | [00_troubleshooting.md](running_the_code/00_troubleshooting.md)     | Every known failure, and its fix                     |
-| [01_install_and_usage.md](running_the_code/01_install_and_usage.md) | Start here                                           |
+| [01_install_and_usage.md](running_the_code/01_install_and_usage.md) | Start here: install, one key, first session          |
 | [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)     | Serving open models on Modal                         |
 | [03_sandboxing.md](running_the_code/03_sandboxing.md)               | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
 | [04_deploy.md](running_the_code/04_deploy.md)                       | The headless harness on Modal — CLI, webhook, cron        |

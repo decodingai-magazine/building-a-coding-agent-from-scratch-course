@@ -25,8 +25,8 @@ module is the whole recording story:
   mandatory even without ``KITARU_AGENT_ID``, because the adapter infers the agent from the task —
   and a configured ``KITARU_AGENT_ID`` is **ignored** there: a Worker Task's token is task-scoped
   and cannot use agent routes, so probing the agent would 403 a healthy replay. The id can reach
-  ``Settings`` from an Environment Bucket at a remote ``DECODE_ENV`` (ADR-0020 §11), where no env
-  scrub can catch it, so the seam is the one place this can be enforced.
+  ``Settings`` from a deployment's Modal Secret as easily as from the Worker's env, so the seam is
+  the one place this can be enforced.
 
 Probing rather than catching the first ``run()`` is deliberate: the alternative — running wrapped,
 catching the session-creation error and re-running bare — cannot tell a recording failure from an
@@ -107,7 +107,7 @@ def _configured_agent_id() -> UUID | None:
     """The configured Kitaru agent as a ``UUID``, or ``None`` to let a Worker Task infer it.
 
     Under a Worker Task the configured id is ignored outright, whatever set it (the Worker's env or
-    an Environment Bucket at a remote ``DECODE_ENV``): the task carries the agent, and the
+    its Modal Secret): the task carries the agent, and the
     task-scoped token cannot use agent routes, so honouring the id would 403 a healthy replay.
 
     Raises ``ValueError`` on a malformed id — a recording setup failure like any other, handled by

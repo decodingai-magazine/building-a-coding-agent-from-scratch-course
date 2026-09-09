@@ -118,9 +118,9 @@ def _build_model(*, model: str | None = None) -> Model:
 
 
 def _provider_api_key(provider: Literal["gemini", "openrouter"]) -> str:
-    """Read the provider API key from ``Settings`` — the single source of truth (ADR-0015 §4).
+    """Read the provider API key from ``Settings`` — the single source of truth (ADR-0021).
 
-    Whichever settings source is active (``.env`` locally, an Environment Bucket remotely) hydrates
+    Whichever store feeds the chain (``.env`` on a laptop, a Modal Secret in a container) hydrates
     the ``SecretStr``; the key never comes from anywhere else, headless or interactively.
     """
     secret = settings.gemini_api_key if provider == "gemini" else settings.openrouter_api_key

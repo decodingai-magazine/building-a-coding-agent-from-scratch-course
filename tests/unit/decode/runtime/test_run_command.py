@@ -3,7 +3,7 @@
 Drives the real Click ``run`` subcommand through ``CliRunner`` with the runner boundary swapped at
 ``decode.runtime.run_headless_task``. Covers the UX contract the durable runtime used to own:
 stdout carries ONLY the agent's answer (pipe-safe), ``--model`` / ``--repo`` / ``--local`` thread
-through, and the pre-flight guard chain — Environment Bucket (ADR-0015 §5), provider config,
+through, and the pre-flight guard chain — provider config,
 ``RUNTIME_ENABLED``, sandbox backend, sandbox repo — each a friendly stderr line + non-zero exit
 that never builds an agent.
 """

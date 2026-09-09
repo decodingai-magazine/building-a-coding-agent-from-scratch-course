@@ -2,7 +2,7 @@
 
 Startup guards check **presence only** and print one line, never a traceback — match the line you got.
 
-Feature-specific tables live next to the feature: **sandbox modes** [03_sandboxing.md](03_sandboxing.md#troubleshooting) · **headless harness on Modal** [04_deploy.md](04_deploy.md#7-troubleshooting) · **recording & replays** [06_evals_replays.md](06_evals_replays.md#8-troubleshooting) · **replays on Modal** [07_evals_replays_deploy.md](07_evals_replays_deploy.md#6-troubleshooting).
+Feature-specific tables live next to the feature: **sandbox modes** [03_sandboxing.md](03_sandboxing.md#3-troubleshooting) · **headless harness on Modal** [04_deploy.md](04_deploy.md#8-troubleshooting) · **recording & replays** [06_evals_replays.md](06_evals_replays.md#6-troubleshooting) · **replays on Modal** [07_evals_replays_deploy.md](07_evals_replays_deploy.md#6-troubleshooting).
 
 ## Install
 
@@ -19,13 +19,12 @@ Feature-specific tables live next to the feature: **sandbox modes** [03_sandboxi
 | --- | --- | --- |
 | `Decode: set GEMINI_API_KEY in your environment or .env to start` | no key, empty, or placeholder (`changeme`) | real key in `.env`. Confirm: `grep -c '^GEMINI_API_KEY=.\+' .env`. |
 | `Decode: LLM_PROVIDER=openrouter needs OPENROUTER_API_KEY …` | provider switched, key not set | set `OPENROUTER_API_KEY`, or drop `LLM_PROVIDER`. |
-| `Decode: LLM_PROVIDER=modal needs MODAL_ENDPOINT_URL …` | provider `modal` before the endpoint exists | create it ([01 §3a](01_install_and_usage.md#3a-modal--your-own-open-source-model-recommended)), paste URL + model id into `.env`. |
+| `Decode: LLM_PROVIDER=modal needs MODAL_ENDPOINT_URL …` | provider `modal` before the endpoint exists | create it ([02 §1](02_modal_endpoints.md#1-create-the-endpoint)), paste URL + model id into `.env`. |
 | `Decode: LLM_PROVIDER=modal proxy tokens are both-or-neither …` | one of `MODAL_PROXY_TOKEN_ID` / `_SECRET` set | set both, or neither (`--unauthenticated` endpoint). |
 | `401` from your Modal endpoint | proxy tokens missing, mismatched, or not allowed on that env | `uv run modal workspace proxy-tokens create`, then `… allow wk-... main`. |
-| First Modal turn hangs, then works | cold start (`Min 0`) | `COMPACTION_CONTEXT_WINDOW_TOKENS` skips the startup probe; `Min ≥ 1` removes cold starts but bills idle GPU. |
+| First Modal turn hangs, then works | cold start | [02 §3](02_modal_endpoints.md#3-cold-starts-and-cost). |
 | `429` / quota errors mid-turn | Gemini free-tier cap | wait, switch to `LLM_PROVIDER=openrouter`, or move to Modal. |
 
-Account tokens (`MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`) are not decode settings — `.env` does nothing. `uv run modal token set …` writes `~/.modal.toml`.
 
 ## Running the agent
 

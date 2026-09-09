@@ -1,125 +1,73 @@
-# Modal Model Catalog — Picking & Serving a Model for the `decode` Harness
+# 02 — Serve your own model on Modal
 
-> **Snapshot:** 2026-06-26, from Modal's **Auto Endpoints** "Create Endpoint" flow. Benchmark figures are Modal's own **estimates** — relative only; validate with `modal endpoint benchmark`. Re-check the dashboard before committing GPU budget.
+Replace the rate-limited free key with an open-weights model you serve yourself. Every lesson is tested against the default below. $30 signup credits ≈ 7 hours on 1×H100.
 
-> Modal also hosts decode's headless harness ([04_deploy.md](04_deploy.md)) and, later, its replay worker ([07_evals_replays_deploy.md](07_evals_replays_deploy.md)).
-
-## TL;DR
-
-| Pick | Model ID | Agentic GPU | Why |
-|---|---|---|---|
-| **Course default** | `Qwen/Qwen3.6-35B-A3B-FP8` | **1×H100** | cheapest serve by a wide margin (MoE, ~3B active); reliable tool-calling via the `hermes`/`qwen` parser. Hundreds of loop re-runs without rationing credits |
-| **Middle ground** | `openai/gpt-oss-120b` | **1×B200** | native OpenAI tool-call format → least harness friction; ~2–3× the interactivity |
-| **Max capability** | `zai-org/GLM-5.2-FP8` | **8×B200** | flagship agentic-coding tuning; 8× the GPU at the priciest tier. `zai-org/GLM-4.7` = cheaper fallback |
-
-A cost/capability ladder, not a ranking. Every lesson is built and tested against the Qwen default.
-
-Rest of the catalog (23 models: 12 Qwen, 4 Gemma, GPT-OSS, Nemotron, 2 DeepSeek, 2 GLM, Kimi) is in the dashboard. Skip small models (Qwen ≤9B, Gemma E2B/E4B — can't hold tool discipline) and frontier giants (`Qwen3.5-397B-A17B-FP8`, `DeepSeek-V4-Pro`, `nvidia/Kimi-K2.6-NVFP4` — overkill).
-
-## Selection criteria for a coding-agent harness
-
-Ranked for `decode`'s loop while you learn it:
-
-1. **Tool / function-calling reliability.** Mis-formatted tool calls = debugging the model instead of the harness. Native OpenAI format (GPT-OSS) is smoothest; Qwen's `hermes`/`qwen` parser clears the bar.
-2. **Cost per learning iteration.** Hundreds of runs, most on turns you already understand. ~10× cheaper serve = ~10× more attempts per credit.
-3. **Long context (≥128k)** — whole files, session replays, compaction. The agentic benchmark below uses a 61k-token input.
-4. **Coding ability** — a great coder that can't drive tools is useless here.
-5. **Instruction following** — permission modes, agent definitions, structured outputs.
-6. **Serveable footprint** — active params + quantization → GPU count → latency & cost. MoE is the sweet spot (35B-A3B on one H100).
-
-**Hard disqualifier:** must serve through vLLM with a working **tool-call parser** (OpenAI/harmony for GPT-OSS, hermes/qwen for Qwen). Confirm under *Advanced Configurations*.
-
-## Benchmarked head-to-head (Modal's estimated preview)
-
-Workload "Agentic multi-turn" — input 61,278 tokens, output 1,521 tokens:
-
-| Model ID | GPU | Peak interactivity (tok/s/user) | Relative serve cost |
-|---|---|---|---|
-| `Qwen/Qwen3.6-35B-A3B-FP8` (course default) | **1×H100** | ~86 | **lowest** |
-| `openai/gpt-oss-120b` | **1×B200** | ~234 → 90 | medium |
-| `zai-org/GLM-5.2-FP8` | **8×B200** | ~112–168 | **highest** (~8× the GPU) |
-
-Qwen: slowest per user, cheapest by far — while building, GPU-hours are the scarce resource. GPT-OSS: ~2–3× interactivity for a real per-hour step up. GLM: most capable on hard agentic tasks, priced accordingly. Numbers are relative; B200 vs H100 is a hardware difference too.
-
-## Setting up an endpoint via the Modal CLI (Auto Endpoints)
-
-Docs: [endpoints](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng) · [metrics](https://modal.com/docs/guide/endpoint-metrics?source=decodingai&campaign=harnesseng) · [benchmarks](https://modal.com/docs/guide/endpoint-benchmarks?source=decodingai&campaign=harnesseng). `modal endpoint create --help` is the source of truth for flags.
-
-### Authenticate the CLI
+## 1. Create the endpoint
 
 ```bash
-modal token set --token-id <your-token-id> --token-secret <your-token-secret>
-# or set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET (see .env.example)
+# 1. authenticate — tokens from https://modal.com?source=decodingai&campaign=harnesseng (one-time, writes ~/.modal.toml)
+uv run modal token set --token-id <your-token-id> --token-secret <your-token-secret>
+
+# 2. serve the course default — Modal picks GPU + recipe, prints the endpoint URL
+uv run modal endpoint create --model Qwen/Qwen3.6-35B-A3B-FP8 --env main
+
+# 3. mint a proxy token pair so the endpoint is not open to the world
+uv run modal workspace proxy-tokens create        # → Modal-Key: wk-... / Modal-Secret: ws-...
+uv run modal workspace proxy-tokens allow wk-... main
 ```
 
-These **account** tokens authenticate the CLI and the Modal Sandbox (`SANDBOX_MODE=modal`). Read from `~/.modal.toml` / `os.environ` by the `modal` library, never by `Settings` — not `.env` keys. The **proxy** pair below *is* a `Settings` field (`MODAL_PROXY_TOKEN_ID` / `_SECRET`): rides `.env`, and doubles as the headless webhook's auth ([04_deploy.md §4](04_deploy.md#4-run-a-task-from-a-webhook)).
+Lost the URL: `uv run modal endpoint list --env main`.
 
-### Create the endpoint
+## 2. Point decode at it
 
-```bash
-modal endpoint create --model Qwen/Qwen3.6-35B-A3B-FP8 --env main    # course default
-modal endpoint create --model openai/gpt-oss-120b --env main         # middle ground
-modal endpoint create --model zai-org/GLM-5.2-FP8 --env main         # max capability (8×B200)
-```
-
-Modal picks the serving recipe + GPU and prints endpoint ID, URL, dashboard link.
-
-### Authentication — proxy tokens
-
-Endpoints require auth by default. Create a pair (scope to the env if RBAC is on):
-
-```bash
-modal workspace proxy-tokens create        # → Modal-Key: wk-... / Modal-Secret: ws-...
-modal workspace proxy-tokens allow wk-... main
-```
-
-Local dev only: `--unauthenticated` at create time.
-
-### Verify — the endpoint speaks OpenAI Chat Completions at `/v1`
-
-```bash
-curl "<your-endpoint-url>/v1/models" \
-  -H "Modal-Key: $MODAL_PROXY_TOKEN_ID" \
-  -H "Modal-Secret: $MODAL_PROXY_TOKEN_SECRET"
-```
-
-### Advanced config — CLI vs dashboard
-
-| Knob | CLI at create | Dashboard after create |
-|---|---|---|
-| Routing region | `--routing-region` (us-west default, us-east, eu-west, ap-south) | Details → Routing Region |
-| Compute placement | `--colocate-compute` (pin containers to the routing region) | Details → Compute Placement |
-| Min / Max / Buffer containers | — | AUTOSCALING → Edit → Override |
-
-Autoscaling is dashboard-only. **Min ≥ 1** = keep-warm (no cold starts, idle GPU billed); **Min 0** = scale-to-zero (first request after idle pays a cold start).
-
-### Manage
-
-```bash
-modal endpoint list --env main
-modal endpoint stop qwen3-6-35b-a3b-fp8 --env main
-```
-
-## Wiring an endpoint into `decode`
-
-OpenAI-compatible, so it rides the same `OpenAIChatModel` path as OpenRouter (ADR-0005); the Provider Seam (`agent/factory._build_model()`) builds it from settings:
+In `.env`:
 
 ```bash
 LLM_PROVIDER=modal
-MODAL_ENDPOINT_URL=https://...                    # base_url = {url}/v1
-MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8     # served model id
-MODAL_PROXY_TOKEN_ID=wk-...                       # optional — omit if --unauthenticated
+MODAL_ENDPOINT_URL=https://your-workspace--your-app.modal.run   # decode calls {url}/v1
+MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8
+MODAL_PROXY_TOKEN_ID=wk-...          # both, or neither (an --unauthenticated endpoint)
 MODAL_PROXY_TOKEN_SECRET=ws-...
 ```
 
-Auth: custom `Modal-Key` / `Modal-Secret` headers, not `Authorization: Bearer`. Both set → default headers; neither → no headers, placeholder `api_key="EMPTY"`. Startup guard enforces both-or-neither.
+Two token pairs, do not mix them: `MODAL_TOKEN_*` authenticate the CLI and are **not** `.env` settings; `MODAL_PROXY_TOKEN_*` are how decode calls the model.
 
-Moving up the ladder = re-point `MODAL_ENDPOINT_URL` / `MODAL_ENDPOINT_MODEL`. No code change.
+> ✅ Returns your model id:
+>
+> ```bash
+> set -a && . ./.env && set +a
+> curl "$MODAL_ENDPOINT_URL/v1/models" -H "Modal-Key: $MODAL_PROXY_TOKEN_ID" -H "Modal-Secret: $MODAL_PROXY_TOKEN_SECRET"
+> ```
 
-## Killing cold starts while you work
+Then `decode` as before.
 
-**Min 0** (default) scales to zero between sessions → the first turn of every session waits for the GPU. While iterating, set **minimum containers to 1**: open the endpoint, **AUTOSCALING → Edit → Override**:
+## 3. Cold starts and cost
 
-![Setting the minimum number of containers to 1 on a Modal endpoint](../assets/modal_setup_endpoint.gif)
+The endpoint scales to zero (Min 0), so the first turn of a session waits for a GPU. While iterating, open the endpoint in the dashboard, **AUTOSCALING → Edit → Override**, set **Min 1**:
 
-A warm container bills idle time. Keep Min 1 for a working session, then back to 0 — or `uv run modal endpoint stop <endpoint-id> --env main` — when done.
+![Min containers = 1](../assets/modal_setup_endpoint.gif)
+
+A warm container bills idle time. Back to Min 0, or stop it, when done:
+
+```bash
+uv run modal endpoint list --env main
+uv run modal endpoint stop <endpoint-id> --env main
+```
+
+`COMPACTION_CONTEXT_WINDOW_TOKENS=262144` in `.env` skips decode's startup probe of `/v1/models`, the one request that waits on a cold endpoint.
+
+## 4. Other models
+
+Same command, different `--model`; then re-point `MODAL_ENDPOINT_URL` / `MODAL_ENDPOINT_MODEL`.
+
+| Pick | Model ID | GPU | Why |
+|---|---|---|---|
+| **Course default** | `Qwen/Qwen3.6-35B-A3B-FP8` | 1×H100 | cheapest by far (MoE, ~3B active); reliable tool calling |
+| Middle ground | `openai/gpt-oss-120b` | 1×B200 | native OpenAI tool-call format; ~2–3× faster per user |
+| Max capability | `zai-org/GLM-5.2-FP8` | 8×B200 | strongest agentic coding; ~8× the GPU cost |
+
+Hard requirement: served through vLLM with a working tool-call parser. Skip models under ~10B (lose tool discipline). Full catalog and benchmarks in the Modal dashboard; docs: [endpoints](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng).
+
+---
+
+**Next:** [03_sandboxing.md](03_sandboxing.md) — move the agent's tools into an isolated Workspace, work on any repo, get a branch back.

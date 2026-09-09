@@ -1,10 +1,8 @@
-"""Drift guard: ``.env.example`` ≡ ``Settings`` fields, BOTH directions, NO allowlist (ADR-0015 §9).
+"""Drift guard: ``.env.example`` ≡ ``Settings`` fields, BOTH directions, NO allowlist (ADR-0021).
 
-The whole "one config surface, two injection mechanisms" claim rests on ``.env.example`` and the
-Environment Bucket being the same surface expressed two ways — ``scripts/sync_secrets.py`` mirrors the
-file into the bucket and keeps exactly the keys that map to a ``Settings`` field. So an undocumented
-field is not a docs nit: it is a knob that silently disappears at every remote environment. This makes
-that a test failure instead.
+``.env.example`` is the documented config surface and ``Settings`` the one reader; a Modal Secret at a
+remote ``DECODE_ENV`` is filled in by hand from this file. So an undocumented field is not a docs nit:
+it is a knob an operator never learns to set. This makes that a test failure instead.
 
 **No allowlist, by design** — an exclusion set is how a drift test rots. The three process-env-only
 operator variables (``DECODE_LOG_FILE``, ``MODAL_TOKEN_ID``, ``MODAL_TOKEN_SECRET``) are handled by
@@ -42,14 +40,14 @@ def settings_keys() -> set[str]:
 
 
 def test_every_settings_field_is_documented_in_env_example():
-    """A field with no ``KEY=`` line is a knob that vanishes at dev/staging/prod. Fail, naming it."""
+    """A field with no ``KEY=`` line is a knob nobody learns to set. Fail, naming it."""
     missing = sorted(settings_keys() - documented_keys())
 
     assert not missing, (
         f"{len(missing)} Settings field(s) are not documented in .env.example: "
         f"{', '.join(missing)}. Add a line for each (e.g. `# {missing[0]}=<default>`) — "
-        "an undocumented field is missing from the Environment Bucket that `make sync-secrets` "
-        "mirrors, so the knob silently disappears at every remote environment (ADR-0015 §9)."
+        "an undocumented field is a knob no operator learns to set, on a laptop or in a "
+        "deployment's Modal Secret (ADR-0021)."
     )
 
 
@@ -61,5 +59,5 @@ def test_every_env_example_key_is_a_real_settings_field():
         f"{len(extra)} key(s) in .env.example are not Settings fields: {', '.join(extra)}. "
         f"Remove the line, or add the field to config/settings.py. A variable that is genuinely "
         "read from os.environ (never from .env) belongs in .env.example as PROSE, not as a "
-        f"`{extra[0]}=` line — nothing would ever load it (ADR-0015 §9)."
+        f"`{extra[0]}=` line — nothing would ever load it (ADR-0021)."
     )

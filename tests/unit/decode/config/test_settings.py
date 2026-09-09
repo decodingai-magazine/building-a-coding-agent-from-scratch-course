@@ -41,8 +41,7 @@ _LSP_ENV_VARS = (
 
 # Headless runtime vars (ADR-0019 §1). Only the master gate survives: the durable-flow knobs
 # (RUNTIME_CHECKPOINT_STRATEGY / RUNTIME_WAIT_TIMEOUT_S) died with the flow, and the secret knobs
-# with ADR-0015 §4 — config comes from DECODE_ENV (the gate + the Environment Bucket have their own
-# file, test_env_bucket.py).
+# with ADR-0015 §4 / ADR-0021 — one Settings chain at every DECODE_ENV.
 _RUNTIME_ENV_VARS = ("RUNTIME_ENABLED",)
 
 # Sandboxing vars (ADR-0011). The Credential-Proxy knobs are gone with the proxy (ADR-0016 §1) —
@@ -399,8 +398,7 @@ def test_stale_secret_store_env_vars_are_silently_ignored(monkeypatch):
 
     An env / ``.env`` still carrying one of the retired knobs must change nothing and print nothing —
     ``extra="ignore"`` swallows it, and the fields are gone, so no reader can branch on them. Config
-    now comes from ``DECODE_ENV``: ``.env`` at ``local``, the Environment Bucket at a remote env (the
-    stale names are spelled out only in ``.env.example``, which is where the loud notice lives).
+    comes from one Settings chain at every ``DECODE_ENV`` (ADR-0021).
     """
     for stale in ("_STORE_MODEL_KEY", "_STORE_CONFIG", "_NAME"):
         monkeypatch.setenv(f"RUNTIME_SECRET{stale}", "true")
@@ -592,8 +590,7 @@ def test_opik_project_name_is_derived_from_decode_env_when_unset(monkeypatch):
     """A trace must name the environment that produced it: the default is ``decode-<DECODE_ENV>``.
 
     At ``local`` (the default gate) that is ``decode-local`` — the suffix is applied ALWAYS, there is
-    no bare ``decode`` project any more (ADR-0015 §8). The remote envs are covered in
-    ``test_env_bucket.py`` (they need a stubbed bucket).
+    no bare ``decode`` project any more (ADR-0015 §8, kept by ADR-0021).
     """
     for var in _OPIK_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -710,11 +707,10 @@ def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):
 
 # .env.example drift is covered GLOBALLY (every field, both directions, no allowlist) by
 # tests/unit/decode/config/test_env_example_drift.py — it subsumes the per-section
-# ``test_env_example_lists_every_*_var`` guards that used to live here (ADR-0015 §9).
+# ``test_env_example_lists_every_*_var`` guards that used to live here (ADR-0021).
 #
-# The DECODE_ENV gate + the Environment Bucket settings source (ADR-0015) have their own file:
-# tests/unit/decode/config/test_env_bucket.py — including the restated "at DECODE_ENV=local, decode
-# never imports kitaru" invariant (a fresh-subprocess import check).
+# The "decode never imports kitaru unless recording is configured" invariant (ADR-0021 §5) is a
+# fresh-subprocess import check in tests/unit/decode/test_cli.py.
 
 
 # --- Compaction context window: derived from the active model (task: auto-size the window) ---
