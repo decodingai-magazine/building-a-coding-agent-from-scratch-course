@@ -48,8 +48,13 @@ which also makes the block re-runnable), and **do not put `DECODE_ENV` in it** �
 which environment it is, and a Secret that disagrees is refused at startup with one line.
 
 Pick the block for the provider you run. Each loads your `.env` into the shell, then copies that provider's
-keys — plus `SANDBOX_GIT_TOKEN`, which only `--sandbox-mode modal` runs use (drop the line if you have no
-token; the run still answers, it just ships no branch).
+keys, plus two optional extras (drop either line if you don't use it — an empty value reads as unset, so the
+create is still safe):
+
+| Optional key | What it buys |
+| --- | --- |
+| `SANDBOX_GIT_TOKEN` | only `--sandbox-mode modal` runs use it, to push a `decode/<session-id>` branch back. Without it the run still answers, it just ships no branch. |
+| `OPIK_API_KEY` (+ `OPIK_WORKSPACE`) | traces every remote run ([ADR-0014](../docs/adr/0014-opik-observability.md)). Presence-based: unset = a byte-identical no-op. **Do not set `OPIK_PROJECT_NAME`** — it derives to `decode-<env>`, which is what keeps a `local` deployment's traces out of `prod`'s. Self-hosted Opik also needs `OPIK_URL_OVERRIDE`. |
 
 **Gemini** (`LLM_PROVIDER=gemini`, the default):
 
@@ -60,6 +65,8 @@ uv run modal secret create decode-headless-local \
   LLM_PROVIDER=gemini \
   GEMINI_API_KEY="$GEMINI_API_KEY" \
   GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}" \
+  OPIK_API_KEY="$OPIK_API_KEY" \
+  OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 
 uv run modal secret list              # values are write-only
@@ -78,6 +85,8 @@ uv run modal secret create decode-headless-local \
   MODAL_ENDPOINT_MODEL="${MODAL_ENDPOINT_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}" \
   MODAL_PROXY_TOKEN_ID="$MODAL_PROXY_TOKEN_ID" \
   MODAL_PROXY_TOKEN_SECRET="$MODAL_PROXY_TOKEN_SECRET" \
+  OPIK_API_KEY="$OPIK_API_KEY" \
+  OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 
 uv run modal secret list
@@ -94,6 +103,8 @@ uv run modal secret create decode-headless-local \
   LLM_PROVIDER=openrouter \
   OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
   OPENROUTER_MODEL="${OPENROUTER_MODEL:-openrouter/free}" \
+  OPIK_API_KEY="$OPIK_API_KEY" \
+  OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 
 uv run modal secret list
