@@ -38,18 +38,20 @@ No extra install: `modal` ships with decode's dependencies.
 ### 2b. The `decode-headless-<env>` Secret
 
 One environment = one deployment = one Secret ([ADR-0021](../docs/adr/0021-decode-env-is-a-naming-suffix.md)).
-`DECODE_ENV` names all three, and it is set at DEPLOY, never inside the Secret. This page runs at
-**`DECODE_ENV=prod`**: the Secret is `decode-headless-prod`, the deploy is `DECODE_ENV=prod decode remote
-deploy`, and the app it publishes is `decode-headless-prod`. Export it once and every command below —
-`create`, `deploy`, `run`, `logs` — lands on the same deployment:
+`DECODE_ENV` names all three, and it is set at DEPLOY, never inside the Secret. Set it once — in `.env`
+(sourced by every block below) or exported in this shell — and every command on this page, `create` /
+`deploy` / `run` / `logs`, lands on the same deployment:
 
 ```bash
-export DECODE_ENV=prod        # or put DECODE_ENV=prod in .env; the launcher reads Settings
+echo 'DECODE_ENV=prod' >> .env      # or, for this shell only:  export DECODE_ENV=prod
 ```
 
-Any other environment is the same page with the suffix swapped (`local` is the default when `DECODE_ENV` is
-unset). The one rule: the suffix in the `create` and the `DECODE_ENV` at the `deploy` must match, or the app
-comes up bound to a Secret that does not exist.
+The blocks below never hardcode the suffix: the Secret name is built from `$DECODE_ENV`, so the Secret you
+create and the app you deploy cannot disagree. The guard is *inside* the name — `${DECODE_ENV:?…}` — which
+makes the `create` itself refuse to run when the variable is empty or unset, instead of quietly writing a
+Secret called `decode-headless-`. (A guard on its own line would not do that: pasted into an interactive
+shell, a failed `:?` prints its message and the shell runs the next line anyway.) `local` is what decode
+assumes when `DECODE_ENV` is genuinely unset — these blocks just make you say it out loud.
 
 The container has no `.env`; **its Secret is its whole config surface**, so it must carry every key that run
 needs. Two rules follow: pass every key on every create (a Secret is replaced, never patched — hence `--force`,
@@ -60,9 +62,9 @@ Pick the block for the provider you run. Each loads your `.env` into the shell, 
 keys, plus two optional extras (drop either line if you don't use it — an empty value reads as unset, so the
 create is still safe):
 
-| Optional key | What it buys |
-| --- | --- |
-| `SANDBOX_GIT_TOKEN` | only `--sandbox-mode modal` runs use it, to push a `decode/<session-id>` branch back. Without it the run still answers, it just ships no branch. |
+| Optional key                        | What it buys                                                                                                                                                                                                                                                                                                         |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SANDBOX_GIT_TOKEN`                 | only `--sandbox-mode modal` runs use it, to push a `decode/<session-id>` branch back. Without it the run still answers, it just ships no branch.                                                                                                                                                                     |
 | `OPIK_API_KEY` (+ `OPIK_WORKSPACE`) | traces every remote run ([ADR-0014](../docs/adr/0014-opik-observability.md)). Presence-based: unset = a byte-identical no-op. **Do not set `OPIK_PROJECT_NAME`** — it derives to `decode-<env>`, which is what keeps a `local` deployment's traces out of `prod`'s. Self-hosted Opik also needs `OPIK_URL_OVERRIDE`. |
 
 **Gemini** (`LLM_PROVIDER=gemini`, the default):
@@ -70,7 +72,7 @@ create is still safe):
 ```bash
 set -a && . ./.env && set +a
 
-uv run modal secret create decode-headless-prod \
+uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or export it first}" \
   LLM_PROVIDER=gemini \
   GEMINI_API_KEY="$GEMINI_API_KEY" \
   GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}" \
@@ -78,17 +80,17 @@ uv run modal secret create decode-headless-prod \
   OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 
-uv run modal secret list              # values are write-only
+uv run modal secret list
 ```
 
 **Modal — your own served model** (`LLM_PROVIDER=modal`, [02_modal_endpoints.md](02_modal_endpoints.md)). The
-endpoint is a *separate* deployed app; these four values point the harness at it, and the proxy pair is what
+endpoint is a _separate_ deployed app; these four values point the harness at it, and the proxy pair is what
 gets past its 🔑:
 
 ```bash
 set -a && . ./.env && set +a
 
-uv run modal secret create decode-headless-prod \
+uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or export it first}" \
   LLM_PROVIDER=modal \
   MODAL_ENDPOINT_URL="$MODAL_ENDPOINT_URL" \
   MODAL_ENDPOINT_MODEL="${MODAL_ENDPOINT_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}" \
@@ -108,7 +110,7 @@ Served `--unauthenticated`? Drop the two `MODAL_PROXY_TOKEN_*` lines — omit bo
 ```bash
 set -a && . ./.env && set +a
 
-uv run modal secret create decode-headless-prod \
+uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or export it first}" \
   LLM_PROVIDER=openrouter \
   OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
   OPENROUTER_MODEL="${OPENROUTER_MODEL:-openrouter/free}" \
@@ -120,7 +122,7 @@ uv run modal secret list
 ```
 
 To change a value later, edit `.env` and re-run the same block — then **redeploy**. A `--force` create writes a
-*new* Secret object, and a running deployment keeps the one it was bound to until `decode remote deploy` runs
+_new_ Secret object, and a running deployment keeps the one it was bound to until `decode remote deploy` runs
 again.
 
 Recording every remote run as a Kitaru Session is optional and orthogonal: add `KITARU_AGENT_ID` +
@@ -132,7 +134,7 @@ all, at any `DECODE_ENV`.
 Every trigger runs against the **deployed** app. Deploy builds the image (`debian_slim` + `uv sync` + this repo's source baked in) — **re-run after any change to decode's source, and after any change to the Secret**. Must run from a checkout of this repo:
 
 ```bash
-uv run decode remote deploy       # DECODE_ENV=prod is exported (§2b) → decode-headless-prod
+uv run decode remote deploy       # reads DECODE_ENV (§2b) → decode-headless-$DECODE_ENV
 ```
 
 Want, at the end of the output:
@@ -145,7 +147,7 @@ Decode: deploying decode-headless-prod (DECODE_ENV=prod).
 ✓ App deployed in 46.102s! 🎉
 ```
 
-`DECODE_ENV` is read here, from this shell (or your `.env`), and **baked into the image** — it is what named the app and the Secret, so the three can never disagree. Prefer it inline (`DECODE_ENV=prod uv run decode remote deploy`) if you would rather not export it. Every `decode remote` command resolves the same name, so a shell without `DECODE_ENV=prod` reaches `decode-headless-local` and reports *that* app as not deployed — which is the failure this naming makes legible instead of silent.
+`DECODE_ENV` is read here, from this shell (or your `.env`), and **baked into the image** — it is what named the app and the Secret, so the three can never disagree. Prefer it inline (`DECODE_ENV=prod uv run decode remote deploy`) if you would rather not export it. Every `decode remote` command resolves the same name, so a shell without `DECODE_ENV=prod` reaches `decode-headless-local` and reports _that_ app as not deployed — which is the failure this naming makes legible instead of silent.
 
 `run_task` = the run; `nightly` = the cron (inert until deployed with a schedule, §5); `webhook` = the POST endpoint (🔑 = proxy auth on, §4). Every trigger takes the same knobs — `task`, `repo`, `sandbox-mode` (`none` | `modal`), `model`, `max-requests`, `timeout-seconds` — and leaves the same traces: the answer in `decode remote logs`, and (`modal` mode + `SANDBOX_GIT_TOKEN`) a `decode/<session-id>` branch on origin.
 
@@ -231,7 +233,7 @@ git ls-remote <url> 'refs/heads/decode/*'
 URL from the deploy output. Body = the `decode remote run` knobs as JSON; only `task` is required. The endpoint spawns the run and returns at once.
 
 ```bash
-export WEBHOOK_URL=https://<workspace>--decode-headless-prod-webhook.modal.run
+export WEBHOOK_URL="https://<workspace>--decode-headless-${DECODE_ENV:?}-webhook.modal.run"
 set -a && . ./.env && set +a         # MODAL_PROXY_TOKEN_ID / MODAL_PROXY_TOKEN_SECRET
 
 curl -s -X POST "$WEBHOOK_URL" \
@@ -293,7 +295,7 @@ Each morning: `uv run decode remote logs` for the answer, `git ls-remote <repo> 
 ```bash
 uv run decode remote logs           # = modal app logs decode-headless-<env>
 uv run modal app list
-uv run modal app stop decode-headless-prod
+uv run modal app stop "decode-headless-${DECODE_ENV:?}"
 ```
 
 | Item                          | Cost                                       |
@@ -306,18 +308,18 @@ uv run modal app stop decode-headless-prod
 
 ## 7. Troubleshooting
 
-| Symptom                                                           | Fix                                                                                                                          |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `Decode: the decode-headless-<env> app is not deployed …`         | `uv run decode remote deploy` at that `DECODE_ENV` (also after `modal app stop`). Nothing was billed.                        |
-| `Decode: Modal credentials are missing or rejected …`             | `uv run modal token set …`. `.env` does nothing for these.                                                                   |
-| `Decode: set GEMINI_API_KEY in your environment` in the run's log | the Secret lacks the provider key — recreate it (§2b), then **redeploy**: a `--force` create writes a new Secret object the running deployment is not bound to. |
-| `Decode: this deployment is DECODE_ENV=… but its Secret carries …` | remove `DECODE_ENV` from the Secret (§2b), or redeploy at the env the Secret names.                                          |
-| Runs land in the wrong Opik project / sandbox app                 | `DECODE_ENV` at deploy names both — redeploy with the one you meant.                                                        |
-| A remote run behaves like last week's code                        | re-run `decode remote deploy`.                                                                                               |
-| `sandbox mode 'docker' cannot run on Modal`                       | use `none` or `modal`.                                                                                                       |
-| Attempts read `NOT SHIPPED`                                       | `none` mode discards its clone; `modal` mode needs a `SANDBOX_GIT_TOKEN` that can push to that repo.                         |
-| Webhook returns `401` / `403`                                     | wrong or missing `Modal-Key` / `Modal-Secret` — [02_modal_endpoints.md](02_modal_endpoints.md#authentication--proxy-tokens). |
-| Nightly deploy dies on the laptop                                 | `DECODE_NIGHTLY_CRON` set without `DECODE_NIGHTLY_TASK`.                                                                     |
+| Symptom                                                            | Fix                                                                                                                                                             |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Decode: the decode-headless-<env> app is not deployed …`          | `uv run decode remote deploy` at that `DECODE_ENV` (also after `modal app stop`). Nothing was billed.                                                           |
+| `Decode: Modal credentials are missing or rejected …`              | `uv run modal token set …`. `.env` does nothing for these.                                                                                                      |
+| `Decode: set GEMINI_API_KEY in your environment` in the run's log  | the Secret lacks the provider key — recreate it (§2b), then **redeploy**: a `--force` create writes a new Secret object the running deployment is not bound to. |
+| `Decode: this deployment is DECODE_ENV=… but its Secret carries …` | remove `DECODE_ENV` from the Secret (§2b), or redeploy at the env the Secret names.                                                                             |
+| Runs land in the wrong Opik project / sandbox app                  | `DECODE_ENV` at deploy names both — redeploy with the one you meant.                                                                                            |
+| A remote run behaves like last week's code                         | re-run `decode remote deploy`.                                                                                                                                  |
+| `sandbox mode 'docker' cannot run on Modal`                        | use `none` or `modal`.                                                                                                                                          |
+| Attempts read `NOT SHIPPED`                                        | `none` mode discards its clone; `modal` mode needs a `SANDBOX_GIT_TOKEN` that can push to that repo.                                                            |
+| Webhook returns `401` / `403`                                      | wrong or missing `Modal-Key` / `Modal-Secret` — [02_modal_endpoints.md](02_modal_endpoints.md#authentication--proxy-tokens).                                    |
+| Nightly deploy dies on the laptop                                  | `DECODE_NIGHTLY_CRON` set without `DECODE_NIGHTLY_TASK`.                                                                                                        |
 
 ## Go further
 
