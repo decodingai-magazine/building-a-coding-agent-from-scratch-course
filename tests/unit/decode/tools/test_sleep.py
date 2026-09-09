@@ -1,9 +1,9 @@
 """Unit tests for the ungated ``sleep`` control tool (``decode.tools.sleep``) — ADR-0003 §8.
 
-Covers the ``sleep_max_s`` cap, the negative/``nan`` rejection (``min(nan, cap)`` is ``nan``,
-which would defeat the cap), and the mode-aware ``_SLEEPER`` seam (interactive vs durable). No
-real wait: ``asyncio.sleep`` / ``kitaru.wait`` are patched so the exact capped duration is
-asserted deterministically.
+Covers the ``sleep_max_s`` cap and the negative/``nan`` rejection (``min(nan, cap)`` is ``nan``,
+which would defeat the cap). The durable ``_SLEEPER`` seam is gone — ``sleep`` awaits
+:func:`asyncio.sleep` in every mode (ADR-0019 §1). No real wait: ``asyncio.sleep`` is patched so
+the exact capped duration is asserted deterministically.
 """
 
 import math
@@ -113,95 +113,11 @@ async def test_sleep_name_constant_is_sleep():
     assert sleep_module.SLEEP_TOOL_NAME == "sleep"
 
 
-# durable (flow) mode: the Headless Runtime installs a durable sleeper that pauses on a flow-scope
-# ``kitaru.wait`` instead of ``asyncio.sleep``. Tests patch ``kitaru.wait`` (the runtime boundary)
-# so the cap + negative/nan rejection are asserted with no real wait and no flow.
+def test_the_durable_sleeper_seam_is_gone():
+    """ADR-0019 §1 (clean break): the flow-scope ``kitaru.wait`` seam is deleted, not shimmed.
 
-
-@pytest.fixture
-def _durable_seam():
-    """Install the durable sleeper, then guarantee the seam is reset (no leak into later tests)."""
-    sleep_module.install_durable_sleeper()
-    try:
-        yield
-    finally:
-        sleep_module.reset_sleeper()
-
-
-async def test_durable_sleeper_waits_on_kitaru_with_the_capped_timeout(mocker, _durable_seam):
-    # In flow mode the seam is the durable sleeper: a request above the cap is clamped, and the
-    # durable ``kitaru.wait`` gets the CAPPED whole-second timeout (named "sleep"), never the raw
-    # 10_000s request — so the cap holds in flow mode exactly as it does interactively.
-    wait = mocker.patch("kitaru.wait")
-    slept = mocker.patch("decode.tools.sleep.asyncio.sleep")
-    mocker.patch("decode.tools.sleep.settings.sleep_max_s", 5.0)
-
-    result = await sleep_module.sleep(_ctx(), seconds=10_000)
-
-    wait.assert_called_once_with(name="sleep", timeout=5)
-    slept.assert_not_awaited()  # flow mode does NOT use the in-process sleep
-    assert result == "Slept 5.0 s."  # the confirmation contract is unchanged in flow mode
-
-
-async def test_durable_sleeper_passes_a_sub_cap_request_through_to_the_wait(mocker, _durable_seam):
-    # A request under the cap is passed through (coerced to whole seconds): kitaru.wait's timeout is
-    # ``int``, so 7.0 → 7. The confirmation still reports the float the tool clamped to.
-    wait = mocker.patch("kitaru.wait")
-    mocker.patch("decode.tools.sleep.settings.sleep_max_s", 60.0)
-
-    result = await sleep_module.sleep(_ctx(), seconds=7.0)
-
-    wait.assert_called_once_with(name="sleep", timeout=7)
-    assert result == "Slept 7.0 s."
-
-
-async def test_durable_sleeper_rejects_negative_before_waiting(mocker, _durable_seam):
-    # The negative guard fires BEFORE the seam in flow mode too: a ModelRetry is raised and the
-    # durable wait is never created — the cap can never be defeated by a negative in flow mode.
-    wait = mocker.patch("kitaru.wait")
-
-    with pytest.raises(ModelRetry):
-        await sleep_module.sleep(_ctx(), seconds=-1)
-
-    wait.assert_not_called()
-
-
-async def test_durable_sleeper_rejects_nan_before_waiting(mocker, _durable_seam):
-    # The headline flow-mode safety case: a ``nan`` request raises ModelRetry and NEVER reaches
-    # ``kitaru.wait`` (``min(nan, cap)`` is ``nan``, which would create an unbounded durable wait).
-    wait = mocker.patch("kitaru.wait")
-    mocker.patch("decode.tools.sleep.settings.sleep_max_s", 60.0)
-
-    with pytest.raises(ModelRetry):
-        await sleep_module.sleep(_ctx(), seconds=float("nan"))
-
-    wait.assert_not_called()
-
-
-async def test_reset_sleeper_restores_in_process_asyncio_sleep(mocker):
-    # AC: after a durable run installs + resets the seam, a subsequent interactive ``sleep`` uses
-    # ``asyncio.sleep`` again (no global leakage). Install, reset, then prove the in-process path runs
-    # and ``kitaru.wait`` is NOT touched.
-    sleep_module.install_durable_sleeper()
-    sleep_module.reset_sleeper()
-
-    wait = mocker.patch("kitaru.wait")
-    slept = mocker.patch("decode.tools.sleep.asyncio.sleep")
-    mocker.patch("decode.tools.sleep.settings.sleep_max_s", 60.0)
-
-    result = await sleep_module.sleep(_ctx(), seconds=0.01)
-
-    slept.assert_awaited_once_with(0.01)  # back to the in-process sleep
-    wait.assert_not_called()  # the durable wait is gone
-    assert result == "Slept 0.01 s."
-
-
-async def test_install_durable_sleeper_swaps_the_active_seam():
-    # The seam itself is the patch point (mirrors bash ``_EXECUTOR`` / web ``_TRANSPORT``): installing
-    # points it at the durable sleeper; resetting points it back at the interactive default.
-    try:
-        sleep_module.install_durable_sleeper()
-        assert sleep_module._SLEEPER is sleep_module._durable_sleep
-    finally:
-        sleep_module.reset_sleeper()
-    assert sleep_module._SLEEPER is sleep_module._interactive_sleep
+    ``sleep`` awaits :func:`asyncio.sleep` in every mode now, so nothing may install a second
+    sleeper — the tests above patch ``asyncio.sleep`` and that is the whole story.
+    """
+    for retired in ("_SLEEPER", "_durable_sleep", "install_durable_sleeper", "reset_sleeper"):
+        assert not hasattr(sleep_module, retired), f"{retired} must not come back"

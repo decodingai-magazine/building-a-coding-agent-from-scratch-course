@@ -6,6 +6,10 @@ cleanly without ever issuing a model request — no network. The agent is *built
 the settings the factory reads.
 """
 
+import os
+import subprocess
+import sys
+
 import pytest
 from click.testing import CliRunner
 from pydantic import SecretStr
@@ -76,6 +80,12 @@ def test_cli_runs_and_exits_zero():
     assert "Decode" in result.output
 
 
+def test_run_and_remote_are_the_only_subcommands():
+    """ADR-0019 §1: ``run`` is the whole local headless surface (``replay`` died with the Durable
+    Flow); ``remote`` is its Modal launcher (ADR-0020)."""
+    assert set(cli.commands) == {"run", "remote"}
+
+
 def test_run_subcommand_is_registered_without_breaking_the_bare_repl(mocker):
     """ADR-0008: ``cli`` is now a group exposing ``run``, yet bare ``decode`` still reaches the REPL.
 
@@ -95,20 +105,30 @@ def test_run_subcommand_is_registered_without_breaking_the_bare_repl(mocker):
 
 
 def test_importing_the_cli_does_not_import_kitaru():
-    """The REPL entrypoint must stay kitaru-free: ``decode run`` imports the runtime lazily (ADR-0008).
+    """The REPL entrypoint must stay kitaru-free (ADR-0015 §1; ADR-0019 §3).
 
-    Importing ``decode.cli`` in a fresh interpreter must not pull in ``kitaru`` (a heavy
-    zenml/temporalio stack) — only ``decode run`` does, inside the subcommand body. A subprocess
-    keeps the check honest regardless of what the rest of the suite already imported.
+    Importing ``decode.cli`` in a fresh interpreter must not pull in ``kitaru`` — at
+    ``DECODE_ENV=local`` nothing does. A subprocess keeps the check honest regardless of what the
+    rest of the suite already imported.
+
+    Tightened for the Recording Seam (ADR-0019 §3): the headless package and the seam module itself
+    are imported too, and BOTH kitaru distributions are checked (``kitaru`` and the adapter
+    ``kitaru_pydantic_ai``) — the seam's imports live inside its configured branch, so an unconfigured
+    process must still come up with neither in ``sys.modules``.
     """
     import subprocess
     import sys
 
-    proc = subprocess.run(
-        [sys.executable, "-c", "import decode.cli, sys; assert 'kitaru' not in sys.modules"],
-        capture_output=True,
-        text=True,
+    code = (
+        "import sys\n"
+        "import decode.cli\n"
+        "import decode.runtime\n"
+        "import decode.runtime.recording\n"
+        "leaked = sorted(m for m in sys.modules if m.split('.')[0] in "
+        "{'kitaru', 'kitaru_pydantic_ai'})\n"
+        "assert not leaked, leaked\n"
     )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     assert proc.returncode == 0, proc.stderr
 
@@ -178,57 +198,54 @@ def test_cli_passes_named_resume_through(mocker):
     assert run_app.await_args.kwargs.get("resume") == "2026-06-19_abc"
 
 
-# task 097: the Environment-Bucket startup guard — FIRST in the REPL chain (ADR-0015 §5)
-# Hydration is process-scoped and surface-agnostic now: at a remote DECODE_ENV the TUI hydrates from
-# the bucket exactly like headless does, so the REPL needs the same friendly failure. It precedes the
-# provider guard because at a remote env the key is EXPECTED to come from the bucket.
+# ADR-0021 §1,5: there is no Environment-Bucket guard any more, because there is no bucket. A remote
+# DECODE_ENV reads the SAME chain as local (process env > .env > defaults) and names things after
+# itself, so the REPL starts identically at every environment and never imports kitaru to do it.
 
 
-def test_repl_unloadable_bucket_exits_nonzero_with_a_friendly_line(mocker):
-    mocker.patch.object(cli_mod.settings, "decode_env", "staging")
-    mocker.patch.object(cli_mod, "bucket_load_error", lambda: "decode-staging: secret not found")
+@pytest.mark.parametrize("env", ["local", "dev", "staging", "prod"])
+def test_the_repl_starts_the_same_at_every_environment(mocker, env):
+    """No environment has a config source the others lack, so none has a startup failure they lack."""
+    mocker.patch.object(cli_mod.settings, "decode_env", env)
+    mocker.patch.object(cli_mod.settings, "gemini_api_key", SecretStr("k"))
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
 
     result = CliRunner().invoke(cli, [])
 
-    assert result.exit_code != 0
-    assert "DECODE_ENV=staging" in result.output
-    assert "decode-staging" in result.output  # the derived bucket name
-    assert "make sync-secrets ENV=staging" in result.output  # ...and the fix
-    assert "Traceback" not in result.output
-    run_app.assert_not_awaited()  # the REPL never starts
-
-
-def test_repl_bucket_guard_precedes_the_provider_key_guard(mocker):
-    """The bucket was supposed to supply the key, so ``make sync-secrets`` is the fix, not the key."""
-    mocker.patch.object(cli_mod.settings, "decode_env", "prod")
-    mocker.patch.object(cli_mod.settings, "gemini_api_key", SecretStr(""))
-    mocker.patch.object(cli_mod, "bucket_load_error", lambda: "decode-prod: secret not found")
-    mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
-
-    result = CliRunner().invoke(cli, [])
-
-    assert result.exit_code != 0
-    assert "make sync-secrets ENV=prod" in result.output
-    assert "set GEMINI_API_KEY in your environment" not in result.output
-
-
-def test_repl_at_local_never_consults_the_bucket(mocker):
-    """``DECODE_ENV=local`` (the default): the guard is a pure no-op — the REPL starts as before."""
-    calls = {"n": 0}
-
-    def _error():
-        calls["n"] += 1
-        return "should never be read at local"
-
-    mocker.patch.object(cli_mod, "bucket_load_error", _error)
-    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
-
-    result = CliRunner().invoke(cli, [])
-
-    assert result.exit_code == 0
-    assert calls["n"] == 0  # never even asked
+    assert result.exit_code == 0, result.output
     run_app.assert_awaited_once()
+
+
+def test_importing_the_cli_at_a_remote_env_imports_no_kitaru_module(tmp_path):
+    """Kitaru is an evals/recording layer, never a config store — startup may not reach it (§1,5).
+
+    ``DECODE_ENV=prod`` is the case that used to import the whole ZenML stack at settings-import
+    time to read the Environment Bucket. With the bucket gone, recording (or a Worker task) is the
+    only thing that can pull kitaru in, so a remote environment must now be as kitaru-free as
+    ``local``. A fresh interpreter from a ``tmp_path`` cwd (no repo ``.env``), because what the rest
+    of the suite already imported would otherwise decide this test.
+    """
+    code = (
+        "import sys\n"
+        "import decode.cli\n"
+        "from decode.config.settings import settings\n"
+        "assert settings.decode_env == 'prod', settings.decode_env\n"
+        "leaked = sorted(m for m in sys.modules if m.split('.')[0] == 'kitaru')\n"
+        "assert not leaked, leaked\n"
+        "print('NO_KITARU_OK')\n"
+    )
+    child_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"KITARU_AGENT_ID", "KITARU_API_URL", "KITARU_TASK_ID"}
+    } | {"DECODE_ENV": "prod"}
+
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=tmp_path, env=child_env
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "NO_KITARU_OK" in result.stdout
 
 
 # task 004 carryover: the no-key startup guard (friendly line, no traceback)
@@ -847,9 +864,22 @@ def test_modal_credentials_present_true_with_modal_toml(monkeypatch, mocker, tmp
     assert cli_mod._modal_credentials_present() is True
 
 
+def test_modal_credentials_present_inside_a_modal_container(monkeypatch, mocker, tmp_path):
+    """task 142 / ADR-0020 §3: a Modal container has neither the token pair nor ~/.modal.toml — it
+    carries an ambient identity, marked by modal's own MODAL_IS_REMOTE. Without this branch a
+    nested-sandbox run on the Modal Headless App is rejected by its own guard."""
+    monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+    monkeypatch.setenv("MODAL_IS_REMOTE", "1")
+    mocker.patch("decode.cli.Path.home", return_value=tmp_path)
+
+    assert cli_mod._modal_credentials_present() is True
+
+
 def test_modal_credentials_absent_with_no_env_and_no_toml(monkeypatch, mocker, tmp_path):
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+    monkeypatch.delenv("MODAL_IS_REMOTE", raising=False)
     mocker.patch("decode.cli.Path.home", return_value=tmp_path)  # empty tmp dir → no ~/.modal.toml
 
     assert cli_mod._modal_credentials_present() is False

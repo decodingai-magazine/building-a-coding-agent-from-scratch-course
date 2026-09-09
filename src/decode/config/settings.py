@@ -3,32 +3,25 @@
 Import the module-level ``settings`` singleton where you need configuration; never read
 ``os.environ`` deep in call sites. Every variable here is mirrored in ``.env.example``.
 
-``Settings`` is the SINGLE config surface with TWO injection mechanisms, selected by ``DECODE_ENV``
-(ADR-0015): ``.env`` at ``local`` (the default — kitaru never imported), the derived **Environment
-Bucket** ``decode-<env>`` at ``dev`` / ``staging`` / ``prod``, where ``.env`` is dropped from the
-chain entirely so a key missing from the bucket fails loudly instead of being backfilled.
+``Settings`` is the SINGLE config surface, with ONE source chain at every environment (ADR-0021):
+``init > process env > .env > defaults``. ``DECODE_ENV`` names the environment and nothing else —
+it suffixes the Modal Secret / app names, the nested sandbox app and the Opik project, and never
+changes where a value is read from. The store that feeds the chain is the platform's own: a
+developer's ``.env`` on a laptop, the ``decode-<app>-<env>`` Modal Secret in a container.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
-from dotenv import dotenv_values
 from pydantic import Field, SecretStr, model_validator
-from pydantic.fields import FieldInfo
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
 DecodeEnv = Literal["local", "dev", "staging", "prod"]
-
-# The environments whose config comes from an Environment Bucket; ``local`` reads ``.env`` instead.
-_REMOTE_ENVS = frozenset({"dev", "staging", "prod"})
-
-_DECODE_ENV_VAR = "DECODE_ENV"
 
 # Literals that mean "I copied .env.example and have not filled this in yet", matched
 # case-insensitively after stripping. A secret holding one of these reads as UNSET, so the startup
@@ -83,121 +76,16 @@ def context_window_for(model_id: str) -> int | None:
     return None
 
 
-# The last Environment-Bucket load failure, or None. The ``settings`` singleton is built at IMPORT
-# time, so the source must never raise: a missing bucket (or a downed Kitaru local server) is
-# recorded here and rendered by the cli startup guards as ONE friendly line (ADR-0015 §5).
-_bucket_load_error: str | None = None
-
-
-def bucket_load_error() -> str | None:
-    """Why the Environment Bucket could not be loaded on the last remote build, else None (ADR-0015 §5)."""
-    return _bucket_load_error
-
-
-def environment_bucket_name(decode_env: str) -> str:
-    """The DERIVED Environment Bucket name — no override knob, so it cannot drift (ADR-0015 §3)."""
-    return f"decode-{decode_env}"
-
-
-def _decode_env_from_dotenv(dotenv_settings: PydanticBaseSettingsSource) -> str | None:
-    """Read ``DECODE_ENV`` straight out of the dotenv file(s) the dotenv source would read, else None.
-
-    Honours the source's own ``env_file`` (``None`` for ``Settings(_env_file=None)``, a custom path
-    for a test build), so an out-of-band read can never disagree with the file the chain would use.
-    """
-    env_file = getattr(dotenv_settings, "env_file", None)
-    if env_file is None:
-        return None
-    paths = env_file if isinstance(env_file, (list, tuple)) else [env_file]
-    value: str | None = None
-    for path in paths:
-        if not Path(path).is_file():
-            continue
-        found = dotenv_values(path).get(_DECODE_ENV_VAR)
-        if found:
-            value = found  # later files win, matching the dotenv source's own ordering
-    return value
-
-
-def _resolve_decode_env(dotenv_settings: PydanticBaseSettingsSource) -> str:
-    """Resolve the ``DECODE_ENV`` gate OUT-OF-BAND — the one deliberate exception to the chain (ADR-0015 §1).
-
-    ``DECODE_ENV`` is the *bootstrap* variable: it decides whether the Environment Bucket is read at
-    all, so it can never come **from** the bucket — and the bucket source sits above dotenv in
-    precedence, so it cannot see a ``.env``-only value through the normal chain either. It is read
-    here instead: parse the dotenv file, then overlay ``os.environ`` — **process env wins**,
-    consistent with every other setting. The resolved value is fed back into the field by the source,
-    so ``settings.decode_env`` can never diverge from the gate that was actually applied.
-    """
-    return os.environ.get(_DECODE_ENV_VAR) or _decode_env_from_dotenv(dotenv_settings) or "local"
-
-
-class EnvironmentBucketSettingsSource(PydanticBaseSettingsSource):
-    """A pydantic-settings source that hydrates the whole surface from the Environment Bucket (ADR-0015 §2).
-
-    Reads ``.env.example``-shaped key/value pairs from the derived Kitaru secret ``decode-<env>`` and
-    feeds the ones mapping to a known field into ``Settings`` — the whole config surface, no
-    per-variable code. Three invariants keep it safe in every ``Settings`` build:
-
-    * **Inert at ``local``.** It hydrates nothing — and imports no kitaru — unless the resolved gate
-      is a remote environment (the restated REPL-safety invariant, ADR-0015 §5).
-    * **``Settings`` object only — never ``os.environ``.** Nothing is written to the process env, so
-      a model-chosen ``bash`` never inherits a bucket-sourced secret.
-    * **Never raises.** The singleton is built at import; a missing bucket / a downed Kitaru local
-      server is captured in :func:`bucket_load_error` and surfaced by the cli as one friendly line.
-    """
-
-    def __init__(self, settings_cls: type[BaseSettings], decode_env: str) -> None:
-        super().__init__(settings_cls)
-        self.decode_env = decode_env
-
-    def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
-        """Unused: :meth:`__call__` is fully overridden, but the abstract base requires a body."""
-        raise NotImplementedError(
-            "EnvironmentBucketSettingsSource overrides __call__; get_field_value is never invoked."
-        )
-
-    def __call__(self) -> dict[str, Any]:
-        global _bucket_load_error
-
-        # The resolved gate always rides back onto the field, so it can never diverge from the gate
-        # that was actually applied — including on the failure path below.
-        if self.decode_env not in _REMOTE_ENVS:
-            # Inert path: every ``local`` build lands here, so kitaru is never imported.
-            return {"decode_env": self.decode_env}
-
-        bucket = environment_bucket_name(self.decode_env)
-        try:
-            from kitaru import get_secret  # lazy: a remote env is the only importer of kitaru here
-
-            values = get_secret(bucket).values
-        except Exception as exc:  # broad on purpose: an import-time crash is never acceptable here
-            _bucket_load_error = f"{bucket}: {exc}"
-            logger.debug("environment bucket %r could not be loaded: %s", bucket, exc)
-            return {"decode_env": self.decode_env}
-
-        _bucket_load_error = None
-        known = self.settings_cls.model_fields
-        hydrated = {key.lower(): value for key, value in values.items() if key.lower() in known}
-        logger.debug(
-            "hydrated %d field(s) from environment bucket %r: %s",
-            len(hydrated),
-            bucket,
-            sorted(hydrated),  # field NAMES only — never the values (they may be secrets)
-        )
-        hydrated["decode_env"] = self.decode_env
-        return hydrated
-
-
 class Settings(BaseSettings):
     """Runtime configuration. Defaults are safe for tests, not production."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # --- Environments: the injection-mechanism selector (ADR-0015 §1) ---
-    # ``local`` (the default) reads ``.env``; every other value reads the derived Environment Bucket
-    # ``decode-<env>`` and DROPS ``.env`` from the chain. It selects the mechanism, nothing else (no
-    # session-dir / log-path / MEMORY.md effect). A new environment is a code change, deliberately.
+    # --- Environments: the NAMING suffix, and nothing else (ADR-0021 §1) ---
+    # Read from the same chain as every other field (process env > ``.env`` > default). It suffixes
+    # names — the nested sandbox app ``decode-sandbox-<env>``, the Opik project ``decode-<env>``, and
+    # (deploy-side) the Modal app + Secret — and changes NOTHING about where config is read from, nor
+    # session dirs, log paths or ``MEMORY.md``. A new environment is a code change, deliberately.
     decode_env: DecodeEnv = "local"
 
     # --- Inference: one of three providers behind LLM_PROVIDER (ADR-0005). ---
@@ -322,17 +210,26 @@ class Settings(BaseSettings):
     # Per-request best-effort wall-clock timeout (seconds); ``initialize`` is bounded too.
     lsp_request_timeout_s: float = Field(10.0, gt=0)
 
-    # --- Kitaru durable runtime (ADR-0008) ---
+    # --- Headless runtime (ADR-0019 §1) ---
     # ``runtime_enabled`` master-gates the WHOLE headless feature: ``False`` → ``decode run`` exits
-    # with a friendly line and never builds a Durable Flow.
+    # with a friendly line and never builds an agent. The durable-flow knobs
+    # (``RUNTIME_CHECKPOINT_STRATEGY`` / ``RUNTIME_WAIT_TIMEOUT_S``) died with the flow — a clean
+    # break, no shim: a stale entry in a developer's ``.env`` is silently ignored.
     runtime_enabled: bool = True
-    # Checkpoint granularity. ``"calls"`` (default) makes every run replay-ready — each model/tool
-    # call is its own Checkpoint (loop-safe on gemini via the keep-alive-free flow-mode HTTP client,
-    # ADR-0010 §3). ``"turn"`` is a cheaper opt-out but replayable only whole. HITL always forces
-    # ``"calls"`` (``flow.py``).
-    runtime_checkpoint_strategy: Literal["turn", "calls"] = "calls"
-    # The durable Wait (HITL) poll timeout (seconds); matches Kitaru's local 600s default.
-    runtime_wait_timeout_s: float = Field(600.0, gt=0)
+    # The default request ceiling for a headless run — the number of model requests after which
+    # ``decode run`` stops with one friendly line and a non-zero exit instead of looping on. ``None``
+    # (the default) is unbounded, byte-identical to the REPL; ``decode run --max-requests N``
+    # overrides it per run. A background run (a cron job, a webhook, a CI step) has nobody watching
+    # its token bill, which is what this ceiling is for.
+    runtime_max_requests: int | None = Field(None, gt=0)
+    # --- Recording Seam (ADR-0019 §3) ---
+    # The Kitaru agent (a UUID) recorded runs are filed under. Presence-based opt-in and decode's
+    # ONLY recording knob: set it (together with the adapter client's own ``KITARU_API_URL`` /
+    # ``KITARU_API_KEY`` **process** env) and a run is wrapped in ``kitaru_pydantic_ai.KitaruAgent``;
+    # empty → the bare agent, and no kitaru module is ever imported. Deliberately NOT paired with
+    # url/key settings of decode's own: the adapter client resolves those itself, so there is exactly
+    # one place to configure the workspace (a second one would drift).
+    kitaru_agent_id: str = ""
     # Secrets are NOT a runtime knob any more: the retired ``RUNTIME_SECRET_*`` family is deleted,
     # with no shim — config comes from ``DECODE_ENV`` (above), in the TUI and headless alike, and a
     # stale entry in a developer's ``.env`` is silently ignored (ADR-0015 §4; loud in .env.example).
@@ -405,15 +302,14 @@ class Settings(BaseSettings):
         """Default the Opik project to ``decode-<DECODE_ENV>``; an explicit value always wins (ADR-0015 §8).
 
         "Explicit" is decided by pydantic's ``model_fields_set``, **never** by comparing against the
-        declared default: a value supplied by ANY settings source (process env, ``.env``, the
-        Environment Bucket, ``init``) lands in ``model_fields_set``, while a default-applied one does
-        not. A sentinel/value comparison would misfire on the operator who deliberately sets
-        ``OPIK_PROJECT_NAME`` to the same literal the default derives to.
+        declared default: a value supplied by ANY settings source (process env, ``.env``, ``init``)
+        lands in ``model_fields_set``, while a default-applied one does not. A sentinel/value
+        comparison would misfire on the operator who deliberately sets ``OPIK_PROJECT_NAME`` to the
+        same literal the default derives to.
 
         ``object.__setattr__`` writes the derived value straight into ``__dict__``: it neither
         re-enters validation nor forges an "explicit" mark in ``model_fields_set``, so the field keeps
-        reading as derived. ``decode_env`` is resolved on this same model (the source feeds the gate
-        back onto the field), so it is safe to read here.
+        reading as derived.
         """
         if "opik_project_name" not in self.model_fields_set:
             object.__setattr__(self, "opik_project_name", f"decode-{self.decode_env}")
@@ -470,40 +366,6 @@ class Settings(BaseSettings):
             )
         object.__setattr__(self, "compaction_context_window_tokens", window)
         return self
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Pick the source chain from the ``DECODE_ENV`` gate — two mechanisms, one surface (ADR-0015 §2).
-
-        Precedence is left-to-right, and the gate is resolved out-of-band (see
-        :func:`_resolve_decode_env`) because it decides which chain is built:
-
-        * ``local`` (the default): ``init > process env > .env > defaults`` — today's behaviour,
-          kitaru never imported.
-        * ``dev`` / ``staging`` / ``prod``: ``init > process env > Environment Bucket > defaults``.
-          ``dotenv_settings`` is **absent from the returned tuple**, so ``.env`` is dropped from the
-          chain entirely and a key missing from the bucket fails loudly instead of being silently
-          backfilled from a developer's file. That is the whole point of having environments.
-
-        An invalid ``DECODE_ENV`` is not a remote env, so it takes the ``local`` chain and the closed
-        ``Literal`` rejects it with a clear validation error (no bucket read on a typo).
-        """
-        decode_env = _resolve_decode_env(dotenv_settings)
-        if decode_env not in _REMOTE_ENVS:
-            return (init_settings, env_settings, dotenv_settings, file_secret_settings)
-        return (
-            init_settings,
-            env_settings,
-            EnvironmentBucketSettingsSource(settings_cls, decode_env),
-            file_secret_settings,
-        )
 
 
 settings = Settings()

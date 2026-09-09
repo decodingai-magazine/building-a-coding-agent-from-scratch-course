@@ -143,8 +143,9 @@ def root_span(
 ) -> AbstractContextManager[Any]:
     """Open a root span named ``name`` when tracing is active, else a ``nullcontext`` (ADR-0014 §4-5).
 
-    ``thread_id`` rides as a span attribute Opik maps to a conversation Thread (session id for the
-    REPL, Kitaru exec_id for a run). ``input`` is set so Opik buckets it into the **trace's** INPUT
+    ``thread_id`` rides as a span attribute Opik maps to a conversation Thread — the decode session
+    id: the REPL's, or the fresh per-run id ``decode run`` mints (ADR-0019 §1). ``input`` is set so
+    Opik buckets it into the **trace's** INPUT
     (a prefix match on the attribute key) — without it the Thread view renders blank rows. The
     paired :func:`record_output` sets the ``output`` half. Call sites open this unconditionally.
     """

@@ -1,4 +1,4 @@
-# Build context for docker/flow.Dockerfile — keep it to what the image installs.
+# Image build-context excludes — keep a build to what it actually installs.
 .venv/
 .git/
 .claude/

@@ -39,13 +39,10 @@ _LSP_ENV_VARS = (
     "LSP_REQUEST_TIMEOUT_S",
 )
 
-# Kitaru durable runtime vars (ADR-0008). The secret knobs are gone — config comes from DECODE_ENV
-# (ADR-0015 §4); the gate + the Environment Bucket have their own file (test_env_bucket.py).
-_RUNTIME_ENV_VARS = (
-    "RUNTIME_ENABLED",
-    "RUNTIME_CHECKPOINT_STRATEGY",
-    "RUNTIME_WAIT_TIMEOUT_S",
-)
+# Headless runtime vars (ADR-0019 §1). Only the master gate survives: the durable-flow knobs
+# (RUNTIME_CHECKPOINT_STRATEGY / RUNTIME_WAIT_TIMEOUT_S) died with the flow, and the secret knobs
+# with ADR-0015 §4 / ADR-0021 — one Settings chain at every DECODE_ENV.
+_RUNTIME_ENV_VARS = ("RUNTIME_ENABLED",)
 
 # Sandboxing vars (ADR-0011). The Credential-Proxy knobs are gone with the proxy (ADR-0016 §1) —
 # a clean break: a retired key left in a ``.env`` is simply ignored (``extra="ignore"``).
@@ -394,10 +391,6 @@ def test_runtime_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     s = Settings(_env_file=None)
     assert s.runtime_enabled is True
-    # Default is "calls": every run is replay-ready (per-call checkpoints), loop-safe on gemini, the
-    # wired provider (ADR-0010 §3). "turn" is the cheaper coarse opt-out (asserted in the literal test).
-    assert s.runtime_checkpoint_strategy == "calls"
-    assert s.runtime_wait_timeout_s == 600.0
 
 
 def test_stale_secret_store_env_vars_are_silently_ignored(monkeypatch):
@@ -405,8 +398,7 @@ def test_stale_secret_store_env_vars_are_silently_ignored(monkeypatch):
 
     An env / ``.env`` still carrying one of the retired knobs must change nothing and print nothing —
     ``extra="ignore"`` swallows it, and the fields are gone, so no reader can branch on them. Config
-    now comes from ``DECODE_ENV``: ``.env`` at ``local``, the Environment Bucket at a remote env (the
-    stale names are spelled out only in ``.env.example``, which is where the loud notice lives).
+    comes from one Settings chain at every ``DECODE_ENV`` (ADR-0021).
     """
     for stale in ("_STORE_MODEL_KEY", "_STORE_CONFIG", "_NAME"):
         monkeypatch.setenv(f"RUNTIME_SECRET{stale}", "true")
@@ -419,49 +411,46 @@ def test_stale_secret_store_env_vars_are_silently_ignored(monkeypatch):
 
 def test_reads_runtime_vars_from_process_env(monkeypatch):
     monkeypatch.setenv("RUNTIME_ENABLED", "false")
-    monkeypatch.setenv("RUNTIME_CHECKPOINT_STRATEGY", "calls")
-    monkeypatch.setenv("RUNTIME_WAIT_TIMEOUT_S", "120.0")
     s = Settings(_env_file=None)
     assert s.runtime_enabled is False
-    assert s.runtime_checkpoint_strategy == "calls"
-    assert s.runtime_wait_timeout_s == 120.0
 
 
 def test_loads_runtime_vars_from_a_dotenv_file(tmp_path, monkeypatch):
     for var in _RUNTIME_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     env = tmp_path / ".env"
-    env.write_text(
-        "RUNTIME_ENABLED=false\nRUNTIME_CHECKPOINT_STRATEGY=calls\nRUNTIME_WAIT_TIMEOUT_S=300.0\n"
-    )
+    env.write_text("RUNTIME_ENABLED=false\n")
     s = Settings(_env_file=str(env))
     assert s.runtime_enabled is False
-    assert s.runtime_checkpoint_strategy == "calls"
-    assert s.runtime_wait_timeout_s == 300.0
 
 
-@pytest.mark.parametrize("strategy", ["turn", "calls"])
-def test_runtime_checkpoint_strategy_accepts_each_valid_literal(monkeypatch, strategy):
-    monkeypatch.setenv("RUNTIME_CHECKPOINT_STRATEGY", strategy)
-    s = Settings(_env_file=None)
-    assert s.runtime_checkpoint_strategy == strategy
+def test_stale_durable_flow_env_vars_are_silently_ignored(monkeypatch):
+    """ADR-0019 §1 (clean break): the Durable Flow's knobs are deleted, not shimmed.
 
-
-def test_runtime_checkpoint_strategy_rejects_unknown_value(monkeypatch):
-    """A value outside {"turn", "calls"} fails fast at load, not inside the flow (Literal)."""
-    for var in _RUNTIME_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
+    An env / ``.env`` still carrying ``RUNTIME_CHECKPOINT_STRATEGY`` or ``RUNTIME_WAIT_TIMEOUT_S``
+    must change nothing and print nothing — ``extra="ignore"`` swallows it and the fields are gone,
+    so no reader can branch on them. A previously *invalid* value (rejected at load by the old
+    ``Literal`` / ``gt=0`` validators) must now load cleanly for the same reason.
+    """
     monkeypatch.setenv("RUNTIME_CHECKPOINT_STRATEGY", "hourly")
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
+    monkeypatch.setenv("RUNTIME_WAIT_TIMEOUT_S", "-1.0")
+
+    s = Settings(_env_file=None)
+
+    surviving = {"runtime_enabled", "runtime_max_requests"}
+    retired = [f for f in Settings.model_fields if f.startswith("runtime_") and f not in surviving]
+    assert retired == []
+    assert s.runtime_enabled is True  # the surviving gate is untouched by the stale entries
 
 
-@pytest.mark.parametrize("bad", ["0", "-1.0"])
-def test_rejects_a_non_positive_runtime_wait_timeout(monkeypatch, bad):
-    """A wait timeout <= 0 fails fast at load, not deep in the durable wait (Field(gt=0))."""
-    for var in _RUNTIME_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("RUNTIME_WAIT_TIMEOUT_S", bad)
+def test_runtime_max_requests_is_unbounded_by_default_and_a_positive_count_when_set(monkeypatch):
+    """The headless request ceiling: unset = unbounded (REPL-identical); ``0`` is not a ceiling."""
+    assert Settings(_env_file=None).runtime_max_requests is None
+
+    monkeypatch.setenv("RUNTIME_MAX_REQUESTS", "200")
+    assert Settings(_env_file=None).runtime_max_requests == 200
+
+    monkeypatch.setenv("RUNTIME_MAX_REQUESTS", "0")
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
@@ -601,8 +590,7 @@ def test_opik_project_name_is_derived_from_decode_env_when_unset(monkeypatch):
     """A trace must name the environment that produced it: the default is ``decode-<DECODE_ENV>``.
 
     At ``local`` (the default gate) that is ``decode-local`` — the suffix is applied ALWAYS, there is
-    no bare ``decode`` project any more (ADR-0015 §8). The remote envs are covered in
-    ``test_env_bucket.py`` (they need a stubbed bucket).
+    no bare ``decode`` project any more (ADR-0015 §8, kept by ADR-0021).
     """
     for var in _OPIK_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -719,11 +707,10 @@ def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):
 
 # .env.example drift is covered GLOBALLY (every field, both directions, no allowlist) by
 # tests/unit/decode/config/test_env_example_drift.py — it subsumes the per-section
-# ``test_env_example_lists_every_*_var`` guards that used to live here (ADR-0015 §9).
+# ``test_env_example_lists_every_*_var`` guards that used to live here (ADR-0021).
 #
-# The DECODE_ENV gate + the Environment Bucket settings source (ADR-0015) have their own file:
-# tests/unit/decode/config/test_env_bucket.py — including the restated "at DECODE_ENV=local, decode
-# never imports kitaru" invariant (a fresh-subprocess import check).
+# The "decode never imports kitaru unless recording is configured" invariant (ADR-0021 §5) is a
+# fresh-subprocess import check in tests/unit/decode/test_cli.py.
 
 
 # --- Compaction context window: derived from the active model (task: auto-size the window) ---

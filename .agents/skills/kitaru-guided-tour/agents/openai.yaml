@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kitaru Guided Tour"
+  short_description: "Experience Kitaru from review through replay"
+  default_prompt: "Use $kitaru-guided-tour to show me Kitaru from guided review through one safe experiment."

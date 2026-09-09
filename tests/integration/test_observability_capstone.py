@@ -204,7 +204,7 @@ def _read_then_report(messages: list[ModelMessage], info: AgentInfo) -> ModelRes
 def _fanout_then_children_glob(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
     """Parent fans out ONE ``agent(prompts=[…])`` call spawning two children; each runs a real ``glob``.
 
-    The child leg produces a child ``chat`` (model) span AND a child ``running tool`` (glob) span, both
+    The child leg produces a child ``chat`` (model) span AND a child ``execute_tool`` (glob) span, both
     of which must nest inside the parent turn's ``chat_turn`` trace (ADR-0013 §9). The parent context is
     told apart from a child by whether the ``agent`` tool is visible (only the ``build`` persona has it).
     """
@@ -317,7 +317,8 @@ def _model_spans(spans: list[dict]) -> list[dict]:
 
 
 def _tool_spans(spans: list[dict]) -> list[dict]:
-    return [s for s in spans if s["name"] == "running tool"]
+    """The tool-call spans — ``execute_tool <name>`` under pydantic-ai 2.x instrumentation."""
+    return [s for s in spans if s["name"].startswith("execute_tool")]
 
 
 def _by_span_id(spans: list[dict]) -> dict[int, dict]:
@@ -325,19 +326,20 @@ def _by_span_id(spans: list[dict]) -> dict[int, dict]:
 
 
 def _descends_through_tool(span: dict, by_id: dict[int, dict]) -> bool:
-    """True when ``span``'s ANCESTOR chain passes through a ``running tool`` span.
+    """True when ``span``'s ANCESTOR chain passes through an ``execute_tool`` span.
 
-    A subagent child's spans (its ``agent run`` / ``chat`` / ``running tool`` legs) all sit *under* the
-    parent's ``running tool`` span for the ``agent`` tool call, so they descend through a tool; the
-    parent turn's own ``chat`` / ``running tool`` spans sit directly under the parent ``agent run`` and
-    do not. This is how a child LLM/tool span is told apart from a parent one, structurally.
+    A subagent child's spans (its ``invoke_agent`` / ``chat`` / ``execute_tool`` legs) all sit *under*
+    the parent's ``execute_tool agent`` span for the ``agent`` tool call, so they descend through a
+    tool; the parent turn's own ``chat`` / ``execute_tool`` spans sit directly under the parent
+    ``invoke_agent`` and do not. This is how a child LLM/tool span is told apart from a parent one,
+    structurally.
     """
     parent = span["parent"]
     while parent is not None:
         node = by_id.get(parent["span_id"])
         if node is None:
             return False
-        if node["name"] == "running tool":
+        if node["name"].startswith("execute_tool"):
             return True
         parent = node["parent"]
     return False
@@ -383,12 +385,12 @@ async def test_subagent_child_spans_nest_in_the_parent_turn_trace_with_child_tok
     trace_id = root["context"]["trace_id"]
 
     by_id = _by_span_id(spans)
-    # The child spans: the ``chat`` (model) and ``running tool`` (glob) legs that descend through the
+    # The child spans: the ``chat`` (model) and ``execute_tool`` (glob) legs that descend through the
     # parent's ``agent`` tool span. Both kinds must be present — this is "child model/tool spans".
     child_model_spans = [s for s in _model_spans(spans) if _descends_through_tool(s, by_id)]
     child_tool_spans = [s for s in _tool_spans(spans) if _descends_through_tool(s, by_id)]
     assert child_model_spans, [s["name"] for s in spans]
-    assert child_tool_spans, "each child's real glob must produce a nested 'running tool' span"
+    assert child_tool_spans, "each child's real glob must produce a nested 'execute_tool' span"
 
     # NESTING CLOSURE: every child span lives in the parent turn's ONE trace and is not a root itself.
     for span in child_model_spans + child_tool_spans:
@@ -417,7 +419,7 @@ async def test_full_turn_is_one_chat_turn_tree_with_nested_spans_and_usage(
     The milestone-level restatement (one test, not the seven per-AC ones in 092): a real ``read`` turn
     through ``build_agent`` + ``Runner`` + ``AgentTurnHandler`` + the gate + the REAL ``SessionLog`` +
     ``render_event`` on every event. Exactly one ``chat_turn`` root carries the session id as its Opik
-    ``thread_id``; the pydantic-ai ``chat`` + ``running tool`` spans nest under it; a leaf model span
+    ``thread_id``; the pydantic-ai ``chat`` + ``execute_tool`` spans nest under it; a leaf model span
     carries ``gen_ai.usage.input_tokens`` > 0. The session log's id IS the thread id (production wiring).
     """
     working_dir = tmp_path / "ws"
@@ -453,7 +455,7 @@ async def test_full_turn_is_one_chat_turn_tree_with_nested_spans_and_usage(
     model_spans = _model_spans(spans)
     tool_spans = _tool_spans(spans)
     assert model_spans, [s["name"] for s in spans]
-    assert tool_spans, "the read tool must produce a 'running tool' span"
+    assert tool_spans, "the read tool must produce an 'execute_tool' span"
     for span in model_spans + tool_spans:
         assert span["context"]["trace_id"] == trace_id
         assert span["parent"] is not None
@@ -577,6 +579,21 @@ async def test_untraced_turn_is_a_noop_zero_spans_and_byte_identical_events(capf
 # 5. Live Opik export smoke — ONE real Gemini turn + real Opik export; SKIPPED without both keys.
 
 
+async def _close_live_gemini_client(agent: Agent) -> None:
+    """Close the REAL provider HTTP client this test opened, then finalize stragglers.
+
+    ``build_agent`` leaves the provider's keep-alive connection open (``flow_mode`` and its
+    keep-alive-free client died with the Durable Flow — ADR-0019 §1), so a live turn parks a socket
+    that pytest's unraisable hook reports at SESSION teardown — turning a run in which every test
+    passed red under ``filterwarnings=["error"]``. Entering and exiting the agent runs pydantic-ai
+    2.22's own provider lifecycle, whose ``__aexit__`` ``aclose()``s the client it created; whoever
+    opens a live client closes it.
+    """
+    async with agent:
+        pass
+    gc.collect()
+
+
 @pytest.mark.filterwarnings("ignore::ResourceWarning")
 @pytest.mark.skipif(
     not (_LIVE_OPIK_KEY and _LIVE_GEMINI_KEY),
@@ -599,8 +616,8 @@ async def test_live_opik_export_smoke(monkeypatch, caplog, tmp_path):
       priced Gemini models** (tokens-only is acceptable for open models — ADR-0014 §8). An in-memory
       ``TestExporter`` is tapped onto the same provider purely to read those attributes locally.
 
-    Kept to ONE turn for cost hygiene. ``build_agent(flow_mode=True)`` hands Gemini a keep-alive-free
-    HTTP client so no pooled socket lingers under ``filterwarnings=["error"]``. The autouse
+    Kept to ONE turn for cost hygiene (``flow_mode`` and its keep-alive-free client died with the
+    Durable Flow's per-call event loops — ADR-0019 §1). The autouse
     ``_isolate_tracing_state`` (plus a best-effort ``reset_tracing`` here) unwinds the real activation so
     the global config never leaks into a later test.
     """
@@ -620,7 +637,7 @@ async def test_live_opik_export_smoke(monkeypatch, caplog, tmp_path):
 
     sink = _RecordingSink()
     resolvers = _RecordingResolvers()
-    agent = build_agent(flow_mode=True)  # real Gemini, keep-alive-free HTTP client
+    agent = build_agent()  # real Gemini
     handler = AgentTurnHandler(agent, deps=_deps(sink, resolvers, tmp_path), session_id=_SESSION_ID)
     runner = Runner(handler, on_event=sink)
 
@@ -650,4 +667,4 @@ async def test_live_opik_export_smoke(monkeypatch, caplog, tmp_path):
 
     logging.getLogger(__name__).info("live Opik smoke: force_flush()=%s (not asserted)", flushed)
     reset_tracing()  # best-effort: the autouse fixture also unwinds the real activation
-    gc.collect()  # finalize any straggler within this test's scope (belt-and-braces with keep-alive-off)
+    await _close_live_gemini_client(agent)

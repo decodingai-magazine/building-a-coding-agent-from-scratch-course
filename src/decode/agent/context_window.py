@@ -19,9 +19,8 @@ per process per ``(provider, model id)`` — failures included, so an offline ru
 not one per turn.
 
 Deliberately SYNCHRONOUS. Callers are startup paths (the cli notice, deps construction) that are
-not in an event loop, and one of them runs under Kitaru's per-call loops where a stray async client
-is exactly the ``Event loop is closed`` hazard :func:`decode.agent.factory._flow_mode_http_client`
-exists to dodge. One blocking call bounded by a short timeout is the simpler correct thing.
+not necessarily in an event loop, and a stray async client on such a path is an ``Event loop is
+closed`` hazard. One blocking call bounded by a short timeout is the simpler correct thing.
 """
 
 from __future__ import annotations

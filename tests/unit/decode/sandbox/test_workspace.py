@@ -20,6 +20,7 @@ from decode.config.settings import settings
 from decode.sandbox.workspace import (
     extract_tar,
     git_config_pairs,
+    is_populated,
     normalize_repo,
     prepare_workspace,
     prepare_workspace_or_empty,
@@ -570,3 +571,37 @@ def test_prepare_workspace_clones_a_browser_url(tmp_path):
     workspace = prepare_workspace(home, repo=f"file://{source}/tree/main")
 
     assert (workspace / "README.md").read_text(encoding="utf-8") == "hi\n"
+
+
+def test_prepare_workspace_clones_over_a_workspace_holding_only_decode_scaffolding(tmp_path):
+    """Regression: a Workspace left with ONLY ``.decode/skills`` (seeded by an earlier no-repo
+    session) must NOT count as populated — the repo still clones in, as the user asked."""
+    source = _make_git_repo(tmp_path / "source")
+    workspace = workspace_dir(tmp_path / "home")
+    seeded = workspace / ".decode" / "skills" / "demo" / "SKILL.md"
+    seeded.parent.mkdir(parents=True)
+    seeded.write_text("stale seed", encoding="utf-8")
+
+    result = prepare_workspace(tmp_path / "home", repo=str(source))
+
+    assert result == workspace
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "hello\n"
+    assert (workspace / ".git").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("entries", "expected"),
+    [
+        ([], False),
+        ([".decode/skills/x/SKILL.md"], False),
+        (["README.md"], True),
+        ([".decode/skills/x/SKILL.md", ".git/HEAD"], True),
+    ],
+)
+def test_is_populated_ignores_decode_scaffolding(tmp_path, entries, expected):
+    for rel in entries:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+
+    assert is_populated(tmp_path) is expected

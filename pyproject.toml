@@ -23,26 +23,22 @@ classifiers = [
 # Runtime deps only. Dev/test go in [dependency-groups]. Kept light on purpose —
 # the course adds the heavier integrations at the step that needs them.
 dependencies = [
-    "pydantic>=2.0,<2.13",  # capped <2.13 for kitaru→zenml (≤2.12.5); see ADR-0009
+    "pydantic>=2.0,<3",  # major bound only: the old <2.13 zenml cap died with kitaru 0.22 (ADR-0019)
     "pydantic-settings>=2.4",
     "python-dotenv>=1",  # explicit .env-file parsing for pydantic-settings (env_file=".env")
-    "click>=8.1,<8.3",  # capped <8.3 for kitaru→zenml (≤8.2.1); see ADR-0009
+    "click>=8.1,<9",  # major bound only: the old <8.3 zenml cap died with kitaru 0.22 (ADR-0019)
     "rich>=13",
     "prompt-toolkit>=3.0.53",
-    # 1.x line for kitaru[pydantic-ai]; downgraded from 2.0 (ADR-0009). NOTE (task 058): switched from
-    # the `pydantic-ai` meta package to `pydantic-ai-slim[google,openai]` and bumped the floor 1.89->1.95.
-    # The meta package's all-provider extras (mistral/temporal/...) cap the resolver at 1.94.0, which
-    # PRE-DATES `pydantic_ai.tools.AgentNativeTool` — a symbol kitaru 0.18's KitaruAgent adapter imports
-    # at load. slim + only decode's two providers reaches 1.95 (adapter imports; full suite green) and
-    # sheds ~40 transitive deps. Capped <1.96: 1.99+ re-breaks 51 agent-loop tests.
-    "pydantic-ai-slim[google,openai]>=1.95,<1.96",
+    # capped <2.23 by the kitaru-pydantic-ai adapter; lift when the adapter does (ADR-0019 §2)
+    "pydantic-ai-slim[google,openai]>=2.22,<2.23",
     "httpx>=0.28.1",
     "markdownify>=1.2.3",
     "pyyaml>=6.0.3",
     "modal>=1.5.3",
     "anyio>=4.14.2",
-    "kitaru[local,pydantic-ai,llm]>=0.18.0",  # durability runtime (ADR-0008); mcp extra dropped (conflicts pydantic-ai mcp)
     "logfire>=4.37.0",
+    "kitaru[cli,mcp,worker]>=0.22.2",
+    "kitaru-pydantic-ai>=0.1.0",  # recording adapter: KitaruAgent wraps build_agent() (ADR-0019 §2)
 ]
 
 [project.scripts]
@@ -62,22 +58,6 @@ dev = [
     # so `uv sync` / `make ci` build everywhere without a Rust toolchain. Lift once opik 2.0 Test
     # Suites are needed (ADR-0017 §6) and the build env has rustc >=1.86.
     "litellm<1.98",
-]
-remote = [
-    "gcsfs!=2025.5.0,!=2025.5.0.post1,<=2026.7.0",
-    "google-cloud-aiplatform>=1.162.0",
-    "google-cloud-artifact-registry>=1.11.3",
-    "google-cloud-build>=3.11.0",
-    "google-cloud-container>=2.21.0",
-    "google-cloud-logging>=3.8.0",
-    "google-cloud-pipeline-components>=2.19.0",
-    "google-cloud-run>=0.10.0",
-    "google-cloud-secret-manager>=2.30.0",
-    "google-cloud-storage>=2.9.0",
-    "grpcio!=1.68.*,!=1.69.*,!=1.70.*",
-    "kfp>=2.6.0",
-    "kubernetes>=30.1.0",
-    "urllib3<2.8.0",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -71,8 +71,8 @@ python -m evals online --filter 'start_time > "2026-07-01T00:00:00Z"'
 ```
 
 It prints one line per thread — `<thread_id>: conversation_coherence=<score>` — and a total. The
-`thread_id` is the session id (REPL) or Kitaru `exec_id` (`decode run`), Opik's conversation key
-(ADR-0014).
+`thread_id` is the decode session id — of a REPL session or of one `decode run` — Opik's conversation
+key (ADR-0014).
 
 **Keys.** The pass needs `OPIK_API_KEY` (to reach the threads) and the active provider's judge key
 (`GEMINI_API_KEY` by default). Without them it **skips friendly** — it prints which vars to set and

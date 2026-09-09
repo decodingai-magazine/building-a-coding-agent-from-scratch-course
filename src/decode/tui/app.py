@@ -50,6 +50,7 @@ from decode.memory.extract import extract_on_exit
 from decode.permissions import rules
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
+from decode.runtime.recording import wrap_for_recording
 from decode.services.lsp.service import shutdown_all as shutdown_lsp_servers
 from decode.skills.loader import load_skills
 from decode.skills.payload import format_skill_payload
@@ -759,8 +760,10 @@ async def run_app(
     override, applied AFTER ``select_agent`` so ``--mode`` wins over the agent default
     (ADR-0003 §7,9). ``repo`` / ``local`` drive the sandbox Workspace clone-at-launch
     (ADR-0012 §3); the CLI guards ``--repo`` in ``none`` mode, so the plain REPL stays
-    byte-identical. All control surfaces (slash commands, Shift+Tab, mid-turn decisions) ride
-    the ONE input surface (see module docstring).
+    byte-identical. The built agent goes through the Recording Seam before the handler drives it,
+    so a configured session is recorded on Kitaru under the decode session id (ADR-0019 §3). All
+    control surfaces (slash commands, Shift+Tab, mid-turn decisions) ride the ONE input surface
+    (see module docstring).
     """
     console = console or Console()
 
@@ -851,6 +854,17 @@ async def run_app(
     # The session log's header records Harness Home, not the Workspace ``deps.cwd`` (ADR-0012 §6).
     session_log = SessionLog.create(settings.sessions_dir, cwd=harness_home)
 
+    # The Recording Seam (ADR-0019 §3), the REPL's half: the SAME agent back unless recording is
+    # configured, in which case it comes back wrapped for Kitaru — so real interactive usage feeds
+    # the replay corpus, not just headless runs. ``session_name`` is the decode session id, the one
+    # id that already names the JSONL log, the Opik thread and the Hand-back Session Branch, so a
+    # whole multi-turn conversation groups under one recognisable Kitaru Session name. Wrapping
+    # once here (never per turn) is what makes that grouping true. The wrapper is a pydantic-ai
+    # ``WrapperAgent``, so the handler's ``iter()`` and the ``agent.model`` read below are
+    # unchanged — the harness loop knows nothing about recording. A degrade hands back ONE notice
+    # line, surfaced with the other startup lines near the banner below.
+    agent, recording_notice = await wrap_for_recording(agent, session_name=session_log.session_id)
+
     # The handler owns the cross-turn ``message_history`` the on-exit write-back summarizes; one
     # per session (§1). ``compaction_model=agent.model`` arms the two-tier compaction cascade
     # (ADR-0006 §3-7) on the ACTIVE provider's own built model, so the summarizer rides the Provider
@@ -871,11 +885,11 @@ async def run_app(
     # invisibly mid-first-turn. Every progress line prints BEFORE its (slow) await — a cold image
     # pull / large clone would otherwise hang silently. ``none`` skips the block — byte-identical.
     if settings.sandbox_mode != "none":
-        from decode.sandbox.workspace import prepare_workspace_or_empty
+        from decode.sandbox.workspace import is_populated, prepare_workspace_or_empty
 
         # (1) Clone host-side; the progress line prints only when a clone will actually happen (a
-        # non-empty Workspace is reused, never re-cloned). Failure degrades to an empty Workspace.
-        if repo is not None and not any(deps.cwd.iterdir()):
+        # populated Workspace is reused, never re-cloned). Failure degrades to an empty Workspace.
+        if repo is not None and not is_populated(deps.cwd):
             emit_line(f"Decode - cloning {repo} into the workspace…")
         _workspace, clone_error = prepare_workspace_or_empty(harness_home, repo=repo, local=local)
         if clone_error is not None:
@@ -900,6 +914,14 @@ async def run_app(
     # One tracing line near the banner when Opik is active (ADR-0014 §1,4); no-op when off.
     if opik_tracing_active:
         emit_line(f"Decode - Opik tracing on (project '{settings.opik_project_name}').")
+
+    # One recording line near the banner when the seam degraded (ADR-0019 §3): the user asked for a
+    # recorded session and is not getting one, so a line filed only under ``.decode/logs`` would be
+    # invisible. It rides the SAME event/emit surface as every other startup line — a raw stderr
+    # write would fight prompt_toolkit's redraw. Emitted ONCE per session, because the wrap that
+    # produced it happens once; every turn afterwards runs silently on the bare agent.
+    if recording_notice is not None:
+        emit_line(f"Decode - {recording_notice}")
 
     # The active model id per provider (same mapping as factory._build_model's branches).
     active_model = {

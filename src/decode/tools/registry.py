@@ -133,7 +133,7 @@ def register_tools(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:
     with a per-tool ``prepare=`` callback (:func:`_restrict_to_active_agent`) that hides the tool —
     returns ``None`` so it is absent from the model's schema **for that run** — when it is not in
     ``ctx.deps.active_agent.tools``. One Agent, no rebuild: switching the active agent changes the
-    visible tool set on the next turn (spike-confirmed against pydantic-ai 1.107). ``retries=None``
+    visible tool set on the next turn (spike-confirmed against pydantic-ai 2.22). ``retries=None``
     (every tool but ``agent``) leaves the Agent's default budget in place.
     """
     for spec in TOOL_SPECS:

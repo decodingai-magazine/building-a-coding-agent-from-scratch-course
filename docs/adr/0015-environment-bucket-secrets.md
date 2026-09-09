@@ -1,7 +1,13 @@
 # 0015. Environment-Bucket secrets — one config surface, two injection mechanisms
 
-Status: Accepted
+Status: Superseded in part by [ADR-0021](0021-decode-env-is-a-naming-suffix.md)
 Date: 2026-07-13
+Superseded: 2026-09-09 — **§§1-3, 5 and 7 are dead.** ADR-0021 deletes the Environment Bucket, the
+`DECODE_ENV`-gated source chain, and `scripts/sync_secrets.py` / `make sync-secrets`: `Settings` now reads ONE
+chain (`init > process env > .env > defaults`) at every environment, and `DECODE_ENV` became a naming suffix.
+Read §§1-3,5,7 below as history — the Context they answer is still worth reading, the mechanism is gone. **§4**
+(the deleted `RUNTIME_SECRET_*` knobs), **§8** (Opik projects follow the environment) and **§9** (the
+`.env.example` drift test) are untouched and still in force.
 Amended: 2026-07-13 — **§6 is moot**: it decided that Credential-Proxy rules resolve `{{ settings_field }}`
 templates from the hydrated `Settings` (amending ADR-0011 §6). [ADR-0016](0016-drop-credential-proxy.md)
 then deleted the Credential Proxy outright, so there are no rules left to resolve. Everything else here
@@ -48,7 +54,7 @@ from anywhere else.
 4. **Clean break.** `runtime_secret_name`, `runtime_secret_store_config`, `runtime_secret_store_model_key` (and
    the long-retired alias `RUNTIME_CREDENTIALS_PROXY_ENABLED`) are **deleted**, with no shim and no fail-fast
    guard — a deliberate choice; `extra="ignore"` swallows stale entries silently. The removal is made loud in
-   `.env.example`, this ADR, and `06_credentials.md` instead. Deleting the model-key knob also deletes
+   `.env.example`, this ADR, and `06_evals_replays.md` §9 instead. Deleting the model-key knob also deletes
    `resolve_provider_key_from_secret_store` / `SECRET_STORE_KEY` and the cli pre-flights built on them: the
    provider key now simply comes from `Settings`, hydrated by whichever mechanism is active.
    `build_agent(flow_mode=…)` **keeps** its `flow_mode` parameter — it still selects the keep-alive-free HTTP

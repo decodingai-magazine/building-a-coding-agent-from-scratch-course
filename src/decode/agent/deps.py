@@ -11,7 +11,6 @@ as ``ctx.deps``. Field meaning, one line each:
 * ``resolve_user_question`` — async hook for ``ask_user``; rides the SAME single decision channel (never a second input surface); the headless default raises so it fails cleanly.
 * ``task_store`` — the per-run TodoWrite list the ``todo_write`` tool rewrites in place.
 * ``active_agent`` — the selected persona (prompt + tool allowlist), reassigned by ``/agent`` and read fresh per turn.
-* ``headless_durable_waits`` — headless HITL flag (ADR-0008 §3): mutating tools raise ``ApprovalRequired`` → a durable wait.
 * ``context_window_tokens`` — the compaction window resolved for this run's actual model; ``None`` falls back to the configured one.
 * ``verbose`` — the live Verbose Mode flag (Ctrl+O): mutable, flipped by the TUI keybind mid-turn, read at emit time by the ``agent`` tool's child sink.
 
@@ -85,7 +84,6 @@ class AgentDeps:
     resolve_user_question: UserQuestionResolver
     task_store: list[Task] = field(default_factory=list)
     active_agent: AgentDef = field(default_factory=_default_active_agent)
-    headless_durable_waits: bool = False
     # The Ctrl+O Verbose Mode toggle; the TUI keybind mutates it live, the ``agent`` tool reads it.
     verbose: VerboseFlag = field(default_factory=VerboseFlag)
     # Harness-Home artifact root (ADR-0012 §6); ``None`` defaults to ``cwd`` in __post_init__.

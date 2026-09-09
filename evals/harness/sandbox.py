@@ -3,7 +3,8 @@
 A benchmark run needs a fresh, isolated Workspace per task and a hidden oracle that the agent can
 never see during its run. Both are exactly what decode's sandbox seam already solves, so this module
 adds no runner infra — it drives the existing ``SandboxExecutor`` through the ``decode.tools.bash``
-module seam, the same ``runtime/flow.py::_warm_headless_executor`` pattern the headless runtime uses.
+module seam, the same ``runtime/headless.py::_prepare_headless_tool_scope`` pattern the headless
+runtime uses.
 
 :func:`benchmark_sandbox` is a sync context manager (Opik task fns are sync) that, for one task run:
 
@@ -150,7 +151,7 @@ def _run_async[T](coro: Coroutine[Any, Any, T]) -> T:
     """Run one coroutine to completion on a fresh loop — safe here because the seam is fresh-exec.
 
     The benchmark task fn is sync (Opik requires it) and holds no loop-bound handle across calls (each
-    sandbox command spawns a fresh subprocess), so a per-call :func:`asyncio.run` is correct and
-    avoids the dedicated-loop dance ``runtime/flow.py`` needs around Kitaru's ``run_sync``.
+    sandbox command spawns a fresh subprocess), so a per-call :func:`asyncio.run` is correct — the
+    same one-``asyncio.run``-per-run shape ``runtime/headless.py::run_headless_task`` has.
     """
     return asyncio.run(coro)

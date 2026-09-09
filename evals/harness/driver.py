@@ -8,7 +8,7 @@ pydantic-ai message history: tool calls from ``ToolCallPart``s, usage summed fro
 observability pipeline and lie under export lag).
 
 Configurable per probe: the gate mode + optional rules, custom permission / question resolvers
-(default = headless auto-deny, mirroring ``runtime/flow.py``), a pre-filled ``message_history`` (the
+(default = headless auto-deny, mirroring ``runtime/headless.py``), a pre-filled ``message_history`` (the
 compaction probe needs it), and ``max_requests`` — a hard cap on model requests so a runaway run
 stops gracefully instead of burning budget. :func:`run_agent_once_sync` wraps it in
 :func:`asyncio.run` because Opik ``evaluate()`` task fns cannot be async.
@@ -108,7 +108,7 @@ class EvalRunRecord:
 
 
 async def _deny_permission_resolver(request: PermissionRequest) -> PermissionDecision:
-    """The headless auto-deny default, mirroring ``runtime/flow.py`` (ADR-0017 §4).
+    """The headless auto-deny default, mirroring ``runtime/headless.py`` (ADR-0017 §4).
 
     An eval run has no interactive approver, so an ``ASK`` the probe did not override is denied —
     the safe default. Probes that want an approval supply their own ``resolve_permission``.
