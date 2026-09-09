@@ -219,10 +219,11 @@ def webhook(request: WebhookRequest) -> dict[str, object]:
     app and answers at once with where to watch. Runs with no Secret of its own — it spawns, it
     does not run.
     """
-    from fastapi import HTTPException  # in the image only (WEB_PACKAGES); never on the laptop
-
     error = webhook_request_error(request)
     if error is not None:
+        # In the image only (WEB_PACKAGES); never on the laptop, so only the rejecting path pays for it.
+        from fastapi import HTTPException
+
         raise HTTPException(status_code=400, detail=error)
     call = run_task.spawn(**webhook_spawn_kwargs(request))
     return webhook_response(call.object_id, request, decode_env=DECODE_ENV)
