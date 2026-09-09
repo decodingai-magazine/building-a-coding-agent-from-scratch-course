@@ -1,6 +1,6 @@
 # 07 — Deploy the Kitaru Worker on Modal
 
-Run the Worker from [06 §4](06_evals_replays.md#4-start-a-worker-on-your-laptop) as a Modal Function, so replays and experiments keep executing with the laptop closed ([ADR-0020 §5](../docs/adr/0020-remote-headless-on-modal.md)). Every `kitaru replay …` / `kitaru experiment …` command from 06 works unchanged, pointed at a different Agent Version. ~20 minutes; needs 06 done once and Modal tokens.
+Run the [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs) Worker from [06 §4](06_evals_replays.md#4-start-a-worker-on-your-laptop) as a Modal Function, so replays and experiments keep executing with the laptop closed ([ADR-0020 §5](../docs/adr/0020-remote-headless-on-modal.md)). Every `kitaru replay …` / `kitaru experiment …` command from 06 works unchanged, pointed at a different Agent Version. ~20 minutes; needs 06 done once and Modal tokens.
 
 | | Laptop Worker (06) | Modal Worker (this page) |
 |---|---|---|
