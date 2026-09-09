@@ -183,7 +183,7 @@ def test_the_deployment_is_resolved_by_name_never_an_ephemeral_app(mocker):
 
     remote_cli.deployed_run_task()
 
-    from_name.assert_called_once_with(mh.APP_NAME, "run_task")
+    from_name.assert_called_once_with(remote_cli.deployed_app_name(), "run_task")
 
 
 # --- decode remote attempts: spawning, N independent calls, no stagger -----------------------------
@@ -317,7 +317,11 @@ def test_deploy_runs_modal_deploy_on_the_app_module(mocker):
     result = _invoke("deploy")
 
     assert result.exit_code == 0, result.output
-    run.assert_called_once_with(["modal", "deploy", "-m", "decode.remote.app"], check=False)
+    argv, kwargs = run.call_args
+    assert argv[0] == ["modal", "deploy", "-m", "decode.remote.app"]
+    # DECODE_ENV is passed EXPLICITLY: ``modal deploy`` re-imports the app module in a subprocess
+    # that reads ``os.environ``, and a value from this laptop's ``.env`` never landed there (§3).
+    assert kwargs["env"]["DECODE_ENV"] == remote_cli.settings.decode_env
 
 
 def test_deploy_outside_a_checkout_is_one_friendly_line_and_no_modal_call(mocker):
@@ -345,4 +349,6 @@ def test_logs_tails_the_deployed_apps_logs(mocker):
     result = _invoke("logs")
 
     assert result.exit_code == 0
-    run.assert_called_once_with(["modal", "app", "logs", mh.APP_NAME], check=False)
+    run.assert_called_once_with(
+        ["modal", "app", "logs", remote_cli.deployed_app_name()], check=False
+    )

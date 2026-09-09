@@ -809,15 +809,17 @@ def test_a_webhook_ceiling_below_one_is_rejected_by_the_schema():
 def test_the_webhook_answers_with_the_call_id_and_where_to_watch():
     request = mh.WebhookRequest(task=TASK, repo=REPO, sandbox_mode="modal")
 
-    response = mh.webhook_response("fc-123", request)
+    response = mh.webhook_response("fc-123", request, decode_env="prod")
 
     assert response["call_id"] == "fc-123"
     assert response["status"] == "spawned"
-    assert any(mh.APP_NAME in line for line in response["watch"])
+    # The watch line names THIS environment's app: a caller sent to ``decode-headless`` when the run
+    # is in ``decode-headless-prod`` is sent to the wrong place (ADR-0021 §2).
+    assert any(mh.app_name("prod") in line for line in response["watch"])
     assert any(REPO in line for line in response["watch"])
 
 
 def test_a_repo_less_webhook_run_lists_no_branch_to_watch():
-    response = mh.webhook_response("fc-123", mh.WebhookRequest(task=TASK))
+    response = mh.webhook_response("fc-123", mh.WebhookRequest(task=TASK), decode_env="local")
 
     assert not any("ls-remote" in line for line in response["watch"])

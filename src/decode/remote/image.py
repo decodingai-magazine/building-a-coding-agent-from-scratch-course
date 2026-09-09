@@ -91,7 +91,10 @@ def extra_packages_command(packages: Sequence[str]) -> str:
 
 
 def build_image(
-    *, extra_dirs: Sequence[str] = (), extra_packages: Sequence[str] = ()
+    *,
+    decode_env: str,
+    extra_dirs: Sequence[str] = (),
+    extra_packages: Sequence[str] = (),
 ) -> modal.Image:
     """The image both apps run on: locked deps, this repo's source, the fixed directories.
 
@@ -105,7 +108,12 @@ def build_image(
     venv, between the locked deps and the source, so the expensive ``uv_sync`` layer stays shared by
     both apps and a source edit still rebuilds only the tail.
 
+    ``decode_env`` is BAKED into the image (ADR-0021 §3). It is a deploy-time decision, read from the
+    deploying laptop's env, and it already picked this app's name and Secret name — baking it keeps
+    those three from disagreeing. A Secret is credentials; the environment is not a credential.
+
     Args:
+        decode_env: The environment this deployment is, baked as ``DECODE_ENV``.
         extra_dirs: Absolute in-image directories to create besides the Harness Home.
         extra_packages: Extra pip requirements for this app's Functions.
 
@@ -130,9 +138,10 @@ def build_image(
             f"/.uv/uv pip install --no-deps --python {VENV_DIR}/bin/python {IMAGE_SOURCE_DIR}"
         )
         .run_commands(f"mkdir -p {' '.join([HARNESS_HOME, *extra_dirs])}")
-        # No ``DECODE_ENV`` baked in: the Modal Secret decides the environment (ADR-0020 §11). Unset,
-        # Settings defaults to ``local`` and reads the Secret's process env; ``prod`` / ``staging``
-        # reads the ``decode-<env>`` Environment Bucket, exactly like a laptop would.
+        # ``DECODE_ENV`` is baked, not carried by the Secret (ADR-0021 §3): it is the same deploy-time
+        # value that named this app and its Secret, so the three cannot drift. It changes names only
+        # — the Secret's process env is still the whole config surface (ADR-0021 §1).
+        .env({"DECODE_ENV": decode_env})
         # LAST, and it has to be: the Worker app lives in the local ``scripts`` package, and a
         # container's sys.path is not the laptop's — without it the Function dies at import, before
         # it runs a line (``ModuleNotFoundError: No module named 'scripts'``, found on the worker's

@@ -41,10 +41,6 @@ eval-regression:  ## Pre-merge behavior regression gate: sync probes + threshold
 		uv run python -m evals sync --no-benchmark --regression && uv run pytest evals/regression/test_thresholds.py; \
 	fi
 
-sync-secrets:  ## Mirror .env into the Kitaru environment bucket decode-$(ENV). Usage: make sync-secrets ENV=staging
-	@[ -n "$(ENV)" ] || { echo "Usage: make sync-secrets ENV=dev|staging|prod   (one-way: .env -> the decode-<ENV> bucket)"; exit 1; }
-	uv run python scripts/sync_secrets.py --env $(ENV)
-
 build:  ## Build wheel + sdist into dist/.
 	uv build
 
@@ -65,4 +61,4 @@ help:  ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression sync-secrets build install-cli uninstall-cli ci help
+.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression build install-cli uninstall-cli ci help

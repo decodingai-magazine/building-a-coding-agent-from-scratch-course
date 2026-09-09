@@ -15,6 +15,7 @@ each costs ONE friendly line and no container.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -22,12 +23,13 @@ from typing import TYPE_CHECKING
 
 import click
 
+from decode.config.settings import settings
 from decode.remote.headless import (
-    APP_NAME,
     DEFAULT_SANDBOX_MODE,
     DEFAULT_TIMEOUT_SECONDS,
     RUN_SUMMARY_FORMAT,
     SUPPORTED_SANDBOX_MODES,
+    app_name,
     attempt_task,
     attempts_exit_code,
     attempts_input_error,
@@ -51,7 +53,23 @@ APP_MODULE = "decode.remote.app"
 # The deploy is delegated to the modal CLI as a subprocess — its output (the build log, the printed
 # webhook URL, the ``✓ App deployed`` line) is the operator's, verbatim.
 DEPLOY_ARGV = ("modal", "deploy", "-m", APP_MODULE)
-LOGS_ARGV = ("modal", "app", "logs", APP_NAME)
+
+
+def deployed_app_name() -> str:
+    """``decode-headless-<env>`` for THIS laptop's ``DECODE_ENV`` — what every subcommand targets.
+
+    Read from ``Settings`` rather than a constant, so ``DECODE_ENV=prod decode remote run`` reaches
+    the ``prod`` deployment and a plain one cannot (ADR-0021 §2). It is the same value the deploy
+    baked into that app's image, which is what makes "the launcher and the deployment agree" true by
+    construction instead of by convention.
+    """
+    return app_name(settings.decode_env)
+
+
+def logs_argv() -> tuple[str, ...]:
+    """``modal app logs decode-headless-<env>`` — this environment's deployment, not another's."""
+    return ("modal", "app", "logs", deployed_app_name())
+
 
 NOT_DEPLOYED_FORMAT = (
     "Decode: the {app_name} app is not deployed, so there is nothing to run — run "
@@ -74,11 +92,12 @@ def deployed_run_task() -> modal.Function:
     """
     import modal
 
+    name = deployed_app_name()
     try:
-        return modal.Function.from_name(APP_NAME, "run_task")
+        return modal.Function.from_name(name, "run_task")
     except modal.exception.NotFoundError as error:
         raise click.ClickException(
-            NOT_DEPLOYED_FORMAT.format(app_name=APP_NAME, error=error)
+            NOT_DEPLOYED_FORMAT.format(app_name=name, error=error)
         ) from error
     except modal.exception.AuthError as error:
         raise click.ClickException(NO_CREDENTIALS_FORMAT.format(error=error)) from error
@@ -169,9 +188,10 @@ def remote() -> None:
     """Run decode headlessly on Modal — deploy once, then run, fan out, or read the logs.
 
     A remote run is ``decode run`` executed in a gVisor container on the deployed
-    ``decode-headless`` app (ADR-0020): same console script, same answer on stdout, plus a recorded
-    Kitaru Session and — with ``--sandbox-mode modal`` and a ``SANDBOX_GIT_TOKEN`` in the secret —
-    a ``decode/<session-id>`` branch on origin. Runbook: running_the_code/04_deploy.md.
+    ``decode-headless-<env>`` app (ADR-0020): same console script, same answer on stdout, plus a
+    recorded Kitaru Session and — with ``--sandbox-mode modal`` and a ``SANDBOX_GIT_TOKEN`` in the
+    secret — a ``decode/<session-id>`` branch on origin. ``DECODE_ENV`` picks WHICH deployment every
+    subcommand here talks to, deploy included (ADR-0021 §2). Runbook: running_the_code/04_deploy.md.
     """
 
 
@@ -187,7 +207,17 @@ def deploy() -> None:
     checkout_error = repo_root_error()
     if checkout_error is not None:
         raise click.ClickException(checkout_error)
-    completed = subprocess.run(list(DEPLOY_ARGV), check=False)
+    click.echo(
+        f"Decode: deploying {deployed_app_name()} (DECODE_ENV={settings.decode_env}).", err=True
+    )
+    # ``DECODE_ENV`` is passed EXPLICITLY, not inherited: ``modal deploy`` re-imports the app module
+    # in a subprocess, which reads ``os.environ`` — and a value that came from this laptop's ``.env``
+    # reached ``Settings`` without ever landing there. Without this line, `DECODE_ENV=prod` in a
+    # ``.env`` would name the app ``decode-headless-prod`` on the launcher side and publish
+    # ``decode-headless-local`` from the deploy side (ADR-0021 §3).
+    completed = subprocess.run(
+        list(DEPLOY_ARGV), check=False, env={**os.environ, "DECODE_ENV": settings.decode_env}
+    )
     if completed.returncode:
         sys.exit(completed.returncode)
 
@@ -300,7 +330,11 @@ def attempts_command(
 
 @remote.command("logs")
 def logs() -> None:
-    """Tail the deployed app's logs — where every run's answer and summary line land."""
-    completed = subprocess.run(list(LOGS_ARGV), check=False)
+    """Tail this environment's deployed app logs — where every run's answer and summary line land.
+
+    ``DECODE_ENV`` picks WHICH deployment (ADR-0021 §2): a plain invocation tails
+    ``decode-headless-local``, ``DECODE_ENV=prod decode remote logs`` tails ``decode-headless-prod``.
+    """
+    completed = subprocess.run(list(logs_argv()), check=False)
     if completed.returncode:
         sys.exit(completed.returncode)

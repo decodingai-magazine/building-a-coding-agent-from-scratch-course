@@ -9,8 +9,8 @@
 
     # watch it / stop it, from anywhere:
     uv run kitaru worker list                 # the row named decode-modal-worker, live: True
-    modal app logs decode-kitaru-worker
-    modal app stop decode-kitaru-worker
+    modal app logs decode-kitaru-worker-local        # -<env>: the app is named per DECODE_ENV
+    modal app stop decode-kitaru-worker-local
 
 An operator script, not library code: it lives outside the ``decode`` import graph, prints with
 ``click.echo``, and its Function runs the SAME console script a laptop runs — ``kitaru worker start``
@@ -36,13 +36,16 @@ this one just happens to sit in a gVisor container instead of on a laptop.
   :mod:`decode.remote.image`, so the image and the registration cannot drift apart. Pin the version
   when you replay — ``--agent decode@3``, never "latest": version 4 is a QA-accident duplicate of 3
   (see ``tasks/done/144-…``), and versions are immutable.
-* **Secrets** ride the ``decode-kitaru-worker`` :class:`modal.Secret` — ``KITARU_API_URL`` +
-  ``KITARU_API_KEY``, deliberately NO ``KITARU_AGENT_ID``, and ``DECODE_ENV`` to pick the config
-  surface (ADR-0020 §11): at ``prod`` / ``staging`` the replayed ``decode run`` hydrates provider
-  keys from the ``decode-<env>`` Environment Bucket; unset (``local``) the Secret must carry them.
-  Create it once, values never committed::
+* **One environment, one deployment** (ADR-0021 §2). ``DECODE_ENV`` is read from the DEPLOYING
+  laptop's env, names this app and its Secret — both ``decode-kitaru-worker-<env>`` — and is baked
+  into the image. The Secret carries credentials only, and it is the WHOLE config surface: the
+  replays this worker spawns read their provider keys from it, there is no second store. A
+  ``DECODE_ENV`` left inside the Secret is refused at startup, because the app's name and the run's
+  environment would then disagree. Create it once, values never committed::
 
-      modal secret create decode-kitaru-worker DECODE_ENV=prod KITARU_API_URL=… KITARU_API_KEY=…
+      DECODE_ENV=prod uv run modal deploy scripts/modal_kitaru_worker.py
+      modal secret create decode-kitaru-worker-prod KITARU_API_URL=… KITARU_API_KEY=… \
+          LLM_PROVIDER=… GEMINI_API_KEY=…
 
   ``KITARU_API_KEY`` must be a **control plane** key (``ZENPROKEY_…``) on a managed workspace: a
   container has no ``kitaru login`` store, and a workspace-local key is rejected server-side under
@@ -67,18 +70,25 @@ from pathlib import Path
 import click
 import modal
 
+from decode.remote.headless import decode_env_mismatch_error, deploy_time_decode_env
 from decode.remote.image import DECODE_BIN, HARNESS_HOME, KITARU_BIN, build_image
 
 # --- the app and its image --------------------------------------------------------------------------
 
-APP_NAME = "decode-kitaru-worker"
+APP_BASE_NAME = "decode-kitaru-worker"
 
-# The Modal Secret this Function runs with (ADR-0020 §4); operator-created, never committed.
-SECRET_NAME = "decode-kitaru-worker"
+# The environment this deployment IS, from the deploying laptop (ADR-0021 §2). It names the app and
+# its Secret and is baked into the image, exactly as it is for the headless app.
+DECODE_ENV = deploy_time_decode_env(os.environ)
+
+APP_NAME = f"{APP_BASE_NAME}-{DECODE_ENV}"
+
+# The Modal Secret this Function runs with (ADR-0021 §2); operator-created, never committed.
+SECRET_NAME = APP_NAME
 
 # The same image the Modal Headless App runs, built once in decode/remote/image.py: the Worker spawns
 # `decode run` from DECODE_BIN, so the two apps must not drift into two layouts.
-IMAGE = build_image()
+IMAGE = build_image(decode_env=DECODE_ENV)
 
 app = modal.App(APP_NAME)
 
@@ -274,10 +284,11 @@ def run_worker(
 ) -> int:
     """Run ONE Kitaru Worker in this container until it dies, and return its exit code.
 
-    The whole Function is: make the Harness Home, drop the variable that would 403 every replay,
-    refuse to start if this container cannot authenticate, then run the same ``kitaru worker start``
-    an operator runs on a laptop. Both pre-flight refusals — an unmakeable Harness Home, a missing
-    credential — cost ONE line and :data:`NOT_CONFIGURED_EXIT`, never a traceback. Nothing about claiming or replaying is re-implemented here — that
+    The whole Function is: refuse a Secret that contradicts this deployment's environment, make the
+    Harness Home, drop the variable that would 403 every replay, refuse to start if this container
+    cannot authenticate, then run the same ``kitaru worker start`` an operator runs on a laptop.
+    Every pre-flight refusal — a contradicted ``DECODE_ENV``, an unmakeable Harness Home, a missing
+    credential — costs ONE line and :data:`NOT_CONFIGURED_EXIT`, never a traceback. Nothing about claiming or replaying is re-implemented here — that
     is the point of ADR-0020 §1.
 
     Args:
@@ -288,6 +299,11 @@ def run_worker(
     Returns:
         The worker's exit code, or :data:`NOT_CONFIGURED_EXIT` when it was never started.
     """
+    mismatch = decode_env_mismatch_error(os.environ, deployed_env=DECODE_ENV)
+    if mismatch is not None:
+        click.echo(mismatch, err=True)
+        return NOT_CONFIGURED_EXIT
+
     harness_home_error = ensure_harness_home(HARNESS_HOME)
     if harness_home_error is not None:
         click.echo(harness_home_error, err=True)

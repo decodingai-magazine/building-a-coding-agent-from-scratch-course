@@ -69,7 +69,6 @@ def test_the_run_env_puts_the_workspace_in_docker_over_a_clone_of_this_repo():
     assert build_run_env(repo=REPO) == {
         "SANDBOX_MODE": "docker",
         "SANDBOX_REPO": str(REPO),
-        "DECODE_ENV": "local",
     }
 
 
@@ -77,7 +76,7 @@ def test_every_run_env_entry_is_passed_as_its_own_env_option():
     argv = _argv()
 
     passed = [argv[i + 1] for i, item in enumerate(argv) if item == "--env"]
-    assert passed == ["SANDBOX_MODE=docker", f"SANDBOX_REPO={REPO}", "DECODE_ENV=local"]
+    assert passed == ["SANDBOX_MODE=docker", f"SANDBOX_REPO={REPO}"]
 
 
 def test_the_working_dir_is_the_harness_home_outside_the_repo():
@@ -245,15 +244,15 @@ def test_none_mode_registers_no_sandbox_repo():
     """AC3: decode refuses a repo under SANDBOX_MODE=none — the container IS the isolation."""
     assert build_run_env(repo=REPO, sandbox_mode="none") == {
         "SANDBOX_MODE": "none",
-        "DECODE_ENV": "local",
     }
 
 
-def test_none_mode_argv_passes_exactly_two_env_options():
+def test_none_mode_argv_passes_exactly_one_env_option():
+    """No ``DECODE_ENV``: a replay runs AS the environment of the Worker that spawned it (ADR-0021 §4)."""
     argv = _argv(sandbox_mode="none")
 
     passed = [argv[i + 1] for i, item in enumerate(argv) if item == "--env"]
-    assert passed == ["SANDBOX_MODE=none", "DECODE_ENV=local"]
+    assert passed == ["SANDBOX_MODE=none"]
 
 
 def test_modal_mode_keeps_the_repo_clone():
@@ -261,7 +260,6 @@ def test_modal_mode_keeps_the_repo_clone():
     assert build_run_env(repo=REPO, sandbox_mode="modal") == {
         "SANDBOX_MODE": "modal",
         "SANDBOX_REPO": str(REPO),
-        "DECODE_ENV": "local",
     }
 
 
@@ -357,7 +355,6 @@ def test_none_mode_dry_run_prints_an_argv_with_no_sandbox_repo(tmp_path):
     assert result.exit_code == 0, result.output
     assert "kitaru agent version register decode" in result.output
     assert "SANDBOX_MODE=none" in result.output
-    assert "DECODE_ENV=local" in result.output
     assert "SANDBOX_REPO" not in result.output
 
 

@@ -1,7 +1,11 @@
 # 0019. Kitaru replay runtime — record sessions via the adapter, replay on workers; the durable runtime dies
 
-**Status:** Accepted
+**Status:** Accepted (§5 superseded by [ADR-0021](0021-decode-env-is-a-naming-suffix.md))
 **Date:** 2026-08-21
+**Superseded in part:** 2026-09-09 — **§5 is dead**: ADR-0021 deletes the Environment Bucket outright rather
+than re-hosting its transport, and with it `make sync-secrets`. §3's invariant is *tightened* by that deletion,
+not weakened: its "or a remote-bucket context" branch is gone, so recording (or a Worker Task) is now the only
+thing that imports kitaru, at any `DECODE_ENV`. Everything else here stands.
 
 Supersedes [ADR-0008](0008-kitaru-durable-runtime.md) and [ADR-0010](0010-runtime-replay.md)
 wholesale. Amends [ADR-0009](0009-downgrade-pydantic-ai-for-kitaru.md): its zenml-driven

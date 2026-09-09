@@ -21,11 +21,7 @@ from pydantic_ai.exceptions import UsageLimitExceeded  # noqa: E402
 
 from decode.agent.context_window import resolve_context_window_detail  # noqa: E402
 from decode.agents.loader import load_primary_agent  # noqa: E402
-from decode.config.settings import (  # noqa: E402
-    bucket_load_error,
-    environment_bucket_name,
-    settings,
-)
+from decode.config.settings import settings  # noqa: E402
 from decode.permissions.types import PermissionMode  # noqa: E402
 from decode.remote.cli import remote  # noqa: E402
 from decode.tui.app import run_app  # noqa: E402
@@ -230,48 +226,17 @@ def _sandbox_repo_config_error(repo: str | None) -> str | None:
     return None
 
 
-def _env_bucket_error() -> str | None:
-    """One friendly line if a remote ``DECODE_ENV``'s Environment Bucket could not be loaded (ADR-0015 §5).
-
-    ``None`` at ``local`` (nothing to load) and whenever the bucket hydrated cleanly. The settings
-    singleton is built at import, so the bucket source captures its failure instead of raising; this
-    turns that captured failure into the house friendly-line-on-stderr + non-zero-exit contract, in
-    the REPL startup chain and the headless pre-flight alike. It runs FIRST in both: at a remote env
-    the provider key is EXPECTED to come from the bucket, so a bucket failure must name
-    ``make sync-secrets``, not ``GEMINI_API_KEY``.
-    """
-    if settings.decode_env == "local":
-        return None
-    error = bucket_load_error()
-    if error is None:
-        return None
-    logger.debug("environment bucket unavailable at DECODE_ENV=%s: %s", settings.decode_env, error)
-    bucket = environment_bucket_name(settings.decode_env)
-    return (
-        f"Decode: DECODE_ENV={settings.decode_env} but the environment bucket {bucket!r} could not "
-        f"be loaded (no such secret on the Kitaru workspace, or this machine cannot reach it — "
-        f"check `kitaru login` / KITARU_API_URL) — run "
-        f"`make sync-secrets ENV={settings.decode_env}` (see running_the_code/06_evals_replays.md)."
-    )
-
-
 def _runtime_config_preflight(repo: str | None = None) -> str | None:
     """The headless guard chain for ``decode run``; the FIRST friendly error line, or None.
 
     Order is load-bearing:
 
-    1. Environment-Bucket guard — at a remote ``DECODE_ENV`` the provider key is expected to come from
-       the bucket, so a bucket failure must be named before any key guard can mis-blame ``.env``.
-    2. Per-provider config guard — unconditional: hydration is process-scoped (ADR-0015 §5), so this
-       already runs against the hydrated config, whichever mechanism supplied it.
-    3. ``RUNTIME_ENABLED`` — a disabled runtime never builds an agent.
-    4. Sandbox backend guard, then the sandbox-repo guard. ``repo`` is the ``--repo`` flag, resolved
+    1. Per-provider config guard — the provider key comes from the same chain at every
+       ``DECODE_ENV`` (ADR-0021 §1), so this is the first thing that can be wrong.
+    2. ``RUNTIME_ENABLED`` — a disabled runtime never builds an agent.
+    3. Sandbox backend guard, then the sandbox-repo guard. ``repo`` is the ``--repo`` flag, resolved
        against ``SANDBOX_REPO`` inside.
     """
-    bucket_error = _env_bucket_error()
-    if bucket_error is not None:
-        return bucket_error
-
     config_error = _provider_config_error()
     if config_error is not None:
         logger.debug("provider %s misconfigured; refusing to run", settings.llm_provider)
@@ -357,14 +322,6 @@ def cli(
         return
 
     logger.debug("decode starting (resume=%s, agent=%s, mode=%s)", resume, agent, mode)
-    # Environment-Bucket startup guard (ADR-0015 §5), FIRST in the chain: at a remote DECODE_ENV the
-    # provider key is expected to come from the bucket, so a bucket failure must name
-    # `make sync-secrets`, not GEMINI_API_KEY. A no-op at the ``local`` default.
-    bucket_error = _env_bucket_error()
-    if bucket_error is not None:
-        click.echo(bucket_error, err=True)
-        raise click.exceptions.Exit(1)
-
     # Provider config startup guard (ADR-0005 §6): one friendly stderr line before any agent is
     # built, instead of the raw pydantic_ai.UserError build_agent() would raise.
     config_error = _provider_config_error()
@@ -488,11 +445,9 @@ def run(
     The agent's answer prints on **stdout** and nothing else does, so a piped ``decode run`` yields
     exactly the answer; diagnostics go to stderr.
 
-    Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): at a remote
-    ``DECODE_ENV`` the Environment-Bucket guard fires first (a missing bucket names
-    ``make sync-secrets ENV=<env>``, ADR-0015 §5), then the per-provider config guard — it reads the
-    already-hydrated config, whichever mechanism supplied it — then ``RUNTIME_ENABLED``: a disabled
-    runtime never builds an agent, then the sandbox backend / repo guards.
+    Guards (same friendly-line-on-stderr, non-zero-exit contract as the REPL): the per-provider
+    config guard, then ``RUNTIME_ENABLED`` — a disabled runtime never builds an agent — then the
+    sandbox backend / repo guards.
 
     Recording (ADR-0019 §3) keeps the same stderr contract: a configured-but-unreachable Kitaru
     workspace costs ONE stderr line and the run continues on the bare agent (exit 0), while under a

@@ -41,10 +41,89 @@ from decode.remote.image import DECODE_BIN, HARNESS_HOME
 
 # --- the app, and the fixed layout of its image ----------------------------------------------------
 
-APP_NAME = "decode-headless"
+# The base name; the deployed app and its Secret are both ``decode-headless-<env>`` (ADR-0021 §2).
+APP_BASE_NAME = "decode-headless"
 
-# The Modal Secret the run Function runs with (ADR-0020 §4); operator-created, never committed.
-SECRET_NAME = "decode-headless"
+
+def app_name(decode_env: str) -> str:
+    """``decode-headless-<env>`` — the deployed Modal app for one environment.
+
+    The suffix is what keeps a ``prod`` deployment and a ``local`` one from being the same app: two
+    environments, two apps, two Secrets, one image recipe. ``decode remote`` resolves it from
+    ``settings.decode_env`` on the laptop, and the Functions from the env baked into the image, so
+    the launcher and the deployment can only ever mean the same app.
+    """
+    return f"{APP_BASE_NAME}-{decode_env}"
+
+
+def secret_name(decode_env: str) -> str:
+    """``decode-headless-<env>`` — the Modal Secret that app's Functions run with (ADR-0021 §2).
+
+    Same string as :func:`app_name` today, and deliberately its own function: the Secret is
+    operator-created and the app is deploy-created, so a future rename of one must not silently
+    rename the other.
+    """
+    return f"{APP_BASE_NAME}-{decode_env}"
+
+
+# The environment a deployment IS, and the one variable that decides it. Read from the DEPLOYING
+# laptop's env at ``decode remote deploy``, never from the Secret: it names the app and the Secret,
+# so it has to be known before either exists (ADR-0021 §2,3).
+DECODE_ENV_VAR = "DECODE_ENV"
+DEFAULT_DECODE_ENV = "local"
+
+# The environments a deployment may be. Same closed set as ``Settings.decode_env``: a typo must fail
+# on the laptop, at deploy, rather than publish a ``decode-headless-prd`` nobody will ever find.
+DEPLOY_ENVS = ("local", "dev", "staging", "prod")
+
+UNKNOWN_DECODE_ENV_FORMAT = (
+    "Decode: DECODE_ENV={value!r} is not a known environment ({known}) — a deploy names the app and "
+    "its Secret after it, so a typo would publish an app you will not find again."
+)
+
+# A Secret is credentials; the environment is the deployment's own identity, baked into the image at
+# deploy. One carried in the Secret can only ever contradict the app it is running in.
+DECODE_ENV_MISMATCH_FORMAT = (
+    "Decode: this deployment is DECODE_ENV={deployed!r} (it is the {app!r} app), but its Secret "
+    "carries DECODE_ENV={found!r} — remove DECODE_ENV from the {secret!r} secret, or redeploy with "
+    "`DECODE_ENV={found} decode remote deploy` (ADR-0021 §3)."
+)
+
+
+def deploy_time_decode_env(env: Mapping[str, str]) -> str:
+    """The environment ``decode remote deploy`` is publishing, from the deploying laptop's env.
+
+    Defaults to ``local``, so a plain ``decode remote deploy`` keeps publishing a plain
+    ``decode-headless-local``. An unknown value raises at DEPLOY, on the laptop: the app name, the
+    Secret name and the baked env all derive from it, and none of them is worth discovering to be
+    wrong from a container log.
+    """
+    value = (env.get(DECODE_ENV_VAR) or DEFAULT_DECODE_ENV).strip() or DEFAULT_DECODE_ENV
+    if value not in DEPLOY_ENVS:
+        raise click.ClickException(
+            UNKNOWN_DECODE_ENV_FORMAT.format(value=value, known=", ".join(DEPLOY_ENVS))
+        )
+    return value
+
+
+def decode_env_mismatch_error(env: Mapping[str, str], *, deployed_env: str) -> str | None:
+    """ONE friendly line if this container's Secret contradicts the deployment's own environment.
+
+    The image bakes ``DECODE_ENV``; a Secret carrying its own would override it in the process env
+    and split one fact in two — an app called ``decode-headless-local`` filing ``decode-prod`` traces.
+    Modal's env precedence makes that silent, so it is caught explicitly instead. ``None`` whenever
+    the Secret is silent on the subject, which is the normal, documented shape.
+    """
+    found = (env.get(DECODE_ENV_VAR) or "").strip()
+    if not found or found == deployed_env:
+        return None
+    return DECODE_ENV_MISMATCH_FORMAT.format(
+        deployed=deployed_env,
+        app=app_name(deployed_env),
+        found=found,
+        secret=secret_name(deployed_env),
+    )
+
 
 # The child's log file — read back after the run for the session id and the shipped branch.
 LOG_FILE = f"{HARNESS_HOME}/decode-run.log"
@@ -104,7 +183,7 @@ NONE_MODE_NO_HANDBACK_NOTE = (
 # about to disappear — the one outcome an operator must not read as "shipped" (ADR-0016 §4).
 UNPUSHED_BRANCH_NOTE = (
     "the Session Branch was NOT pushed: it existed only inside the container, which is now gone. "
-    "Add a SANDBOX_GIT_TOKEN with push access to the decode-headless secret and re-run."
+    "Add a SANDBOX_GIT_TOKEN with push access to the decode-headless-<env> secret and re-run."
 )
 
 # The env var git and ``gh`` read, and the credential helper that feeds it to git's HTTPS transport
@@ -290,11 +369,10 @@ def decode_run_env(
     this Function reads the session id back out of it, and ``LOG_LEVEL`` defaults to DEBUG because
     that is the level the session-id line is logged at (an operator-set level still wins).
 
-    ``DECODE_ENV`` is deliberately NOT set here: it is the Secret's to decide (ADR-0020 §11). Absent
-    from the Secret, Settings defaults to ``local`` and the Secret's process env is the whole config
-    surface; ``prod`` / ``staging`` makes the child hydrate from the ``decode-<env>`` Environment
-    Bucket, names the nested sandbox app ``decode-sandbox-<env>`` and the Opik project
-    ``decode-<env>``.
+    ``DECODE_ENV`` is deliberately NOT set here either — it is INHERITED from ``base_env``, where the
+    image baked it at deploy (ADR-0021 §3). The child therefore names its nested sandbox app
+    ``decode-sandbox-<env>`` and its Opik project ``decode-<env>`` off the same value that named the
+    app it is running in, and reads its config from this very env, as ``Settings`` does everywhere.
 
     ``SANDBOX_REPO`` is dropped in BOTH modes: a repo belongs to this invocation's ``--repo`` flag,
     and one left in the Secret would silently trip decode's ``--repo``-under-``none`` guard.
@@ -619,15 +697,21 @@ def webhook_spawn_kwargs(request: WebhookRequest) -> dict[str, object]:
     }
 
 
-def webhook_response(call_id: str, request: WebhookRequest) -> dict[str, object]:
-    """What the webhook answers at once: the call id, the run's shape, and where to look for it."""
+def webhook_response(
+    call_id: str, request: WebhookRequest, *, decode_env: str
+) -> dict[str, object]:
+    """What the webhook answers at once: the call id, the run's shape, and where to look for it.
+
+    ``decode_env`` names the app in the ``watch`` commands — a caller told to tail ``decode-headless``
+    when the run is in ``decode-headless-prod`` is told to look in the wrong place.
+    """
     return {
         "call_id": call_id,
         "sandbox_mode": request.sandbox_mode,
         "repo": request.repo,
         "status": "spawned",
         "watch": [
-            f"modal app logs {APP_NAME}",
+            f"modal app logs {app_name(decode_env)}",
             "uv run kitaru session list --agent decode --origin recorded",
         ]
         + ([f"git ls-remote {request.repo} 'refs/heads/decode/*'"] if request.repo else []),

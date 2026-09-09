@@ -6,16 +6,17 @@ Run `decode run` on [Modal](https://modal.com?source=decodingai&campaign=harness
 
 ## 1. What you are deploying: `decode run`
 
+From locally executing your agent loop via:
+
 ```bash
 uv run decode run "list the python files under src and summarize what the cli module does"
 ```
 
-- **Bypass by default** — every tool runs without approval prompts; `ask_user` is a no-op. A task that needs a human answer mid-run belongs in the REPL.
-- **stdout is the answer, alone.** Notices go to stderr, detail to `.decode/logs/decode.log`. `decode run … | pbcopy` is safe.
-- **Same knobs as the REPL** — provider-key guard, `--model`, `--repo` + a sandbox mode ([03_sandboxing.md](03_sandboxing.md)), Hand-back on completion, Opik tracing.
-- **`--max-requests N`** — stop after N model requests (stderr line, exit 1). `RUNTIME_MAX_REQUESTS` sets the default; unset = unbounded.
+To executing it remotely as:
 
-The Modal Headless App (`decode-headless`, `src/decode/remote/app.py`) is one Function, `run_task`, that runs this command as a subprocess, plus two callers of it: `nightly` (cron) and `webhook` (POST).
+```bash
+uv run decode remote run "list the python files under src and summarize what the cli module does"
+```
 
 ---
 
@@ -23,52 +24,109 @@ The Modal Headless App (`decode-headless`, `src/decode/remote/app.py`) is one Fu
 
 ### 2a. Prerequisites
 
-| Need | Why | Get it |
-|---|---|---|
-| Core setup | `uv`, the repo, `make install`, a provider key in `.env` | [01_install_and_usage.md](01_install_and_usage.md) |
-| Modal account + CLI tokens | `decode remote` talks to your Modal workspace | `uv run modal token set --token-id … --token-secret …` — from [modal.com](https://modal.com?source=decodingai&campaign=harnesseng) at signup ($30 free credits). Not decode settings; `.env` does nothing for them. |
-| Modal **proxy token** pair | webhook auth (§4) | `MODAL_PROXY_TOKEN_ID` / `MODAL_PROXY_TOKEN_SECRET` in `.env` — [02_modal_endpoints.md](02_modal_endpoints.md#authentication--proxy-tokens) |
-| `SANDBOX_GIT_TOKEN` *(optional)* | lets `--sandbox-mode modal` runs push a branch back | scoped, revocable PAT — [03_sandboxing.md](03_sandboxing.md#the-sandbox-git-token-sandbox_git_token) |
+| Need                             | Why                                                      | Get it                                                                                                                                                                                                              |
+| -------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core setup                       | `uv`, the repo, `make install`, a provider key in `.env` | [01_install_and_usage.md](01_install_and_usage.md)                                                                                                                                                                  |
+| Modal account + CLI tokens       | `decode remote` talks to your Modal workspace            | `uv run modal token set --token-id … --token-secret …` — from [modal.com](https://modal.com?source=decodingai&campaign=harnesseng) at signup ($30 free credits). Not decode settings; `.env` does nothing for them. |
+| Modal **proxy token** pair       | webhook auth (§4)                                        | `MODAL_PROXY_TOKEN_ID` / `MODAL_PROXY_TOKEN_SECRET` in `.env` — [02_modal_endpoints.md](02_modal_endpoints.md#authentication--proxy-tokens)                                                                         |
+| `SANDBOX_GIT_TOKEN` _(optional)_ | lets `--sandbox-mode modal` runs push a branch back      | scoped, revocable PAT — [03_sandboxing.md](03_sandboxing.md#the-sandbox-git-token-sandbox_git_token)                                                                                                                |
+
+No Kitaru account is needed for anything on this page: recording is opt-in and separate ([06](06_evals_replays.md)).
 
 No extra install: `modal` ships with decode's dependencies.
 
-### 2b. The `decode-headless` Secret
+### 2b. The `decode-headless-<env>` Secret
 
-The container has no `.env`; its whole environment is one Modal Secret, `decode-headless`. Create once — values from your shell, never committed:
+One environment = one deployment = one Secret ([ADR-0021](../docs/adr/0021-decode-env-is-a-naming-suffix.md)).
+`DECODE_ENV` names all three: a plain deploy publishes the app `decode-headless-local`, running with the Secret
+of that same name; `DECODE_ENV=prod` publishes `decode-headless-prod` with `decode-headless-prod`. This page
+uses `local` — swap the suffix and the deploy line together and everything below holds.
+
+The container has no `.env`; **its Secret is its whole config surface**, so it must carry every key that run
+needs. Two rules follow: pass every key on every create (a Secret is replaced, never patched — hence `--force`,
+which also makes the block re-runnable), and **do not put `DECODE_ENV` in it** — the deployment already knows
+which environment it is, and a Secret that disagrees is refused at startup with one line.
+
+Pick the block for the provider you run. Each loads your `.env` into the shell, then copies that provider's
+keys — plus `SANDBOX_GIT_TOKEN`, which only `--sandbox-mode modal` runs use (drop the line if you have no
+token; the run still answers, it just ships no branch).
+
+**Gemini** (`LLM_PROVIDER=gemini`, the default):
 
 ```bash
 set -a && . ./.env && set +a
 
-uv run modal secret create decode-headless \
+uv run modal secret create decode-headless-local \
+  LLM_PROVIDER=gemini \
   GEMINI_API_KEY="$GEMINI_API_KEY" \
-  SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN"
+  GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}" \
+  SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 
 uv run modal secret list              # values are write-only
 ```
 
-| Key | Why |
-|---|---|
-| `GEMINI_API_KEY` — or your provider's | Another provider = its keys + `LLM_PROVIDER` (`OPENROUTER_API_KEY`; or `MODAL_ENDPOINT_URL` + `MODAL_ENDPOINT_MODEL` + the proxy token pair, [02_modal_endpoints.md](02_modal_endpoints.md)) |
-| `SANDBOX_GIT_TOKEN` *(optional)* | only `--sandbox-mode modal` runs ship branches; without it the run still answers |
+**Modal — your own served model** (`LLM_PROVIDER=modal`, [02_modal_endpoints.md](02_modal_endpoints.md)). The
+endpoint is a *separate* deployed app; these four values point the harness at it, and the proxy pair is what
+gets past its 🔑:
 
-Update with `--force` on the same command (replaces the whole Secret — pass every key again). `DECODE_ENV` unset = `local`: the Secret is the whole config surface. Running the deployment at `DECODE_ENV=prod` comes later, in [07 §2c](07_evals_replays_deploy.md#2c-decode_envprod-for-both-modal-apps).
+```bash
+set -a && . ./.env && set +a
+
+uv run modal secret create decode-headless-local \
+  LLM_PROVIDER=modal \
+  MODAL_ENDPOINT_URL="$MODAL_ENDPOINT_URL" \
+  MODAL_ENDPOINT_MODEL="${MODAL_ENDPOINT_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}" \
+  MODAL_PROXY_TOKEN_ID="$MODAL_PROXY_TOKEN_ID" \
+  MODAL_PROXY_TOKEN_SECRET="$MODAL_PROXY_TOKEN_SECRET" \
+  SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
+
+uv run modal secret list
+```
+
+Served `--unauthenticated`? Drop the two `MODAL_PROXY_TOKEN_*` lines — omit both or set both.
+
+**OpenRouter** (`LLM_PROVIDER=openrouter`):
+
+```bash
+set -a && . ./.env && set +a
+
+uv run modal secret create decode-headless-local \
+  LLM_PROVIDER=openrouter \
+  OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+  OPENROUTER_MODEL="${OPENROUTER_MODEL:-openrouter/free}" \
+  SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
+
+uv run modal secret list
+```
+
+To change a value later, edit `.env` and re-run the same block — then **redeploy**. A `--force` create writes a
+*new* Secret object, and a running deployment keeps the one it was bound to until `decode remote deploy` runs
+again.
+
+Recording every remote run as a Kitaru Session is optional and orthogonal: add `KITARU_AGENT_ID` +
+`KITARU_API_URL` to the Secret ([06 §3](06_evals_replays.md)). Without them the container imports no kitaru at
+all, at any `DECODE_ENV`.
 
 ### 2c. Deploy
 
-Every trigger runs against the **deployed** app. Deploy builds the image (`debian_slim` + `uv sync` + this repo's source baked in) — **re-run after any change to decode's source**. Must run from a checkout of this repo:
+Every trigger runs against the **deployed** app. Deploy builds the image (`debian_slim` + `uv sync` + this repo's source baked in) — **re-run after any change to decode's source, and after any change to the Secret**. Must run from a checkout of this repo:
 
 ```bash
-uv run decode remote deploy
+uv run decode remote deploy                    # → decode-headless-local
+DECODE_ENV=prod uv run decode remote deploy    # → decode-headless-prod, on its own Secret
 ```
 
 Want, at the end of the output:
 
 ```
+Decode: deploying decode-headless-local (DECODE_ENV=local).
 ├── 🔨 Created function run_task.
 ├── 🔨 Created function nightly.
-└── 🔨 Created web function webhook => https://<workspace>--decode-headless-webhook.modal.run 🔑
+└── 🔨 Created web function webhook => https://<workspace>--decode-headless-local-webhook.modal.run 🔑
 ✓ App deployed in 46.102s! 🎉
 ```
+
+`DECODE_ENV` is read here, from this shell (or your `.env`), and **baked into the image** — it is what named the app and the Secret, so the three can never disagree. Every `decode remote` command resolves the same name, so `DECODE_ENV=prod decode remote run …` reaches the `prod` deployment and a plain one cannot.
 
 `run_task` = the run; `nightly` = the cron (inert until deployed with a schedule, §5); `webhook` = the POST endpoint (🔑 = proxy auth on, §4). Every trigger takes the same knobs — `task`, `repo`, `sandbox-mode` (`none` | `modal`), `model`, `max-requests`, `timeout-seconds` — and leaves the same traces: the answer in `decode remote logs`, and (`modal` mode + `SANDBOX_GIT_TOKEN`) a `decode/<session-id>` branch on origin.
 
@@ -93,18 +151,26 @@ Decode: run finished — exit=0 sandbox=none session=346fbde2-… branch=None
 ```
 
 A change to a real repo, shipped back as a branch:
+(Change the `--repo` with something of yours or fork ours.)
 
 ```bash
 uv run decode remote run "add a hello line to README and commit" \
-  --repo https://github.com/you/your-repo.git --sandbox-mode modal --max-requests 60
-git ls-remote https://github.com/you/your-repo.git 'refs/heads/decode/*'
+  --repo https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course \
+  --sandbox-mode modal \
+  --max-requests 60
 ```
 
-| `--sandbox-mode` | Where `bash` runs | What `--repo` does | Hand-back |
-|---|---|---|---|
-| `none` (default) | the gVisor container itself (`/harness`) | the harness clones it to `/scratch/repo` and launches decode there | none: the clone dies with the container |
-| `modal` | a nested Modal Sandbox, `/workspace` | passed through to `decode run --repo` | pushes `decode/<session-id>` when `SANDBOX_GIT_TOKEN` is in the Secret |
-| `docker` | — | — | rejected client-side, one line, no container (no Docker daemon on Modal) |
+Then verify the output branches:
+
+```bash
+git ls-remote https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course 'refs/heads/decode/*'
+```
+
+| `--sandbox-mode` | Where `bash` runs                        | What `--repo` does                                                 | Hand-back                                                                |
+| ---------------- | ---------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| `none` (default) | the gVisor container itself (`/harness`) | the harness clones it to `/scratch/repo` and launches decode there | none: the clone dies with the container                                  |
+| `modal`          | a nested Modal Sandbox, `/workspace`     | passed through to `decode run --repo`                              | pushes `decode/<session-id>` when `SANDBOX_GIT_TOKEN` is in the Secret   |
+| `docker`         | —                                        | —                                                                  | rejected client-side, one line, no container (no Docker daemon on Modal) |
 
 `--max-requests N` → `decode run --max-requests N` in the container: past N requests, one `Decode: the run stopped at its request ceiling …` line, exit 1, Hand-back still runs. `--timeout-seconds` bounds the clock (default 1800).
 
@@ -115,7 +181,7 @@ uv run decode remote attempts "add a hello line to README and commit" \
   --repo https://github.com/you/your-repo.git --attempts 3 --sandbox-mode modal
 ```
 
-Each attempt's task gets *"Commit your work when you are done. Do NOT push and do NOT open a pull request."* appended, so the Hand-back is the only ship path and the N branches stay comparable. Want:
+Each attempt's task gets _"Commit your work when you are done. Do NOT push and do NOT open a pull request."_ appended, so the Hand-back is the only ship path and the N branches stay comparable. Want:
 
 ```
 #    session                               branch            shipped?     exit
@@ -133,7 +199,7 @@ Three attempts take about as long as one (59 s vs 72 s measured). Past `--attemp
 ```bash
 uv run decode remote attempts "…" --repo <url> --attempts 2 --sandbox-mode modal --detach
 # later:
-uv run decode remote logs                      # = modal app logs decode-headless
+uv run decode remote logs                      # = modal app logs decode-headless-<env>
 git ls-remote <url> 'refs/heads/decode/*'
 ```
 
@@ -146,7 +212,7 @@ git ls-remote <url> 'refs/heads/decode/*'
 URL from the deploy output. Body = the `decode remote run` knobs as JSON; only `task` is required. The endpoint spawns the run and returns at once.
 
 ```bash
-export WEBHOOK_URL=https://<workspace>--decode-headless-webhook.modal.run
+export WEBHOOK_URL=https://<workspace>--decode-headless-local-webhook.modal.run
 set -a && . ./.env && set +a         # MODAL_PROXY_TOKEN_ID / MODAL_PROXY_TOKEN_SECRET
 
 curl -s -X POST "$WEBHOOK_URL" \
@@ -160,7 +226,7 @@ Want:
 
 ```json
 {"call_id": "fc-01ABC…", "sandbox_mode": "modal", "repo": "https://github.com/you/your-repo.git",
- "status": "spawned", "watch": ["modal app logs decode-headless", …,
+ "status": "spawned", "watch": ["modal app logs decode-headless-local", …,
  "git ls-remote https://github.com/you/your-repo.git 'refs/heads/decode/*'"]}
 ```
 
@@ -168,7 +234,7 @@ Then `uv run decode remote logs` for the answer, `git ls-remote` for the branch.
 
 - **Proxy auth is the lock.** No valid `Modal-Key` / `Modal-Secret` pair → refused at Modal's edge, before the Function runs.
 - **A bad request costs nothing.** `sandbox_mode: "docker"` or an empty `task` → `400`, nothing spawned.
-- **The endpoint holds no Secret.** It spawns `run_task`; only the run's container gets `decode-headless`.
+- **The endpoint holds no Secret.** It spawns `run_task`; only the run's container gets `decode-headless-<env>`.
 - **Callers:** a GitHub Actions step (`curl` with the two headers from repository secrets), a ticket bot, Zapier, a Slack slash command.
 
 ---
@@ -192,48 +258,50 @@ Want:
 Decode: nightly job registered — cron='0 2 * * *' (UTC) task='Find every TODO comment, …'
 ```
 
-| Variable | Meaning |
-|---|---|
-| `DECODE_NIGHTLY_CRON` | crontab syntax, **UTC** — unset = no schedule |
-| `DECODE_NIGHTLY_TASK` | the prompt; required once a cron is set (checked at deploy, on the laptop) |
-| `DECODE_NIGHTLY_REPO` / `_SANDBOX_MODE` / `_MODEL` | = `decode remote run`'s `--repo` / `--sandbox-mode` / `--model` |
-| `DECODE_NIGHTLY_MAX_REQUESTS` / `_TIMEOUT_SECONDS` | token and clock ceilings |
+| Variable                                           | Meaning                                                                    |
+| -------------------------------------------------- | -------------------------------------------------------------------------- |
+| `DECODE_NIGHTLY_CRON`                              | crontab syntax, **UTC** — unset = no schedule                              |
+| `DECODE_NIGHTLY_TASK`                              | the prompt; required once a cron is set (checked at deploy, on the laptop) |
+| `DECODE_NIGHTLY_REPO` / `_SANDBOX_MODE` / `_MODEL` | = `decode remote run`'s `--repo` / `--sandbox-mode` / `--model`            |
+| `DECODE_NIGHTLY_MAX_REQUESTS` / `_TIMEOUT_SECONDS` | token and clock ceilings                                                   |
 
-Each morning: `uv run decode remote logs` for the answer, `git ls-remote <repo> 'refs/heads/decode/*'` for the branch. Modal's dashboard has a *run now* button on any scheduled Function. To stop: redeploy without `DECODE_NIGHTLY_CRON` (Modal has no pause).
+Each morning: `uv run decode remote logs` for the answer, `git ls-remote <repo> 'refs/heads/decode/*'` for the branch. Modal's dashboard has a _run now_ button on any scheduled Function. To stop: redeploy without `DECODE_NIGHTLY_CRON` (Modal has no pause).
 
 ---
 
 ## 6. Watch, cost, redeploy
 
 ```bash
-uv run decode remote logs           # = modal app logs decode-headless
+uv run decode remote logs           # = modal app logs decode-headless-<env>
 uv run modal app list
-uv run modal app stop decode-headless
+uv run modal app stop decode-headless-local
 ```
 
-| Item | Cost |
-|---|---|
-| Containers + nested sandboxes | per run-second, nothing idle |
-| Deployed app, nothing running | nothing |
-| Provider tokens | `--max-requests` caps a run nobody watches |
+| Item                          | Cost                                       |
+| ----------------------------- | ------------------------------------------ |
+| Containers + nested sandboxes | per run-second, nothing idle               |
+| Deployed app, nothing running | nothing                                    |
+| Provider tokens               | `--max-requests` caps a run nobody watches |
 
 **A code change needs a redeploy** — the source is baked into the image at `decode remote deploy`.
 
 ## 7. Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| `Decode: the decode-headless app is not deployed …` | `uv run decode remote deploy` (also after `modal app stop`). Nothing was billed. |
-| `Decode: Modal credentials are missing or rejected …` | `uv run modal token set …`. `.env` does nothing for these. |
-| `Decode: set GEMINI_API_KEY in your environment` in the run's log | the Secret lacks the provider key — recreate with `--force`. |
-| A remote run behaves like last week's code | re-run `decode remote deploy`. |
-| `sandbox mode 'docker' cannot run on Modal` | use `none` or `modal`. |
-| Attempts read `NOT SHIPPED` | `none` mode discards its clone; `modal` mode needs a `SANDBOX_GIT_TOKEN` that can push to that repo. |
-| Webhook returns `401` / `403` | wrong or missing `Modal-Key` / `Modal-Secret` — [02_modal_endpoints.md](02_modal_endpoints.md#authentication--proxy-tokens). |
-| Nightly deploy dies on the laptop | `DECODE_NIGHTLY_CRON` set without `DECODE_NIGHTLY_TASK`. |
+| Symptom                                                           | Fix                                                                                                                          |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `Decode: the decode-headless-<env> app is not deployed …`         | `uv run decode remote deploy` at that `DECODE_ENV` (also after `modal app stop`). Nothing was billed.                        |
+| `Decode: Modal credentials are missing or rejected …`             | `uv run modal token set …`. `.env` does nothing for these.                                                                   |
+| `Decode: set GEMINI_API_KEY in your environment` in the run's log | the Secret lacks the provider key — recreate it (§2b), then **redeploy**: a `--force` create writes a new Secret object the running deployment is not bound to. |
+| `Decode: this deployment is DECODE_ENV=… but its Secret carries …` | remove `DECODE_ENV` from the Secret (§2b), or redeploy at the env the Secret names.                                          |
+| Runs land in the wrong Opik project / sandbox app                 | `DECODE_ENV` at deploy names both — redeploy with the one you meant.                                                        |
+| A remote run behaves like last week's code                        | re-run `decode remote deploy`.                                                                                               |
+| `sandbox mode 'docker' cannot run on Modal`                       | use `none` or `modal`.                                                                                                       |
+| Attempts read `NOT SHIPPED`                                       | `none` mode discards its clone; `modal` mode needs a `SANDBOX_GIT_TOKEN` that can push to that repo.                         |
+| Webhook returns `401` / `403`                                     | wrong or missing `Modal-Key` / `Modal-Secret` — [02_modal_endpoints.md](02_modal_endpoints.md#authentication--proxy-tokens). |
+| Nightly deploy dies on the laptop                                 | `DECODE_NIGHTLY_CRON` set without `DECODE_NIGHTLY_TASK`.                                                                     |
 
 ## Go further
 
 - Headless inside a sandbox on your laptop: [03_sandboxing.md](03_sandboxing.md) (`SANDBOX_MODE=docker decode run --repo <url> "<task>"`).
-- Record every run and replay it later: [06_evals_replays.md](06_evals_replays.md); run this deployment at `DECODE_ENV=prod`: [07_evals_replays_deploy.md](07_evals_replays_deploy.md).
+- Record every run and replay it later: [06_evals_replays.md](06_evals_replays.md) — recording is opt-in and orthogonal to this deployment. The Modal-hosted Kitaru Worker: [07_evals_replays_deploy.md](07_evals_replays_deploy.md).
 - [ADR-0020](../docs/adr/0020-remote-headless-on-modal.md) — why this remote shape.

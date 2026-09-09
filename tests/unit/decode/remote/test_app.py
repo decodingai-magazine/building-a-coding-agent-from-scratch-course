@@ -17,9 +17,28 @@ REPO = "https://github.com/iusztinpaul/decode-course.git"
 
 
 def test_the_deploy_target_is_the_named_app_the_launcher_resolves():
-    """``decode remote run`` resolves ``Function.from_name(APP_NAME, "run_task")`` — both ends agree."""
-    assert mh.app.name == headless.APP_NAME
+    """The published app is ``decode-headless-<env>``, the name the launcher resolves (ADR-0021 §2)."""
+    assert mh.app.name == headless.app_name(mh.DECODE_ENV)
     assert mh.run_task.local is not None
+
+
+def test_the_app_and_its_secret_are_named_after_the_same_environment():
+    """One environment, one deployment: the app, the Secret and the baked env are one fact (§2)."""
+    assert mh.DECODE_ENV in headless.DEPLOY_ENVS
+    assert mh.app.name == mh.SECRET_NAME == f"decode-headless-{mh.DECODE_ENV}"
+
+
+def test_a_secret_that_contradicts_the_deployments_environment_is_refused(mocker):
+    """A Secret carrying its own ``DECODE_ENV`` would split one fact in two — one line, no run (§3)."""
+    execute = mocker.patch.object(mh, "execute_run")
+    mocker.patch.dict(mh.os.environ, {"DECODE_ENV": "staging"}, clear=False)
+    mocker.patch.object(mh, "DECODE_ENV", "local")
+
+    result = mh.run_task.local(task=TASK, sandbox_mode="none")
+
+    execute.assert_not_called()
+    assert result["exit_code"] == headless.SANDBOX_MODE_REJECTED_EXIT
+    assert "decode-headless-local" in str(result["answer"])
 
 
 def test_run_task_is_execute_run_on_the_containers_env(mocker):

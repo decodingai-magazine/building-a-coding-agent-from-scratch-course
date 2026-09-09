@@ -117,6 +117,10 @@ def test_the_unconfigured_seam_imports_no_kitaru_module_in_a_fresh_interpreter(t
     A clean subprocess from a ``tmp_path`` cwd (no repo ``.env``) with the kitaru env scrubbed keeps
     this honest regardless of what the rest of the suite already imported: importing the runtime AND
     running the seam must leave ``sys.modules`` kitaru-free.
+
+    ``DECODE_ENV=prod`` rides along deliberately (ADR-0021 §1,5): a remote environment used to be a
+    second way to import kitaru, through the Environment Bucket. It is not one any more, and this is
+    where that stays true.
     """
     code = (
         "import asyncio, sys\n"
@@ -131,8 +135,8 @@ def test_the_unconfigured_seam_imports_no_kitaru_module_in_a_fresh_interpreter(t
         "assert not leaked, leaked\n"
         "print('NO_KITARU_OK')\n"
     )
-    scrubbed = {"DECODE_ENV", "KITARU_AGENT_ID", "KITARU_API_URL", "KITARU_TASK_ID"}
-    child_env = {k: v for k, v in os.environ.items() if k not in scrubbed}
+    scrubbed = {"KITARU_AGENT_ID", "KITARU_API_URL", "KITARU_TASK_ID"}
+    child_env = {k: v for k, v in os.environ.items() if k not in scrubbed} | {"DECODE_ENV": "prod"}
 
     result = subprocess.run(
         [sys.executable, "-c", code],

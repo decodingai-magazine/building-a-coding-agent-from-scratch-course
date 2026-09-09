@@ -14,7 +14,7 @@ import logging
 
 import pytest
 from click.testing import CliRunner
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 from pydantic_ai.exceptions import ModelHTTPError
 from support.kitaru_recording import kitaru_api_error
 
@@ -444,57 +444,19 @@ def test_run_model_does_not_bypass_the_disabled_runtime_guard(monkeypatch, _prov
     assert "headless runtime is disabled" in result.stderr
 
 
-# Environment Bucket: the `decode run` pre-flight guards a remote DECODE_ENV whose bucket could not
-# be loaded (ADR-0015 §5). Hydration is process-scoped (it happened at settings import), so the
-# bucket source records a failure instead of raising; the pre-flight turns it into ONE friendly line
-# — FIRST in the chain, because at a remote env the provider key is EXPECTED to come from the
-# bucket, so a bucket failure must name `make sync-secrets ENV=<env>`, never GEMINI_API_KEY.
+# ADR-0021 §1: every DECODE_ENV reads the same chain, so a remote environment has no extra way to
+# fail at pre-flight — it just names the Opik project and the nested sandbox app after itself.
 
 
-@pytest.fixture
-def _bucket_unloadable(monkeypatch):
-    """Pin ``DECODE_ENV=staging`` with a captured bucket-load failure, and no provider key."""
-    monkeypatch.setattr(cli_mod.settings, "decode_env", "staging")
-    monkeypatch.setattr(cli_mod.settings, "llm_provider", "gemini")
-    monkeypatch.setattr(cli_mod.settings, "gemini_api_key", SecretStr(""))
-    monkeypatch.setattr(cli_mod.settings, "runtime_enabled", True)
-    monkeypatch.setattr(cli_mod, "bucket_load_error", lambda: "decode-staging: secret not found")
-
-
-def test_run_unloadable_bucket_is_a_friendly_line_not_a_traceback(monkeypatch, _bucket_unloadable):
-    _no_runner_tripwire(monkeypatch)
-
-    result = CliRunner().invoke(cli, ["run", "list the files"])
-
-    assert result.exit_code != 0
-    assert not isinstance(result.exception, (RuntimeError, ValidationError))
-    assert "DECODE_ENV=staging" in result.stderr
-    assert "decode-staging" in result.stderr  # the derived bucket name
-    assert "make sync-secrets ENV=staging" in result.stderr  # ...and the fix
-    assert "Traceback" not in result.stderr
-
-
-def test_run_bucket_guard_precedes_the_provider_key_guard(monkeypatch, _bucket_unloadable):
-    """The provider key is missing too — but the bucket line is the one that fires (ADR-0015 §5)."""
-    _no_runner_tripwire(monkeypatch)
-
-    result = CliRunner().invoke(cli, ["run", "list the files"])
-
-    assert result.exit_code != 0
-    assert "make sync-secrets" in result.stderr
-    assert "set GEMINI_API_KEY in your environment" not in result.stderr
-
-
-def test_run_remote_env_with_a_healthy_bucket_runs_the_task(monkeypatch, _provider_ok):
-    """A remote env whose bucket loaded cleanly is invisible to the guard chain — the run proceeds."""
-    monkeypatch.setattr(cli_mod.settings, "decode_env", "prod")
-    monkeypatch.setattr(cli_mod, "bucket_load_error", lambda: None)
-    _recording_runner(monkeypatch, "the hydrated answer")
+@pytest.mark.parametrize("env", ["local", "staging", "prod"])
+def test_a_remote_env_runs_the_task_like_local_does(monkeypatch, _provider_ok, env):
+    monkeypatch.setattr(cli_mod.settings, "decode_env", env)
+    _recording_runner(monkeypatch, "the answer")
 
     result = CliRunner().invoke(cli, ["run", "summarize the repo"])
 
-    assert result.exit_code == 0
-    assert "the hydrated answer" in result.stdout
+    assert result.exit_code == 0, result.stderr
+    assert "the answer" in result.stdout
 
 
 # The sandbox backend guard shares the `decode run` pre-flight (ADR-0011 §1). The probes are PATCHED

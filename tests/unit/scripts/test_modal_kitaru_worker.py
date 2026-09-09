@@ -108,7 +108,7 @@ def image(mocker):
 
 
 def test_the_shared_image_creates_the_harness_home_and_any_extra_dir(image):
-    mi.build_image(extra_dirs=("/scratch/repo",))
+    mi.build_image(decode_env="local", extra_dirs=("/scratch/repo",))
 
     commands = [call.args[0] for call in image.run_commands.call_args_list]
     mkdir = [command for command in commands if command.startswith("mkdir")]
@@ -121,7 +121,7 @@ def test_the_scripts_package_is_importable_inside_the_container(image):
     Found live — the first ``modal run`` of the worker died at import with
     ``ModuleNotFoundError: No module named 'scripts'`` before a single line of the Function ran.
     """
-    mi.build_image()
+    mi.build_image(decode_env="local")
 
     image.add_local_python_source.assert_called_once_with("scripts")
     # And it must be the LAST step: Modal refuses a build step after an ``add_local_*`` (the deploy
@@ -430,9 +430,19 @@ def test_the_function_may_run_for_a_whole_day():
 
 
 def test_the_worker_runs_on_the_purpose_split_secret():
-    """ADR-0020 §4: its own Secret, deliberately without an agent id."""
-    assert mkw.SECRET_NAME == "decode-kitaru-worker"
-    assert mkw.APP_NAME == "decode-kitaru-worker"
+    """ADR-0020 §4 + ADR-0021 §2: its own Secret, per environment, deliberately without an agent id."""
+    assert mkw.DECODE_ENV in ("local", "dev", "staging", "prod")
+    assert mkw.SECRET_NAME == mkw.APP_NAME == f"decode-kitaru-worker-{mkw.DECODE_ENV}"
+
+
+def test_a_secret_that_contradicts_the_deployments_environment_refuses_to_start(mocker):
+    """The worker's Secret carries credentials, never the environment — the app's name says that (§3)."""
+    start = mocker.patch.object(mkw.subprocess, "run")
+    mocker.patch.dict(mkw.os.environ, {"DECODE_ENV": "staging"}, clear=False)
+    mocker.patch.object(mkw, "DECODE_ENV", "local")
+
+    assert mkw.run_worker.local() == mkw.NOT_CONFIGURED_EXIT
+    start.assert_not_called()
 
 
 # --- the launch surface -----------------------------------------------------------------------------

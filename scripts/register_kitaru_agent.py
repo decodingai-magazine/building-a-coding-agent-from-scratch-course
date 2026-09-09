@@ -17,8 +17,8 @@ The Agent Version is decode's **replay context**, replicated rather than simulat
   (``.decode/sessions``, ``.decode/sandbox``, logs — ADR-0012 §6), so a replay writes nothing into
   the operator's working tree. The script refuses a Harness Home inside the repo.
 * **env** — ``SANDBOX_MODE=docker`` + ``SANDBOX_REPO=<repo>``: replayed tool calls run in a docker
-  Workspace that is a fresh ``git clone`` of this repo, never on the host tree. ``DECODE_ENV=local``
-  pins the config surface, so the spawn does not inherit an operator's remote-bucket env.
+  Workspace that is a fresh ``git clone`` of this repo, never on the host tree. ``DECODE_ENV`` is
+  deliberately absent: a replay runs AS the environment of the Worker that spawned it (ADR-0021 §4).
 * **secrets — deliberately none.** kitaru's Worker builds a task process env by layering the run
   spec (and any version-attached secret) ON TOP of its own ``os.environ``
   (``kitaru/worker/process.py::build_process_env``), so provider credentials already reach the run
@@ -90,10 +90,12 @@ _DESCRIPTIONS = {
 def build_run_env(*, repo: Path, sandbox_mode: str = DEFAULT_SANDBOX_MODE) -> dict[str, str]:
     """The run spec's process env: the replay context, and nothing secret (ADR-0019 §4).
 
-    Each key is load-bearing: ``SANDBOX_MODE`` picks the Workspace every tool call runs in,
-    ``SANDBOX_REPO`` makes that Workspace a clone of ``repo``, and ``DECODE_ENV`` pins the config
-    surface to ``local`` so the spawn cannot inherit a remote Environment Bucket from the Worker's
-    shell. Provider credentials are NOT here — they ride the Worker's inherited env (module docstring).
+    Each key is load-bearing: ``SANDBOX_MODE`` picks the Workspace every tool call runs in, and
+    ``SANDBOX_REPO`` makes that Workspace a clone of ``repo``. ``DECODE_ENV`` is deliberately NOT
+    here (ADR-0021 §4): it names the environment a replay runs AS, and that is the Worker's to say —
+    a replay spawned by ``decode-kitaru-worker-prod`` should file its traces under ``decode-prod``,
+    not under whatever a registration script guessed months earlier. Provider credentials are NOT
+    here either — they ride the Worker's inherited env (module docstring).
 
     Under ``none`` the repo is dropped entirely: decode rejects a repo when there is no sandbox to
     clone it into (ADR-0012 §3), so shipping one would fail every spawn at pre-flight. The Worker's
@@ -102,7 +104,6 @@ def build_run_env(*, repo: Path, sandbox_mode: str = DEFAULT_SANDBOX_MODE) -> di
     env = {"SANDBOX_MODE": sandbox_mode}
     if sandbox_mode != "none":
         env["SANDBOX_REPO"] = str(repo)
-    env["DECODE_ENV"] = "local"
     return env
 
 

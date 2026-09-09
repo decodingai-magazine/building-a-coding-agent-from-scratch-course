@@ -28,15 +28,18 @@ never runs an ephemeral app. Every decision a run is made of lives in :mod:`deco
   so editing decode rebuilds only the last two — and a code change needs a re-deploy before the
   next run. The console script therefore exists at ONE deterministic absolute path,
   :data:`DECODE_BIN` — the same one the Worker's Agent Version is registered with.
-* **Secrets** ride the ``decode-headless`` :class:`modal.Secret`, and the Secret's ``DECODE_ENV``
-  picks the config surface (ADR-0020 §11). ``DECODE_ENV=prod`` (or ``staging``): the Secret carries
-  the bootstrap only — ``DECODE_ENV`` + ``KITARU_API_URL`` + ``KITARU_API_KEY`` — and Settings
-  hydrates everything else (provider keys, ``KITARU_AGENT_ID``, ``SANDBOX_GIT_TOKEN``) from the
-  ``decode-<env>`` Environment Bucket, so the nested sandbox app is ``decode-sandbox-<env>`` and the
-  Opik project ``decode-<env>``. ``DECODE_ENV`` unset (``local``): the Secret IS the config surface
-  and must carry every key itself. Create it once, values never committed::
+* **One environment, one deployment** (ADR-0021 §2). ``DECODE_ENV`` is read from the DEPLOYING
+  laptop's env, names the app and its Secret — both ``decode-headless-<env>`` — and is baked into
+  the image; the Secret carries credentials only. So ``DECODE_ENV=prod decode remote deploy``
+  publishes ``decode-headless-prod``, running with the Secret of that name, filing Opik traces under
+  ``decode-prod`` and nesting its sandboxes in ``decode-sandbox-prod``. The Secret IS the whole
+  config surface at every environment — there is no second store to fall back to. Create it once,
+  values never committed::
 
-      modal secret create decode-headless DECODE_ENV=prod KITARU_API_URL=… KITARU_API_KEY=…
+      modal secret create decode-headless-prod LLM_PROVIDER=… GEMINI_API_KEY=… [SANDBOX_GIT_TOKEN=…]
+
+  A ``DECODE_ENV`` left INSIDE a Secret is refused at startup (:func:`decode.remote.headless
+  .decode_env_mismatch_error`): it would mean the app's name and the run's environment disagree.
 
 * **Two triggers need no laptop** (ADR-0020 Amendment §8). ``nightly`` is a Modal cron: the schedule
   and the job (task / repo / mode / ceilings) are read from ``DECODE_NIGHTLY_*`` on the laptop AT
@@ -56,7 +59,6 @@ import click
 import modal
 
 from decode.remote.headless import (
-    APP_NAME,
     DEFAULT_SANDBOX_MODE,
     DEFAULT_TIMEOUT_SECONDS,
     FUNCTION_TIMEOUT_SECONDS,
@@ -66,15 +68,18 @@ from decode.remote.headless import (
     NIGHTLY_UNCONFIGURED_MESSAGE,
     REPO_CLONE_DIR,
     SANDBOX_MODE_REJECTED_EXIT,
-    SECRET_NAME,
     WEB_PACKAGES,
     WebhookRequest,
+    app_name,
     build_result,
+    decode_env_mismatch_error,
+    deploy_time_decode_env,
     execute_run,
     nightly_config_error,
     nightly_cron,
     nightly_job_env,
     nightly_run_kwargs,
+    secret_name,
     webhook_request_error,
     webhook_response,
     webhook_spawn_kwargs,
@@ -84,13 +89,21 @@ from decode.remote.image import DECODE_BIN, HARNESS_HOME, build_image
 # The image is built by ``decode.remote.image``, shared with the Modal-hosted Kitaru Worker
 # (``scripts/modal_kitaru_worker.py``) — one build, one layout, one set of absolute paths. The
 # webhook's FastAPI is the only layer the two apps do not share; the locked-deps layer below it is.
-IMAGE = build_image(extra_dirs=(REPO_CLONE_DIR,), extra_packages=WEB_PACKAGES)
+# The environment this deployment IS, read from the deploying laptop once (ADR-0021 §2). It names
+# the app and the Secret below and is baked into the image, so a container can never disagree with
+# the app it runs in about which environment it is.
+DECODE_ENV = deploy_time_decode_env(os.environ)
+
+IMAGE = build_image(
+    decode_env=DECODE_ENV, extra_dirs=(REPO_CLONE_DIR,), extra_packages=WEB_PACKAGES
+)
+SECRET_NAME = secret_name(DECODE_ENV)
 
 # Re-exported: the in-image paths are read from HERE by the Agent Version registration's drift guard
 # (``scripts/register_kitaru_agent.py``) — they are defined once, in ``decode.remote.image``.
 __all__ = ["DECODE_BIN", "HARNESS_HOME", "app", "nightly", "run_task", "webhook"]
 
-app = modal.App(APP_NAME)
+app = modal.App(app_name(DECODE_ENV))
 
 
 def nightly_schedule(env: Mapping[str, str]) -> modal.Cron | None:
@@ -120,7 +133,21 @@ def run_task(
     The whole Function is :func:`decode.remote.headless.execute_run` on the container's env: the
     mode guard, the git credential helper, the harness clone under ``none``, the ``decode run``
     subprocess, the log read-back. Nothing about the agent is re-implemented here (ADR-0020 §1).
+
+    One guard runs first: a Secret that carries its own ``DECODE_ENV`` disagreeing with the deployed
+    one is refused (ADR-0021 §3), because the app name, the Secret name and the run's environment are
+    supposed to be the same fact said once.
     """
+    mismatch = decode_env_mismatch_error(os.environ, deployed_env=DECODE_ENV)
+    if mismatch is not None:
+        click.echo(mismatch, err=True)
+        return build_result(
+            sandbox_mode=sandbox_mode,
+            repo=repo,
+            exit_code=SANDBOX_MODE_REJECTED_EXIT,
+            stdout=mismatch,
+            log_text="",
+        )
     return execute_run(
         task=task,
         repo=repo,
@@ -198,4 +225,4 @@ def webhook(request: WebhookRequest) -> dict[str, object]:
     if error is not None:
         raise HTTPException(status_code=400, detail=error)
     call = run_task.spawn(**webhook_spawn_kwargs(request))
-    return webhook_response(call.object_id, request)
+    return webhook_response(call.object_id, request, decode_env=DECODE_ENV)

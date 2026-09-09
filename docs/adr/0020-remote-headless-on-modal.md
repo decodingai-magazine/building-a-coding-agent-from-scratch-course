@@ -228,7 +228,7 @@ a repo checkout (`uv_sync` needs the lockfile; the source layer needs `src/`) �
 gets one friendly line saying so. Not done (deliberately): moving the Worker under `decode remote
 worker` — no second caller yet.
 
-**2026-09-08 — §11 The Modal Secret picks `DECODE_ENV`; `local` is no longer pinned in-container.**
+**2026-09-08 — §11 The Modal Secret picks `DECODE_ENV`; `local` is no longer pinned in-container.** **SUPERSEDED 2026-09-09 by [ADR-0021](0021-decode-env-is-a-naming-suffix.md) §2,3**: the environment is a DEPLOY-time decision that names the app and its Secret (`decode-headless-<env>`) and is BAKED into the image; a Secret carrying its own `DECODE_ENV` is now refused at startup. §4's two-Secret split still stands. The rest of this entry is history:
 Supersedes §4's "`DECODE_ENV=local` in every container"; §4's two-Secret split and the
 no-`KITARU_AGENT_ID` rule for the Worker Secret stand.
 
