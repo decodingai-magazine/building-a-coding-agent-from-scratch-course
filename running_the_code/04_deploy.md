@@ -87,6 +87,10 @@ uv run decode remote deploy       # → decode-headless-$DECODE_ENV
 
 `run_task` = the run, `nightly` = the cron (§6), `webhook` = the POST endpoint (§5). All three take the same knobs: `task`, `repo`, `sandbox-mode` (`none` | `modal`), `model`, `max-requests`, `timeout-seconds`.
 
+The same three in the dashboard, under **Apps → `decode-headless-<env>`** — idle, costing nothing. `nightly` carries its schedule badge only once §6 has set a cron:
+
+![The three entrypoints of a deployed decode-headless app](../assets/modal_3_entrypoints.png)
+
 ## 4. Run from the CLI
 
 ```bash
@@ -110,11 +114,15 @@ uv run decode remote run "add a hello line to README and commit" \
 git ls-remote https://github.com/<you>/<repo> 'refs/heads/decode/*'
 ```
 
-| `--sandbox-mode` | Where `bash` runs | Hand-back |
-| --- | --- | --- |
-| `none` (default) | the container itself; `--repo` is cloned to `/scratch/repo` and dies with it | none |
-| `modal` | a nested Modal Sandbox, `/workspace` | pushes `decode/<session-id>` when `SANDBOX_GIT_TOKEN` is in the Secret |
-| `docker` | rejected client-side, no container | — |
+A `--sandbox-mode modal` run is two live apps: `run_task` busy on `decode-headless-<env>`, and the nested Sandbox it opened under `decode-sandbox-<env>`:
+
+![One remote run in flight, with its nested Sandbox](../assets/modal_1_running.png)
+
+| `--sandbox-mode` | Where `bash` runs                                                            | Hand-back                                                              |
+| ---------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `none` (default) | the container itself; `--repo` is cloned to `/scratch/repo` and dies with it | none                                                                   |
+| `modal`          | a nested Modal Sandbox, `/workspace`                                         | pushes `decode/<session-id>` when `SANDBOX_GIT_TOKEN` is in the Secret |
+| `docker`         | rejected client-side, no container                                           | —                                                                      |
 
 `--max-requests N` stops the run after N model requests (exit 1, hand-back still runs). `--timeout-seconds` bounds the clock (default 1800).
 
@@ -127,12 +135,33 @@ uv run decode remote attempts "add a hello line to README and commit" \
 
 > ✅ A table, one row per attempt, `shipped` = branch reached origin, then two `git` lines to compare them. Three attempts take about as long as one. `--detach` returns the call ids at once; read them later with `uv run decode remote logs`.
 
+The fan-out is visible as one Function with three of everything — `run_task` at 3 containers / 3 inputs, and three live Sandboxes:
+
+![Three attempts running in parallel](../assets/modal_3_entrypoints_running.png)
+
 ## 5. Run from a webhook
 
-URL from the deploy output. Body = the `run` knobs as JSON; only `task` is required. Proxy auth is the lock: without a valid `Modal-Key` / `Modal-Secret` pair the request is refused at Modal's edge.
+The deploy prints the URL once (§3). To read it again later, open **Apps → `decode-headless-<env>` → Functions → `webhook`** in the Modal dashboard: it sits under the function name, beside a globe and a key icon. The key is the point — it means proxy auth is enforced, so the bare URL is not a public "spend my tokens" button. The icon next to the `webhook` title copies it.
+
+![Where the webhook URL lives on the Modal dashboard](../assets/modal_webhook_url.png)
+
+The shape is deterministic, so you can also just write it out:
+
+```
+https://<workspace>--decode-headless-<env>-webhook.modal.run
+```
+
+`<workspace>` is your Modal workspace slug (`p-b-iusztin` above), and the rest is the app name plus the function name. That same page is where you watch it: **Containers** / **Calls** at the top, and the call-results strip below.
+
+First export your webhook url:
 
 ```bash
 export WEBHOOK_URL=<your_webhook_url>
+```
+
+Then:
+
+```bash
 set -a && . ./.env && set +a
 
 curl -s -X POST "$WEBHOOK_URL" \
@@ -143,6 +172,10 @@ curl -s -X POST "$WEBHOOK_URL" \
 ```
 
 > ✅ `{"call_id": "fc-…", "status": "spawned", "watch": [...]}`. A bad body (`sandbox_mode: "docker"`, empty `task`) is a `400`, nothing spawned. Answer: `uv run decode remote logs`; branch: `git ls-remote`.
+
+The POST returns in milliseconds; the work shows up on `run_task`, not on `webhook` — the endpoint spawns and is done:
+
+![The run spawned by a webhook POST](../assets/modal_webhook.png)
 
 Callers: a GitHub Actions step, a ticket bot, a Slack slash command.
 
@@ -161,7 +194,7 @@ uv run decode remote deploy
 
 > ✅ `Decode: nightly job registered — cron='0 2 * * *' (UTC) task='Find every TODO comment, …'`
 
-`DECODE_NIGHTLY_CRON` (UTC) turns it on; `_TASK` is then required; `_REPO` / `_SANDBOX_MODE` / `_MODEL` / `_MAX_REQUESTS` / `_TIMEOUT_SECONDS` mirror the `run` flags. Stop: redeploy without `DECODE_NIGHTLY_CRON`. Modal's dashboard has a *run now* button on the Function.
+`DECODE_NIGHTLY_CRON` (UTC) turns it on; `_TASK` is then required; `_REPO` / `_SANDBOX_MODE` / `_MODEL` / `_MAX_REQUESTS` / `_TIMEOUT_SECONDS` mirror the `run` flags. Stop: redeploy without `DECODE_NIGHTLY_CRON`. Modal's dashboard has a _run now_ button on the Function.
 
 ## 7. Watch, stop, cost
 
@@ -175,17 +208,17 @@ Containers and nested sandboxes bill per run-second, nothing idle.
 
 ## 8. Troubleshooting
 
-| Symptom | Fix |
-| --- | --- |
-| `Decode: the decode-headless-<env> app is not deployed …` | `uv run decode remote deploy` at that `DECODE_ENV` (also after `modal app stop`). |
-| `Decode: Modal credentials are missing or rejected …` | `uv run modal token set …`. |
-| `Decode: set GEMINI_API_KEY in your environment` in the run's log | the Secret lacks the provider key: re-create it (§2), then redeploy. |
-| `Decode: this deployment is DECODE_ENV=… but its Secret carries …` | remove `DECODE_ENV` from the Secret, or redeploy at the env the Secret names. |
-| Runs land in the wrong Opik project / sandbox app | `DECODE_ENV` at deploy names both; redeploy with the one you meant. |
-| A remote run behaves like last week's code | `uv run decode remote deploy`. |
-| Attempts read `NOT SHIPPED` | `none` mode discards its clone; `modal` mode needs a `SANDBOX_GIT_TOKEN` that can push there. |
-| Webhook `401` / `403` | wrong or missing `Modal-Key` / `Modal-Secret`. |
-| Nightly deploy dies on the laptop | `DECODE_NIGHTLY_CRON` set without `DECODE_NIGHTLY_TASK`. |
+| Symptom                                                            | Fix                                                                                           |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `Decode: the decode-headless-<env> app is not deployed …`          | `uv run decode remote deploy` at that `DECODE_ENV` (also after `modal app stop`).             |
+| `Decode: Modal credentials are missing or rejected …`              | `uv run modal token set …`.                                                                   |
+| `Decode: set GEMINI_API_KEY in your environment` in the run's log  | the Secret lacks the provider key: re-create it (§2), then redeploy.                          |
+| `Decode: this deployment is DECODE_ENV=… but its Secret carries …` | remove `DECODE_ENV` from the Secret, or redeploy at the env the Secret names.                 |
+| Runs land in the wrong Opik project / sandbox app                  | `DECODE_ENV` at deploy names both; redeploy with the one you meant.                           |
+| A remote run behaves like last week's code                         | `uv run decode remote deploy`.                                                                |
+| Attempts read `NOT SHIPPED`                                        | `none` mode discards its clone; `modal` mode needs a `SANDBOX_GIT_TOKEN` that can push there. |
+| Webhook `401` / `403`                                              | wrong or missing `Modal-Key` / `Modal-Secret`.                                                |
+| Nightly deploy dies on the laptop                                  | `DECODE_NIGHTLY_CRON` set without `DECODE_NIGHTLY_TASK`.                                      |
 
 ---
 
