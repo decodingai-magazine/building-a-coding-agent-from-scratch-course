@@ -38,9 +38,18 @@ No extra install: `modal` ships with decode's dependencies.
 ### 2b. The `decode-headless-<env>` Secret
 
 One environment = one deployment = one Secret ([ADR-0021](../docs/adr/0021-decode-env-is-a-naming-suffix.md)).
-`DECODE_ENV` names all three: a plain deploy publishes the app `decode-headless-local`, running with the Secret
-of that same name; `DECODE_ENV=prod` publishes `decode-headless-prod` with `decode-headless-prod`. This page
-uses `local` — swap the suffix and the deploy line together and everything below holds.
+`DECODE_ENV` names all three, and it is set at DEPLOY, never inside the Secret. This page runs at
+**`DECODE_ENV=prod`**: the Secret is `decode-headless-prod`, the deploy is `DECODE_ENV=prod decode remote
+deploy`, and the app it publishes is `decode-headless-prod`. Export it once and every command below —
+`create`, `deploy`, `run`, `logs` — lands on the same deployment:
+
+```bash
+export DECODE_ENV=prod        # or put DECODE_ENV=prod in .env; the launcher reads Settings
+```
+
+Any other environment is the same page with the suffix swapped (`local` is the default when `DECODE_ENV` is
+unset). The one rule: the suffix in the `create` and the `DECODE_ENV` at the `deploy` must match, or the app
+comes up bound to a Secret that does not exist.
 
 The container has no `.env`; **its Secret is its whole config surface**, so it must carry every key that run
 needs. Two rules follow: pass every key on every create (a Secret is replaced, never patched — hence `--force`,
@@ -61,7 +70,7 @@ create is still safe):
 ```bash
 set -a && . ./.env && set +a
 
-uv run modal secret create decode-headless-local \
+uv run modal secret create decode-headless-prod \
   LLM_PROVIDER=gemini \
   GEMINI_API_KEY="$GEMINI_API_KEY" \
   GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}" \
@@ -79,7 +88,7 @@ gets past its 🔑:
 ```bash
 set -a && . ./.env && set +a
 
-uv run modal secret create decode-headless-local \
+uv run modal secret create decode-headless-prod \
   LLM_PROVIDER=modal \
   MODAL_ENDPOINT_URL="$MODAL_ENDPOINT_URL" \
   MODAL_ENDPOINT_MODEL="${MODAL_ENDPOINT_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}" \
@@ -99,7 +108,7 @@ Served `--unauthenticated`? Drop the two `MODAL_PROXY_TOKEN_*` lines — omit bo
 ```bash
 set -a && . ./.env && set +a
 
-uv run modal secret create decode-headless-local \
+uv run modal secret create decode-headless-prod \
   LLM_PROVIDER=openrouter \
   OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
   OPENROUTER_MODEL="${OPENROUTER_MODEL:-openrouter/free}" \
@@ -123,21 +132,20 @@ all, at any `DECODE_ENV`.
 Every trigger runs against the **deployed** app. Deploy builds the image (`debian_slim` + `uv sync` + this repo's source baked in) — **re-run after any change to decode's source, and after any change to the Secret**. Must run from a checkout of this repo:
 
 ```bash
-uv run decode remote deploy                    # → decode-headless-local
-DECODE_ENV=prod uv run decode remote deploy    # → decode-headless-prod, on its own Secret
+uv run decode remote deploy       # DECODE_ENV=prod is exported (§2b) → decode-headless-prod
 ```
 
 Want, at the end of the output:
 
 ```
-Decode: deploying decode-headless-local (DECODE_ENV=local).
+Decode: deploying decode-headless-prod (DECODE_ENV=prod).
 ├── 🔨 Created function run_task.
 ├── 🔨 Created function nightly.
-└── 🔨 Created web function webhook => https://<workspace>--decode-headless-local-webhook.modal.run 🔑
+└── 🔨 Created web function webhook => https://<workspace>--decode-headless-prod-webhook.modal.run 🔑
 ✓ App deployed in 46.102s! 🎉
 ```
 
-`DECODE_ENV` is read here, from this shell (or your `.env`), and **baked into the image** — it is what named the app and the Secret, so the three can never disagree. Every `decode remote` command resolves the same name, so `DECODE_ENV=prod decode remote run …` reaches the `prod` deployment and a plain one cannot.
+`DECODE_ENV` is read here, from this shell (or your `.env`), and **baked into the image** — it is what named the app and the Secret, so the three can never disagree. Prefer it inline (`DECODE_ENV=prod uv run decode remote deploy`) if you would rather not export it. Every `decode remote` command resolves the same name, so a shell without `DECODE_ENV=prod` reaches `decode-headless-local` and reports *that* app as not deployed — which is the failure this naming makes legible instead of silent.
 
 `run_task` = the run; `nightly` = the cron (inert until deployed with a schedule, §5); `webhook` = the POST endpoint (🔑 = proxy auth on, §4). Every trigger takes the same knobs — `task`, `repo`, `sandbox-mode` (`none` | `modal`), `model`, `max-requests`, `timeout-seconds` — and leaves the same traces: the answer in `decode remote logs`, and (`modal` mode + `SANDBOX_GIT_TOKEN`) a `decode/<session-id>` branch on origin.
 
@@ -223,7 +231,7 @@ git ls-remote <url> 'refs/heads/decode/*'
 URL from the deploy output. Body = the `decode remote run` knobs as JSON; only `task` is required. The endpoint spawns the run and returns at once.
 
 ```bash
-export WEBHOOK_URL=https://<workspace>--decode-headless-local-webhook.modal.run
+export WEBHOOK_URL=https://<workspace>--decode-headless-prod-webhook.modal.run
 set -a && . ./.env && set +a         # MODAL_PROXY_TOKEN_ID / MODAL_PROXY_TOKEN_SECRET
 
 curl -s -X POST "$WEBHOOK_URL" \
@@ -237,7 +245,7 @@ Want:
 
 ```json
 {"call_id": "fc-01ABC…", "sandbox_mode": "modal", "repo": "https://github.com/you/your-repo.git",
- "status": "spawned", "watch": ["modal app logs decode-headless-local", …,
+ "status": "spawned", "watch": ["modal app logs decode-headless-prod", …,
  "git ls-remote https://github.com/you/your-repo.git 'refs/heads/decode/*'"]}
 ```
 
@@ -285,7 +293,7 @@ Each morning: `uv run decode remote logs` for the answer, `git ls-remote <repo> 
 ```bash
 uv run decode remote logs           # = modal app logs decode-headless-<env>
 uv run modal app list
-uv run modal app stop decode-headless-local
+uv run modal app stop decode-headless-prod
 ```
 
 | Item                          | Cost                                       |
