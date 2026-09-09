@@ -230,6 +230,14 @@ For the full experience, go through the articles and videos that cover what the 
   </tr>
 </table>
 
+## 📬 Learn How to Build Coding Agents From Scratch
+
+> Join 44k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) to learn to build coding agents from scratch.
+
+<a href="https://www.decodingai.com/" target="_blank">
+  <img src="assets/decodingai.jpg" alt="Decoding AI Magazine" width="100%"/>
+</a>
+
 ## 👥 Who Should Join?
 
 **Engineers who learn by building.** You finish with a working coding agent that teaches you harness engineering patterns to steal for your own agentic applications.
@@ -249,14 +257,14 @@ Best for **ML/AI engineers** who want to level up their craft and for **software
 
 Running the code costs **$0** if you stick to free tiers:
 
-| Service                                                                                                                                                      | Cost                                                                                                             |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| Gemini API (default provider — easy setup, but limited API requests)                                                                                         | free tier ([Google AI Studio](https://aistudio.google.com/apikey))                                               |
-| [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (recommended provider + remote sandbox)                                                     | $30 free credits — enough to run the course                                                                      |
-| OpenRouter (alternative provider)                                                                                                                            | $0 on `:free` models (optional $10 credit raises the daily cap)                                                  |
-| [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)               | free tier                                                                                                        |
-| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (recording + replays)  | free — a managed workspace, nothing to host yourself                                                             |
-| Modal — run headless agents + the Kitaru Worker remotely _(optional)_                                                                                        | usage-based, ~zero idle — see [04_deploy.md](running_the_code/04_deploy.md) + [07_evals_replays_deploy.md](running_the_code/07_evals_replays_deploy.md) |
+| Service                                                                                                                                                          | Cost                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gemini API (default provider — easy setup, but limited API requests)                                                                                             | free tier ([Google AI Studio](https://aistudio.google.com/apikey))                                                                                      |
+| [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (recommended provider + remote sandbox)                                                         | $30 free credits — enough to run the course                                                                                                             |
+| OpenRouter (alternative provider)                                                                                                                                | $0 on `:free` models (optional $10 credit raises the daily cap)                                                                                         |
+| [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)                   | free tier                                                                                                                                               |
+| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (recording + replays) | free — a managed workspace, nothing to host yourself                                                                                                    |
+| Modal — run headless agents + the Kitaru Worker remotely _(optional)_                                                                                            | usage-based, ~zero idle — see [04_deploy.md](running_the_code/04_deploy.md) + [07_evals_replays_deploy.md](running_the_code/07_evals_replays_deploy.md) |
 
 _**Reading-only? Everything's free!**_
 
@@ -299,16 +307,16 @@ One Python package; each module maps to one part of the architecture:
 
 Everything lives under [`running_the_code/`](running_the_code/). Follow them in order; each ends with a link to the next:
 
-| Guide                                                               | What's inside                                        |
-| ------------------------------------------------------------------- | ---------------------------------------------------- |
-| [00_troubleshooting.md](running_the_code/00_troubleshooting.md)     | Every known failure, and its fix                     |
-| [01_install_and_usage.md](running_the_code/01_install_and_usage.md) | Start here: install, one key, first session          |
-| [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)     | Serving open models on Modal                         |
-| [03_sandboxing.md](running_the_code/03_sandboxing.md)               | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
-| [04_deploy.md](running_the_code/04_deploy.md)                       | The headless harness on Modal — CLI, webhook, cron        |
-| [05_evals.md](running_the_code/05_evals.md)                         | Benchmarks, regression probes, and online evals      |
-| [06_evals_replays.md](running_the_code/06_evals_replays.md)         | Kitaru on your laptop: record, replay & the full evals loop |
-| [07_evals_replays_deploy.md](running_the_code/07_evals_replays_deploy.md) | The Kitaru Worker on Modal — replays off-laptop |
+| Guide                                                                     | What's inside                                                      |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [00_troubleshooting.md](running_the_code/00_troubleshooting.md)           | Every known failure, and its fix                                   |
+| [01_install_and_usage.md](running_the_code/01_install_and_usage.md)       | Start here: install, one key, first session                        |
+| [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)           | Serving open models on Modal                                       |
+| [03_sandboxing.md](running_the_code/03_sandboxing.md)                     | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
+| [04_deploy.md](running_the_code/04_deploy.md)                             | The headless harness on Modal — CLI, webhook, cron                 |
+| [05_evals.md](running_the_code/05_evals.md)                               | Benchmarks, regression probes, and online evals                    |
+| [06_evals_replays.md](running_the_code/06_evals_replays.md)               | Kitaru on your laptop: record, replay & the full evals loop        |
+| [07_evals_replays_deploy.md](running_the_code/07_evals_replays_deploy.md) | The Kitaru Worker on Modal — replays off-laptop                    |
 
 ## 🤝 Sponsors
 
@@ -362,7 +370,7 @@ Found a bug and know the fix? Fork, fix, run `make ci` (no API key needed), and 
 
 ## 📬 Learn How to Build Coding Agents From Scratch
 
-> Join 40k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) to learn to build coding agents from scratch.
+> Join 44k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) to learn to build coding agents from scratch.
 
 <a href="https://www.decodingai.com/" target="_blank">
   <img src="assets/decodingai.jpg" alt="Decoding AI Magazine" width="100%"/>

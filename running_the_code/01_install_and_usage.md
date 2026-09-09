@@ -26,6 +26,7 @@ Then set **one** provider in `.env`:
 
 ```bash
 # Gemini — default provider, free key at https://aistudio.google.com/apikey
+LLM_PROVIDER=gemini
 GEMINI_API_KEY=your-key
 
 # or OpenRouter — free router across tool-capable models, key at https://openrouter.ai
@@ -53,14 +54,14 @@ decode
 
 ![Decode REPL](../assets/decode_tui_plain.png)
 
-| Action | Key |
-| --- | --- |
-| Send | `Enter` |
-| Steer a running turn | `Enter` while it works |
-| Queue a follow-up | `Alt+Enter` while it works |
-| Abort the turn | `Esc` |
-| Approve / deny a tool | `y` / `n` |
-| Quit | `Ctrl-D` or `/quit` |
+| Action                | Key                        |
+| --------------------- | -------------------------- |
+| Send                  | `Enter`                    |
+| Steer a running turn  | `Enter` while it works     |
+| Queue a follow-up     | `Alt+Enter` while it works |
+| Abort the turn        | `Esc`                      |
+| Approve / deny a tool | `y` / `n`                  |
+| Quit                  | `Ctrl-D` or `/quit`        |
 
 Everything decode writes lands under `<cwd>/.decode/` (gitignored): `sessions/*.jsonl`, `MEMORY.md`, `logs/decode.log`.
 
