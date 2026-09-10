@@ -29,16 +29,16 @@ dependencies = [
     "click>=8.1,<9",  # major bound only: the old <8.3 zenml cap died with kitaru 0.22 (ADR-0019)
     "rich>=13",
     "prompt-toolkit>=3.0.53",
-    # capped <2.23 by the kitaru-pydantic-ai adapter; lift when the adapter does (ADR-0019 §2)
-    "pydantic-ai-slim[google,openai]>=2.22,<2.23",
+    # minor-pinned to the window the kitaru-pydantic-ai adapter supports (its own cap is <2.41) — ADR-0022 §12
+    "pydantic-ai-slim[google,openai]>=2.40,<2.41",
     "httpx>=0.28.1",
     "markdownify>=1.2.3",
     "pyyaml>=6.0.3",
     "modal>=1.5.3",
     "anyio>=4.14.2",
     "logfire>=4.37.0",
-    "kitaru[cli,mcp,worker]>=0.22.2",
-    "kitaru-pydantic-ai>=0.1.0",  # recording adapter: KitaruAgent wraps build_agent() (ADR-0019 §2)
+    "kitaru[cli,mcp,worker]>=0.26.0",
+    "kitaru-pydantic-ai>=0.2.1",  # recording adapter: KitaruAgent wraps build_agent() (ADR-0019 §2)
 ]
 
 [project.scripts]

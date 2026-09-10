@@ -80,7 +80,7 @@ Same baseline replay as [06 §5](06_evals_replays.md#5-replay-then-compare), pin
 uv run kitaru replay create <SESSION_ID> --agent decode@3 \
   --evaluator 'decode-bad-request-400@1' \
   --tool-policy '{"default":{"type":"history","scope":"baseline","on_miss":"error_result"}}' \
-  --evaluate-baselines
+  --baseline-evaluation-mode if-missing
 uv run kitaru job watch <JOB_ID>
 uv run kitaru replay get <REPLAY_ID>
 ```

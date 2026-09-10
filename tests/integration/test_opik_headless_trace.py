@@ -94,8 +94,15 @@ def _model_spans(spans: list[dict]) -> list[dict]:
 
 
 def _tool_spans(spans: list[dict]) -> list[dict]:
-    """The tool-call spans — ``execute_tool <name>`` under pydantic-ai 2.x instrumentation."""
-    return [s for s in spans if s["name"].startswith("execute_tool")]
+    """The tool-call spans, selected the way the Opik importer selects them.
+
+    Not by span *name*: ``importers/opik_importer.py`` maps a span to a ``tool_call`` node when its
+    metadata says ``gen_ai.operation.name == "execute_tool"``, and reads the tool's name out of
+    ``logfire.msg``. Selecting here on the same attribute means an upstream change to either fact
+    (the pydantic-ai upgrade of task 155 is exactly when that could happen) fails this test instead
+    of silently producing a trace the importer would classify as a plain ``span``.
+    """
+    return [s for s in spans if s["attributes"].get("gen_ai.operation.name") == "execute_tool"]
 
 
 def test_a_headless_run_is_one_decode_run_root_with_nested_spans_and_usage(
@@ -140,6 +147,36 @@ def test_a_headless_run_is_one_decode_run_root_with_nested_spans_and_usage(
     # AC1: a leaf model span carries ``gen_ai.usage.*`` tokens (> 0).
     input_tokens = [s["attributes"].get("gen_ai.usage.input_tokens") for s in model_spans]
     assert any(tokens and tokens > 0 for tokens in input_tokens), input_tokens
+
+
+def test_a_tool_span_carries_what_the_opik_importer_reads(active_tracing, monkeypatch):
+    """The Opik → Kitaru importer's detection contract, pinned on a real run (task 155, AC6).
+
+    ``importers/opik_importer.py`` turns an Opik span into a ``tool_call`` node on exactly two
+    facts, and nothing else: metadata ``gen_ai.operation.name == "execute_tool"``, and a
+    ``logfire.msg`` of the form ``running tool: <name>`` that the tool's name is parsed out of.
+    Both are pydantic-ai instrumentation details, so a version bump can move them without a single
+    other test going red — and the damage would only show up as a Kitaru session whose tool calls
+    all imported as anonymous spans. This asserts them on the spans a real headless run emits.
+    """
+    Path(_READ_TARGET).write_text(_READ_CONTENTS, encoding="utf-8")
+    _patch_agent(
+        monkeypatch,
+        [
+            ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": _READ_TARGET})]),
+            ModelResponse(parts=[TextPart(content="read the spec")]),
+        ],
+    )
+
+    hl.run_headless_task("read the spec then report")
+
+    spans = active_tracing.exporter.exported_spans_as_dict()
+    tool_spans = _tool_spans(spans)
+    assert len(tool_spans) == 1, [s["name"] for s in spans]
+    attributes = tool_spans[0]["attributes"]
+    assert attributes["gen_ai.operation.name"] == "execute_tool"
+    # The name the importer parses — the prefix and the tool name, verbatim (_TOOL_MSG_PREFIX).
+    assert attributes["logfire.msg"] == "running tool: read"
 
 
 def test_each_run_gets_its_own_root_span_and_thread_id(active_tracing, monkeypatch):

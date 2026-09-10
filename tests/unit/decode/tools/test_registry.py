@@ -8,6 +8,7 @@ declared classification (the loop reads it via ``tool_kind`` when building a Per
 from pydantic import SecretStr
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.models.test import TestModel
+from support.registered_tools import registered_tools
 
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
@@ -112,7 +113,7 @@ def test_register_tools_registers_every_spec_on_the_agent(mocker):
     agent = _agent(mocker)
 
     # build_agent already registers via the registry; the real M1 tools must be on the agent...
-    registered = set(agent._function_toolset.tools)
+    registered = set(registered_tools(agent))
     assert {
         "read",
         "glob",
@@ -144,7 +145,7 @@ def test_register_tools_registers_every_spec_onto_a_bare_agent():
 
     register_tools(bare)
 
-    assert set(bare._function_toolset.tools) == {spec.name for spec in TOOL_SPECS}
+    assert set(registered_tools(bare)) == {spec.name for spec in TOOL_SPECS}
 
 
 async def test_restrict_to_active_agent_hides_disallowed_tools(monkeypatch):

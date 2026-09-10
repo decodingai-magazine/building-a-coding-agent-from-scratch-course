@@ -31,6 +31,8 @@ uv run kitaru session get <SESSION_ID>                              # node by no
 
 > ✅ The session appears in the list, every model and tool call a node.
 
+Since kitaru 0.24 `session list` returns no inputs/outputs — add `--include-payloads` when you want them (or read one session with `session get`).
+
 REPL turns record too, grouped by decode session id. Remote runs on Modal record when the same keys ride the headless Secret ([04 §2](04_deploy.md#2-create-the-decode-headless-env-secret)). `KITARU_AGENT_ID` empty = no recording, no kitaru import. Unreachable workspace: a user-launched run continues on the bare agent with one `[kitaru] not recording this run` line and exits 0; a Worker-spawned run hard-fails instead.
 
 Backfill from Opik with the custom importer (a Worker, §4, executes it; payloads split at 50 MiB):
@@ -89,12 +91,12 @@ A **baseline replay** (no override) is the control: it proves the Session reprod
 uv run kitaru replay create <SESSION_ID> --agent decode@2 \
   --evaluator 'decode-bad-request-400@1' \
   --tool-policy '{"default":{"type":"history","scope":"baseline","on_miss":"error_result"}}' \
-  --evaluate-baselines
+  --baseline-evaluation-mode if-missing
 uv run kitaru job watch <JOB_ID>          # from the create output
 uv run kitaru replay get <REPLAY_ID>      # status + result_session_id
 ```
 
-`--evaluator` is required. `history` answers tool calls from the recording; `on_miss: error_result` keeps a miss from executing live (`passthrough` runs real bash, never default to it). `--evaluate-baselines` scores the original too. What-if: `--override '{"model": {"Qwen/Qwen3.6-35B-A3B-FP8": "gemini-3.5-flash"}}'`.
+`--evaluator` is required. `history` answers tool calls from the recording; `on_miss: error_result` keeps a miss from executing live (`passthrough` runs real bash, never default to it). `--baseline-evaluation-mode` (kitaru 0.25, replacing `--evaluate-baselines`) scores the original too: `if-missing` (the default) scores it once, `force` re-scores, `none` skips. What-if: `--override '{"model": {"Qwen/Qwen3.6-35B-A3B-FP8": "gemini-3.5-flash"}}'`.
 
 > ✅ Dashboard (URL from `kitaru status`) → Agents → decode → Sessions: the replay's page has a **Compare** link against its baseline. Any two sessions: tick both → Compare.
 
@@ -105,7 +107,7 @@ uv run kitaru experiment create cheaper-model \
   --evaluator 'decode-bad-request-400@1' \
   --override '{"model": {"Qwen/Qwen3.6-35B-A3B-FP8": "gemini-3.5-flash"}}'
 uv run kitaru experiment run start cheaper-model \
-  --cohort-version <ID> --agent decode@2 --evaluate-baselines --wait      # non-zero on failure: a CI gate
+  --cohort-version <ID> --agent decode@2 --baseline-evaluation-mode if-missing --wait   # non-zero on failure: a CI gate
 ```
 
 Designing a what-if: the `kitaru-replay-experiment` skill.
