@@ -22,6 +22,7 @@ module flag so nothing leaks across tests.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -205,3 +206,42 @@ def test_an_inactive_run_emits_zero_spans_and_returns_the_same_output(capfire, m
 
     assert hl.run_headless_task("run without tracing") == "done, untraced"
     assert capfire.exporter.exported_spans_as_dict() == [], "an inactive run must emit no spans"
+
+
+def test_the_root_span_carries_the_eval_join_metadata(active_tracing, monkeypatch):
+    """ADR-0022 §10: git_sha / model / sandbox_mode / decode_env ride on the exported root span.
+
+    These are the fields Trace Mining filters and joins on, and they must land in the TRACE's
+    metadata — which on Opik's OTLP ingestion means the ``opik.metadata.<key>`` attribute and
+    nothing else (an unmapped bare attribute is dropped; verified against a live trace, task 156).
+    A root span's metadata is the trace's, so asserting the exported attribute here is asserting the
+    whole of decode's side of that contract.
+    """
+    _patch_agent(monkeypatch, [ModelResponse(parts=[TextPart(content="done")])])
+
+    hl.run_headless_task("do it", model="gemini-2.5-pro")
+
+    root = _roots_named(active_tracing.exporter.exported_spans_as_dict(), hl.RUN_SPAN_NAME)[0]
+    attributes = root["attributes"]
+    prefix = tracing.OPIK_METADATA_PREFIX
+    # THIS run's model, not the configured default.
+    assert attributes[f"{prefix}model"] == "gemini-2.5-pro"
+    assert attributes[f"{prefix}sandbox_mode"] == settings.sandbox_mode
+    assert attributes[f"{prefix}decode_env"] == settings.decode_env
+    assert attributes[f"{prefix}git_sha"]  # a sha, or the explicit "unknown" — never missing
+    # ``kitaru_session_id`` is absent unless the adapter published one (0.2.1 does not).
+    assert f"{prefix}kitaru_session_id" not in attributes
+
+
+def test_a_traced_run_also_writes_its_summary(active_tracing, monkeypatch, tmp_path):
+    """The two ground-truth surfaces agree: the summary's session id IS the trace's thread id."""
+    _patch_agent(monkeypatch, [ModelResponse(parts=[TextPart(content="done")])])
+    target = tmp_path / "summary.json"
+
+    assert hl.run_headless_task("do it", summary_json=target) == "done"
+
+    summary = json.loads(target.read_text(encoding="utf-8"))
+    root = _roots_named(active_tracing.exporter.exported_spans_as_dict(), hl.RUN_SPAN_NAME)[0]
+    assert summary["session_id"] == root["attributes"]["thread_id"]
+    assert summary["exit_reason"] == "completed"
+    assert summary["requests"] == 1

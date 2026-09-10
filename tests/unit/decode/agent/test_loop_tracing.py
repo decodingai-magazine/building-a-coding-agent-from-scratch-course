@@ -11,7 +11,7 @@ real-span nesting / usage assertions live in ``tests/integration/test_opik_repl_
 from __future__ import annotations
 
 import contextlib
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -39,13 +39,20 @@ class _SpanRecorder:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str | None]] = []
+        self.metadata: list[Mapping[str, str] | None] = []
         self.enters = 0
         self.exits = 0
 
     def __call__(
-        self, name: str, *, thread_id: str | None = None, input: str | None = None
+        self,
+        name: str,
+        *,
+        thread_id: str | None = None,
+        input: str | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> contextlib.AbstractContextManager[None]:
         self.calls.append((name, thread_id))
+        self.metadata.append(metadata)
         return self._span()
 
     @contextlib.contextmanager
@@ -244,3 +251,17 @@ async def test_exception_mid_leg_closes_the_root_span_exactly_once(agent, record
     # An error, NOT an abort: the turn finished with aborted False (distinguishes it from AC6).
     finished = [e for e in seen if getattr(e, "kind", "") == "turn_finished"]
     assert finished and finished[-1].aborted is False
+
+
+async def test_the_turn_span_carries_the_eval_join_metadata(agent, recorder):
+    """ADR-0022 §10: a REPL turn's root span carries the same four join fields a headless run's does.
+
+    One vocabulary across both surfaces, so a mined REPL trace and a benchmark trial slice alike.
+    """
+    handler = AgentTurnHandler(agent, deps=_deps(), session_id="sess-42")
+    runner = Runner(handler, on_event=lambda event: None)
+
+    with agent.override(model=_text_model("hi")):
+        await _run_one_turn(runner, "hello")
+
+    assert set(recorder.metadata[0]) >= {"git_sha", "model", "sandbox_mode", "decode_env"}

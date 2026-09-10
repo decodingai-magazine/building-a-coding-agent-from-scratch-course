@@ -156,7 +156,12 @@ class AgentTurnHandler:
         pending_results: DeferredToolResults | None = None
 
         with observability.root_span(
-            "chat_turn", thread_id=self._session_id, input=ctx.prompt
+            "chat_turn",
+            thread_id=self._session_id,
+            input=ctx.prompt,
+            # The same join/filter fields a headless run's root span carries (ADR-0022 §10), so a
+            # mined REPL trace and a benchmark trial slice on one vocabulary.
+            metadata=observability.trace_metadata(),
         ) as span:
             try:
                 while True:

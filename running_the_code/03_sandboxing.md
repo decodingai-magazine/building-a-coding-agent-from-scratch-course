@@ -21,6 +21,8 @@ SANDBOX_MODE=docker decode --repo https://github.com/<you>/<repo>
 
 Headless is the same: `SANDBOX_MODE=docker decode run --repo <url> "<task>"`.
 
+- `--summary-json <path>` additionally writes one JSON object for that run — `session_id`, `exit_reason` (`completed` / `request_limit` / `error`), `requests`, tokens, `cost_usd`, the `handback` branch, and the answer — which is how the eval benchmark reads a run's outcome without parsing traces. Nothing else about the run changes.
+
 - `--repo <url-or-path>` (or `SANDBOX_REPO`) clones `HEAD` with your ambient git credentials. `--local` = fast local clone.
 - **Hand-back** on exit or `/ship` commits uncommitted model work, pushes `decode/<session-id>`. Every git command runs **host-side**: no credential enters the sandbox. Failed push: the branch stays in `.decode/sandbox`. Unchanged Workspace: skipped.
 

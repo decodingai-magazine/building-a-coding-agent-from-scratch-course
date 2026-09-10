@@ -412,8 +412,22 @@ def cli(
     help="Stop the run after N model requests (one friendly line, non-zero exit); overrides "
     "RUNTIME_MAX_REQUESTS. Unset = unbounded. A cron or webhook run has nobody watching its bill.",
 )
+@click.option(
+    "--summary-json",
+    "summary_json",
+    default=None,
+    metavar="PATH",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write this run's summary (session id, exit reason, requests, tokens, cost, hand-back "
+    "branch, output) as ONE JSON object at PATH; parent dirs are created. Nothing else changes.",
+)
 def run(
-    task: str | None, model: str | None, repo: str | None, local: bool, max_requests: int | None
+    task: str | None,
+    model: str | None,
+    repo: str | None,
+    local: bool,
+    max_requests: int | None,
+    summary_json: Path | None,
 ) -> None:
     """Run a single TASK headlessly, then print the agent's answer (ADR-0019 §1).
 
@@ -441,6 +455,12 @@ def run(
     the Hand-back still ships whatever the Workspace holds. The ceiling exists for runs nobody
     watches — a cron job, a webhook, a CI step — whose only stop condition would otherwise be the
     model's own.
+
+    ``--summary-json PATH`` additionally writes ONE JSON object describing the run — session id,
+    exit reason (``completed`` / ``request_limit`` / ``error``), requests, tokens, cost, the
+    hand-back branch and the final answer — after the Hand-back. It is what a benchmark trial reads
+    as ground truth instead of parsing traces (ADR-0022 §1); the run's stdout, stderr and exit code
+    are untouched, and a write failure is a log line only.
 
     The agent's answer prints on **stdout** and nothing else does, so a piped ``decode run`` yields
     exactly the answer; diagnostics go to stderr.
@@ -496,16 +516,23 @@ def run(
     )
 
     logger.debug(
-        "decode run starting (task=%r, model=%r, repo=%r, local=%s, max_requests=%r)",
+        "decode run starting (task=%r, model=%r, repo=%r, local=%s, max_requests=%r, "
+        "summary_json=%r)",
         task,
         model,
         resolved_repo,
         local,
         max_requests,
+        summary_json,
     )
     try:
         output = run_headless_task(
-            task, model=model, repo=resolved_repo, local=local, max_requests=max_requests
+            task,
+            model=model,
+            repo=resolved_repo,
+            local=local,
+            max_requests=max_requests,
+            summary_json=summary_json,
         )
     except UsageLimitExceeded as exc:
         # The request ceiling (``--max-requests`` / ``RUNTIME_MAX_REQUESTS``) fired: the run did

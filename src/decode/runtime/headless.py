@@ -29,11 +29,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import click
-from pydantic_ai import Agent, DeferredToolRequests, UsageLimits
+from pydantic_ai import Agent, DeferredToolRequests, UsageLimits, capture_run_messages
+from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.messages import ModelMessage
 
 from decode import observability
 from decode.agent.context_window import resolve_context_window
@@ -44,9 +48,13 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
-from decode.runtime.recording import wrap_for_recording
+from decode.runtime.recording import one_line, recorded_session_id, wrap_for_recording
+from decode.runtime.summary import ExitReason, build_summary, summarize_usage, write_summary
 from decode.tools.askuser import deny_user_question_resolver
 from decode.tools.bash import close_executor, warm_executor
+
+if TYPE_CHECKING:
+    from decode.sandbox.handback import ShipResult
 
 logger = logging.getLogger(__name__)
 
@@ -145,25 +153,29 @@ def _reap_executor() -> None:
         loop.close()
 
 
-def _ship_headless_workspace(repo: str | None, session_id: str) -> None:
+def _ship_headless_workspace(repo: str | None, session_id: str) -> ShipResult | None:
     """Hand the Workspace back as a ``decode/<session-id>`` Session Branch, host-side (ADR-0012 §8).
 
     Runs AFTER the executor reap, which is what sweeps a modal sandbox's filesystem back into the
     Workspace this ships. Every git command is a host subprocess against ``.decode/sandbox``, so no
     credential ever enters the sandbox. Best-effort: a hand-back failure never fails a completed
     run; the outcome is logged. A no-op with no repo / in ``none`` mode.
+
+    Returns the :class:`~decode.sandbox.handback.ShipResult` so the run summary can name the branch
+    it produced (ADR-0022 §1) — ``None`` when there was no hand-back to do, or when it failed.
     """
     if repo is None or settings.sandbox_mode == "none":
-        return
+        return None
     from decode.sandbox.handback import ship_workspace
 
     try:
         result = ship_workspace(Path.cwd(), repo=repo, session_id=session_id)
     except Exception:
         logger.warning("[handback] headless hand-back failed; continuing", exc_info=True)
-        return
+        return None
     if result.branch is not None:
         logger.info("[handback] %s", result.message)
+    return result
 
 
 def resolve_max_requests(flag: int | None) -> int | None:
@@ -180,6 +192,24 @@ def _usage_limits(max_requests: int | None) -> UsageLimits | None:
     return UsageLimits(request_limit=max_requests) if max_requests is not None else None
 
 
+@dataclass(slots=True)
+class _RunState:
+    """What the run's ``finally`` needs to write a summary, filled in as the run progresses.
+
+    Mutable and shared across the ``asyncio.run`` boundary on purpose: ``run_headless_task``'s
+    ``finally`` is outside the loop, and on the ``request_limit`` / ``error`` paths there is no
+    result object to read. ``messages`` is the very list ``capture_run_messages`` mutates in place,
+    so it holds whatever the run got through before it stopped. ``exit_reason`` starts at ``error``
+    so an escape nobody classified still reports honestly.
+    """
+
+    messages: list[ModelMessage] = field(default_factory=list)
+    kitaru_session_id: str | None = None
+    output: str = ""
+    exit_reason: ExitReason = "error"
+    error: str | None = None
+
+
 async def _run_task(
     task: str,
     *,
@@ -188,8 +218,15 @@ async def _run_task(
     local: bool,
     session_id: str,
     max_requests: int | None = None,
+    state: _RunState | None = None,
 ) -> str:
-    """Run ONE task to completion through the bypass agent and return its final text (ADR-0019 §1)."""
+    """Run ONE task to completion through the bypass agent and return its final text (ADR-0019 §1).
+
+    ``state`` is the caller's summary scratchpad (ADR-0022 §1): the captured message history, the
+    Kitaru Session id when the adapter exposes one. It is filled in as the run goes, so the
+    ``finally`` upstairs can report a run that never returned.
+    """
+    state = state if state is not None else _RunState()
     tool_scope = await _prepare_headless_tool_scope(repo, local)
     # The Recording Seam (ADR-0019 §3): the SAME agent back unless recording is configured, in which
     # case it comes back wrapped for Kitaru, with this run's session id naming the Kitaru Session —
@@ -203,10 +240,24 @@ async def _run_task(
     # stays exactly the agent's answer (ADR-0019 §1).
     if recording_notice is not None:
         click.echo(recording_notice, err=True)
+    state.kitaru_session_id = recorded_session_id(agent)
     deps = _build_headless_deps(tool_scope, model)
-    # One root span per run, keyed on the run's session id (a nullcontext when tracing is off).
-    with observability.root_span(RUN_SPAN_NAME, thread_id=session_id, input=task) as span:
-        result = await agent.run(task, deps=deps, usage_limits=_usage_limits(max_requests))
+    # One root span per run, keyed on the run's session id (a nullcontext when tracing is off), plus
+    # the metadata an eval filters and joins traces on (ADR-0022 §10).
+    with observability.root_span(
+        RUN_SPAN_NAME,
+        thread_id=session_id,
+        input=task,
+        metadata=observability.trace_metadata(model, kitaru_session_id=state.kitaru_session_id),
+    ) as span:
+        # ``capture_run_messages`` is the only source that survives a raising run: the result object
+        # does not exist when the request ceiling fires or the provider errors, but the messages the
+        # run DID exchange are already in this list, so the summary reports what was really spent
+        # (ADR-0022 §1). Bound immediately — the list is mutated in place, and a copy taken after
+        # the ``with`` would only ever run on the completed path.
+        with capture_run_messages() as messages:
+            state.messages = messages
+            result = await agent.run(task, deps=deps, usage_limits=_usage_limits(max_requests))
         observability.record_output(span, result.output)
     output = result.output
     if not isinstance(output, str):
@@ -225,6 +276,7 @@ def run_headless_task(
     repo: str | None = None,
     local: bool = False,
     max_requests: int | None = None,
+    summary_json: Path | None = None,
 ) -> str:
     """Run ``task`` headlessly and return the agent's final text — the whole runtime (ADR-0019 §1).
 
@@ -236,6 +288,11 @@ def run_headless_task(
     ships. Both run on error too: a crashed run still ships its work — and so does a run that hit
     its ``max_requests`` ceiling (``--max-requests``, else ``RUNTIME_MAX_REQUESTS``), which raises
     :class:`~pydantic_ai.exceptions.UsageLimitExceeded` out of here for ``decode run`` to report.
+
+    ``summary_json`` (``--summary-json``) writes ONE JSON object at the very end of that ``finally``
+    — after the Hand-back, so it can name the Session Branch — giving a Benchmark Trial ground truth
+    without parsing a trace (ADR-0022 §1). Unset, nothing at all is written and the run is
+    byte-identical; a write failure is a logged warning and never touches the exit code.
     """
     session_id = str(uuid4())
     max_requests = resolve_max_requests(max_requests)
@@ -250,8 +307,9 @@ def run_headless_task(
         local,
         max_requests,
     )
+    state = _RunState()
     try:
-        return asyncio.run(
+        output = asyncio.run(
             _run_task(
                 task,
                 model=model,
@@ -259,8 +317,37 @@ def run_headless_task(
                 local=local,
                 session_id=session_id,
                 max_requests=max_requests,
+                state=state,
             )
         )
+    except UsageLimitExceeded:
+        # The ceiling is not a failure: the run did exactly what it was told to do and stopped, so
+        # the summary reports the spend and leaves ``error`` null (ADR-0022 §1).
+        state.exit_reason = "request_limit"
+        raise
+    except BaseException as error:
+        # Includes the KeyboardInterrupt a benchmark's agent-timeout sends: a run killed at its
+        # deadline still owes the harness a summary of what it spent (ADR-0022 §4).
+        state.error = one_line(error)
+        raise
+    else:
+        state.exit_reason = "completed"
+        state.output = output
+        return output
     finally:
         _reap_executor()
-        _ship_headless_workspace(repo, session_id)
+        handback = _ship_headless_workspace(repo, session_id)
+        if summary_json is not None:
+            # LAST, after the Hand-back, so the summary can name the Session Branch it produced.
+            write_summary(
+                summary_json,
+                build_summary(
+                    session_id=session_id,
+                    kitaru_session_id=state.kitaru_session_id,
+                    exit_reason=state.exit_reason,
+                    error=state.error,
+                    usage=summarize_usage(state.messages),
+                    handback=handback,
+                    output=state.output,
+                ),
+            )
