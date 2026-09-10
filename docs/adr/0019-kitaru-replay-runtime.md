@@ -175,3 +175,7 @@ not anticipate; the rest stands unchanged.
 - **Test surface:** runtime unit tests shrink to the plain runner + seam fakes; the
   integration proof of replay moves OUT of pytest into the operator gate (task 137's
   documented worker replay) — CI no longer exercises kitaru end-to-end, by design.
+
+### Amendment (2026-09-10) — §2 pin lifted
+
+`pydantic-ai-slim[google,openai]>=2.40,<2.41` with `kitaru-pydantic-ai>=0.2.1` (the adapter's own cap is `<2.41`) and `kitaru>=0.26`; see [ADR-0022](0022-evals-v2-own-harbor-on-opik.md) §12.
