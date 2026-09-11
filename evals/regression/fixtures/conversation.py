@@ -1,8 +1,8 @@
-"""A near-limit pre-filled conversation for the compaction probe (ADR-0017 §6; ADR-0006).
+"""A near-limit pre-filled conversation for the compaction case (ADR-0017 §6; ADR-0006).
 
 decode represents an in-progress conversation as a list of pydantic-ai ``ModelMessage``s — the exact
 shape ``decode.context.compaction`` reads and the eval driver's ``message_history`` seeds. The
-compaction probe needs a history that has grown near the model's context window so the agent must
+compaction case needs a history that has grown near the model's context window so the agent must
 compact to keep working. :func:`near_limit_history` builds one deterministically: alternating
 user/assistant turns padded with filler until the coarse ``chars≈/4`` token estimate reaches a target,
 the same estimator ``compaction.split_tail`` uses to size a tail.
@@ -33,10 +33,10 @@ def near_limit_history(
     exceed, since a whole final round is never split). The turns are numbered so the transcript reads
     as a real growing session. ``target_tokens`` must be positive.
 
-    ``early_fact`` seeds ONE concrete fact into the FIRST user turn (the compaction-survival probe's
+    ``early_fact`` seeds ONE concrete fact into the FIRST user turn (the compaction-survival case's
     "early fact": the detail the agent is later asked to recall). It rides the padded first turn, so it
     sits at the OLDEST end of the history — the part full compaction summarizes away — which is exactly
-    the recall-across-compaction behavior the probe grades.
+    the recall-across-compaction behavior the case grades.
     """
     if target_tokens <= 0:
         raise ValueError(f"target_tokens must be positive, got {target_tokens}")

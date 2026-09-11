@@ -22,7 +22,6 @@ from decode.config.settings import settings
 from evals.harness.benchmark import (
     EXPERIMENT_SCORING_FUNCTIONS,
     BenchmarkSelectionError,
-    _select_tasks,
     agent_model,
     default_job_name,
     default_threads,
@@ -30,6 +29,7 @@ from evals.harness.benchmark import (
     make_benchmark_task_fn,
     new_job_dir,
     run_benchmark,
+    select_tasks,
     summarize,
     trial_payload,
     validate_job_name,
@@ -435,13 +435,13 @@ def test_run_benchmark_raises_when_no_task_matches(mocker):
         run_benchmark(task_id="does-not-exist")
 
 
-def test_select_tasks_filters_by_id_and_difficulty(greeting_task_dir: Path):
+def testselect_tasks_filters_by_id_and_difficulty(greeting_task_dir: Path):
     task = load_benchmark_task(greeting_task_dir)
 
-    assert _select_tasks([task], task_id=task.id, difficulty=None) == [task]
-    assert _select_tasks([task], task_id="nope", difficulty=None) == []
-    assert _select_tasks([task], task_id=None, difficulty="easy") == [task]
-    assert _select_tasks([task], task_id=None, difficulty="hard") == []
+    assert select_tasks([task], task_id=task.id, difficulty=None) == [task]
+    assert select_tasks([task], task_id="nope", difficulty=None) == []
+    assert select_tasks([task], task_id=None, difficulty="easy") == [task]
+    assert select_tasks([task], task_id=None, difficulty="hard") == []
 
 
 def test_agent_model_prefers_the_run_override():

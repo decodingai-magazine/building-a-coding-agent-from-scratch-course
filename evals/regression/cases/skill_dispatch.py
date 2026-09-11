@@ -1,4 +1,4 @@
-"""Probe 10 — a task matching a skill's description dispatches that skill by name (ADR-0004; §2,6).
+"""Case 10 — a task matching a skill's description dispatches that skill by name (ADR-0004; §2,6).
 
 Skill-dispatch discipline (ADR-0004): the catalog advertises each skill's name + description cheaply,
 and when a request matches one, the agent should call the ``skill`` tool with that skill's name to pull
@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from evals.harness.metrics import MaxStepsMetric, ToolArgsMetric, ToolCalledMetric
+from evals.regression.case import RegressionCase
 from evals.regression.fixtures import seed_skills_dir
-from evals.regression.probe import RegressionProbe
 
 # A distinctive skill name (no built-in collides) with a description the prompt mirrors.
 _SKILL_NAME = "release-notes"
@@ -39,13 +39,21 @@ def _fixture(workspace: Path) -> None:
     )
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="10-skill-dispatch",
     prompt=(
         "Draft the release notes for version 2.1 from the changelog. Use the skill that fits this "
         "task."
     ),
     fixture=_fixture,
+    difficulty="medium",
+    symptom=(
+        "harness invariant: a task matching a skill's description dispatches that skill by name."
+    ),
+    assertion=(
+        "The response delivers the release notes the user asked for, drafted from the changelog in "
+        "the workspace."
+    ),
     metrics=[
         ToolCalledMetric("skill"),
         ToolArgsMetric(

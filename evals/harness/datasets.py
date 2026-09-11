@@ -1,10 +1,18 @@
-"""Sync the eval tracks into their Opik datasets (ADR-0022 §6; ADR-0017 §2,6).
+"""Sync the eval tracks into their Opik surfaces (ADR-0022 §6,8; ADR-0017 §2,6).
 
 The Opik datasets are the axes every ``evaluate()`` run scores against. ``decode-benchmark-v2`` gets
 one item per Benchmark Task — its key, its slice labels, the prompt VERBATIM and a ``checksum`` over
-the whole task folder; ``decode-regression-v1`` gets one item per behavior probe (``probe_id`` /
-``tags``). The heavy assets (``environment/``, ``tests/``, ``solution/``, probe fixtures) stay on
-disk; the item only needs what a human filters and sorts an Experiment by.
+the whole task folder; ``decode-regression-v2`` gets one item per Regression Case (``case_id`` /
+``difficulty`` / ``tags`` / ``symptom`` / ``source_trace_id``). The heavy assets (``environment/``,
+``tests/``, ``solution/``, case fixtures) stay on disk; the item only needs what a human filters,
+sorts and reads an Experiment by.
+
+A Regression Case registers TWICE from ONE definition (ADR-0022 §8): the dataset item above, which
+the deterministic metrics gate, and a ``decode-regression-suite`` Test Suite item carrying the case's
+natural-language ``assertion``, which an LLM judge grades — the contrast ADR-0017 §6 is built on.
+:func:`regression_items` is that one pass over the cases; :func:`sync_regression_cases` writes both
+surfaces, while :func:`sync_regression_dataset` writes the dataset ALONE so the money-costing gate
+run never depends on the Test Suite API being reachable.
 
 The ``checksum`` is the item's version marker. Opik dedupes an ``insert`` by CONTENT hash, so a task
 whose folder is unchanged re-syncs to the same item, while an EDITED task mints a new item beside the
@@ -23,18 +31,21 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import opik
+from opik.api_objects.dataset.execution_policy import ExecutionPolicy
 
 from decode.config.settings import settings
 from evals.harness.task_loader import BenchmarkTask
 
 if TYPE_CHECKING:
     from opik.api_objects.dataset.dataset import Dataset
+    from opik.api_objects.dataset.test_suite.test_suite import TestSuite
 
-    from evals.regression.probe import RegressionProbe
+    from evals.regression.case import RegressionCase
 
 # The single benchmark dataset version (ADR-0022 §6). Bumping the suite bumps this constant; v2 is
 # the format-v2 Benchmark Task (``task.toml`` + ``instruction.md`` + ``tests/test.sh``).
@@ -45,8 +56,24 @@ BENCHMARK_DATASET_NAME = "decode-benchmark-v2"
 CHECKSUM_IGNORED_DIR_NAMES = frozenset({"__pycache__"})
 CHECKSUM_IGNORED_SUFFIXES = (".pyc",)
 
-# The single regression-probe dataset version (ADR-0017 §6). Bumping the suite bumps this constant.
-REGRESSION_DATASET_NAME = "decode-regression-v1"
+# The single Regression Case dataset version (ADR-0022 §8). Bumping the suite bumps this constant.
+REGRESSION_DATASET_NAME = "decode-regression-v2"
+
+# The Test Suite the same cases register into — surface (b)'s analogue of the dataset name. A FILTERED
+# run appends its slice (``-<tier>`` / ``-<case id>``): ``opik.run_tests`` runs every item of the suite
+# it is handed and takes no item filter, so a tier run gets its own suite rather than billing all 21.
+REGRESSION_SUITE_NAME = "decode-regression-suite"
+
+# Cross-cutting NL quality bars every suite item is graded against (the suite's ``global_assertions``),
+# on top of the case's own ``assertion``.
+GLOBAL_ASSERTIONS: tuple[str, ...] = (
+    "The response directly addresses what the user asked in the prompt.",
+    "The response does not invent files, functions, or facts that are not grounded in the "
+    "workspace the agent was given or in the user's own prompt.",
+)
+
+# One run per item, and that run must pass: a regression gate has no use for a majority vote.
+SUITE_EXECUTION_POLICY: ExecutionPolicy = {"runs_per_item": 1, "pass_threshold": 1}
 
 
 def benchmark_dataset_item(task: BenchmarkTask) -> dict[str, Any]:
@@ -128,27 +155,122 @@ def sync_benchmark_dataset(
     return dataset
 
 
-def regression_dataset_item(probe: RegressionProbe) -> dict[str, Any]:
-    """The Opik dataset item for one probe: its key plus the slice tags (ADR-0017 §6).
+@dataclass(frozen=True)
+class RegressionSurfaces:
+    """The two Opik surfaces one Regression Case registers into (ADR-0022 §8)."""
 
-    ``tags`` is copied into a fresh list so the item never aliases the probe's mutable field.
+    dataset: Dataset
+    suite: TestSuite
+
+
+def regression_dataset_item(case: RegressionCase) -> dict[str, Any]:
+    """The Opik dataset item for one case: its key, tier, slice tags, symptom, provenance (§8).
+
+    ``symptom`` rides along so an Experiment row says what the case exists to catch without a
+    checkout, and ``source_trace_id`` is the LIVE trace a MINED case came from (``None`` for an
+    invented one — never a placeholder). ``tags`` is copied into a fresh list so the item never
+    aliases the case's mutable field.
     """
-    return {"probe_id": probe.id, "tags": list(probe.tags)}
+    return {
+        "case_id": case.id,
+        "difficulty": case.difficulty,
+        "tags": list(case.tags),
+        "symptom": case.symptom,
+        "source_trace_id": case.source_trace_id,
+    }
+
+
+def regression_suite_item(case: RegressionCase) -> dict[str, Any]:
+    """The Opik Test Suite item for one case: the run keys plus its ONE assertion (§8).
+
+    ``data`` is what the suite task fn is handed (the prompt it drives the agent with, the case id it
+    resolves the case by, the tier it is sliced on); ``assertions`` is the case's natural-language
+    quality bar. The bar is a rubric, not judge-visible input — it states what "good" looks like
+    WITHOUT naming the expected value, so a judge reading ``input``/``output`` cannot cheat off it.
+    """
+    return {
+        "data": {"prompt": case.prompt, "case_id": case.id, "difficulty": case.difficulty},
+        "assertions": [case.assertion],
+    }
+
+
+def regression_items(
+    cases: Iterable[RegressionCase],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """ONE pass over the cases → ``(dataset items, suite items)`` — one definition, both surfaces."""
+    dataset_items: list[dict[str, Any]] = []
+    suite_items: list[dict[str, Any]] = []
+    for case in cases:
+        dataset_items.append(regression_dataset_item(case))
+        suite_items.append(regression_suite_item(case))
+    return dataset_items, suite_items
+
+
+def sync_regression_cases(
+    cases: Iterable[RegressionCase],
+    *,
+    client: opik.Opik | None = None,
+    suite_name: str = REGRESSION_SUITE_NAME,
+) -> RegressionSurfaces:
+    """Upsert every case into BOTH Opik surfaces from one pass over the list (ADR-0022 §8).
+
+    The dataset feeds the deterministic metric gate, the Test Suite feeds the natural-language
+    assertions — one case declaration, two registrations, never two lists to keep in sync. Both
+    upserts are idempotent (``get_or_create`` never duplicates, Opik ``insert`` dedupes by content),
+    so re-running is safe; an empty ``cases`` creates both surfaces and inserts nothing.
+    ``suite_name`` lets a filtered run register its own suite (see :data:`REGRESSION_SUITE_NAME`).
+    """
+    client = client or opik.Opik()
+    dataset_items, suite_items = regression_items(cases)
+    dataset = _upsert_regression_dataset(client, dataset_items)
+    suite = _upsert_regression_suite(client, suite_name, suite_items)
+    return RegressionSurfaces(dataset=dataset, suite=suite)
 
 
 def sync_regression_dataset(
-    probes: Iterable[RegressionProbe], *, client: opik.Opik | None = None
+    cases: Iterable[RegressionCase], *, client: opik.Opik | None = None
 ) -> Dataset:
-    """Upsert one dataset item per probe into ``decode-regression-v1`` (ADR-0017 §6).
+    """Upsert one dataset item per case into ``decode-regression-v2`` — the DATASET alone (§8).
 
-    Uses ``get_or_create_dataset`` (never duplicates the dataset) and a single ``insert`` of all items
-    (Opik deduplicates by content, so re-syncing is idempotent). Pass ``client`` to inject a stub in
-    tests; the default constructs a real :class:`opik.Opik`, which needs Opik config. An empty
-    ``probes`` is a valid no-op sync. Returns the Opik ``Dataset`` handle.
+    What :func:`evals.harness.regression.run_regression` calls: the money-costing gate must not
+    depend on the Test Suite API being reachable, so the suite half lives in
+    :func:`sync_regression_cases` and the CLI's ``sync`` is what writes both.
     """
     client = client or opik.Opik()
-    dataset = client.get_or_create_dataset(REGRESSION_DATASET_NAME)
-    items: Sequence[dict[str, Any]] = [regression_dataset_item(probe) for probe in probes]
+    dataset_items, _ = regression_items(cases)
+    return _upsert_regression_dataset(client, dataset_items)
+
+
+def _upsert_regression_dataset(client: opik.Opik, items: Sequence[dict[str, Any]]) -> Dataset:
+    """``get_or_create`` the case dataset IN the eval project and insert ``items`` (idempotent).
+
+    Same project rule as the benchmark dataset: opik 2.2.36 resolves an ``evaluate()`` run's project
+    from the DATASET, so a dataset with no project sends every regression trace to an auto-named
+    project instead of ``decode-evals``.
+    """
+    dataset = client.get_or_create_dataset(
+        REGRESSION_DATASET_NAME, project_name=settings.eval_project_name
+    )
     if items:
-        dataset.insert(items)
+        dataset.insert(list(items))
     return dataset
+
+
+def _upsert_regression_suite(
+    client: opik.Opik, name: str, items: Sequence[dict[str, Any]]
+) -> TestSuite:
+    """``get_or_create`` the Test Suite in the eval project and insert ``items`` (idempotent).
+
+    The suite carries the cross-cutting :data:`GLOBAL_ASSERTIONS` and the one-run-per-item policy;
+    each item carries its case's own assertion. ``project_name`` keeps suite runs under
+    ``decode-evals``, never in live REPL tracing (ADR-0017 §9).
+    """
+    suite = client.get_or_create_test_suite(
+        name=name,
+        project_name=settings.eval_project_name,
+        global_assertions=list(GLOBAL_ASSERTIONS),
+        global_execution_policy=SUITE_EXECUTION_POLICY,
+    )
+    if items:
+        suite.insert(list(items))
+    return suite

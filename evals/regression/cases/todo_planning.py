@@ -1,4 +1,4 @@
-"""Probe 08 — a genuinely multi-step ask is planned with ``todo_write`` (ADR-0002 §7; ADR-0017 §2,6).
+"""Case 08 — a genuinely multi-step ask is planned with ``todo_write`` (ADR-0002 §7; ADR-0017 §2,6).
 
 Planning discipline (ADR-0002): faced with a task that has several distinct steps, the agent should
 lay them out as a TodoWrite list before diving in, so its plan is visible and trackable. A small CLI
@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from evals.harness.metrics import MaxStepsMetric, ToolArgsMetric, ToolCalledMetric
-from evals.regression.probe import RegressionProbe
+from evals.regression.case import RegressionCase
 
 _APP = "app.py"
 _APP_BODY = (
@@ -37,7 +37,7 @@ def _fixture(workspace: Path) -> None:
     (workspace / _APP).write_text(_APP_BODY, encoding="utf-8")
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="08-todo-planning",
     prompt=(
         f"I need three changes to {_APP}: add a --verbose flag, add input validation for the CLI "
@@ -45,6 +45,15 @@ PROBE = RegressionProbe(
         "start."
     ),
     fixture=_fixture,
+    difficulty="medium",
+    symptom=(
+        "harness invariant: a genuinely multi-step ask is planned with todo_write before the work "
+        "starts."
+    ),
+    assertion=(
+        "The response lays the work out as a list covering each of the changes the user asked for, "
+        "rather than starting with no plan."
+    ),
     metrics=[
         ToolCalledMetric("todo_write"),
         ToolArgsMetric(

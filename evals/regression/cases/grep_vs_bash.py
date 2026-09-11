@@ -1,4 +1,4 @@
-"""Probe 02 — finding a definition uses the ``grep`` tool, not a ``bash grep`` shell-out (ADR-0017 §2,6).
+"""Case 02 — finding a definition uses the ``grep`` tool, not a ``bash grep`` shell-out (ADR-0017 §2,6).
 
 Search discipline (ADR-0002): "where is ``parse_config`` defined?" should drive the ``grep`` tool over
 a small source tree, not a ``bash`` shell-out. A tiny ``src/`` package with one ``parse_config``
@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from evals.harness.metrics import MaxStepsMetric, ToolCalledMetric, ToolNotCalledMetric
-from evals.regression.probe import RegressionProbe
+from evals.regression.case import RegressionCase
 
 _CONFIG_SOURCE = '''\
 """Configuration loading for the sample app."""
@@ -35,10 +35,19 @@ def _fixture(workspace: Path) -> None:
     (workspace / "README.md").write_text("# sample app\n", encoding="utf-8")
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="02-grep-vs-bash",
     prompt="Find where the function parse_config is defined in this project.",
     fixture=_fixture,
+    difficulty="easy",
+    symptom=(
+        "harness invariant: finding a definition drives the grep tool, never a `bash grep` "
+        "shell-out."
+    ),
+    assertion=(
+        "The response names where the requested function is defined, rather than guessing or "
+        "reporting that it could not look."
+    ),
     metrics=[
         ToolCalledMetric("grep"),
         ToolNotCalledMetric("bash"),

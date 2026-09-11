@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 # A tiny module whose ``add`` annotates ``int`` params but is called with a ``str`` — an unambiguous
-# type error a language-server / fix-the-bug probe can be asked to find and fix.
+# type error a language-server / fix-the-bug case can be asked to find and fix.
 _TYPE_ERROR_SOURCE = '''\
-"""A tiny module with one deliberate type error for the regression probes."""
+"""A tiny module with one deliberate type error for the regression cases."""
 
 
 def add(left: int, right: int) -> int:
@@ -18,7 +18,7 @@ def add(left: int, right: int) -> int:
 result: int = add("not", "numbers")
 '''
 
-# The minimal skill a dispatch probe needs: a front-matter'd SKILL.md under ``.decode/skills/<name>/``.
+# The minimal skill a dispatch case needs: a front-matter'd SKILL.md under ``.decode/skills/<name>/``.
 _SKILL_TEMPLATE = """\
 ---
 name: {name}
@@ -35,7 +35,7 @@ def seed_type_error(workspace: Path, *, filename: str = "buggy.py") -> Path:
     """Write a tiny Python module carrying one deliberate type error into ``workspace``.
 
     Returns the path of the seeded file (relative name ``filename``). The module type-checks as broken
-    (``add("not", "numbers")`` against ``int`` params) so an LSP / fix-the-bug probe has something
+    (``add("not", "numbers")`` against ``int`` params) so an LSP / fix-the-bug case has something
     concrete to diagnose.
     """
     path = workspace / filename
@@ -53,7 +53,7 @@ def seed_skills_dir(
     """Seed ``<workspace>/.decode/skills/<name>/SKILL.md`` and return the skill's directory.
 
     The layout mirrors decode's on-disk skills catalog (ADR-0004): one folder per skill under
-    ``.decode/skills`` with a front-matter'd ``SKILL.md``. A skill-dispatch probe seeds this, then
+    ``.decode/skills`` with a front-matter'd ``SKILL.md``. A skill-dispatch case seeds this, then
     asks the agent to use the skill.
     """
     skill_dir = workspace / ".decode" / "skills" / name

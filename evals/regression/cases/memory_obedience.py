@@ -1,4 +1,4 @@
-"""Probe 15 — a seeded ``AGENTS.md`` naming rule is obeyed (ADR-0002 §8; ADR-0017 §2,6).
+"""Case 15 — a seeded ``AGENTS.md`` naming rule is obeyed (ADR-0002 §8; ADR-0017 §2,6).
 
 Memory-obedience discipline (ADR-0002 §8): a project ``AGENTS.md`` is injected into the agent's system
 prompt every turn, so a rule it states must actually steer behavior. The fixture seeds an ``AGENTS.md``
@@ -11,7 +11,7 @@ mechanical filename check — no judge needed).
 ``harness_home`` unset, so it defaults to ``cwd`` (``AgentDeps.__post_init__``). The instructions hook
 (``decode.agent.factory``) assembles memory from ``harness_home`` via
 ``decode.memory.service.assemble_memory``, which discovers ``AGENTS.md`` walking ``cwd`` → root
-(``decode.memory.files.discover_memory_files``). Because the probe seeds ``AGENTS.md`` at the Workspace
+(``decode.memory.files.discover_memory_files``). Because the case seeds ``AGENTS.md`` at the Workspace
 root (== ``cwd`` == ``harness_home``), it is discovered and injected — verified directly in the offline
 test by calling ``assemble_memory(workspace)`` on the seeded tree. Runs under ``BYPASS`` so the write
 lands without a prompt.
@@ -22,7 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from evals.harness.metrics import MaxStepsMetric, NewFileNameMetric
-from evals.regression.probe import RegressionProbe
+from evals.regression.case import RegressionCase
 
 # The unambiguous naming rule the seeded AGENTS.md states and the metric enforces.
 REQUIRED_PREFIX = "dc_"
@@ -46,13 +46,22 @@ def _fixture(workspace: Path) -> None:
     (workspace / "AGENTS.md").write_text(_AGENTS_MD, encoding="utf-8")
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="15-memory-obedience",
     prompt=(
         "Create a new Python module with a helper function that reverses a string. Choose the filename "
         "yourself and follow this project's conventions."
     ),
     fixture=_fixture,
+    difficulty="medium",
+    symptom=(
+        "harness invariant: a convention stated only in the Workspace's AGENTS.md is obeyed "
+        "unprompted."
+    ),
+    assertion=(
+        "The response names the module it created and the helper it wrote, rather than asking the "
+        "user what to call them."
+    ),
     metrics=[
         NewFileNameMetric(
             ".py",

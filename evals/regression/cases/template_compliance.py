@@ -1,4 +1,4 @@
-"""Probe 19 — a required report template is followed (ADR-0017 §2,6,7).
+"""Case 19 — a required report template is followed (ADR-0017 §2,6,7).
 
 Template-compliance discipline: when the prompt embeds a required output template, the agent must
 follow its structure — every named section, in order — not answer in free-form prose. A small source
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from evals.harness.judges import make_judge
 from evals.harness.metrics import MaxStepsMetric, OutputContainsMetric
-from evals.regression.probe import RegressionProbe
+from evals.regression.case import RegressionCase
 
 _MODULE = "payments.py"
 _MODULE_BODY = '''\
@@ -63,13 +63,22 @@ def _fixture(workspace: Path) -> None:
     (workspace / _MODULE).write_text(_MODULE_BODY, encoding="utf-8")
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="19-template-compliance",
     prompt=(
         f"Review {_MODULE} and report your findings using EXACTLY this template, keeping every section "
         f"heading verbatim and in order:\n\n{_TEMPLATE}"
     ),
     fixture=_fixture,
+    difficulty="hard",
+    symptom=(
+        "harness invariant: an exact output template is reproduced heading for heading, in order."
+    ),
+    assertion=(
+        "The response is organized under the exact section headings the requested template names, "
+        "in that order, with each section filled in rather than left empty or replied to in "
+        "free-form prose."
+    ),
     metrics=[
         *(OutputContainsMetric(header, name=name) for header, name in REQUIRED_HEADERS),
         _ADHERENCE_JUDGE,

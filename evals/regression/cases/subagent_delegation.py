@@ -1,4 +1,4 @@
-"""Probe 09 — a scoped investigation is delegated to the Explore subagent (ADR-0013; ADR-0017 §2,6).
+"""Case 09 — a scoped investigation is delegated to the Explore subagent (ADR-0013; ADR-0017 §2,6).
 
 Delegation discipline (ADR-0013): asked to investigate how something works across a codebase — a
 read-only, self-contained question — the agent should spawn the read-only Explore subagent via the
@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from evals.harness.metrics import MaxStepsMetric, ToolCalledMetric
-from evals.regression.probe import RegressionProbe
+from evals.regression.case import RegressionCase
 
 _CONFIG = "src/app/config.py"
 _CONFIG_BODY = '''\
@@ -55,13 +55,22 @@ def _fixture(workspace: Path) -> None:
         path.write_text(body, encoding="utf-8")
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="09-subagent-delegation",
     prompt=(
         "Explore this codebase and report how the application configuration is loaded. Delegate the "
         "investigation to a subagent."
     ),
     fixture=_fixture,
+    difficulty="medium",
+    symptom=(
+        "harness invariant: an explicit 'delegate this' drives the agent tool instead of a solo "
+        "exploration."
+    ),
+    assertion=(
+        "The response reports how this codebase loads its configuration, grounded in the files it "
+        "explored rather than in generic advice."
+    ),
     metrics=[
         ToolCalledMetric("agent"),
         MaxStepsMetric(),

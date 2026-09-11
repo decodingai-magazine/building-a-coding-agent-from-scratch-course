@@ -1,139 +1,41 @@
-"""Offline tests for the Opik 2.0 Test Suites surface (ADR-0017 §6; task 116).
+"""Offline tests for the Opik Test Suites regression surface (ADR-0022 §8; ADR-0017 §6).
 
-No infra, no keys, no Opik 2.0: the 2.0 surface (``Opik.get_or_create_test_suite`` / ``opik.run_tests``)
-is MOCKED, since this repo is pinned to opik 1.9.8 (the litellm/rustc gate — see the module docstring).
-The tests cover the version guard, the item shaping, the ``{"input", "output"}`` adapter (and that it
-never leaks an expected answer into ``input``), the suite wiring, and the pass-rate gate.
+No infra, no keys: ``opik.run_tests`` and the client's ``get_or_create_test_suite`` are mocked. The
+tests cover the case selection (``--case`` / ``--difficulty``, skip-guarded cases excluded), the
+sliced suite name a filtered run registers, the ``{"input", "output"}`` adapter (and that it never
+leaks an expected answer into ``input``), the serial run wiring, and the pass-rate gate.
 """
 
 from __future__ import annotations
 
-import opik
 import pytest
 
+from evals.harness.datasets import REGRESSION_SUITE_NAME
 from evals.harness.test_suite import (
-    GLOBAL_ASSERTIONS,
-    ITEM_ASSERTIONS,
     SUITE_PASS_BAR,
-    SUITE_PROBE_IDS,
-    TEST_SUITE_NAME,
     SuitePassRateError,
     SuiteSelectionError,
-    SuiteUnavailableError,
     assert_pass_rate,
-    build_suite,
     make_suite_task_fn,
     run_test_suite,
-    select_suite_probes,
-    suite_api_available,
-    suite_items,
 )
-from evals.regression.loader import load_probes
-from evals.regression.probe import RegressionProbe
+from evals.regression.case import RegressionCase
 
 
-def _probe(probe_id: str, prompt: str = "do the thing") -> RegressionProbe:
-    """A minimal probe standing in for a real one — id + prompt is all the suite surface reads."""
-    return RegressionProbe(
-        id=probe_id,
-        prompt=prompt,
-        fixture=lambda _w: None,
-        metrics=[object()],  # the suite surface never scores with these; one is enough to construct
-    )
-
-
-# --- the version guard (path b) ---------------------------------------------------------------------
-
-
-def test_suite_api_unavailable_on_installed_opik_1_9():
-    """The installed opik 1.9.8 has neither half of the 2.0 surface, so the probe reports unavailable."""
-    assert suite_api_available(object()) is False
-
-
-def test_suite_api_available_true_when_both_halves_present(mocker):
-    """With ``opik.run_tests`` present and a client exposing ``get_or_create_test_suite`` → available."""
-    mocker.patch("opik.run_tests", create=True)
-    client = mocker.Mock(spec=["get_or_create_test_suite"])
-
-    assert suite_api_available(client) is True
-
-
-def test_run_test_suite_raises_a_clear_versioned_stop_when_unavailable(mocker):
-    """Without the 2.0 surface, ``run_test_suite`` stops loudly and names the version + rustc reason."""
-    client = mocker.Mock(spec=[])  # no get_or_create_test_suite → guard fails
-
-    with pytest.raises(SuiteUnavailableError) as excinfo:
-        run_test_suite(client=client)
-
-    message = str(excinfo.value)
-    assert "opik>=2" in message
-    # The INSTALLED version, read live — asserted against opik itself so a dependency bump
-    # (1.9.8 → 2.x) keeps testing the behavior instead of failing on a stale literal.
-    assert opik.__version__ in message
-    assert "rustc" in message
-    assert "116" in message  # points the reader at the task log
-
-
-# --- item + assertion shaping -----------------------------------------------------------------------
-
-
-def test_suite_probe_ids_include_the_three_named_judge_probes():
-    """The subset is anchored on the ADR-named judge probes 17/18/19 (task 116)."""
-    assert {"17-grounded-answer", "18-no-hallucinated-files", "19-template-compliance"} <= set(
-        SUITE_PROBE_IDS
-    )
-
-
-def test_every_suite_probe_has_item_assertions():
-    """Each probe in the subset ships at least one natural-language item assertion."""
-    for probe_id in SUITE_PROBE_IDS:
-        assert ITEM_ASSERTIONS.get(probe_id), probe_id
-
-
-def test_suite_items_carry_probe_id_data_and_item_assertions():
-    """One item per probe: ``data`` keyed by probe id, ``assertions`` from the per-probe rubric."""
-    probes = [_probe("17-grounded-answer"), _probe("18-no-hallucinated-files")]
-
-    items = suite_items(probes)
-
-    assert [item["data"]["probe_id"] for item in items] == [
-        "17-grounded-answer",
-        "18-no-hallucinated-files",
-    ]
-    assert items[0]["assertions"] == list(ITEM_ASSERTIONS["17-grounded-answer"])
-
-
-def test_suite_item_data_never_carries_the_prompt_or_an_expected_answer():
-    """``data`` is just the probe id — no prompt, no expected answer that a judge could read (§6)."""
-    probes = [_probe("17-grounded-answer", prompt="what is the Quibbler responsible for?")]
-
-    items = suite_items(probes)
-
-    assert items[0]["data"] == {"probe_id": "17-grounded-answer"}
-    assert "prompt" not in items[0]["data"]
-
-
-def test_select_suite_probes_orders_by_subset_and_skips_missing(mocker):
-    """The selection follows ``SUITE_PROBE_IDS`` order and drops (warns on) any id not in the registry."""
-    warn = mocker.patch("evals.harness.test_suite.logger.warning")
-    # Registry has two of the subset (out of order) plus an unrelated probe.
-    registry = [
-        _probe("18-no-hallucinated-files"),
-        _probe("unrelated"),
-        _probe("17-grounded-answer"),
-    ]
-
-    selected = select_suite_probes(registry)
-
-    assert [probe.id for probe in selected] == ["17-grounded-answer", "18-no-hallucinated-files"]
-    assert warn.called  # the missing subset ids were logged
-
-
-def test_the_real_registry_supplies_every_suite_probe():
-    """Every id in the subset resolves against the real probe registry (no stale/renamed id)."""
-    selected = select_suite_probes(load_probes())
-
-    assert [probe.id for probe in selected] == list(SUITE_PROBE_IDS)
+def _case(case_id: str, prompt: str = "do the thing", **overrides: object) -> RegressionCase:
+    """A minimal case standing in for a real one — the suite surface reads id / prompt / tier."""
+    fields: dict[str, object] = {
+        "id": case_id,
+        "prompt": prompt,
+        "fixture": lambda _w: None,
+        # the suite surface never scores with these; one is enough to construct
+        "metrics": [object()],
+        "difficulty": "easy",
+        "symptom": "harness invariant: it behaves.",
+        "assertion": "The response behaves.",
+    }
+    fields.update(overrides)
+    return RegressionCase(**fields)  # type: ignore[arg-type]
 
 
 # --- the {"input", "output"} adapter ----------------------------------------------------------------
@@ -141,16 +43,16 @@ def test_the_real_registry_supplies_every_suite_probe():
 
 def test_suite_task_fn_shapes_input_and_output_from_the_regression_payload(mocker):
     """The adapter reuses the regression task fn and returns the ``{input, output}`` Test Suite contract."""
-    probe = _probe("17-grounded-answer", prompt="what is the Quibbler responsible for?")
+    case = _case("17-grounded-answer", prompt="what is the Quibbler responsible for?")
     fake_regression = mocker.Mock(return_value={"output": "The Quibbler deduplicates webhooks."})
     mocker.patch("evals.harness.test_suite.make_regression_task_fn", return_value=fake_regression)
 
-    task = make_suite_task_fn({probe.id: probe})
-    result = task({"probe_id": probe.id})
+    task = make_suite_task_fn({case.id: case})
+    result = task({"case_id": case.id})
 
-    fake_regression.assert_called_once_with({"probe_id": probe.id})
+    fake_regression.assert_called_once_with({"case_id": case.id})
     assert result["output"] == "The Quibbler deduplicates webhooks."
-    assert result["input"] == {"prompt": probe.prompt}
+    assert result["input"] == {"prompt": case.prompt}
 
 
 def test_suite_task_fn_input_never_leaks_an_expected_answer(mocker):
@@ -159,7 +61,7 @@ def test_suite_task_fn_input_never_leaks_an_expected_answer(mocker):
     The docs warn a leaked expectation in ``input`` lets the NL judge cheat, so the adapter must forward
     ONLY the prompt the agent actually received — never the graded payload's internals.
     """
-    probe = _probe("18-no-hallucinated-files", prompt="what does does_not_exist.py do?")
+    case = _case("18-no-hallucinated-files", prompt="what does does_not_exist.py do?")
     fake_regression = mocker.Mock(
         return_value={
             "output": "That file does not exist in the project.",
@@ -169,62 +71,72 @@ def test_suite_task_fn_input_never_leaks_an_expected_answer(mocker):
     )
     mocker.patch("evals.harness.test_suite.make_regression_task_fn", return_value=fake_regression)
 
-    task = make_suite_task_fn({probe.id: probe})
-    result = task({"probe_id": probe.id})
+    task = make_suite_task_fn({case.id: case})
+    result = task({"case_id": case.id})
 
-    assert result["input"] == {"prompt": probe.prompt}
+    assert result["input"] == {"prompt": case.prompt}
     assert "file_state" not in result["input"]
     assert set(result.keys()) == {"input", "output"}
 
 
-# --- suite construction + run wiring ----------------------------------------------------------------
+# --- selection + run wiring -------------------------------------------------------------------------
 
 
-def test_build_suite_creates_the_named_suite_with_global_assertions_and_inserts_items(mocker):
-    """``build_suite`` sets the global NL bars + project on the suite and inserts one item per probe."""
-    from decode.config.settings import settings
-
-    probes = [_probe("17-grounded-answer"), _probe("18-no-hallucinated-files")]
-    client = mocker.Mock()
-    suite = client.get_or_create_test_suite.return_value
-
-    returned = build_suite(client, probes)
-
-    assert returned is suite
-    _, kwargs = client.get_or_create_test_suite.call_args
-    assert kwargs["name"] == TEST_SUITE_NAME
-    assert kwargs["global_assertions"] == list(GLOBAL_ASSERTIONS)
-    assert kwargs["project_name"] == settings.eval_project_name
-    suite.insert.assert_called_once()
-    inserted = suite.insert.call_args[0][0]
-    assert [item["data"]["probe_id"] for item in inserted] == [
-        "17-grounded-answer",
-        "18-no-hallucinated-files",
-    ]
-
-
-def test_run_test_suite_builds_the_suite_and_runs_it(mocker):
-    """The happy path: guard passes → build_suite → ``opik.run_tests`` with the adapter, result returned."""
+def test_run_test_suite_registers_the_cases_and_runs_the_suite_serially(mocker):
+    """The happy path: sync both surfaces → ``opik.run_tests`` with the adapter, one item at a time."""
     run_tests = mocker.patch("opik.run_tests", create=True)
-    client = mocker.Mock(spec=["get_or_create_test_suite"])
-    suite = client.get_or_create_test_suite.return_value
+    sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a"), _case("b")])
+    client = mocker.Mock()
 
     result = run_test_suite(client=client)
 
     assert result is run_tests.return_value
-    _, kwargs = run_tests.call_args
-    assert kwargs["test_suite"] is suite
+    assert sync.call_args.kwargs["suite_name"] == REGRESSION_SUITE_NAME
+    assert [case.id for case in sync.call_args.args[0]] == ["a", "b"]
+    kwargs = run_tests.call_args.kwargs
+    assert kwargs["test_suite"] is sync.return_value.suite
     assert callable(kwargs["task"])
+    # The agent runs host-native through the process-global bash seam — two items at once would clash.
+    assert kwargs["worker_threads"] == 1
 
 
-def test_run_test_suite_raises_when_no_subset_probe_is_in_the_registry(mocker):
-    """An empty selection is a friendly stop, never a silent zero-item suite run."""
+def test_a_filtered_run_registers_its_own_sliced_suite(mocker):
+    """``run_tests`` has no item filter, so a tier run gets its own suite instead of billing all 21."""
     mocker.patch("opik.run_tests", create=True)
-    client = mocker.Mock(spec=["get_or_create_test_suite"])
-    mocker.patch("evals.harness.test_suite.load_probes", return_value=[_probe("unrelated")])
+    sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    mocker.patch(
+        "evals.harness.test_suite.load_cases",
+        return_value=[_case("a"), _case("b", difficulty="hard")],
+    )
+
+    run_test_suite(difficulty="hard", client=mocker.Mock())
+
+    assert sync.call_args.kwargs["suite_name"] == f"{REGRESSION_SUITE_NAME}-hard"
+    assert [case.id for case in sync.call_args.args[0]] == ["b"]
+
+
+def test_a_skip_guarded_case_is_never_registered_or_run(mocker):
+    """A declared-but-blocked case (MCP) stays in the registry and out of the judged suite."""
+    mocker.patch("opik.run_tests", create=True)
+    sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    mocker.patch(
+        "evals.harness.test_suite.load_cases",
+        return_value=[_case("a"), _case("skipped", skip_reason="MCP has not shipped")],
+    )
+
+    run_test_suite(client=mocker.Mock())
+
+    assert [case.id for case in sync.call_args.args[0]] == ["a"]
+
+
+def test_run_test_suite_raises_when_the_filter_matches_nothing(mocker):
+    """An empty selection is a friendly stop, never a silent zero-item (vacuously green) suite run."""
+    mocker.patch("opik.run_tests", create=True)
+    mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a")])
 
     with pytest.raises(SuiteSelectionError):
-        run_test_suite(client=client)
+        run_test_suite(case_id="nope", client=mocker.Mock())
 
 
 # --- the pass-rate gate -----------------------------------------------------------------------------

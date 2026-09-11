@@ -153,7 +153,7 @@ def test_run_online_eval_passes_live_project_and_single_metric(mocker, with_keys
     assert kwargs["filter_string"] == 'status = "inactive"'
     assert len(kwargs["metrics"]) == 1
     assert isinstance(kwargs["metrics"][0], ConversationThreadMetric)
-    # both transforms are required callables in opik 1.9.8's signature
+    # both transforms are required callables in the installed opik's signature
     assert kwargs["trace_input_transform"]({"input": "q"}) == "q"
     assert kwargs["trace_output_transform"]("a") == "a"
 

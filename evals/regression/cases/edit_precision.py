@@ -1,4 +1,4 @@
-"""Probe 03 — a one-value change is a surgical ``edit``, not a file rewrite (ADR-0017 §2,6).
+"""Case 03 — a one-value change is a surgical ``edit``, not a file rewrite (ADR-0017 §2,6).
 
 Edit-precision (ADR-0002): "change the port to 9000" should touch exactly the ``PORT`` line via the
 ``edit`` tool, leaving the rest of ``config.py`` byte-for-byte. A small config module is seeded; the run
@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from evals.harness.metrics import FileDiffLinesMetric, MaxStepsMetric, ToolCalledMetric
-from evals.regression.probe import RegressionProbe
+from evals.regression.case import RegressionCase
 
 _CONFIG = "config.py"
 _CONFIG_BODY = 'HOST = "localhost"\nPORT = 8000\nDEBUG = False\n'
@@ -24,10 +24,16 @@ def _fixture(workspace: Path) -> None:
     (workspace / _CONFIG).write_text(_CONFIG_BODY, encoding="utf-8")
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="03-edit-precision",
     prompt=f"Change the port in {_CONFIG} to 9000.",
     fixture=_fixture,
+    difficulty="easy",
+    symptom="harness invariant: a one-value change is a surgical edit, not a whole-file rewrite.",
+    assertion=(
+        "The response confirms the single value the user named was changed in place, and never "
+        "describes rewriting the whole file."
+    ),
     metrics=[
         ToolCalledMetric("edit"),
         FileDiffLinesMetric(path=_CONFIG, baseline=_CONFIG_BODY, max_lines=2),

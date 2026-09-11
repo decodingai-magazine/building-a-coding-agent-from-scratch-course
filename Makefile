@@ -36,9 +36,9 @@ eval-benchmark:  ## Outcome benchmark as an Opik experiment (needs OPIK_API_KEY 
 		uv run python -m evals benchmark $(ARGS); \
 	fi
 
-eval-regression:  ## Pre-merge behavior regression gate: sync probes + threshold gate (needs OPIK_API_KEY + provider key; skips friendly without). Costs money; never in CI.
+eval-regression:  ## Pre-merge behavior regression gate: sync cases + threshold gate (needs OPIK_API_KEY + provider key; skips friendly without). Costs money; never in CI. Slice a tier with ARGS='--difficulty hard'.
 	@if uv run python -m evals.harness.keys; then \
-		uv run python -m evals sync --no-benchmark --regression && uv run pytest evals/regression/test_thresholds.py; \
+		uv run python -m evals sync --no-benchmark --regression $(ARGS) && uv run pytest evals/regression/test_thresholds.py $(ARGS); \
 	fi
 
 build:  ## Build wheel + sdist into dist/.

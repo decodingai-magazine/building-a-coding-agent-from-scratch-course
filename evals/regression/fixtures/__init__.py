@@ -1,18 +1,18 @@
-"""Shared fixture builders the regression probes seed a fresh Workspace with (ADR-0017 §6).
+"""Shared fixture builders the regression cases seed a fresh Workspace with (ADR-0017 §6).
 
-Each builder is a small, offline, reusable seed a probe's ``fixture`` composes:
+Each builder is a small, offline, reusable seed a case's ``fixture`` composes:
 
 * :func:`seed_type_error` — a tiny Python module carrying one obvious type error (the LSP / fix-a-bug
-  probes);
-* :func:`seed_skills_dir` — a ``.decode/skills/<name>/SKILL.md`` layout (the skill-dispatch probes);
+  cases);
+* :func:`seed_skills_dir` — a ``.decode/skills/<name>/SKILL.md`` layout (the skill-dispatch cases);
 * :func:`serve_page` — a stdlib ``http.server`` serving one known page on localhost, as a context
-  manager a probe enters around the run (the web-fetch probes);
+  manager a case enters around the run (the web-fetch cases);
 * :func:`near_limit_history` — a pre-filled pydantic-ai conversation sized near a token budget (the
-  compaction probe's ``message_history``);
+  compaction case's ``message_history``);
 * :func:`seed_mcp_note` / :func:`mcp_stdio_server_stub` — the documented stub for the skip-guarded
-  MCP-tool-usage probe (decode has no MCP factory yet, so no ``fastmcp`` dependency).
+  MCP-tool-usage case (decode has no MCP factory yet, so no ``fastmcp`` dependency).
 
-They are re-exported here so a probe writes ``from evals.regression.fixtures import seed_type_error``.
+They are re-exported here so a case writes ``from evals.regression.fixtures import seed_type_error``.
 """
 
 from __future__ import annotations

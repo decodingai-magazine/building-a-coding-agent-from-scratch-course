@@ -178,15 +178,34 @@ def test_benchmark_subcommand_reports_an_empty_selection(mocker):
 
 
 def test_regression_subcommand_invokes_run_regression(mocker):
-    """``evals regression --probe X`` forwards the id to ``run_regression`` and reports the project."""
+    """``evals regression --case X`` forwards the id to ``run_regression`` and reports the project."""
     run_regression = mocker.patch("evals.harness.regression.run_regression")
 
-    result = CliRunner().invoke(cli, ["regression", "--probe", "smoke-read-tool"])
+    result = CliRunner().invoke(cli, ["regression", "--case", "smoke-read-tool"])
 
     assert result.exit_code == 0, result.output
     _, kwargs = run_regression.call_args
-    assert kwargs["probe_id"] == "smoke-read-tool"
+    assert kwargs["case_id"] == "smoke-read-tool"
+    assert kwargs["difficulty"] is None
     assert "decode-evals" in result.output
+
+
+def test_regression_subcommand_forwards_the_difficulty_tier(mocker):
+    """``evals regression --difficulty hard`` slices the paid run to one tier (ADR-0022 §8)."""
+    run_regression = mocker.patch("evals.harness.regression.run_regression")
+
+    result = CliRunner().invoke(cli, ["regression", "--difficulty", "hard"])
+
+    assert result.exit_code == 0, result.output
+    assert run_regression.call_args.kwargs["difficulty"] == "hard"
+
+
+def test_regression_subcommand_rejects_an_unknown_tier():
+    """A typo'd tier is a friendly ``Invalid value`` before any billed run starts."""
+    result = CliRunner().invoke(cli, ["regression", "--difficulty", "trivial"])
+
+    assert result.exit_code != 0
+    assert "Invalid value" in result.output
 
 
 def test_regression_subcommand_reports_an_empty_selection(mocker):
@@ -195,13 +214,13 @@ def test_regression_subcommand_reports_an_empty_selection(mocker):
 
     mocker.patch(
         "evals.harness.regression.run_regression",
-        side_effect=RegressionSelectionError("no regression probe matched"),
+        side_effect=RegressionSelectionError("no regression case matched"),
     )
 
-    result = CliRunner().invoke(cli, ["regression", "--probe", "nope"])
+    result = CliRunner().invoke(cli, ["regression", "--case", "nope"])
 
     assert result.exit_code != 0
-    assert "no regression probe matched" in result.output
+    assert "no regression case matched" in result.output
 
 
 def test_suite_subcommand_runs_and_reports_pass_rate(mocker):
@@ -227,19 +246,30 @@ def test_suite_subcommand_gates_non_zero_below_the_bar(mocker):
     assert "below the bar" in result.output
 
 
-def test_suite_subcommand_reports_the_version_gate_when_opik_is_too_old(mocker):
-    """On the pinned opik 1.9.8 the surface exits with a clear versioned message, not a traceback."""
-    from evals.harness.test_suite import SuiteUnavailableError
+def test_suite_subcommand_forwards_the_case_and_tier_filters(mocker):
+    """``suite`` takes the SAME ``--case`` / ``--difficulty`` slice ``regression`` does (§8)."""
+    run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
+    run_test_suite.return_value = mocker.Mock(pass_rate=1.0)
+
+    result = CliRunner().invoke(cli, ["suite", "--difficulty", "hard"])
+
+    assert result.exit_code == 0, result.output
+    assert run_test_suite.call_args.kwargs == {"case_id": None, "difficulty": "hard"}
+
+
+def test_suite_subcommand_reports_an_empty_selection(mocker):
+    """A ``SuiteSelectionError`` becomes a friendly non-zero CLI error, not a traceback."""
+    from evals.harness.test_suite import SuiteSelectionError
 
     mocker.patch(
         "evals.harness.test_suite.run_test_suite",
-        side_effect=SuiteUnavailableError("Opik Test Suites need opik>=2.0"),
+        side_effect=SuiteSelectionError("no runnable regression case matched"),
     )
 
-    result = CliRunner().invoke(cli, ["suite"])
+    result = CliRunner().invoke(cli, ["suite", "--case", "nope"])
 
     assert result.exit_code != 0
-    assert "opik>=2.0" in result.output
+    assert "no runnable regression case matched" in result.output
 
 
 def test_online_subcommand_prints_thread_scores(mocker):
@@ -301,25 +331,57 @@ def test_online_subcommand_reports_no_threads(mocker):
     assert "no threads to score in decode-prod" in result.output
 
 
-def test_sync_regression_upserts_probe_items(mocker):
-    """``evals sync --regression --no-benchmark`` syncs the probe registry into the regression dataset."""
-    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_dataset")
-    probe = mocker.Mock()
-    mocker.patch("evals.regression.loader.load_probes", return_value=[probe])
+def test_sync_regression_upserts_both_surfaces(mocker):
+    """``evals sync --regression --no-benchmark`` writes the v2 dataset AND the Test Suite (§8)."""
+    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    case = mocker.Mock(skip_reason=None, difficulty="easy")
+    mocker.patch("evals.regression.loader.load_cases", return_value=[case])
 
     result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--regression"])
 
     assert result.exit_code == 0, result.output
-    sync_regression.assert_called_once_with([probe])
-    assert "decode-regression-v1" in result.output
+    sync_regression.assert_called_once_with([case])
+    assert "decode-regression-v2" in result.output
+    assert "decode-regression-suite" in result.output
+
+
+def test_sync_regression_skips_a_skip_guarded_case(mocker):
+    """The Opik surfaces carry what actually RUNS; the registry keeps the blocked case visible."""
+    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    runnable = mocker.Mock(skip_reason=None, difficulty="easy")
+    skipped = mocker.Mock(skip_reason="MCP has not shipped", difficulty="medium")
+    skipped.id = "12-mcp-tool-usage"
+    mocker.patch("evals.regression.loader.load_cases", return_value=[runnable, skipped])
+
+    result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--regression"])
+
+    assert result.exit_code == 0, result.output
+    sync_regression.assert_called_once_with([runnable])
+    # The echo names the skip, so "upserted 1" vs "2 case(s) available" explains itself.
+    assert "1 skipped: 12-mcp-tool-usage" in result.output
+
+
+def test_sync_forwards_the_difficulty_tier_to_both_tracks(mocker):
+    """``make eval-regression ARGS='--difficulty hard'`` syncs the same tier the gate then runs."""
+    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    easy = mocker.Mock(skip_reason=None, difficulty="easy")
+    hard = mocker.Mock(skip_reason=None, difficulty="hard")
+    mocker.patch("evals.regression.loader.load_cases", return_value=[easy, hard])
+
+    result = CliRunner().invoke(
+        cli, ["sync", "--no-benchmark", "--regression", "--difficulty", "hard"]
+    )
+
+    assert result.exit_code == 0, result.output
+    sync_regression.assert_called_once_with([hard])
 
 
 def test_sync_default_syncs_both_datasets(mocker):
     """Plain ``evals sync`` upserts BOTH the benchmark and the regression datasets."""
     sync_benchmark = mocker.patch("evals.harness.datasets.sync_benchmark_dataset")
-    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_dataset")
+    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
     mocker.patch("evals.harness.task_loader.load_benchmark_tasks", return_value=[])
-    mocker.patch("evals.regression.loader.load_probes", return_value=[])
+    mocker.patch("evals.regression.loader.load_cases", return_value=[])
 
     result = CliRunner().invoke(cli, ["sync"])
 
@@ -367,16 +429,16 @@ def test_regression_subcommand_reports_an_invalid_opik_key(mocker):
     """The headline ``make eval-regression`` ritual: a wrong key stays friendly (twice-flagged; task 121)."""
     mocker.patch("evals.harness.regression.run_regression", side_effect=_api_error(401))
 
-    result = CliRunner().invoke(cli, ["regression", "--probe", "05-web-fetch-discipline"])
+    result = CliRunner().invoke(cli, ["regression", "--case", "05-web-fetch-discipline"])
 
     _assert_friendly_opik_key_error(result)
 
 
 def test_sync_subcommand_reports_an_invalid_opik_key(mocker):
     """``evals sync`` (the first thing ``make eval-regression`` runs) friendly-fails on a wrong key."""
-    probe = mocker.Mock()
-    mocker.patch("evals.regression.loader.load_probes", return_value=[probe])
-    mocker.patch("evals.harness.datasets.sync_regression_dataset", side_effect=_api_error(401))
+    case = mocker.Mock(skip_reason=None, difficulty="easy")
+    mocker.patch("evals.regression.loader.load_cases", return_value=[case])
+    mocker.patch("evals.harness.datasets.sync_regression_cases", side_effect=_api_error(401))
 
     result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--regression"])
 
@@ -397,9 +459,8 @@ def test_online_subcommand_reports_an_invalid_opik_key(mocker):
 def test_suite_subcommand_reports_an_invalid_opik_key(mocker):
     """``suite`` wraps ``run_test_suite`` in ``opik_boundary`` too — a wrong key stays friendly.
 
-    Version-gated on the pinned opik 1.9.8 today, but the moment the pin lifts a present-but-invalid
-    ``OPIK_API_KEY`` here must not dump the raw ``ApiError`` traceback the other four subcommands
-    already suppress (task 122, Nit 2).
+    A present-but-invalid ``OPIK_API_KEY`` here must not dump the raw ``ApiError`` traceback the
+    other four subcommands already suppress (task 122, Nit 2).
     """
     mocker.patch("evals.harness.test_suite.run_test_suite", side_effect=_api_error(401))
 
@@ -412,7 +473,7 @@ def test_a_non_auth_api_error_is_still_friendly(mocker):
     """A non-401 Opik failure (e.g. 500) is still one friendly line naming the status, not a traceback."""
     mocker.patch("evals.harness.regression.run_regression", side_effect=_api_error(500))
 
-    result = CliRunner().invoke(cli, ["regression", "--probe", "05-web-fetch-discipline"])
+    result = CliRunner().invoke(cli, ["regression", "--case", "05-web-fetch-discipline"])
 
     _assert_friendly_opik_key_error(result, status="500")
 

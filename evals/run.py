@@ -1,9 +1,9 @@
 """The ``python -m evals`` CLI body — a Click group with the eval tracks as subcommands (ADR-0017).
 
-``benchmark`` runs the outcome benchmark (task 106); ``regression`` runs the behavior probes host-native
-(task 111); ``sync`` upserts the Opik datasets (tasks 105, 111). Deliberately imports no ``opik`` at
-module scope — the Opik harness is pulled in lazily by the tracks that need it, so building the CLI never
-needs keys or a network.
+``benchmark`` runs the outcome benchmark (ADR-0022 §1); ``regression`` runs the behavior cases
+host-native (§8); ``suite`` runs the same cases against their natural-language assertions; ``sync``
+upserts the Opik surfaces. Deliberately imports no ``opik`` at module scope — the Opik harness is
+pulled in lazily by the tracks that need it, so building the CLI never needs keys or a network.
 """
 
 from __future__ import annotations
@@ -174,20 +174,27 @@ def settings_project_name() -> str:
 
 
 @cli.command()
-@click.option("--probe", "probe_id", default=None, help="Run only this regression probe id.")
-def regression(probe_id: str | None) -> None:
-    """Run the behavior regression probes host-native as an Opik experiment (ADR-0017 §3,4,6).
+@click.option("--case", "case_id", default=None, help="Run only this regression case id.")
+@click.option(
+    "--difficulty",
+    type=click.Choice(["easy", "medium", "hard"]),
+    default=None,
+    help="Run only the cases of this difficulty tier.",
+)
+def regression(case_id: str | None, difficulty: str | None) -> None:
+    """Run the behavior Regression Cases host-native as an Opik experiment (ADR-0022 §8).
 
-    Each selected probe seeds a fresh temp Workspace, runs the real agent HOST-NATIVE (``none`` mode —
-    no docker) under the probe's gate policy, and scores its behavior with the probe's metrics under
-    ``settings.eval_project_name``. Opik + the harness are imported lazily so ``--help`` never needs keys
-    or a network (ADR-0017 §1).
+    Each selected case seeds a fresh temp Workspace, runs the real agent HOST-NATIVE (``none`` mode —
+    no docker) under the case's gate policy, and scores its behavior with the case's deterministic
+    metrics. ``--difficulty`` slices the run to one tier and names the experiment after it
+    (``decode-regression-gate-hard``), so a tier's baseline stays its own. Opik + the harness are
+    imported lazily so ``--help`` never needs keys or a network (ADR-0017 §1).
     """
     from evals.harness.regression import RegressionSelectionError, run_regression
 
     try:
         with opik_boundary():
-            run_regression(probe_id=probe_id)
+            run_regression(case_id=case_id, difficulty=difficulty)
     except RegressionSelectionError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -195,28 +202,34 @@ def regression(probe_id: str | None) -> None:
 
 
 @cli.command()
-def suite() -> None:
-    """Run the Opik 2.0 Test Suite regression surface — natural-language assertions (ADR-0017 §6).
+@click.option("--case", "case_id", default=None, help="Run only this regression case id.")
+@click.option(
+    "--difficulty",
+    type=click.Choice(["easy", "medium", "hard"]),
+    default=None,
+    help="Run only the cases of this difficulty tier.",
+)
+def suite(case_id: str | None, difficulty: str | None) -> None:
+    """Run the Opik Test Suite regression surface — natural-language assertions (ADR-0022 §8).
 
-    The CONTRAST to ``regression``: instead of deterministic code metrics + a threshold gate, a small
-    subset of the most judge-flavored probes is graded against natural-language quality bars by an LLM
-    judge, and the run is gated on its ``pass_rate``. Needs opik>=2.0; on the pinned opik 1.9.8 this
-    exits with a clear version-gate message (task 116). Opik + the harness are imported lazily so
-    ``--help`` never needs keys or a network (ADR-0017 §1).
+    The CONTRAST to ``regression``: the same cases, graded by an LLM judge against each case's
+    ``assertion`` (plus the suite's global bars) instead of deterministic metrics, gated on the run's
+    ``pass_rate``. A filtered run registers and runs its own sliced suite, since ``run_tests`` has no
+    per-item filter. Opik + the harness are imported lazily so ``--help`` never needs keys or a
+    network (ADR-0017 §1).
     """
     from evals.harness.test_suite import (
         SUITE_PASS_BAR,
         SuitePassRateError,
         SuiteSelectionError,
-        SuiteUnavailableError,
         assert_pass_rate,
         run_test_suite,
     )
 
     try:
         with opik_boundary():
-            result = run_test_suite()
-    except (SuiteUnavailableError, SuiteSelectionError) as exc:
+            result = run_test_suite(case_id=case_id, difficulty=difficulty)
+    except SuiteSelectionError as exc:
         raise click.ClickException(str(exc)) from exc
 
     pass_rate = result.pass_rate
@@ -283,14 +296,25 @@ def online(filter_string: str | None) -> None:
     "regression",
     default=True,
     show_default=True,
-    help="Sync the behavior probes into the decode-regression-v1 Opik dataset.",
+    help="Sync the Regression Cases into the decode-regression-v2 dataset AND their Test Suite.",
 )
-def sync(benchmark: bool, regression: bool) -> None:
-    """Upsert the eval tracks' Opik datasets (ADR-0017 §2,6).
+@click.option(
+    "--difficulty",
+    type=click.Choice(["easy", "medium", "hard"]),
+    default=None,
+    help="Sync only the tasks / cases of this difficulty tier.",
+)
+def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
+    """Upsert the eval tracks' Opik surfaces (ADR-0022 §6,8).
 
     ``--benchmark`` loads ``evals/benchmark/tasks/`` into ``decode-benchmark-v2``; ``--regression``
-    loads the probe registry into ``decode-regression-v1`` (both on by default). Opik is imported lazily
-    here (not at CLI build time) so ``--help`` never needs keys or a network.
+    loads the case registry into BOTH regression surfaces from one pass — the ``decode-regression-v2``
+    dataset the metric gate scores and the ``decode-regression-suite`` Test Suite the natural-language
+    assertions are judged in (both on by default). A skip-guarded case stays in the registry but is
+    not registered: the Opik surfaces carry what actually runs. ``--difficulty`` slices the upsert to
+    one tier, so ``make eval-regression ARGS='--difficulty hard'`` syncs and gates the same eight
+    cases. Opik is imported lazily here (not at CLI build time) so ``--help`` never needs keys or a
+    network.
     """
     if not benchmark and not regression:
         click.echo("evals sync: nothing selected (pass --benchmark and/or --regression).")
@@ -300,23 +324,29 @@ def sync(benchmark: bool, regression: bool) -> None:
     from evals.harness.datasets import (
         BENCHMARK_DATASET_NAME,
         REGRESSION_DATASET_NAME,
+        REGRESSION_SUITE_NAME,
         sync_benchmark_dataset,
-        sync_regression_dataset,
+        sync_regression_cases,
     )
 
     with opik_boundary():
         if benchmark:
+            from evals.harness.benchmark import select_tasks
             from evals.harness.task_loader import load_benchmark_tasks
 
-            tasks = load_benchmark_tasks()
+            tasks = select_tasks(load_benchmark_tasks(), task_id=None, difficulty=difficulty)
             sync_benchmark_dataset(tasks)
             click.echo(f"evals sync: upserted {len(tasks)} task(s) into {BENCHMARK_DATASET_NAME}.")
 
         if regression:
-            from evals.regression.loader import load_probes
+            from evals.regression.loader import load_cases, runnable_cases, select_cases
 
-            probes = load_probes()
-            sync_regression_dataset(probes)
+            selected = select_cases(load_cases(), difficulty=difficulty)
+            cases = runnable_cases(selected)
+            skipped = [case.id for case in selected if case.skip_reason is not None]
+            note = f" ({len(skipped)} skipped: {', '.join(skipped)})" if skipped else ""
+            sync_regression_cases(cases)
             click.echo(
-                f"evals sync: upserted {len(probes)} probe(s) into {REGRESSION_DATASET_NAME}."
+                f"evals sync: upserted {len(cases)} case(s){note} into {REGRESSION_DATASET_NAME} "
+                f"and {REGRESSION_SUITE_NAME}."
             )

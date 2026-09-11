@@ -96,9 +96,9 @@ def _coerce_args_dict(args: Any) -> dict[str, Any]:
 class ToolArgsMetric(BaseMetric):
     """Score ``1.0`` when SOME recorded call to ``tool_name`` has args satisfying ``predicate``.
 
-    :class:`ToolCalledMetric` only proves a tool WAS called; some probes need to grade the CALL's
+    :class:`ToolCalledMetric` only proves a tool WAS called; some cases need to grade the CALL's
     arguments — a genuinely multi-step plan is ``todo_write`` with ``>= 3`` items, a skill-dispatch
-    probe wants the ``skill`` tool called with the RIGHT ``name``. ``predicate`` is a plain
+    case wants the ``skill`` tool called with the RIGHT ``name``. ``predicate`` is a plain
     ``dict -> bool`` callable evaluated against each matching call's decoded args; the metric passes
     when any one call satisfies it. ``description`` is the human phrase the ``reason`` cites (e.g.
     "at least 3 todo items"). A predicate that raises on a malformed args dict is treated as an
@@ -299,9 +299,9 @@ class FileDiffLinesMetric(BaseMetric):
     The regression task-fn records the run's final Workspace as ``file_state`` (a
     ``{path: content}`` snapshot), NOT a unified ``diff`` — so :class:`DiffLinesMetric` (which reads a
     ``diff`` string a benchmark run computes) has nothing to grade on a regression payload. This metric
-    closes that gap: it holds the probe's known ``baseline`` for ``path`` and, at score time, diffs it
+    closes that gap: it holds the case's known ``baseline`` for ``path`` and, at score time, diffs it
     against ``file_state[path]`` and counts changed lines with the SAME counter
-    :class:`DiffLinesMetric` uses — so an edit-precision / minimal-diff probe grades on how much of the
+    :class:`DiffLinesMetric` uses — so an edit-precision / minimal-diff case grades on how much of the
     seeded file the agent actually rewrote. A single-line replacement is one ``-`` plus one ``+`` = two
     changed lines. ``path`` absent from the snapshot (the agent never wrote it, or deleted it) or a
     missing / malformed ``file_state`` scores a graceful ``0.0``.
@@ -343,7 +343,7 @@ class FileEqualsMetric(BaseMetric):
     """Score ``1.0`` when ``file_state[path]`` equals ``expected`` byte-for-byte (as text), else ``0.0``.
 
     The exact-match counterpart to :class:`FileDiffLinesMetric` (which grades a line-count budget): a
-    step-efficiency probe asks for a file containing EXACTLY a value, so a trailing newline or extra
+    step-efficiency case asks for a file containing EXACTLY a value, so a trailing newline or extra
     prose is a fail, not a within-threshold pass. Reads the run's ``file_state`` snapshot the
     regression task-fn records ({path: content}); ``path`` absent (never written / deleted) or a
     missing / malformed ``file_state`` scores a graceful ``0.0``.
@@ -380,7 +380,7 @@ class FileEqualsMetric(BaseMetric):
 class NewFileNameMetric(BaseMetric):
     """Score ``1.0`` when the run created ≥1 file matching ``suffix`` AND every one obeys ``predicate``.
 
-    The memory-obedience probe (a seeded ``AGENTS.md`` rule such as "every new Python file's name starts
+    The memory-obedience case (a seeded ``AGENTS.md`` rule such as "every new Python file's name starts
     with ``dc_``") grades on the NAME of the file the agent chose, not its content — so neither
     :class:`FileEqualsMetric` (a known path) nor a tool-arg check fits. This metric reads the run's
     ``file_state`` snapshot, keeps the paths ending in ``suffix``, and passes only when at least one such
@@ -443,13 +443,13 @@ class NewFileNameMetric(BaseMetric):
 class JsonSchemaMetric(BaseMetric):
     """Score ``1.0`` when the run's ``output`` is JSON that validates against a pydantic ``schema``.
 
-    The JSON-output-contract probe asks the agent to answer ONLY as JSON matching a schema; grading it
+    The JSON-output-contract case asks the agent to answer ONLY as JSON matching a schema; grading it
     needs BOTH that the text parses as JSON (Opik's ``IsJson`` built-in covers that) AND that the parsed
     object satisfies the declared shape. This metric closes the second half: it ``json.loads`` the
     ``output`` and calls ``schema.model_validate`` on the result. Any failure — non-string output, a
     parse error, a validation error, or JSON that is not an object the model accepts — is a graceful
     ``0.0`` with a reason, never a raise (the contract is strict on purpose: a ```` ```json ```` fence or
-    trailing prose breaks the parse, which is the point of an output-contract probe). ``track=False`` for
+    trailing prose breaks the parse, which is the point of an output-contract case). ``track=False`` for
     the same offline reason as the rest.
     """
 
@@ -490,8 +490,8 @@ class JsonSchemaMetric(BaseMetric):
 class OutputContainsMetric(BaseMetric):
     """Score ``1.0`` when ``needle`` appears in the run's final assistant ``output`` text.
 
-    Case-insensitive by default (an agent may phrase the answer in any casing). Used where a probe's
-    behavior is confirmed by the agent NAMING something in its answer — e.g. the LSP-diagnostics probe
+    Case-insensitive by default (an agent may phrase the answer in any casing). Used where a case's
+    behavior is confirmed by the agent NAMING something in its answer — e.g. the LSP-diagnostics case
     asserts the seeded error is surfaced in the reply. A missing / non-string ``output`` scores a
     graceful ``0.0``.
     """
@@ -521,7 +521,7 @@ class OutputContainsMetric(BaseMetric):
 class ToolNotSucceededMetric(BaseMetric):
     """Score ``1.0`` when ``tool_name`` never SUCCEEDED — not called, or every call the gate denied.
 
-    Stricter-than-absent counterpart to :class:`ToolNotCalledMetric`: a plan-mode probe wants "zero
+    Stricter-than-absent counterpart to :class:`ToolNotCalledMetric`: a plan-mode case wants "zero
     SUCCESSFUL write/edit calls", which a denied attempt still satisfies (the agent tried to edit but
     ``enter_plan_mode`` had flipped the gate to ``PLAN``, so the write was denied and never landed).
     Reads ``tool_calls`` (every attempt) and ``denied_tools`` (the gate-denied ones); the tool

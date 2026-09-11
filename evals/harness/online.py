@@ -17,7 +17,7 @@ Two deliberate design points:
   check (:func:`online_keys_missing`) reads only ``settings``. So ``python -m evals online --help`` and
   the friendly no-key skip never touch Opik or the network.
 
-Verified against the INSTALLED ``opik==1.9.8`` ``evaluate_threads`` signature (task-117 log):
+Verified against the INSTALLED opik's ``evaluate_threads`` signature (task-117 log):
 ``(project_name, filter_string, eval_project_name, metrics, trace_input_transform,
 trace_output_transform, verbose=1, num_workers=8, max_traces_per_thread=1000)`` — every one of the
 first six is required (``filter_string``/``eval_project_name`` accept ``None``), so all six are passed
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # The conversation-level judge's name on the live threads' feedback scores. ConversationalCoherenceMetric
 # is a PRESET conversation judge (no custom criteria to phrase), so the 0-10 / "Score 1.0/0.0" phrasing
-# collision the G-Eval probes must dodge (task-114 lesson) does not apply here — it applies to the UI
+# collision the G-Eval judges must dodge (task-114 lesson) does not apply here — it applies to the UI
 # online RULE the walkthrough in evals/README.md sets up, where the operator DOES write the criteria.
 CONVERSATION_METRIC_NAME = "conversation_coherence"
 

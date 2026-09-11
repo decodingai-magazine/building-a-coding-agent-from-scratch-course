@@ -1,10 +1,10 @@
-"""The regression probe registry: one module per probe, each exposing ``PROBE`` (ADR-0017 §6).
+"""The regression case registry: one module per case, each exposing ``CASE`` (ADR-0017 §6).
 
-:func:`evals.regression.loader.load_probes` discovers every ``*.py`` module here and reads its
-module-level ``PROBE`` (or ``PROBES``). To add a behavior probe, drop a new module beside this one —
-no central list to edit. The full behavior suite lands in tasks 112-114; this package ships one
-reference probe (``smoke_read_tool``) that exercises the whole contract end to end and serves as the
-template the real probes copy.
+:func:`evals.regression.loader.load_cases` discovers every ``*.py`` module here and reads its
+module-level ``CASE`` (or ``CASES``). To add a behavior case, drop a new module beside this one —
+no central list to edit (a MINED case is the same drop, named ``mined_<slug>.py``). The reference
+case (``smoke_read_tool``) exercises the whole contract end to end and is the template every other
+case copies.
 """
 
 from __future__ import annotations

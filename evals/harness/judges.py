@@ -8,7 +8,7 @@ decode's own provider (ADR-0017 §7): :func:`judge_model` resolves the LiteLLM m
 
 :func:`judge_model` is pure and network-free, so its routing is unit-tested without keys. The one
 wrinkle is the ``modal`` route: its OpenAI-compatible endpoint needs a per-user ``base_url``, which a
-bare LiteLLM model string cannot carry — GEval 1.9.8 takes only ``model`` (a string) or a pre-built
+bare LiteLLM model string cannot carry — GEval takes only ``model`` (a string) or a pre-built
 Opik model. :func:`make_judge` therefore hands GEval a :class:`LiteLLMChatModel` with ``api_base``
 set for the modal derivation, and the plain string for every other route.
 """

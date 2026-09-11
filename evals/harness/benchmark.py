@@ -244,7 +244,7 @@ def run_benchmark(
         raise ValueError(f"trials must be >= 1, got {trials}.")
 
     all_tasks = load_benchmark_tasks()
-    selected = _select_tasks(all_tasks, task_id=task_id, difficulty=difficulty)
+    selected = select_tasks(all_tasks, task_id=task_id, difficulty=difficulty)
     if not selected:
         raise BenchmarkSelectionError(
             f"no benchmark task matched (task={task_id!r}, difficulty={difficulty!r}); "
@@ -277,7 +277,7 @@ def run_benchmark(
             sandbox=sandbox, trials=trials, job_name=job_name, model=model
         ),
         experiment_name=job_name,
-        project_name=_evaluate_project_name(dataset),
+        project_name=evaluate_project_name(dataset),
         dataset_item_ids=list(item_ids.values()),
         task_threads=threads if threads is not None else default_threads(sandbox),
         trial_count=trials,
@@ -285,10 +285,14 @@ def run_benchmark(
     return BenchmarkRun(result=result, job_dir=job_dir)
 
 
-def _select_tasks(
+def select_tasks(
     tasks: list[BenchmarkTask], *, task_id: str | None, difficulty: Difficulty | None
 ) -> list[BenchmarkTask]:
-    """Filter loaded tasks by exact ``task_id`` and/or ``difficulty`` (both optional, AND-combined)."""
+    """Filter loaded tasks by exact ``task_id`` and/or ``difficulty`` (both optional, AND-combined).
+
+    Public so the CLI's ``sync --difficulty`` slices the dataset upsert by the SAME rule a run does
+    (the Regression Case side is :func:`evals.regression.loader.select_cases`).
+    """
     selected = tasks
     if task_id is not None:
         selected = [task for task in selected if task.id == task_id]
@@ -316,13 +320,15 @@ def _selected_item_ids(dataset: Any, checksums: dict[str, str]) -> dict[str, str
     return selected
 
 
-def _evaluate_project_name(dataset: Any) -> str | None:
+def evaluate_project_name(dataset: Any) -> str | None:
     """The ``evaluate(project_name=...)`` value — ``None`` once the dataset names the project.
 
     opik 2.2.36 resolves the run's project from the dataset and DEPRECATES this parameter, warning
-    once per run when both are set. ``sync_benchmark_dataset`` creates the dataset inside
+    once per run when both are set. Both syncs create their dataset inside
     ``settings.eval_project_name``, so the parameter is only needed as the fallback for a dataset
     created before that (and it is the same name either way — eval traces never touch live tracing).
+    Public because BOTH experiment tracks answer this question the same way (the regression harness
+    reuses it) — one rule, never two drifting copies.
     """
     return None if getattr(dataset, "project_name", None) else settings.eval_project_name
 
