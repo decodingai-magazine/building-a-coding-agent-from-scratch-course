@@ -148,7 +148,7 @@ DOCKER_MODE_MESSAGE = (
 )
 
 # One whole agent run: a clone, a sandbox, many model calls. Generous for the same reason the Agent
-# Version's timeout is (``scripts/register_kitaru_agent.py``): a killed process is indistinguishable
+# Version's timeout is (``scripts/bootstrap_kitaru.py``): a killed process is indistinguishable
 # from a failed agent. The Function's own ceiling sits above it so the child is killed first — and
 # says so — instead of the container vanishing mid-answer.
 DEFAULT_TIMEOUT_SECONDS = 1800

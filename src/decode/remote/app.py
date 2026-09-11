@@ -100,7 +100,7 @@ IMAGE = build_image(
 SECRET_NAME = secret_name(DECODE_ENV)
 
 # Re-exported: the in-image paths are read from HERE by the Agent Version registration's drift guard
-# (``scripts/register_kitaru_agent.py``) — they are defined once, in ``decode.remote.image``.
+# (``scripts/bootstrap_kitaru.py::desired_versions``) — defined once, in ``decode.remote.image``.
 __all__ = ["DECODE_BIN", "HARNESS_HOME", "app", "nightly", "run_task", "webhook"]
 
 app = modal.App(app_name(DECODE_ENV))

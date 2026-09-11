@@ -196,6 +196,45 @@ def test_trial_payload_of_a_timed_out_trial_is_an_agent_failure(greeting_task_di
     assert payload["infra_error"] is None
 
 
+def test_the_trial_payload_carries_the_decode_session_id_the_cohort_join_needs(
+    greeting_task_dir: Path,
+):
+    """`evals kitaru cohort from-experiment` resolves a Session by NAME = this session id.
+
+    The item's own Opik trace is `evaluate()`'s wrapper around the task fn, not the subprocess
+    trace, so nothing else on an experiment row can name the run that was recorded (task 165).
+    """
+    task = load_benchmark_task(greeting_task_dir)
+
+    payload = trial_payload(
+        _trial(summary={"session_id": "sess-42", "kitaru_session_id": "kit-42"}), task
+    )
+
+    assert payload["session_id"] == "sess-42"
+    assert payload["kitaru_session_id"] == "kit-42"
+
+
+def test_an_unrecorded_trial_reports_no_kitaru_session(greeting_task_dir: Path):
+    task = load_benchmark_task(greeting_task_dir)
+
+    payload = trial_payload(_trial(summary={"session_id": "sess-42"}), task)
+
+    assert payload["session_id"] == "sess-42"
+    assert payload["kitaru_session_id"] is None
+
+
+def test_an_infra_error_payload_keeps_the_same_shape(greeting_task_dir: Path, mocker):
+    """Same keys as a graded trial, so a reader never has to branch on the status."""
+    task = load_benchmark_task(greeting_task_dir)
+    mocker.patch("evals.harness.benchmark.run_trial", side_effect=RuntimeError("boom"))
+    task_fn = make_benchmark_task_fn({task.id: task}, sandbox="docker", job_dir=Path("/tmp/j"))
+
+    payload = task_fn({"task_id": task.id})
+
+    assert payload["session_id"] is None
+    assert payload["kitaru_session_id"] is None
+
+
 # --- the job dir + defaults ---
 
 

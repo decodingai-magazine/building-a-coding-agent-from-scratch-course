@@ -41,6 +41,16 @@ eval-regression:  ## Pre-merge behavior regression gate: sync cases + threshold 
 		uv run python -m evals sync --no-benchmark --regression $(ARGS) && uv run pytest evals/regression/test_thresholds.py $(ARGS); \
 	fi
 
+KITARU_LOCAL_URL ?= http://localhost:8000
+
+kitaru-local:  ## Start the local OSS Kitaru server (docker compose) and register decode on it. `kitaru logout` stops it.
+	uv run kitaru login --local
+	uv run python scripts/bootstrap_kitaru.py --server $(KITARU_LOCAL_URL)
+	@echo ""
+	@echo "# Export these two: decode reads KITARU_AGENT_ID, the kitaru adapter reads KITARU_API_URL."
+	@echo "export KITARU_API_URL=$(KITARU_LOCAL_URL)"
+	@printf 'export KITARU_AGENT_ID=%s\n' "$$(uv run kitaru agent get decode --server $(KITARU_LOCAL_URL) --output json | uv run python -c 'import json,sys; print(json.load(sys.stdin)["item"]["id"])')"
+
 build:  ## Build wheel + sdist into dist/.
 	uv build
 
@@ -61,4 +71,4 @@ help:  ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression build install-cli uninstall-cli ci help
+.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression kitaru-local build install-cli uninstall-cli ci help

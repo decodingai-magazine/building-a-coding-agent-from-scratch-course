@@ -797,3 +797,153 @@ def test_the_new_live_commands_help_imports_no_opik():
         env=_subprocess_env(),
     )
     assert result.returncode == 0, result.stderr
+
+
+# --- `evals kitaru`: the Opik → Kitaru bridge (task 165) ---
+
+
+def test_help_lists_the_kitaru_bridge():
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "kitaru" in result.output
+
+
+def test_kitaru_import_skips_friendly_without_the_two_keys(mocker):
+    """Keyless checkout: one line, exit 0 — never a traceback inside opik or kitaru."""
+    mocker.patch(
+        "evals.harness.kitaru_cli.kitaru_keys_missing",
+        return_value=["OPIK_API_KEY", "KITARU_API_URL"],
+    )
+    open_source = mocker.patch("evals.harness.kitaru_import.open_source")
+
+    result = CliRunner().invoke(cli, ["kitaru", "import", "trace-1"])
+
+    assert result.exit_code == 0
+    assert "skipped" in result.output
+    assert "KITARU_API_URL" in result.output
+    open_source.assert_not_called()
+
+
+def test_kitaru_cohort_skips_friendly_without_the_two_keys(mocker):
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=["KITARU_API_URL"])
+    open_experiment = mocker.patch("evals.harness.kitaru_cohort.open_experiment")
+
+    result = CliRunner().invoke(cli, ["kitaru", "cohort", "from-experiment", "bench-x"])
+
+    assert result.exit_code == 0
+    assert "skipped" in result.output
+    open_experiment.assert_not_called()
+
+
+def test_kitaru_import_prints_one_line_per_thread(mocker):
+    from evals.harness.kitaru_import import ImportOutcome
+
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=[])
+    mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
+    mocker.patch(
+        "evals.harness.kitaru_cli.resolve_ref", side_effect=lambda kind, name, **kw: f"{name}@1"
+    )
+    source = mocker.patch("evals.harness.kitaru_import.open_source")
+    source.return_value.project = "decode-prod"
+    run_import = mocker.patch(
+        "evals.harness.kitaru_import.run_import",
+        return_value=[
+            ImportOutcome(thread="t-1", status="imported", session_id="kit-1", readiness="ready"),
+            ImportOutcome(thread="t-2", status="skipped", session_id="kit-2"),
+        ],
+    )
+
+    result = CliRunner().invoke(cli, ["kitaru", "import", "trace-1", "--thread", "t-2"])
+
+    assert result.exit_code == 0, result.output
+    assert "t-1 → kit-1 (ready)" in result.output
+    assert "1 of 2 thread(s) imported" in result.output
+    assert run_import.call_args.kwargs["threads"] == ["t-2"]
+    assert run_import.call_args.kwargs["trace_ids"] == ["trace-1"]
+    assert run_import.call_args.kwargs["agent_ref"] == "decode@1"
+    assert run_import.call_args.kwargs["importer_ref"] == "opik@1"
+
+
+def test_kitaru_import_turns_a_kitaru_failure_into_one_line(mocker):
+    from evals.harness.kitaru_cli import KitaruCommandError
+
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=[])
+    mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
+    mocker.patch(
+        "evals.harness.kitaru_cli.resolve_ref",
+        side_effect=KitaruCommandError("importer 'opik' has no registered version yet"),
+    )
+    mocker.patch("evals.harness.kitaru_import.open_source")
+
+    result = CliRunner().invoke(cli, ["kitaru", "import", "trace-1"])
+
+    assert result.exit_code != 0
+    assert "no registered version" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_kitaru_cohort_prints_the_frozen_version(mocker):
+    from evals.harness.kitaru_cohort import CohortOutcome, FailedTrial
+
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=[])
+    mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
+    mocker.patch("evals.harness.kitaru_cohort.open_experiment", return_value=([], {"x": 1}))
+    build_cohort = mocker.patch(
+        "evals.harness.kitaru_cohort.build_cohort",
+        return_value=CohortOutcome(
+            cohort="decode-benchmark-failures",
+            version_ref="decode-benchmark-failures@2",
+            session_count=3,
+            added=2,
+            unresolved=[FailedTrial(task_id="018", session_id=None, kitaru_session_id=None)],
+        ),
+    )
+
+    result = CliRunner().invoke(cli, ["kitaru", "cohort", "from-experiment", "bench-x"])
+
+    assert result.exit_code == 0, result.output
+    assert "decode-benchmark-failures@2" in result.output
+    assert "no Session for trial 018" in result.output
+    assert build_cohort.call_args.kwargs["cohort"] == "decode-benchmark-failures"
+
+
+def test_kitaru_cohort_refusal_is_one_line(mocker):
+    from evals.harness.kitaru_cohort import CohortError
+
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=[])
+    mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
+    mocker.patch(
+        "evals.harness.kitaru_cohort.open_experiment",
+        side_effect=CohortError("this experiment recorded no Kitaru Sessions"),
+    )
+
+    result = CliRunner().invoke(cli, ["kitaru", "cohort", "from-experiment", "bench-x"])
+
+    assert result.exit_code != 0
+    assert "recorded no Kitaru Sessions" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_the_kitaru_bridge_help_imports_neither_opik_nor_kitaru():
+    """``--help`` must need no keys, no network and no kitaru install (ADR-0017 §1)."""
+    code = (
+        "import sys\n"
+        "from click.testing import CliRunner\n"
+        "from evals.run import cli\n"
+        "for argv in (['kitaru', '--help'], ['kitaru', 'import', '--help'],\n"
+        "             ['kitaru', 'cohort', 'from-experiment', '--help']):\n"
+        "    result = CliRunner().invoke(cli, argv)\n"
+        "    assert result.exit_code == 0, result.output\n"
+        "assert '--thread' in CliRunner().invoke(cli, ['kitaru', 'import', '--help']).output\n"
+        "leaked = sorted(m for m in sys.modules if 'opik' in m or m.startswith('kitaru'))\n"
+        "assert not leaked, leaked\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        env=_subprocess_env(),
+    )
+    assert result.returncode == 0, result.stderr

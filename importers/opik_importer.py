@@ -1,8 +1,8 @@
 """Kitaru importer for Opik trace exports (provider: ``opik``).
 
-Consumes ONE static JSON payload produced by a separate acquisition step (the Opik REST export;
-see ``scripts/`` once wired) — the parser itself performs no network calls, filesystem writes,
-subprocesses, or credential reads:
+Consumes ONE static JSON payload produced by a separate acquisition step — ``python -m evals kitaru
+import`` (:mod:`evals.harness.kitaru_import`) builds it off the Opik SDK. The parser itself performs
+no network calls, filesystem writes, subprocesses, or credential reads:
 
 ```json
 {
@@ -53,10 +53,82 @@ from kitaru.task.importer import (
     TokenUsage,
 )
 
-from importers.opik_spans import is_tool_span, tool_span_name
-
 MAX_PAYLOAD_BYTES = 50 * 1024 * 1024
 MAX_TRACE_RECORDS = 100_000
+
+# --- the tool-span reader: ONE definition, HERE ----------------------------------------------------
+#
+# A Kitaru importer is uploaded as ONE script and the Worker runs that file alone, from whatever cwd
+# the Worker was started in. A sibling import (the now-deleted ``importers/opik_spans.py``, task 163)
+# therefore resolved only by accident — when the Worker happened to be started at the repo root —
+# and raised ``ModuleNotFoundError: No module named 'importers'`` anywhere else, failing every
+# import job. So the readers live here, in the file that has to travel alone, and
+# :mod:`evals.harness.mine` imports them FROM this module: still one definition, no copy to drift.
+#
+# Detection is by **provider evidence, never by span name**: a tool span is one whose metadata
+# carries ``gen_ai.operation.name == "execute_tool"``; the tool's name is parsed out of logfire's
+# ``logfire.msg`` ("running tool: <name>"). A span merely *named* ``execute_tool read`` is not one.
+#
+# Two payload spellings are live at once, so both are read: ``gen_ai.tool.call.arguments`` /
+# ``gen_ai.tool.call.result`` (pydantic-ai's current instrumentation, verified on ``decode-prod``,
+# 2026-09) and ``tool_arguments`` / ``tool_response`` (the older spelling this importer's 2026-08
+# sample used).
+
+TOOL_OPERATION_NAME = "execute_tool"
+TOOL_MSG_PREFIX = "running tool: "
+DEFERRAL_ATTRIBUTE = "pydantic_ai.tool.deferral.name"
+APPROVAL_REQUIRED = "ApprovalRequired"
+
+_ARGUMENT_KEYS = ("gen_ai.tool.call.arguments", "tool_arguments")
+_RESULT_KEYS = ("gen_ai.tool.call.result", "tool_response")
+
+
+def _mapping(value: object) -> dict[str, Any]:
+    """The value as a dict, or an empty one — Opik omits absent fields entirely."""
+    return value if isinstance(value, dict) else {}
+
+
+def is_tool_span(span: dict[str, Any]) -> bool:
+    """Whether this span is a tool execution, judged on ``gen_ai.operation.name`` alone."""
+    return _mapping(span.get("metadata")).get("gen_ai.operation.name") == TOOL_OPERATION_NAME
+
+
+def tool_span_name(span: dict[str, Any]) -> str | None:
+    """The tool's name parsed from ``logfire.msg`` ("running tool: <name>"), else ``None``."""
+    message = _mapping(span.get("metadata")).get("logfire.msg")
+    if isinstance(message, str) and message.startswith(TOOL_MSG_PREFIX):
+        return message[len(TOOL_MSG_PREFIX) :] or None
+    return None
+
+
+def _payload(span: dict[str, Any], field: str, keys: tuple[str, ...]) -> Any:
+    payload = _mapping(span.get(field))
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return None
+
+
+def tool_span_arguments(span: dict[str, Any]) -> Any:
+    """The call's arguments under either instrumentation spelling; ``None`` when absent."""
+    return _payload(span, "input", _ARGUMENT_KEYS)
+
+
+def tool_span_result(span: dict[str, Any]) -> Any:
+    """The call's result under either instrumentation spelling; ``None`` when the call never ran."""
+    return _payload(span, "output", _RESULT_KEYS)
+
+
+def tool_span_deferred(span: dict[str, Any]) -> bool:
+    """Whether this span is the DEFERRED leg of a gated call (``ApprovalRequired``, no result).
+
+    pydantic-ai sets ``pydantic_ai.tool.deferral.name = "ApprovalRequired"`` on the span of a call
+    that raised :class:`pydantic_ai.ApprovalRequired` instead of running, and such a span carries no
+    result. An APPROVED call emits a second, completed span for the same tool + arguments on the
+    resume leg; a DENIED one never does — which is how ``evals mine --preset denied`` counts
+    denials (``evals.harness.mine.denied_tool_calls``). Read by that caller, not by :func:`parse`.
+    """
+    return _mapping(span.get("input")).get(DEFERRAL_ATTRIBUTE) == APPROVAL_REQUIRED
 
 
 def _enc(component: str) -> str:
@@ -119,8 +191,9 @@ def _cost(span: dict[str, Any]) -> Decimal | None:
 def _node_semantics(span: dict[str, Any]) -> tuple[NodeType, str | None]:
     """(node type, tool name) from explicit provider evidence, never from names alone.
 
-    Tool detection + naming live in :mod:`importers.opik_spans` — the ONE reader ``evals mine``
-    shares (task 163), so the two cannot drift when pydantic-ai renames an attribute.
+    Tool detection + naming are :func:`is_tool_span` / :func:`tool_span_name` above — the ONE reader
+    ``evals mine`` imports from here (task 163, task 165), so the two cannot drift when pydantic-ai
+    renames an attribute.
     """
     if span.get("type") == "llm":
         return NodeType.LLM_CALL, None

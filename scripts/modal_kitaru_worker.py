@@ -21,21 +21,25 @@ this one just happens to sit in a gVisor container instead of on a laptop.
   absent: importer jobs read export files that exist on the operator's machine and nowhere in this
   container, so claiming one would fail it. ``--agent-version-id`` narrows the agent claim further,
   to ``agent=<id>`` — worth using while the laptop Worker is also polling, because the two would
-  otherwise race for the same task and each one can only run its own Agent Version (the laptop's v2
-  is ``SANDBOX_MODE=docker``; there is no Docker daemon here, and the v3 in-image paths do not exist
-  on a laptop).
+  otherwise race for the same task and each one can only run its own Agent Version (the laptop's is
+  ``SANDBOX_MODE=docker``; there is no Docker daemon here, and this one's in-image paths do not
+  exist on a laptop).
 * **``KITARU_AGENT_ID`` is scrubbed** from the worker's env with one logged line. The Secret is not
   supposed to carry it (ADR-0020 §4), but if one is ever added, every spawned replay would inherit
   it, the Recording Seam would probe an agents route the task-scoped token cannot use, and the run
   would hard-fail with ``403: Task credentials are not accepted on this route`` (ADR-0019 §3,
   tasks/139, 06_evals_replays.md §7.3). The scrub is the backstop; the Secret's composition is the
   rule.
-* **The worker spawns agent version 3** — ``decode run`` under ``SANDBOX_MODE=none`` with
-  :data:`DECODE_BIN` and :data:`HARNESS_HOME` as its in-image paths, registered from a laptop with
-  ``scripts/register_kitaru_agent.py --sandbox-mode none --skip-bin-check``. Both paths come from
-  :mod:`decode.remote.image`, so the image and the registration cannot drift apart. Pin the version
-  when you replay — ``--agent decode@3``, never "latest": version 4 is a QA-accident duplicate of 3
-  (see ``tasks/done/144-…``), and versions are immutable.
+* **The worker spawns the ``none``-mode Agent Version** — ``decode run`` under
+  ``SANDBOX_MODE=none`` with :data:`DECODE_BIN` and :data:`HARNESS_HOME` as its in-image paths.
+  ``scripts/bootstrap_kitaru.py`` registers it on every server it bootstraps, alongside the laptop
+  Worker's ``docker`` one — nothing to pass and no check to skip: it reads both paths from
+  :mod:`decode.remote.image` and never stats them (only the laptop's own ``decode`` entrypoint is
+  checked), so the image and the registration cannot drift apart. Pin the version when you replay,
+  never "latest" — but read the NUMBER off ``kitaru agent version list decode``, because it is per
+  server: a freshly bootstrapped one has ``decode@1`` docker / ``decode@2`` none, while the managed
+  workspace's ``none`` spec is ``decode@3`` (its 4 is a QA-accident duplicate, ``tasks/done/144-…``).
+  Versions are immutable.
 * **One environment, one deployment** (ADR-0021 §2). ``DECODE_ENV`` is read from the DEPLOYING
   laptop's env, names this app and its Secret — both ``decode-kitaru-worker-<env>`` — and is baked
   into the image. The Secret carries credentials only, and it is the WHOLE config surface: the

@@ -139,7 +139,7 @@ Recording and replay are an **operator** surface, not a code path: nothing here 
 
 - **Record** — export `KITARU_API_URL` + set `KITARU_AGENT_ID`, then any REPL turn or `decode run` files a **Kitaru Session** (`kitaru session get <id>` shows it node by node); freeze a set of them as a **Cohort** (`decode-bad-request-400@1`).
 - **Replay** — `kitaru replay create <session-id> --agent decode@<version>` re-runs a Session **from the top** on a **Kitaru Worker** you start yourself (`kitaru worker start` — the server executes nothing). No override = **Baseline Replay**, the control; overrides (model / system prompt / prompt / params) + `--tool-policy` make it a what-if.
-- **Agent Version** — the registered run spec the Worker spawns (`scripts/register_kitaru_agent.py`): `decode run` with no inline prompt, `SANDBOX_MODE=docker`, repo clone, Harness Home outside the repo. A code change = a new version.
+- **Agent Version** — the registered run spec the Worker spawns (`scripts/bootstrap_kitaru.py`, which registers everything decode needs on one server, idempotently): `decode run` with no inline prompt, `SANDBOX_MODE=docker` (laptop) / `none` (Modal Worker), repo clone, Harness Home outside the repo. A code change = a new version.
 - Investigating a bad session, authoring an evaluator → skill **kitaru-investigation**; designing/running a what-if replay or cohort experiment → skill **kitaru-replay-experiment**; pulling sessions in from another trace store → skill **kitaru-importer-builder**.
 
 # Documentation Conventions

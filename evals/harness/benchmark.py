@@ -173,6 +173,11 @@ def trial_payload(result: TrialResult, task: BenchmarkTask) -> dict[str, Any]:
     ``cost_usd`` come from the run's own summary; ``trial_dir`` points a human at the evidence.
     ``infra_error`` carries the reason ONLY when the harness was at fault, so an excluded trial is
     distinguishable from a lost one without re-deriving the taxonomy.
+
+    ``session_id`` / ``kitaru_session_id`` come straight off the run's own ``--summary-json`` and are
+    the ONLY join from an experiment row back to the Session the trial recorded (task 165): the
+    item's Opik trace is ``evaluate()``'s wrapper around the task fn, never the ``decode run``
+    subprocess trace, so ``evals kitaru cohort from-experiment`` has nothing else to resolve by.
     """
     summary = result.summary or {}
     return {
@@ -188,6 +193,8 @@ def trial_payload(result: TrialResult, task: BenchmarkTask) -> dict[str, Any]:
         "output_tokens": summary.get("output_tokens", 0),
         "cost_usd": summary.get("cost_usd"),
         "trial_dir": str(result.trial_dir),
+        "session_id": summary.get("session_id"),
+        "kitaru_session_id": summary.get("kitaru_session_id"),
         "infra_error": result.reason if result.status == "infra_error" else None,
     }
 
@@ -207,6 +214,8 @@ def _infra_payload(reason: str, *, max_steps: int = 0) -> dict[str, Any]:
         "output_tokens": 0,
         "cost_usd": None,
         "trial_dir": "",
+        "session_id": None,
+        "kitaru_session_id": None,
         "infra_error": reason,
     }
 

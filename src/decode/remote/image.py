@@ -7,7 +7,8 @@ by the REPL or ``decode run``.
 
 The layout is the load-bearing part. The Worker spawns replays from an **Agent Version** whose run
 spec names :data:`DECODE_BIN` and :data:`HARNESS_HOME` as absolute in-image paths (registered from a
-laptop that cannot stat them — ``scripts/register_kitaru_agent.py --skip-bin-check``). A path that
+laptop that cannot stat them — ``scripts/bootstrap_kitaru.py`` reads the two values from here and
+registers them as-is, checking only the LAPTOP Worker's own entrypoint). A path that
 drifts here is not a test failure, it is every replay failing to spawn, hours later, on a machine
 nobody is watching. Hence: ONE definition, imported by both apps and pinned by unit tests on both
 sides.

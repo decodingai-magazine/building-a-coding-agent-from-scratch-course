@@ -56,7 +56,12 @@ from typing import TYPE_CHECKING, Any
 
 from evals.harness.online import live_project_name
 from evals.harness.online_rule import RULE_NAME
-from importers.opik_spans import (
+
+# The ONE tool-span reader lives in the Kitaru importer, which a Worker uploads and runs as a single
+# file from an arbitrary cwd — so it cannot import a sibling, and this caller imports from it
+# instead (task 165). Costs `evals mine` a `kitaru.task.importer` import, which is cheap and already
+# a dependency; `evals --help` never pays it, because this module is imported inside the command.
+from importers.opik_importer import (
     is_tool_span,
     tool_span_arguments,
     tool_span_deferred,
