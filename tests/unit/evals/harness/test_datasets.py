@@ -4,7 +4,8 @@ No network and no keys: the tests inject a stubbed ``opik.Opik`` (or a mock ``cl
 payloads — one item per task (``task_id`` / ``difficulty`` / ``tags``) and, for one Regression Case,
 BOTH surfaces from one definition (the dataset item the metrics gate and the Test Suite item its
 natural-language assertion grades) — plus the idempotent-by-construction call shape
-(``get_or_create_dataset`` / ``get_or_create_test_suite`` then a single ``insert``).
+(``get_or_create_dataset`` / ``get_or_create_test_suite`` then a single ``insert``) and the
+content-versioned suite NAME that keeps an edited case from being judged twice.
 """
 
 from __future__ import annotations
@@ -16,13 +17,15 @@ from evals.harness.datasets import (
     BENCHMARK_DATASET_NAME,
     GLOBAL_ASSERTIONS,
     REGRESSION_DATASET_NAME,
-    REGRESSION_SUITE_NAME,
+    REGRESSION_SUITE_PREFIX,
     SUITE_EXECUTION_POLICY,
+    SUITE_VERSION_LENGTH,
     benchmark_dataset_item,
     case_checksum,
     regression_dataset_item,
     regression_items,
     regression_suite_item,
+    regression_suite_name,
     sync_benchmark_dataset,
     sync_regression_cases,
     sync_regression_dataset,
@@ -309,7 +312,7 @@ def test_sync_regression_cases_writes_the_dataset_and_the_test_suite(mocker) -> 
         REGRESSION_DATASET_NAME, project_name=settings.eval_project_name
     )
     client.get_or_create_test_suite.assert_called_once_with(
-        name=REGRESSION_SUITE_NAME,
+        name=regression_suite_name(cases),
         project_name=settings.eval_project_name,
         global_assertions=list(GLOBAL_ASSERTIONS),
         global_execution_policy=SUITE_EXECUTION_POLICY,
@@ -319,15 +322,52 @@ def test_sync_regression_cases_writes_the_dataset_and_the_test_suite(mocker) -> 
     assert (surfaces.dataset, surfaces.suite) == (dataset, suite)
 
 
-def test_sync_regression_cases_can_name_the_suite_for_a_filtered_run(mocker) -> None:
-    """A tier run registers its own suite — ``run_tests`` has no per-item scoping (§8)."""
-    client = mocker.Mock()
+def test_the_suite_name_is_stable_for_the_same_cases() -> None:
+    """Same content, same suite — a re-sync reopens the one suite holding exactly these items (§8)."""
+    cases = [_case("a"), _case("b")]
 
-    sync_regression_cases([_case("a")], client=client, suite_name="decode-regression-suite-easy")
+    name = regression_suite_name(cases)
 
-    assert client.get_or_create_test_suite.call_args.kwargs["name"] == (
-        "decode-regression-suite-easy"
+    assert name == regression_suite_name([_case("b"), _case("a")])
+    assert name.startswith(f"{REGRESSION_SUITE_PREFIX}-")
+    assert len(name) == len(REGRESSION_SUITE_PREFIX) + 1 + SUITE_VERSION_LENGTH
+
+
+def test_the_suite_name_changes_when_any_case_checksum_changes() -> None:
+    """The whole point: an EDITED case mints a FRESH suite instead of a second item in the old one.
+
+    Opik never deletes, and ``opik.run_tests`` takes no item filter, so a fixed-name suite would hold
+    two items for the edited case and judge it twice. The name follows the content.
+    """
+    before = [_case("a"), _case("b")]
+    after = [_case("a"), _case("b", prompt="do it differently")]
+
+    assert case_checksum(after[1]) != case_checksum(before[1])
+    assert regression_suite_name(after) != regression_suite_name(before)
+
+
+def test_a_slice_gets_its_own_suite_name() -> None:
+    """The hash is over the SELECTED cases, so a ``--difficulty`` / ``--case`` run never bills the rest."""
+    everything = [_case("a"), _case("b", difficulty="hard")]
+    slice_of_it = [case for case in everything if case.difficulty == "hard"]
+
+    assert regression_suite_name(slice_of_it) != regression_suite_name(everything)
+    assert regression_suite_name(slice_of_it) == regression_suite_name(
+        [_case("b", difficulty="hard")]
     )
+
+
+def test_the_synced_suite_holds_exactly_one_item_per_case(mocker) -> None:
+    """One item per runnable case in a freshly-named suite — never a stale second item beside it."""
+    cases = [_case("a"), _case("b"), _case("c")]
+    client = mocker.Mock()
+    suite = client.get_or_create_test_suite.return_value
+
+    surfaces = sync_regression_cases(cases, client=client)
+
+    assert surfaces.suite_name == regression_suite_name(cases)
+    inserted = suite.insert.call_args.args[0]
+    assert [item["data"]["case_id"] for item in inserted] == ["a", "b", "c"]
 
 
 def test_sync_regression_dataset_never_touches_the_suite_api(mocker) -> None:

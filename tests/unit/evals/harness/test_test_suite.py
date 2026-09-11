@@ -2,7 +2,8 @@
 
 No infra, no keys: ``opik.run_tests`` and the client's ``get_or_create_test_suite`` are mocked. The
 tests cover the case selection (``--case`` / ``--difficulty``, skip-guarded cases excluded), the
-sliced suite name a filtered run registers, the ``{"input", "output"}`` adapter (and that it never
+content-versioned suite name a run registers (the same one ``sync --regression`` resolves), the
+``{"input", "output"}`` adapter (and that it never
 leaks an expected answer into ``input``), the serial run wiring, and the pass-rate gate.
 """
 
@@ -10,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from evals.harness.datasets import REGRESSION_SUITE_NAME
+from evals.harness.datasets import regression_suite_name
 from evals.harness.test_suite import (
     SUITE_PASS_BAR,
     SuitePassRateError,
@@ -90,10 +91,10 @@ def test_run_test_suite_registers_the_cases_and_runs_the_suite_serially(mocker):
     mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a"), _case("b")])
     client = mocker.Mock()
 
-    result = run_test_suite(client=client)
+    run = run_test_suite(client=client)
 
-    assert result is run_tests.return_value
-    assert sync.call_args.kwargs["suite_name"] == REGRESSION_SUITE_NAME
+    assert run.result is run_tests.return_value
+    assert run.suite_name is sync.return_value.suite_name
     assert [case.id for case in sync.call_args.args[0]] == ["a", "b"]
     kwargs = run_tests.call_args.kwargs
     assert kwargs["test_suite"] is sync.return_value.suite
@@ -103,7 +104,11 @@ def test_run_test_suite_registers_the_cases_and_runs_the_suite_serially(mocker):
 
 
 def test_a_filtered_run_registers_its_own_sliced_suite(mocker):
-    """``run_tests`` has no item filter, so a tier run gets its own suite instead of billing all 21."""
+    """``run_tests`` has no item filter, so a tier run gets its own suite instead of billing them all.
+
+    The slice needs no suffix: the suite name hashes the SELECTED cases, so handing ``sync`` the one
+    hard case is what gives the run its own suite.
+    """
     mocker.patch("opik.run_tests", create=True)
     sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
     mocker.patch(
@@ -113,8 +118,32 @@ def test_a_filtered_run_registers_its_own_sliced_suite(mocker):
 
     run_test_suite(difficulty="hard", client=mocker.Mock())
 
-    assert sync.call_args.kwargs["suite_name"] == f"{REGRESSION_SUITE_NAME}-hard"
     assert [case.id for case in sync.call_args.args[0]] == ["b"]
+    assert "suite_name" not in sync.call_args.kwargs
+
+
+def test_the_run_registers_the_versioned_suite_with_one_item_per_case(mocker):
+    """End to end through the REAL sync: ONE function names the suite, and it holds one item per case.
+
+    Only ``opik.run_tests`` is mocked; the fake client records what ``sync_regression_cases`` asked
+    Opik for — the same call ``python -m evals sync --regression`` makes, so both commands provably
+    agree on the name.
+    """
+    mocker.patch("opik.run_tests", create=True)
+    cases = [_case("a"), _case("b"), _case("skipped", skip_reason="MCP has not shipped")]
+    mocker.patch("evals.harness.test_suite.load_cases", return_value=cases)
+    client = mocker.Mock()
+    suite = client.get_or_create_test_suite.return_value
+
+    run = run_test_suite(client=client)
+
+    runnable = [case for case in cases if case.skip_reason is None]
+    assert run.suite_name == regression_suite_name(runnable)
+    assert client.get_or_create_test_suite.call_args.kwargs["name"] == regression_suite_name(
+        runnable
+    )
+    inserted = suite.insert.call_args.args[0]
+    assert [item["data"]["case_id"] for item in inserted] == ["a", "b"]
 
 
 def test_a_skip_guarded_case_is_never_registered_or_run(mocker):

@@ -350,10 +350,11 @@ def run_regression(
 def scoped_name(base: str, *, case_id: str | None = None, difficulty: str | None = None) -> str:
     """``base`` for a full run, ``base-<slice>`` for a filtered one (ADR-0022 §8).
 
-    ONE naming rule for both regression surfaces — the experiment a gate run logs
-    (``decode-regression-gate-hard``) and the Test Suite a filtered suite run registers
-    (``decode-regression-suite-hard``). A slice keeps its own name so its baseline, and the items it
-    bills, stay its own; ``--case`` wins over ``--difficulty`` because it is the narrower filter.
+    The EXPERIMENT naming rule: a gate run over one tier logs as ``decode-regression-gate-hard`` so
+    its baseline compares against that tier and never against the whole set; ``--case`` wins over
+    ``--difficulty`` because it is the narrower filter. Surface (b) does NOT share it — a Test Suite
+    is named after its content (:func:`evals.harness.datasets.regression_suite_name`), which slices
+    it for free.
     """
     slice_name = case_id or difficulty
     return f"{base}-{slice_name}" if slice_name else base

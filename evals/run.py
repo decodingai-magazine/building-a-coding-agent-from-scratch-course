@@ -214,9 +214,10 @@ def suite(case_id: str | None, difficulty: str | None) -> None:
 
     The CONTRAST to ``regression``: the same cases, graded by an LLM judge against each case's
     ``assertion`` (plus the suite's global bars) instead of deterministic metrics, gated on the run's
-    ``pass_rate``. A filtered run registers and runs its own sliced suite, since ``run_tests`` has no
-    per-item filter. Opik + the harness are imported lazily so ``--help`` never needs keys or a
-    network (ADR-0017 §1).
+    ``pass_rate``. Since ``run_tests`` has no per-item filter, the suite is named after the selected
+    cases' content (``decode-regression-suite-<8 hex>``, the same name ``sync --regression`` resolves)
+    — a filtered or edited selection runs its own suite, and the line below names it. Opik + the
+    harness are imported lazily so ``--help`` never needs keys or a network (ADR-0017 §1).
     """
     from evals.harness.test_suite import (
         SUITE_PASS_BAR,
@@ -228,13 +229,13 @@ def suite(case_id: str | None, difficulty: str | None) -> None:
 
     try:
         with opik_boundary():
-            result = run_test_suite(case_id=case_id, difficulty=difficulty)
+            run = run_test_suite(case_id=case_id, difficulty=difficulty)
     except SuiteSelectionError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    pass_rate = result.pass_rate
+    pass_rate = run.result.pass_rate
     click.echo(
-        f"evals suite: pass rate {pass_rate:.0%} (bar {SUITE_PASS_BAR:.0%}), "
+        f"evals suite: {run.suite_name} pass rate {pass_rate:.0%} (bar {SUITE_PASS_BAR:.0%}), "
         f"logged under {settings_project_name()}."
     )
     try:
@@ -461,8 +462,10 @@ def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
 
     ``--benchmark`` loads ``evals/benchmark/tasks/`` into ``decode-benchmark-v2``; ``--regression``
     loads the case registry into BOTH regression surfaces from one pass — the ``decode-regression-v2``
-    dataset the metric gate scores and the ``decode-regression-suite`` Test Suite the natural-language
-    assertions are judged in (both on by default). A skip-guarded case stays in the registry but is
+    dataset the metric gate scores and the ``decode-regression-suite-<8 hex>`` Test Suite the
+    natural-language assertions are judged in, named after the synced cases' content so an edit mints
+    a fresh suite instead of a second item (both on by default, and the line below names the suite it
+    resolved). A skip-guarded case stays in the registry but is
     not registered: the Opik surfaces carry what actually runs. ``--difficulty`` slices the upsert to
     one tier, so ``make eval-regression ARGS='--difficulty hard'`` syncs and gates the same eight
     cases. Opik is imported lazily here (not at CLI build time) so ``--help`` never needs keys or a
@@ -476,7 +479,6 @@ def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
     from evals.harness.datasets import (
         BENCHMARK_DATASET_NAME,
         REGRESSION_DATASET_NAME,
-        REGRESSION_SUITE_NAME,
         sync_benchmark_dataset,
         sync_regression_cases,
     )
@@ -497,10 +499,10 @@ def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
             cases = runnable_cases(selected)
             skipped = [case.id for case in selected if case.skip_reason is not None]
             note = f" ({len(skipped)} skipped: {', '.join(skipped)})" if skipped else ""
-            sync_regression_cases(cases)
+            surfaces = sync_regression_cases(cases)
             click.echo(
                 f"evals sync: upserted {len(cases)} case(s){note} into {REGRESSION_DATASET_NAME} "
-                f"and {REGRESSION_SUITE_NAME}."
+                f"and {surfaces.suite_name}."
             )
 
 

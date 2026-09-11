@@ -115,7 +115,7 @@ python -m evals suite --difficulty hard         # the same cases, judged on thei
 
 > ✅ The gate (`evals/regression/test_thresholds.py`) prints one table **per tier** and gates **globally**: tool discipline ≥ 0.8, judges ≥ 0.7. A drop against the previous experiment WARNs. The experiment is `decode-regression-gate`, or `decode-regression-gate-<tier>` for a filtered run, so a tier's baseline stays its own.
 
-**Two surfaces, on purpose.** One case definition registers twice: as a `decode-regression-v2` dataset item that deterministic metrics score (`python -m evals regression`), and as a `decode-regression-suite` Test Suite item whose English `assertion` an LLM judge checks against the answer (`python -m evals suite`, gated on `pass_rate` ≥ 0.8). Numbers catch exact regressions cheaply; assertions catch "the answer got worse in a way no single number captures". The contrast is the lesson — neither replaces the other.
+**Two surfaces, on purpose.** One case definition registers twice: as a `decode-regression-v2` dataset item that deterministic metrics score (`python -m evals regression`), and as an item in the `decode-regression-suite-<8 hex>` Test Suite (named after the synced cases' content, so an edit mints a fresh suite rather than a second, twice-judged item) whose English `assertion` an LLM judge checks against the answer (`python -m evals suite`, gated on `pass_rate` ≥ 0.8). Numbers catch exact regressions cheaply; assertions catch "the answer got worse in a way no single number captures". The contrast is the lesson — neither replaces the other.
 
 ## 4. Online eval, and the mining loop
 

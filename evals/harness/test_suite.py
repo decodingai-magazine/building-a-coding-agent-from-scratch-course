@@ -13,20 +13,23 @@ reads) in one pass. This module only RUNS the suite: it selects the cases (``--c
 exactly those items, adapts the regression task fn to the Test Suites ``{"input", "output"}``
 contract, and gates on ``result.pass_rate``.
 
-``opik.run_tests`` takes no per-item filter — it runs every item of the suite it is handed — so a
-FILTERED run registers its own sliced suite (``decode-regression-suite-hard``) rather than billing
-every runnable case. ``--difficulty`` is therefore the cost knob on THIS surface too. The full run
-uses ``decode-regression-suite``, the one ``python -m evals sync`` writes.
+``opik.run_tests`` takes no per-item filter — it runs every item of the suite it is handed — so the
+suite a run uses is named after its CONTENT: ``decode-regression-suite-<8 hex>`` over the selected
+cases' ``(case_id, case_checksum)`` pairs (:func:`evals.harness.datasets.regression_suite_name`). A
+FILTERED run therefore lands in its own suite rather than billing every runnable case
+(``--difficulty`` is the cost knob on THIS surface too), an EDITED case lands in a fresh suite holding
+exactly one item per case instead of a second item in the old one, and a full run uses the very suite
+``python -m evals sync --regression`` writes — both resolve the name through that one function.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from evals.harness.datasets import REGRESSION_SUITE_NAME
-from evals.harness.regression import make_regression_task_fn, scoped_name
+from evals.harness.regression import make_regression_task_fn
 from evals.regression.loader import load_cases, runnable_cases, select_cases
 
 if TYPE_CHECKING:
@@ -51,6 +54,19 @@ class SuiteSelectionError(Exception):
 
 class SuitePassRateError(Exception):
     """The suite ran but its pass rate fell below :data:`SUITE_PASS_BAR` — the gate failed."""
+
+
+@dataclass(frozen=True)
+class SuiteRun:
+    """One Test Suite run: the versioned suite it ran and the ``run_tests`` result it returned.
+
+    The name rides out with the result so the CLI PRINTS the suite the run actually billed — a
+    content-versioned name is the run's most useful breadcrumb, and recomputing it at the call site
+    would be a second chance to get it wrong.
+    """
+
+    suite_name: str
+    result: Any
 
 
 def make_suite_task_fn(
@@ -79,17 +95,18 @@ def run_test_suite(
     case_id: str | None = None,
     difficulty: str | None = None,
     client: opik.Opik | None = None,
-) -> Any:
-    """Run the selected cases' Test Suite and return its result (ADR-0022 §8).
+) -> SuiteRun:
+    """Run the selected cases' Test Suite and return it with its result (ADR-0022 §8).
 
-    Selects the runnable cases the filters name, upserts them into the suite that slice runs under
-    (:func:`~evals.harness.regression.scoped_name` over :data:`REGRESSION_SUITE_NAME`), and calls
-    ``opik.run_tests``.
+    Selects the runnable cases the filters name, upserts them through
+    :func:`~evals.harness.datasets.sync_regression_cases` — which names the suite after the selection's
+    CONTENT, so this run and ``python -m evals sync --regression`` resolve the same name from the same
+    function — and calls ``opik.run_tests`` on it.
 
     The run is SERIAL by construction (``worker_threads=1``): each item drives the REAL agent
     host-native through the process-global ``bash`` executor seam, so two concurrent items would clash
-    — the same reason surface (a) runs ``evaluate(task_threads=1)``. Returns the run result carrying
-    ``pass_rate``.
+    — the same reason surface (a) runs ``evaluate(task_threads=1)``. Returns the :class:`SuiteRun`
+    carrying the suite name and the result (whose ``pass_rate`` the gate reads).
     """
     import opik
 
@@ -104,10 +121,10 @@ def run_test_suite(
         )
 
     client = client or opik.Opik()
-    suite_name = scoped_name(REGRESSION_SUITE_NAME, case_id=case_id, difficulty=difficulty)
-    suite = sync_regression_cases(selected, client=client, suite_name=suite_name).suite
+    surfaces = sync_regression_cases(selected, client=client)
     task = make_suite_task_fn({case.id: case for case in all_cases})
-    return opik.run_tests(test_suite=suite, task=task, worker_threads=1)
+    result = opik.run_tests(test_suite=surfaces.suite, task=task, worker_threads=1)
+    return SuiteRun(suite_name=surfaces.suite_name, result=result)
 
 
 def assert_pass_rate(pass_rate: float, bar: float = SUITE_PASS_BAR) -> None:

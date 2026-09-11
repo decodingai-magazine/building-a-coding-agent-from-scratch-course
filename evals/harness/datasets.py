@@ -8,8 +8,9 @@ the whole task folder; ``decode-regression-v2`` gets one item per Regression Cas
 human filters, sorts and reads an Experiment by.
 
 A Regression Case registers TWICE from ONE definition (ADR-0022 §8): the dataset item above, which
-the deterministic metrics gate, and a ``decode-regression-suite`` Test Suite item carrying the case's
-natural-language ``assertion``, which an LLM judge grades — the contrast ADR-0017 §6 is built on.
+the deterministic metrics gate, and a ``decode-regression-suite-<version>`` Test Suite item carrying
+the case's natural-language ``assertion``, which an LLM judge grades — the contrast ADR-0017 §6 is
+built on.
 :func:`regression_items` is that one pass over the cases; :func:`sync_regression_cases` writes both
 surfaces, while :func:`sync_regression_dataset` writes the dataset ALONE so the money-costing gate
 run never depends on the Test Suite API being reachable.
@@ -22,9 +23,13 @@ checksum matches what is declared right now — ``evals.harness.benchmark`` over
 has no fresh item. Without that scoping, one re-synced case is graded once per historical version:
 double cost and duplicated rows on every gate run after an edit.
 
-Surface (b) is deliberately checksum-FREE: ``opik.run_tests`` takes no item filter and runs every item
-of the suite it is handed, so a ``checksum`` in the suite item would mint a second item and bill the
-judge twice rather than version anything.
+Surface (b) versions the SUITE instead of the item. Its ITEMS stay checksum-FREE — ``opik.run_tests``
+takes no item filter and runs every item of the suite it is handed, so a ``checksum`` in the suite item
+would mint a second item and bill the judge twice rather than version anything. The version therefore
+rides in the suite's NAME: :func:`regression_suite_name` hashes the ``(case_id, case_checksum)`` pairs
+of the cases being registered, so an edited case mints a FRESH suite holding exactly one item per case
+rather than a second item inside the old one. Stale suites stay behind, inert — Opik never deletes, so
+they are ignored, not removed.
 
 Dataset names are code constants, not settings (ADR-0017 §2) — a suite version is a property of the
 suite, not an operator knob. Both syncs are idempotent: ``get_or_create`` never duplicates the dataset
@@ -65,10 +70,13 @@ CHECKSUM_IGNORED_SUFFIXES = (".pyc",)
 # The single Regression Case dataset version (ADR-0022 §8). Bumping the suite bumps this constant.
 REGRESSION_DATASET_NAME = "decode-regression-v2"
 
-# The Test Suite the same cases register into — surface (b)'s analogue of the dataset name. A FILTERED
-# run appends its slice (``-<tier>`` / ``-<case id>``): ``opik.run_tests`` runs every item of the suite
-# it is handed and takes no item filter, so a tier run gets its own suite rather than billing all 21.
-REGRESSION_SUITE_NAME = "decode-regression-suite"
+# The readable stem every Test Suite name starts with — surface (b)'s analogue of the dataset name.
+# The name a run actually uses is this plus a content version (:func:`regression_suite_name`).
+REGRESSION_SUITE_PREFIX = "decode-regression-suite"
+
+# How much of the suite-version digest rides in the name: short enough to read in the Opik UI and to
+# paste into a message, long enough that two case sets never collide in practice (2^32).
+SUITE_VERSION_LENGTH = 8
 
 # Cross-cutting NL quality bars every suite item is graded against (the suite's ``global_assertions``),
 # on top of the case's own ``assertion``.
@@ -163,10 +171,15 @@ def sync_benchmark_dataset(
 
 @dataclass(frozen=True)
 class RegressionSurfaces:
-    """The two Opik surfaces one Regression Case registers into (ADR-0022 §8)."""
+    """The two Opik surfaces one Regression Case registers into (ADR-0022 §8).
+
+    ``suite_name`` is the versioned name the suite was actually upserted under — carried out so the
+    caller prints the SAME string the sync wrote, never a second guess at it.
+    """
 
     dataset: Dataset
     suite: TestSuite
+    suite_name: str
 
 
 def regression_dataset_item(case: RegressionCase) -> dict[str, Any]:
@@ -246,7 +259,8 @@ def regression_suite_item(case: RegressionCase) -> dict[str, Any]:
 
     Deliberately NOT carried: the ``checksum`` the dataset item is versioned by. ``opik.run_tests``
     takes no item filter and runs every item of the suite it is handed, so a checksum here would mint
-    a second item and bill the judge twice instead of versioning anything.
+    a second item and bill the judge twice instead of versioning anything. Surface (b)'s version lives
+    one level up, in the SUITE's name (:func:`regression_suite_name`).
     """
     return {
         "description": case.description,
@@ -257,6 +271,33 @@ def regression_suite_item(case: RegressionCase) -> dict[str, Any]:
         },
         "assertions": [case.assertion],
     }
+
+
+def regression_suite_name(cases: Iterable[RegressionCase]) -> str:
+    """``decode-regression-suite-<8 hex>`` — the Test Suite name for exactly THIS set of cases (§8).
+
+    The suite is versioned by its CONTENT because ``opik.run_tests`` takes no item filter and Opik
+    never deletes: re-syncing an edited case into a fixed-name suite leaves the stale item beside the
+    fresh one, and the next ``python -m evals suite`` judges that case twice (double cost, duplicated
+    rows). Hashing the sorted ``(case_id, case_checksum)`` pairs makes a content change mint a FRESH
+    suite holding exactly one item per case; the old suites stay behind, inert — ignored, not removed.
+
+    The hash is over the SELECTED cases, so a filtered run (``--difficulty hard``, ``--case 17-…``)
+    lands in its own suite for free — no ``-<tier>`` suffix to plumb through, and no way for
+    ``sync --difficulty hard`` and ``suite --difficulty hard`` to disagree on the name, since they
+    hash the same selection rather than the same flags (``sync`` has no ``--case`` to forward at all).
+    The readability the suffix carried is paid back by both commands PRINTING the resolved name.
+
+    Sorted by ``(case_id, checksum)`` so the name never depends on registry iteration order, and each
+    part is ``\0``-terminated so two cases cannot merge into one digest input.
+    """
+    digest = hashlib.sha256()
+    for case_id, checksum in sorted((case.id, case_checksum(case)) for case in cases):
+        digest.update(case_id.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(checksum.encode("utf-8"))
+        digest.update(b"\0")
+    return f"{REGRESSION_SUITE_PREFIX}-{digest.hexdigest()[:SUITE_VERSION_LENGTH]}"
 
 
 def regression_items(
@@ -272,10 +313,7 @@ def regression_items(
 
 
 def sync_regression_cases(
-    cases: Iterable[RegressionCase],
-    *,
-    client: opik.Opik | None = None,
-    suite_name: str = REGRESSION_SUITE_NAME,
+    cases: Iterable[RegressionCase], *, client: opik.Opik | None = None
 ) -> RegressionSurfaces:
     """Upsert every case into BOTH Opik surfaces from one pass over the list (ADR-0022 §8).
 
@@ -283,13 +321,19 @@ def sync_regression_cases(
     assertions — one case declaration, two registrations, never two lists to keep in sync. Both
     upserts are idempotent (``get_or_create`` never duplicates, Opik ``insert`` dedupes by content),
     so re-running is safe; an empty ``cases`` creates both surfaces and inserts nothing.
-    ``suite_name`` lets a filtered run register its own suite (see :data:`REGRESSION_SUITE_NAME`).
+
+    The suite name is DERIVED from ``cases`` (:func:`regression_suite_name`), never passed in: the
+    name is a fact about the content, so ``python -m evals sync --regression`` and
+    ``python -m evals suite`` cannot drift apart, and the suite this writes holds exactly one item per
+    case. The resolved name rides back on :class:`RegressionSurfaces` for the caller to print.
     """
     client = client or opik.Opik()
-    dataset_items, suite_items = regression_items(cases)
+    case_list = list(cases)
+    dataset_items, suite_items = regression_items(case_list)
+    suite_name = regression_suite_name(case_list)
     dataset = _upsert_regression_dataset(client, dataset_items)
     suite = _upsert_regression_suite(client, suite_name, suite_items)
-    return RegressionSurfaces(dataset=dataset, suite=suite)
+    return RegressionSurfaces(dataset=dataset, suite=suite, suite_name=suite_name)
 
 
 def sync_regression_dataset(
@@ -326,6 +370,8 @@ def _upsert_regression_suite(
 ) -> TestSuite:
     """``get_or_create`` the Test Suite in the eval project and insert ``items`` (idempotent).
 
+    ``name`` is the content-versioned name :func:`regression_suite_name` resolved, so ``get_or_create``
+    either reopens the suite holding exactly these items or mints a fresh one for the new content.
     The suite carries the cross-cutting :data:`GLOBAL_ASSERTIONS` and the one-run-per-item policy;
     each item carries its case's own assertion. ``project_name`` keeps suite runs under
     ``decode-evals``, never in live REPL tracing (ADR-0017 §9).
