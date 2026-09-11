@@ -21,6 +21,7 @@ from evals.harness.metrics import (
     MaxStepsMetric,
     NewFileNameMetric,
     OutputContainsMetric,
+    RewardMetric,
     ToolArgsMetric,
     ToolCalledMetric,
     ToolNotCalledMetric,
@@ -175,6 +176,87 @@ def test_max_steps_missing_field_is_graceful_zero() -> None:
     result = MaxStepsMetric().score(steps=3)
     _assert_well_formed(result)
     assert result.value == 0.0
+
+
+# --- RewardMetric ----------------------------------------------------------------------------
+
+
+def test_reward_metric_scores_a_won_trial() -> None:
+    """``agent_ok`` ⇒ the Verifier's reward IS the score of record (ADR-0022 §3)."""
+    result = RewardMetric().score(status="agent_ok", reward=1.0, reason=None)
+
+    assert result.name == "reward"
+    assert result.value == 1.0
+    assert result.scoring_failed is False
+
+
+def test_reward_metric_scores_a_lost_trial_with_its_reason() -> None:
+    """An agent failure is a real 0 in the denominator, and the row says WHY (ADR-0022 §4)."""
+    result = RewardMetric().score(
+        status="agent_fail", reward=0.0, reason="the run hit its 15-request ceiling"
+    )
+
+    assert result.value == 0.0
+    assert result.scoring_failed is False
+    assert "ceiling" in result.reason
+
+
+def test_reward_metric_marks_an_infra_error_as_scoring_failed() -> None:
+    """An Infra Error is excluded, not zeroed — Opik's own axis for "this was not measurable"."""
+    result = RewardMetric().score(
+        status="infra_error", reward=None, reason="the Verifier timed out after 600s"
+    )
+
+    assert result.value == 0.0
+    assert result.scoring_failed is True
+    assert "Verifier" in result.reason
+
+
+def test_reward_metric_marks_a_missing_reward_as_scoring_failed() -> None:
+    """A graded status with no number cannot be read as a 0 — it is unscorable (ADR-0022 §3)."""
+    result = RewardMetric().score(status="agent_fail", reward=None, reason=None)
+
+    assert result.scoring_failed is True
+
+
+def test_reward_metric_is_graceful_on_a_missing_payload() -> None:
+    """Opik hands the metric whatever the task fn returned; a shapeless payload never raises."""
+    result = RewardMetric().score()
+
+    assert result.value == 0.0
+    assert result.scoring_failed is True
+
+
+def test_opik_excludes_a_failed_reward_from_the_aggregate() -> None:
+    """The ADR-0022 §4 rule, proven against the INSTALLED opik: a failed score is not a 0.
+
+    ``calculate_aggregated_statistics`` is what feeds Opik's per-experiment / per-item score view;
+    it skips ``scoring_failed`` results entirely, so an Infra Error leaves the mean of the two graded
+    trials at 0.5 rather than dragging it to 0.33.
+    """
+    from opik.evaluation.score_statistics import calculate_aggregated_statistics
+    from opik.evaluation.test_case import TestCase
+    from opik.evaluation.test_result import TestResult
+
+    metric = RewardMetric()
+    scores = [
+        metric.score(status="agent_ok", reward=1.0, reason=None),
+        metric.score(status="agent_fail", reward=0.0, reason="wrong answer"),
+        metric.score(status="infra_error", reward=None, reason="the sandbox did not start"),
+    ]
+    results = [
+        TestResult(
+            test_case=TestCase(trace_id=f"t{i}", dataset_item_id="item-1", task_output={}),
+            score_results=[score],
+            trial_id=i,
+        )
+        for i, score in enumerate(scores)
+    ]
+
+    aggregated = calculate_aggregated_statistics(results)
+
+    assert aggregated["reward"].values == [1.0, 0.0]  # the infra trial is absent entirely
+    assert aggregated["reward"].mean == 0.5
 
 
 # --- DiffLinesMetric -------------------------------------------------------------------------

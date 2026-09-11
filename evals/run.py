@@ -59,6 +59,24 @@ def opik_boundary() -> Iterator[None]:
         raise _opik_error_as_click(exc) from exc
 
 
+def _validate_job_name(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+    """Reject a ``--job-name`` that is not one safe path segment, before any (billed) trial starts.
+
+    The harness owns the rule (``evals.harness.benchmark.validate_job_name``) because every caller
+    of ``new_job_dir`` must obey it; this callback only re-dresses it as the same one-line
+    ``Invalid value for '--job-name'`` the other flags produce. Imported lazily so ``--help``, which
+    exits before non-eager callbacks run, still pulls in no ``opik`` (ADR-0017 §1).
+    """
+    if value is None:
+        return None
+    from evals.harness.benchmark import validate_job_name
+
+    try:
+        return validate_job_name(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), ctx=ctx, param=param) from exc
+
+
 @click.group()
 def cli() -> None:
     """decode eval suite — benchmark + regression harness (ADR-0017)."""
@@ -77,58 +95,75 @@ def cli() -> None:
     type=click.Choice(["docker", "modal"]),
     default="docker",
     show_default=True,
-    help="The sandbox rung each task run executes in.",
-)
-@click.option(
-    "--nb-samples",
-    type=click.IntRange(min=1),
-    default=None,
-    help="Cap the number of dataset items sampled (Opik nb_samples).",
+    help="The sandbox rung each Trial's `decode run` executes in.",
 )
 @click.option(
     "--trials",
     type=click.IntRange(min=1),
     default=1,
     show_default=True,
-    help="Runs per item (Opik trial_count) — drives pass@k / pass^k / flakiness aggregates.",
+    help="Trials per task (Opik trial_count) — the pass@k / pass^k / flakiness axis.",
+)
+@click.option(
+    "--threads",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Trials to run at once (Opik task_threads) [default: 1 for docker, 4 for modal].",
+)
+@click.option(
+    "--job-name",
+    default=None,
+    callback=_validate_job_name,
+    help="Name the job: the Opik experiment AND the Trial Dir parent [default: bench-<UTC stamp>].",
+)
+@click.option(
+    "--model",
+    default=None,
+    help="Override the model every Trial runs on (`decode run --model`).",
 )
 def benchmark(
     task_id: str | None,
     difficulty: str | None,
     sandbox: str,
-    nb_samples: int | None,
     trials: int,
+    threads: int | None,
+    job_name: str | None,
+    model: str | None,
 ) -> None:
-    """Run the outcome benchmark as an Opik experiment (ADR-0022 §1,§3,§6).
+    """Run the outcome benchmark as one Opik Experiment (ADR-0022 §1,§3,§6).
 
     Each selected task runs ``--trials`` Benchmark Trials: a subprocess ``decode run`` against a
     fresh Seed Repo with ``SANDBOX_MODE=--sandbox``, graded host-side by the hidden ``tests/test.sh``
     Verifier on a pristine clone of the handed-back branch, with every trial's evidence left in its
-    Trial Dir under ``.decode/evals/runs/``. Scored with the code metrics under
-    ``settings.eval_project_name``. The trial aggregates
-    (pass@1 / pass@k / pass^k / flakiness + cost) are attached to the experiment and printed as a Rich
-    summary table. Opik + the harness are imported lazily so ``--help`` never needs keys or a
-    network (ADR-0017 §1).
+    Trial Dir under ``.decode/evals/runs/<job>/``. The reward is the score of record; pass@1 / pass@k
+    / pass^k / flakiness / cost ride ``experiment_scoring_functions`` onto the experiment row and are
+    printed here as a Rich table with per-tier rollups. Opik + the harness are imported lazily so
+    ``--help`` never needs keys or a network (ADR-0017 §1).
     """
     from rich.console import Console
 
-    from evals.harness.aggregates import render_summary_table, summarize
-    from evals.harness.benchmark import BenchmarkSelectionError, run_benchmark
+    from evals.harness.aggregates import render_summary_table
+    from evals.harness.benchmark import BenchmarkSelectionError, run_benchmark, summarize
 
     try:
         with opik_boundary():
-            result = run_benchmark(
+            run = run_benchmark(
                 task_id=task_id,
                 difficulty=difficulty,
                 sandbox=sandbox,
-                nb_samples=nb_samples,
                 trials=trials,
+                threads=threads,
+                job_name=job_name,
+                model=model,
             )
     except BenchmarkSelectionError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    Console().print(render_summary_table(summarize(result, trials=trials)))
-    click.echo(f"evals benchmark: experiment logged under {settings_project_name()}.")
+    Console().print(render_summary_table(summarize(run.result, trials=trials)))
+    click.echo(
+        f"evals benchmark: experiment {run.experiment_name} logged under "
+        f"{settings_project_name()}; trial dirs in {run.job_dir}."
+    )
 
 
 def settings_project_name() -> str:
@@ -241,7 +276,7 @@ def online(filter_string: str | None) -> None:
     "benchmark",
     default=True,
     show_default=True,
-    help="Sync the benchmark tasks into the decode-benchmark-v1 Opik dataset.",
+    help="Sync the benchmark tasks into the decode-benchmark-v2 Opik dataset.",
 )
 @click.option(
     "--regression/--no-regression",
@@ -253,7 +288,7 @@ def online(filter_string: str | None) -> None:
 def sync(benchmark: bool, regression: bool) -> None:
     """Upsert the eval tracks' Opik datasets (ADR-0017 §2,6).
 
-    ``--benchmark`` loads ``evals/benchmark/tasks/`` into ``decode-benchmark-v1``; ``--regression``
+    ``--benchmark`` loads ``evals/benchmark/tasks/`` into ``decode-benchmark-v2``; ``--regression``
     loads the probe registry into ``decode-regression-v1`` (both on by default). Opik is imported lazily
     here (not at CLI build time) so ``--help`` never needs keys or a network.
     """

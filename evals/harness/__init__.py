@@ -24,6 +24,7 @@ from evals.harness.judges import judge_model, make_judge
 from evals.harness.metrics import (
     DiffLinesMetric,
     MaxStepsMetric,
+    RewardMetric,
     ToolCalledMetric,
     ToolNotCalledMetric,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "DiffLinesMetric",
     "EvalRunRecord",
     "MaxStepsMetric",
+    "RewardMetric",
     "SeedError",
     "SeedInfo",
     "ToolCallRecord",

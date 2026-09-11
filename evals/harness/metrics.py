@@ -31,6 +31,8 @@ from typing import Any
 from opik.evaluation.metrics.base_metric import BaseMetric
 from opik.evaluation.metrics.score_result import ScoreResult
 
+from evals.harness.aggregates import DEFAULT_PASS_METRIC, INFRA_ERROR_STATUS
+
 
 def _tool_call_names(tool_calls: Any) -> list[str] | None:
     """Best-effort tool-name extraction from a task-fn ``tool_calls`` list, else ``None``.
@@ -213,6 +215,53 @@ class MaxStepsMetric(BaseMetric):
             name=self.name,
             value=1.0 if within else 0.0,
             reason=f"steps={steps} {'<=' if within else '>'} max_steps={max_steps}.",
+        )
+
+
+class RewardMetric(BaseMetric):
+    """The benchmark's grade of record: the Verifier's reward, or a FAILED score (ADR-0022 §3,§4).
+
+    One Trial = one score. ``agent_ok`` / ``agent_fail`` are graded outcomes and carry the reward the
+    ``tests/test.sh`` Verifier wrote (``1.0`` / ``0.0``; every task is binary) with the trial's own
+    one-line ``reason``. An ``infra_error`` — the harness failing, not the agent — comes back as
+    ``scoring_failed=True``: Opik's aggregation skips such a score entirely, so the trial leaves both
+    the numerator and the denominator, which is exactly the taxonomy's rule. A graded status with no
+    numeric reward is unscorable too: a ``None`` reward must NEVER be read as a zero.
+
+    The ``status`` / ``reward`` / ``reason`` parameters are matched by name against the task fn's
+    payload (:func:`evals.harness.benchmark.trial_payload`); everything else is absorbed, so a
+    payload that lost a field scores a failed score instead of aborting the run.
+    """
+
+    def __init__(self, name: str | None = None) -> None:
+        super().__init__(name=name or DEFAULT_PASS_METRIC, track=False)
+
+    def score(
+        self,
+        status: Any = None,
+        reward: Any = None,
+        reason: Any = None,
+        **ignored_kwargs: Any,
+    ) -> ScoreResult:
+        detail = str(reason) if reason else None
+        if status == INFRA_ERROR_STATUS:
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                scoring_failed=True,
+                reason=detail or "the harness could not run or grade this trial",
+            )
+        if not isinstance(reward, (int, float)) or isinstance(reward, bool):
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                scoring_failed=True,
+                reason=f"the trial reported no numeric reward (status={status!r}, reward={reward!r}).",
+            )
+        return ScoreResult(
+            name=self.name,
+            value=float(reward),
+            reason=detail or f"the Verifier scored {float(reward)}.",
         )
 
 

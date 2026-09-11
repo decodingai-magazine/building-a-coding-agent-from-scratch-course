@@ -176,8 +176,9 @@ Every task passes this before it lands (ADR-0022 §2).
 
 ## Syncing to Opik
 
-`python -m evals sync --benchmark` upserts one item per task (`task_id`, `difficulty`, `tags`) into
-the `decode-benchmark-v1` dataset. Idempotent — Opik deduplicates by content.
+`python -m evals sync --benchmark` upserts one item per task (`task_id`, `difficulty`, `category`,
+`tags`, `instruction`, `checksum`) into
+the `decode-benchmark-v2` dataset. Idempotent — Opik deduplicates by content.
 
 ## Audit table
 

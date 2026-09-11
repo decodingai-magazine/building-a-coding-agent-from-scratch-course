@@ -83,6 +83,9 @@ STRIPPED_ENV_VARS: tuple[str, ...] = ("KITARU_TASK_ID", "SANDBOX_REPO", "KITARU_
 
 # The Trial Dir's fixed layout (ADR-0022 §7); ``home`` is the subprocess's throwaway Harness Home.
 SEED_DIR_NAME = "seed"
+# The child's Workspace, pinned per trial INSIDE its Harness Home (``home/.decode/sandbox``) so
+# concurrent trials of one job never share a clone — see :func:`child_env`.
+WORKSPACE_DIR_PARTS = (".decode", "sandbox")
 HOME_DIR_NAME = "home"
 PRISTINE_DIR_NAME = "pristine"
 AGENT_DIR_NAME = "agent"
@@ -235,6 +238,7 @@ def child_env(
     sandbox: str,
     env: Mapping[str, str] | None = None,
     config: Settings | None = None,
+    workspace_dir: Path | None = None,
 ) -> dict[str, str]:
     """The environment the ``decode run`` subprocess gets — pure, so it is testable on its own.
 
@@ -250,6 +254,12 @@ def child_env(
     the headless runtime is on; a Kitaru Worker Task / replay id and an ambient ``SANDBOX_REPO``
     would each make the child do something other than this trial. ``KITARU_AGENT_ID`` passes
     through untouched — recording rides the Recording Seam exactly as it does for a user's run.
+
+    ``workspace_dir`` PINS the child's Workspace, and is set LAST so it beats the exported setting.
+    ``sandbox_workspace_dir`` defaults to the relative ``.decode/sandbox``, which each child already
+    resolves inside its own Harness Home — but an operator whose ``.env`` sets it ABSOLUTE would
+    otherwise have every concurrent trial of a ``--threads > 1`` job clone into the SAME directory
+    (ADR-0022 §6). Left ``None``, the child resolves the setting itself, exactly like a user's run.
     """
     config = config if config is not None else settings
     child = dict(os.environ if env is None else env)
@@ -257,6 +267,8 @@ def child_env(
     child["SANDBOX_MODE"] = sandbox
     child["OPIK_PROJECT_NAME"] = config.eval_project_name
     child["RUNTIME_ENABLED"] = "true"
+    if workspace_dir is not None:
+        child["SANDBOX_WORKSPACE_DIR"] = str(workspace_dir)
     for name in STRIPPED_ENV_VARS:
         child.pop(name, None)
     return child
@@ -348,7 +360,10 @@ def _run_agent(
             cwd=home_dir,
             stdout=stdout,
             stderr=stderr,
-            env=child_env(sandbox=sandbox),
+            env=child_env(
+                sandbox=sandbox,
+                workspace_dir=home_dir / WORKSPACE_DIR_PARTS[0] / WORKSPACE_DIR_PARTS[1],
+            ),
             # Its OWN process group, so the timeout's SIGINT reaches decode AND everything it
             # spawned (a docker exec, a git push) rather than just the interpreter.
             start_new_session=True,

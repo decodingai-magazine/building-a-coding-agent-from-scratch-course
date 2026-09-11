@@ -40,29 +40,90 @@ def test_help_lists_the_eval_tracks():
 
 
 def test_benchmark_subcommand_invokes_run_benchmark(mocker):
-    """``evals benchmark`` forwards its filters to ``run_benchmark`` and reports the project (task 106)."""
+    """``evals benchmark`` forwards every flag to ``run_benchmark`` and reports where to look."""
     run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+    run_benchmark.return_value.job_dir = Path(".decode/evals/runs/bench-x")
+    run_benchmark.return_value.experiment_name = "bench-x"
 
-    result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--sandbox", "docker"])
+    result = CliRunner().invoke(
+        cli,
+        [
+            "benchmark",
+            "--task",
+            "001-find-and-replace",
+            "--difficulty",
+            "easy",
+            "--sandbox",
+            "modal",
+            "--trials",
+            "3",
+            "--threads",
+            "2",
+            "--job-name",
+            "bench-x",
+            "--model",
+            "qwen-x",
+        ],
+    )
 
     assert result.exit_code == 0, result.output
     _, kwargs = run_benchmark.call_args
-    assert kwargs["task_id"] == "001-greeting"
-    assert kwargs["sandbox"] == "docker"
+    assert kwargs == {
+        "task_id": "001-find-and-replace",
+        "difficulty": "easy",
+        "sandbox": "modal",
+        "trials": 3,
+        "threads": 2,
+        "job_name": "bench-x",
+        "model": "qwen-x",
+    }
     assert "decode-evals" in result.output
+    assert "bench-x" in result.output
+    assert ".decode/evals/runs/bench-x" in result.output
 
 
-def test_benchmark_subcommand_forwards_trials_and_prints_the_summary(mocker):
-    """``benchmark --trials 3`` forwards ``trials`` and prints the Rich aggregate table (ADR-0017 §8)."""
+def test_benchmark_subcommand_refuses_a_traversing_job_name(mocker):
+    """``--job-name '../../evil'`` is refused BEFORE any (billed) trial starts.
+
+    The name is both a directory under ``.decode/evals/runs/`` and the Opik experiment name, so a
+    ``..`` component would write Trial Dirs outside the harness tree.
+    """
     run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+
+    result = CliRunner().invoke(cli, ["benchmark", "--job-name", "../../evil"])
+
+    assert result.exit_code != 0
+    assert "--job-name" in result.output
+    run_benchmark.assert_not_called()
+
+
+def test_benchmark_subcommand_defaults_are_the_cheap_ones(mocker):
+    """No flags: one trial, docker, and the harness picks the job name + thread policy."""
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+
+    result = CliRunner().invoke(cli, ["benchmark"])
+
+    assert result.exit_code == 0, result.output
+    _, kwargs = run_benchmark.call_args
+    assert kwargs["sandbox"] == "docker"
+    assert kwargs["trials"] == 1
+    assert kwargs["threads"] is None  # resolved per sandbox by run_benchmark
+    assert kwargs["job_name"] is None
+    assert kwargs["model"] is None
+    assert kwargs["difficulty"] is None
+
+
+def test_benchmark_subcommand_prints_the_summary_table(mocker):
+    """``--trials 3`` labels the table's columns with the real k (ADR-0022 §6)."""
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+    run_benchmark.return_value.job_dir = Path(".decode/evals/runs/bench-x")
 
     result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--trials", "3"])
 
     assert result.exit_code == 0, result.output
-    _, kwargs = run_benchmark.call_args
-    assert kwargs["trials"] == 3
-    # The summary table renders even on the mock result (graceful-empty), naming the trial count.
+    # The table renders even on the mock result (graceful-empty), naming the trial count.
     assert "trial(s)" in result.output
+    assert "pass@3" in result.output
 
 
 @pytest.mark.parametrize("trials", ["0", "-1"])
@@ -81,11 +142,21 @@ def test_benchmark_subcommand_rejects_a_non_positive_trials(mocker, trials):
     run_benchmark.assert_not_called()
 
 
-def test_benchmark_subcommand_rejects_a_non_positive_nb_samples(mocker):
-    """``--nb-samples 0`` is a friendly range error too — never a silent zero-item cap."""
+def test_benchmark_subcommand_rejects_a_non_positive_threads(mocker):
+    """``--threads 0`` is a friendly range error too — never a silent zero-worker run."""
     run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
 
-    result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--nb-samples", "0"])
+    result = CliRunner().invoke(cli, ["benchmark", "--threads", "0"])
+
+    assert result.exit_code != 0
+    run_benchmark.assert_not_called()
+
+
+def test_benchmark_subcommand_has_no_nb_samples_flag(mocker):
+    """``--nb-samples`` is gone: a job is scoped by ``--task`` / ``--difficulty`` (ADR-0022 §6)."""
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+
+    result = CliRunner().invoke(cli, ["benchmark", "--nb-samples", "1"])
 
     assert result.exit_code != 0
     run_benchmark.assert_not_called()
@@ -356,6 +427,32 @@ def test_importing_the_cli_does_not_import_opik():
         "import evals.run, sys; "
         "leaked = sorted(m for m in sys.modules if 'opik' in m); "
         "assert not leaked, leaked"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        env=_subprocess_env(),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_benchmark_help_imports_no_opik():
+    """``evals benchmark --help`` must render with no keys and no network (ADR-0017 §1).
+
+    A fresh subprocess so no other test's imports pollute ``sys.modules``: building AND invoking the
+    help of the one opik-heaviest command still pulls in nothing from opik.
+    """
+    code = (
+        "import sys\n"
+        "from click.testing import CliRunner\n"
+        "from evals.run import cli\n"
+        "result = CliRunner().invoke(cli, ['benchmark', '--help'])\n"
+        "assert result.exit_code == 0, result.output\n"
+        "assert '--threads' in result.output, result.output\n"
+        "leaked = sorted(m for m in sys.modules if 'opik' in m)\n"
+        "assert not leaked, leaked\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],

@@ -433,6 +433,42 @@ def test_child_env_applies_the_trial_overrides_and_removals() -> None:
         assert stripped not in env
 
 
+def test_child_env_pins_the_workspace_under_the_trials_own_home(tmp_path: Path) -> None:
+    """Concurrent trials must never share one Workspace (``--threads > 1``, ADR-0022 §6).
+
+    ``SANDBOX_WORKSPACE_DIR`` defaults to the RELATIVE ``.decode/sandbox``, which a child launched
+    from its own Harness Home resolves per trial — but an operator's ``.env`` may set it ABSOLUTE,
+    and ``child_env`` exports every explicitly-set field. The per-trial override must win.
+    """
+    config = Settings(_env_file=None, sandbox_workspace_dir=Path("/shared/.decode/sandbox"))
+    workspace = tmp_path / "home" / ".decode" / "sandbox"
+
+    env = child_env(sandbox="docker", env={}, config=config, workspace_dir=workspace)
+
+    assert env["SANDBOX_WORKSPACE_DIR"] == str(workspace)
+
+
+def test_child_env_leaves_the_workspace_to_the_child_when_unpinned() -> None:
+    """With no override the child resolves the setting itself, exactly like a user's own run."""
+    config = Settings(_env_file=None)
+
+    env = child_env(sandbox="docker", env={}, config=config)
+
+    assert "SANDBOX_WORKSPACE_DIR" not in env
+
+
+def test_a_trial_runs_the_agent_with_its_own_workspace(tmp_path: Path) -> None:
+    """The Workspace a trial's ``decode run`` uses lives inside that trial's own Trial Dir.
+
+    Two trials of one Benchmark Job run at once under ``--threads > 1``; a shared Workspace would
+    have them clobber each other's clone (ADR-0022 §6).
+    """
+    result = _run(_task(tmp_path), tmp_path, "oracle")
+
+    workspace = Path(_agent_stdout(result)["workspace"])
+    assert workspace.parent.parent == result.trial_dir / "home"
+
+
 def test_child_env_exports_the_parents_resolved_settings() -> None:
     """A key that lives only in the repo ``.env`` must reach a child launched from another cwd."""
     config = Settings(

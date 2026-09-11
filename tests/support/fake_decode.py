@@ -21,10 +21,11 @@ the script honours the flags the trial passes (``--repo`` / ``--summary-json`` /
   the SAME process group, so only the trial's SIGKILL escalation ends the group. It prints a second
   json line naming that grandchild's pid, which is how the test proves nothing survived.
 
-Every mode prints ONE json line on stdout first — its argv, its cwd, its process-group id and a
-listing of the Seed Repo as the "agent" sees it. That line is the evidence the tests read: the group
-id proves ``start_new_session=True``, and the listing proves ``tests/`` and ``solution/`` are not
-there while the agent runs.
+Every mode prints ONE json line on stdout first — its argv, its cwd, its process-group id, the
+``SANDBOX_WORKSPACE_DIR`` it was handed and a listing of the Seed Repo as the "agent" sees it. That
+line is the evidence the tests read: the group id proves ``start_new_session=True``, the workspace
+proves each trial got its own, and the listing proves ``tests/`` and ``solution/`` are not there
+while the agent runs.
 """
 
 from __future__ import annotations
@@ -116,6 +117,7 @@ def main():
         "argv": sys.argv[1:],
         "cwd": os.getcwd(),
         "pgid": os.getpgrp(),
+        "workspace": os.environ.get("SANDBOX_WORKSPACE_DIR"),
         "seed": sorted(os.listdir(repo)) if repo else [],
     }))
     sys.stdout.flush()
