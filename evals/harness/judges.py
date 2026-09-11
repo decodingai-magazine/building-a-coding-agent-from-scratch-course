@@ -7,13 +7,16 @@ decode's own provider (ADR-0017 §7): :func:`judge_model` resolves the LiteLLM m
 ``EVAL_JUDGE_MODEL`` overrides, else the string derives from ``settings.llm_provider``.
 
 :func:`judge_model` is pure and network-free, so its routing is unit-tested without keys. The one
-wrinkle is the ``modal`` route: its OpenAI-compatible endpoint needs a per-user ``base_url``, which a
-bare LiteLLM model string cannot carry — GEval takes only ``model`` (a string) or a pre-built
-Opik model. :func:`make_judge` therefore hands GEval a :class:`LiteLLMChatModel` with ``api_base``
-set for the modal derivation, and the plain string for every other route.
+wrinkle is the ``modal`` route: its OpenAI-compatible endpoint needs a per-user ``base_url`` AND
+proxy-token auth, neither of which a bare LiteLLM model string can carry — GEval takes only ``model``
+(a string) or a pre-built Opik model. :func:`make_judge` therefore hands GEval a
+:class:`LiteLLMChatModel` carrying ``api_base`` + the endpoint's auth for the modal derivation, and
+the plain string for every other route.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from opik.evaluation.metrics import GEval
 from opik.evaluation.models.litellm.litellm_chat_model import LiteLLMChatModel
@@ -23,6 +26,12 @@ from decode.config.settings import settings
 # The fixed default judge — decode's gemini provider maps here regardless of ``settings.gemini_model``
 # (ADR-0017 §7): a small, cheap, capable judge model, pinned so eval scores stay comparable.
 DEFAULT_GEMINI_JUDGE = "gemini/gemini-2.5-flash"
+
+# The modal route's ``api_key``. The Modal Auto Endpoint authenticates on the Modal-Key/Modal-Secret
+# proxy headers and IGNORES the Bearer token, but litellm's openai route refuses to build a request
+# without a non-empty key ("Missing credentials … set OPENAI_API_KEY"). A placeholder satisfies that
+# check without copying a secret into a second place — the real auth rides the headers.
+MODAL_PROXY_PLACEHOLDER_API_KEY = "modal-proxy"
 
 
 def judge_model() -> str:
@@ -50,18 +59,32 @@ def resolve_judge_model() -> str | LiteLLMChatModel:
 
     For every route but the ``modal`` derivation this is just the :func:`judge_model` string. The
     ``modal`` derivation instead returns a :class:`LiteLLMChatModel` pre-built with ``api_base``
-    pointed at ``{settings.modal_endpoint_url}/v1`` (the OpenAI-compatible route), because a bare
-    LiteLLM string cannot carry a base URL. Shared by :func:`make_judge` (the G-Eval trace judge) and
-    the online thread metric (:mod:`evals.harness.online`) so the modal wrinkle lives in one place.
-    Construction makes no LLM call. An explicit ``EVAL_JUDGE_MODEL`` override always stays the plain
-    string — the operator owns its full routing then.
+    pointed at ``{settings.modal_endpoint_url}/v1`` (the OpenAI-compatible route — the setting is a
+    BARE base by contract, so every consumer appends the suffix) plus the endpoint's auth, because a
+    bare LiteLLM string can carry neither. Auth mirrors
+    :func:`decode.agent.factory._build_model`: the dual ``Modal-Key`` / ``Modal-Secret`` proxy-token
+    headers when BOTH are set, none at all for an ``--unauthenticated`` endpoint — over a constant
+    :data:`MODAL_PROXY_PLACEHOLDER_API_KEY` litellm needs non-empty either way. The kwargs reach
+    ``litellm.completion`` verbatim (``LiteLLMChatModel`` merges ``_completion_kwargs`` into every
+    call). Shared by :func:`make_judge` (the G-Eval trace judge) and the online thread metric
+    (:mod:`evals.harness.online`) so the modal wrinkle lives in one place. Construction makes no LLM
+    call. An explicit ``EVAL_JUDGE_MODEL`` override always stays the plain string — the operator owns
+    its full routing then.
     """
     model_string = judge_model()
     if not settings.eval_judge_model.strip() and settings.llm_provider == "modal":
-        return LiteLLMChatModel(
-            model_name=model_string,
-            api_base=f"{settings.modal_endpoint_url}/v1",
-        )
+        completion_kwargs: dict[str, Any] = {
+            "api_base": f"{settings.modal_endpoint_url}/v1",
+            "api_key": MODAL_PROXY_PLACEHOLDER_API_KEY,
+        }
+        token_id = settings.modal_proxy_token_id.get_secret_value()
+        token_secret = settings.modal_proxy_token_secret.get_secret_value()
+        if token_id and token_secret:
+            completion_kwargs["extra_headers"] = {
+                "Modal-Key": token_id,
+                "Modal-Secret": token_secret,
+            }
+        return LiteLLMChatModel(model_name=model_string, **completion_kwargs)
     return model_string
 
 
