@@ -9,10 +9,11 @@ The folder IS the contract: the loader (`evals/harness/task_loader.py`) validate
 and refuses to load a task that breaks one. There is no per-task `Dockerfile` — the sandbox image is
 decode's own, so a task may only depend on what that image has.
 
-Nineteen real tasks land in tasks 158 (easy + medium) and 159 (hard); until then the format is this
-README, the loader, the seeder and the fixture task
-(`tests/unit/evals/fixtures/tasks/001-greeting`), which is the smallest complete example of
-everything below.
+Thirteen real tasks are on this format — the 7 easy (`001`–`007`) and 6 medium (`008`–`014`, the gap
+at `010` is where `010-git-hygiene` was deleted, ADR-0022 §3); the 6 hard ones (`015`–`020`) are
+still on the legacy `task.yaml` layout and convert in task 159, so the loader does not see them yet.
+The fixture task (`tests/unit/evals/fixtures/tasks/001-greeting`) stays the smallest complete example
+of everything below.
 
 ## Folder layout
 
