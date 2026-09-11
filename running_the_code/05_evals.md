@@ -139,7 +139,26 @@ python -m evals mine --preset all --limit 100 --json                # every id, 
 
 `mine` is read-only: it searches the live project, clusters hits by signature — preset, error, last tool, model — and prints trace ids. You pick one, read the run in Opik (its `thread_id` is the decode session id), and write the case that fails on exactly that behaviour into `evals/regression/cases/mined_<slug>.py` with its `source_trace_id`. From then on the gate in §3 owns it. Worked example, picks and deliberate skips: [`evals/regression/mining/NOTES.md`](../evals/regression/mining/NOTES.md).
 
-Judge model for the scripted pass and G-Eval cases: `EVAL_JUDGE_MODEL` (a LiteLLM string; empty derives it from `LLM_PROVIDER`).
+### Choosing the judge's provider
+
+The judge has its own provider knob: `EVAL_JUDGE_PROVIDER` (`gemini` | `openrouter` | `modal`; empty
+follows the agent's `LLM_PROVIDER`, which is what every run before this knob did), with
+`EVAL_JUDGE_MODEL` picking the model *on* that route (a LiteLLM string). So a modal-served agent can
+be graded by a cheap gemini judge — or by your own endpoint, at no per-token cost:
+
+```bash
+EVAL_JUDGE_PROVIDER=modal make eval-regression   # judge on the Modal endpoint
+```
+
+When agent and judge providers differ, the preflight asks for **both** keys — one guard serves
+`eval-benchmark` (agent only) and `eval-regression` (agent *and* judge).
+
+⚠️ A `modal` judge gives two things up, both forced by the endpoint (SGLang + DFLASH speculative
+decoding): it drops `logprobs`/`top_logprobs`, which the server refuses, so G-Eval parses the score
+out of the returned JSON instead of weighting it by token probabilities; and it switches Qwen's
+thinking off (`chat_template_kwargs.enable_thinking=false`) under a 300 s timeout, because a
+thinking judge blows opik's 60 s default restating the rubric. **Scores from a logprob judge and a
+non-logprob judge are not directly comparable** — compare a modal judge only against itself.
 
 ---
 

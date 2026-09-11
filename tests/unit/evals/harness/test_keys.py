@@ -127,3 +127,70 @@ def test_main_returns_one_and_prints_friendly_line_when_missing(mocker, capsys):
     assert "skipped" in err.lower()
     # No traceback — the guard is a one-liner, never a raise.
     assert "Traceback" not in err
+
+
+# --- a judge on its own provider: both keys, deduped, agent first (task 170) ------------------------
+
+
+def test_a_differing_judge_provider_adds_its_key_after_the_agents(with_keys, mocker):
+    """Agent gemini + judge modal: the regression gate drives BOTH, so it needs both keys."""
+    mocker.patch.object(settings, "eval_judge_provider", "modal")
+    mocker.patch.object(settings, "modal_endpoint_url", "")
+
+    assert keys.eval_keys_missing() == ["MODAL_ENDPOINT_URL"]
+
+
+def test_both_provider_keys_are_reported_when_both_are_missing(mocker):
+    """Agent first, judge second — the operator reads the run's own order."""
+    mocker.patch.object(settings, "llm_provider", "openrouter")
+    mocker.patch.object(settings, "eval_judge_provider", "gemini")
+    mocker.patch.object(
+        settings, "opik_api_key", SimpleNamespace(get_secret_value=lambda: "opik-key")
+    )
+    mocker.patch.object(
+        settings, "openrouter_api_key", SimpleNamespace(get_secret_value=lambda: "")
+    )
+    mocker.patch.object(settings, "gemini_api_key", SimpleNamespace(get_secret_value=lambda: ""))
+
+    assert keys.eval_keys_missing() == ["OPENROUTER_API_KEY", "GEMINI_API_KEY"]
+
+
+def test_the_same_provider_on_both_sides_is_reported_once(mocker):
+    """An explicit judge provider that MATCHES the agent's must not duplicate its key."""
+    mocker.patch.object(settings, "llm_provider", "gemini")
+    mocker.patch.object(settings, "eval_judge_provider", "gemini")
+    mocker.patch.object(settings, "opik_api_key", SimpleNamespace(get_secret_value=lambda: ""))
+    mocker.patch.object(settings, "gemini_api_key", SimpleNamespace(get_secret_value=lambda: ""))
+
+    assert keys.eval_keys_missing() == ["OPIK_API_KEY", "GEMINI_API_KEY"]
+
+
+def test_a_judge_only_caller_skips_the_agents_provider_key(mocker):
+    """``require_agent=False`` = online eval: it grades traces the agent ALREADY emitted."""
+    mocker.patch.object(settings, "llm_provider", "modal")
+    mocker.patch.object(settings, "eval_judge_provider", "gemini")
+    mocker.patch.object(settings, "modal_endpoint_url", "")
+    mocker.patch.object(
+        settings, "opik_api_key", SimpleNamespace(get_secret_value=lambda: "opik-key")
+    )
+    mocker.patch.object(
+        settings, "gemini_api_key", SimpleNamespace(get_secret_value=lambda: "gem-key")
+    )
+
+    assert keys.eval_keys_missing(require_agent=False) == []
+    # The judge's own key is still demanded — that is the provider this caller DOES call.
+    mocker.patch.object(settings, "gemini_api_key", SimpleNamespace(get_secret_value=lambda: ""))
+    assert keys.eval_keys_missing(require_agent=False) == ["GEMINI_API_KEY"]
+
+
+def test_require_provider_false_wins_over_require_agent(mocker):
+    """The master switch still drops EVERY provider key — the Opik-only commands stay keyless."""
+    mocker.patch.object(settings, "llm_provider", "modal")
+    mocker.patch.object(settings, "eval_judge_provider", "gemini")
+    mocker.patch.object(settings, "modal_endpoint_url", "")
+    mocker.patch.object(settings, "gemini_api_key", SimpleNamespace(get_secret_value=lambda: ""))
+    mocker.patch.object(
+        settings, "opik_api_key", SimpleNamespace(get_secret_value=lambda: "opik-key")
+    )
+
+    assert keys.eval_keys_missing(require_provider=False) == []

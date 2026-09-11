@@ -129,6 +129,32 @@ def test_the_other_routes_refuse_and_ask_for_an_explicit_model(mocker, routed: s
         opik_judge_model()
 
 
+def test_the_default_model_follows_the_judge_provider_not_the_agents(mocker) -> None:
+    """A gemini JUDGE on a modal agent derives the id that used to be unreachable (task 170)."""
+    mocker.patch.object(online_rule.settings, "llm_provider", "modal")
+    mocker.patch.object(online_rule.settings, "eval_judge_provider", "gemini")
+    mocker.patch.object(online_rule.settings, "eval_judge_model", "")
+
+    assert opik_judge_model() == "gemini-2.5-flash"
+
+
+def test_a_modal_judge_still_refuses_and_names_the_judge_provider(mocker) -> None:
+    """The online rule runs inside OPIK, never through litellm — so the modal endpoint is no help.
+
+    The refusal must name the JUDGE's provider: with a gemini agent and a modal judge, blaming
+    ``llm_provider`` would send the operator to the wrong env var.
+    """
+    mocker.patch.object(online_rule.settings, "llm_provider", "gemini")
+    mocker.patch.object(online_rule.settings, "eval_judge_provider", "modal")
+    mocker.patch.object(online_rule.settings, "eval_judge_model", "")
+    mocker.patch.object(online_rule.settings, "modal_endpoint_model", "Qwen/Qwen3")
+
+    with pytest.raises(OnlineRuleError, match="--model") as excinfo:
+        opik_judge_model()
+
+    assert "'modal'" in str(excinfo.value)
+
+
 # --- the payload ---------------------------------------------------------------------------------
 
 

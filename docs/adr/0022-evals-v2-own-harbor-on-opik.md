@@ -290,6 +290,17 @@ changes a decision, and each is where a reader should look when the text and the
   project from the **dataset**, so the datasets are created in `settings.eval_project_name` and
   `evaluate(project_name=…)` is passed only as the fallback for a dataset that carries none — same
   project either way, without the duplicate-configuration warning.
+- **§7, the judge's provider is its own knob.** `EVAL_JUDGE_PROVIDER` (empty = follow the agent's
+  `LLM_PROVIDER`, today's behaviour) selects the judge route; `EVAL_JUDGE_MODEL` picks the model on
+  it, and on `modal` it now replaces the model *inside* the authenticated model object instead of
+  demoting the route to a bare string. A `modal` judge carries two endpoint-forced workarounds
+  (`evals/harness/judges.py::ModalJudgeModel`): it hides `logprobs`/`top_logprobs`, which DFLASH
+  speculative decoding refuses, so G-Eval takes its non-logprob parse path — scores from a logprob
+  and a non-logprob judge are NOT comparable — and it switches Qwen's thinking off
+  (`chat_template_kwargs.enable_thinking=false`, verified live) under a 300 s timeout, a float
+  rather than opik's `httpx.Timeout` shape because constructor kwargs land in G-Eval's
+  chain-of-thought cache key and must hash. The key preflight follows suit: both providers' keys
+  when they differ, the judge's alone for the judge-only `evals online`.
 - **§13, the project lookup.** The rule's project id comes from `projects.retrieve_project(name=…)`
   (exact-match, unpaginated); the obvious `find_projects(name=…)` is a paginated *substring* query
   that can report an existing project as missing. Rule idempotency is `find_evaluators` plus an

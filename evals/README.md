@@ -127,9 +127,10 @@ It prints one line per thread — `<thread_id>: conversation_coherence=<score>` 
 `thread_id` is the decode session id — of a REPL session or of one `decode run` — Opik's conversation
 key (ADR-0014).
 
-**Keys.** The pass needs `OPIK_API_KEY` (to reach the threads) and the active provider's judge key
-(`GEMINI_API_KEY` by default). Without them it **skips friendly** — it prints which vars to set and
-exits `0`, so `--help` and a keyless checkout never error:
+**Keys.** The pass needs `OPIK_API_KEY` (to reach the threads) and the **judge** provider's key
+(`GEMINI_API_KEY` by default) — and only the judge's: it grades traces decode already emitted, so it
+never calls the agent's provider. Without them it **skips friendly** — it prints which vars to set
+and exits `0`, so `--help` and a keyless checkout never error:
 
 ```
 evals online: skipped — set OPIK_API_KEY, GEMINI_API_KEY to score live threads.
@@ -139,6 +140,32 @@ evals online: skipped — set OPIK_API_KEY, GEMINI_API_KEY to score live threads
 `decode-evals` so they never pollute live tracing (ADR-0017 §9). Online eval inverts that on
 purpose: grading real traffic *in place* is the whole point, so its scores attach to the live
 threads (`eval_project_name=None`).
+
+## Choosing the judge's provider
+
+Every LLM judge in the suite — the G-Eval [Judges](../docs/glossary.md) in Regression Cases and the
+conversation judge above — runs on the provider `EVAL_JUDGE_PROVIDER` names, independently of the
+agent's `LLM_PROVIDER`. Empty (the default) follows the agent, which is what every run before this
+knob did. `EVAL_JUDGE_MODEL` still picks the model *on* that route.
+
+```bash
+EVAL_JUDGE_PROVIDER=gemini  python -m evals suite      # modal-served agent, gemini judge
+EVAL_JUDGE_PROVIDER=modal   python -m evals suite      # judge on your own endpoint, no per-token cost
+```
+
+When the two providers differ, `make eval-benchmark` / `make eval-regression` want **both** keys —
+one guard serves the benchmark (agent only) and the gate (agent *and* judge), so it asks for
+everything the run might call.
+
+**What a `modal` judge gives up.** decode's Modal Auto Endpoint (SGLang + DFLASH speculative
+decoding) refuses `return_logprob`, so the judge model hides `logprobs`/`top_logprobs` and G-Eval
+takes its non-logprob parse path — it reads the score out of the JSON the judge returns instead of
+weighting it by token probabilities. It also switches Qwen's thinking off
+(`chat_template_kwargs.enable_thinking=false`), because a thinking judge spends minutes restating
+the rubric before the one line G-Eval parses, and runs under a 300 s timeout instead of opik's 60 s
+default. Consequence worth remembering: **scores from a logprob judge and a non-logprob judge are
+not directly comparable** — a modal judge's numbers are a baseline for *itself*, so don't read a
+gemini-judged gate against a modal-judged one and call the delta a regression.
 
 ## Mining regressions — `python -m evals mine`
 

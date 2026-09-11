@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from decode.config.settings import settings
-from evals.harness.judges import judge_model
+from evals.harness.judges import judge_model, judge_provider
 
 if TYPE_CHECKING:
     from opik.rest_api.types import AutomationRuleEvaluatorWrite_LlmAsJudge
@@ -95,12 +95,15 @@ def opik_judge_model(override: str | None = None) -> str:
     """The model id Opik's SERVER-side judge runs on (ADR-0022 §13).
 
     An explicit ``--model`` wins verbatim — the operator owns the routing then. Otherwise the id
-    derives from the shared eval routing (:func:`evals.harness.judges.judge_model`) and only the
-    gemini spelling can be translated: an online rule names a model the Opik workspace has
-    configured under **AI Providers**, so it carries no LiteLLM route prefix (``gemini/gemini-2.5-
-    flash`` → ``gemini-2.5-flash``). Every other route (``openrouter/…``, ``openai/…`` for the modal
-    endpoint) raises :class:`OnlineRuleError` asking for an explicit ``--model``, because guessing
-    would create a rule that is accepted and then silently fails to score.
+    derives from the shared eval routing (:func:`evals.harness.judges.judge_model`, which follows the
+    JUDGE's provider, ADR-0022 §7) and only the gemini spelling can be translated: an online rule
+    names a model the Opik workspace has configured under **AI Providers**, so it carries no LiteLLM
+    route prefix (``gemini/gemini-2.5-flash`` → ``gemini-2.5-flash``). Every other route
+    (``openrouter/…``, ``openai/…`` for the modal endpoint) raises :class:`OnlineRuleError` asking for
+    an explicit ``--model``, because guessing would create a rule that is accepted and then silently
+    fails to score. A modal JUDGE refuses like any other: this rule runs inside Opik's server, not
+    through litellm, so decode's endpoint and its proxy headers are no help here. The refusal names
+    the judge's provider — blaming ``LLM_PROVIDER`` would send the operator to the wrong env var.
     """
     if override and override.strip():
         return override.strip()
@@ -108,7 +111,7 @@ def opik_judge_model(override: str | None = None) -> str:
     if routed.startswith("gemini/"):
         return routed.split("/", 1)[1]
     raise OnlineRuleError(
-        f"cannot derive an Opik judge model from the {settings.llm_provider!r} route "
+        f"cannot derive an Opik judge model from the {judge_provider()!r} judge route "
         f"({routed!r}) — "
         "pass --model <id> naming a model your Opik workspace has configured under AI Providers."
     )

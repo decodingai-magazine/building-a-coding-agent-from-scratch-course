@@ -63,15 +63,17 @@ def online_keys_missing() -> list[str]:
     """The env-var names online eval needs but does not have — empty means good to run (ADR-0017 §10).
 
     Delegates to the ONE shared, settings-backed, provider-aware preflight
-    (:func:`evals.harness.keys.eval_keys_missing`) so this track cannot drift from the offline gates:
-    the required set is identical — ``OPIK_API_KEY`` to reach the threads, plus the active provider's
-    key so the conversation judge can actually grade (``gemini`` → ``GEMINI_API_KEY``, ``openrouter``
-    → ``OPENROUTER_API_KEY``, ``modal`` → ``MODAL_ENDPOINT_URL``). Reads only ``settings`` (never
-    ``opik``), so the CLI can decide to skip friendly without importing the Opik client or touching the
-    network. An explicit ``EVAL_JUDGE_MODEL`` override does not change WHICH provider key LiteLLM will
-    need, so the provider check stands regardless.
+    (:func:`evals.harness.keys.eval_keys_missing`) so this track cannot drift from the offline gates —
+    but as the suite's only JUDGE-ONLY pass (``require_agent=False``): it grades traces decode already
+    emitted, so it needs ``OPIK_API_KEY`` to reach the threads plus the JUDGE provider's key
+    (``EVAL_JUDGE_PROVIDER`` or, empty, ``LLM_PROVIDER`` — ``gemini`` → ``GEMINI_API_KEY``,
+    ``openrouter`` → ``OPENROUTER_API_KEY``, ``modal`` → ``MODAL_ENDPOINT_URL``), and never the
+    agent's own. With the two providers the same, which is the default, the set is unchanged. Reads
+    only ``settings`` (never ``opik``), so the CLI can decide to skip friendly without importing the
+    Opik client or touching the network. An explicit ``EVAL_JUDGE_MODEL`` override does not change
+    WHICH provider key LiteLLM will need, so the provider check stands regardless.
     """
-    return eval_keys_missing()
+    return eval_keys_missing(require_agent=False)
 
 
 def make_conversation_metric() -> ConversationThreadMetric:

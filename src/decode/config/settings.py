@@ -267,7 +267,12 @@ class Settings(BaseSettings):
 
     # --- Evals (ADR-0017) — the eval suite is NOT shipped in the wheel, but its judges + Opik
     # project are read from this SAME Settings surface so the harness needs no config of its own. ---
-    # The LiteLLM model string G-Eval judges run on; empty derives it from ``llm_provider`` (task 104).
+    # The provider the eval JUDGE runs on, independent of the agent's ``llm_provider``; empty (the
+    # default) follows it, so today's behaviour is unchanged. Judging a modal-served agent with a
+    # gemini judge — or the reverse — is one env var, not a code change (ADR-0022 §7).
+    eval_judge_provider: Literal["", "gemini", "openrouter", "modal"] = ""
+    # The LiteLLM model string G-Eval judges run on; empty derives it from the judge provider above
+    # (``eval_judge_provider`` or ``llm_provider``) — task 104.
     eval_judge_model: str = ""
     # The Opik project eval runs log under — kept distinct from the live-REPL project (ADR-0014) so
     # eval traces never mix into ``decode-<env>``.
