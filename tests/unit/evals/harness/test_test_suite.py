@@ -31,6 +31,7 @@ def _case(case_id: str, prompt: str = "do the thing", **overrides: object) -> Re
         # the suite surface never scores with these; one is enough to construct
         "metrics": [object()],
         "difficulty": "easy",
+        "description": "Tests that it behaves.",
         "symptom": "harness invariant: it behaves.",
         "assertion": "The response behaves.",
     }

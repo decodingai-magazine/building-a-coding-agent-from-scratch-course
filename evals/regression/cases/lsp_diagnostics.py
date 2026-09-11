@@ -34,6 +34,10 @@ CASE = RegressionCase(
     prompt=f"Check {_BROKEN} for type errors using the language server and report what you find.",
     fixture=_fixture,
     difficulty="medium",
+    description=(
+        "Tests that a request to check a file for type errors drives the lsp tool and reports the "
+        "diagnostic it returns."
+    ),
     symptom=(
         "harness invariant: a 'check for type errors' ask drives the lsp tool rather than a guess."
     ),

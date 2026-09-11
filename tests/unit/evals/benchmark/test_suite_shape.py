@@ -147,3 +147,15 @@ def test_the_audit_table_in_the_readme_covers_every_task() -> None:
     missing = [task.id for task in _TASKS if f"`{task.id}`" not in readme]
 
     assert not missing, f"the audit table has no row for: {missing}"
+
+
+def test_the_task_table_in_the_readme_carries_every_description() -> None:
+    """The README's task table is generated from the loader; it must not go stale (ADR-0022 §2)."""
+    readme = (BENCHMARK_TASKS_DIR / "README.md").read_text(encoding="utf-8")
+
+    missing = [task.id for task in _TASKS if task.task.description not in readme]
+
+    assert not missing, (
+        f"the task table has no description row for: {missing} — "
+        "run `uv run python scripts/gen_eval_tables.py`"
+    )

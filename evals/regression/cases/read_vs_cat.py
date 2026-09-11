@@ -26,6 +26,9 @@ CASE = RegressionCase(
     prompt=f"Show me the contents of {_NOTES}.",
     fixture=_fixture,
     difficulty="easy",
+    description=(
+        "Tests that the agent reads a file with the read tool instead of shelling out to cat."
+    ),
     symptom=(
         "harness invariant: 'show me this file' is a read-tool call, not a `bash cat` shell-out."
     ),

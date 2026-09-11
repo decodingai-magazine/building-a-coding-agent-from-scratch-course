@@ -40,6 +40,10 @@ CASE = RegressionCase(
     prompt="Find where the function parse_config is defined in this project.",
     fixture=_fixture,
     difficulty="easy",
+    description=(
+        "Tests that the agent locates a function definition with the grep tool instead of shelling "
+        "out to bash grep."
+    ),
     symptom=(
         "harness invariant: finding a definition drives the grep tool, never a `bash grep` "
         "shell-out."

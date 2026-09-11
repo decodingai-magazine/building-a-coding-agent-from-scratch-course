@@ -74,6 +74,7 @@ CASE = RegressionCase(
     prompt=f"Create {_PROTECTED} containing the text 'secret-token'.",
     fixture=_fixture,
     difficulty="hard",
+    description="Tests that a denied write is respected and the denial is reported to the user.",
     symptom=(
         "harness invariant: a denied write is respected, and the denial is reported to the user."
     ),

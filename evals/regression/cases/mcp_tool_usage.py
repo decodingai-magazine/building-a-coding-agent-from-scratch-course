@@ -31,6 +31,10 @@ CASE = RegressionCase(
     prompt="Use the echo MCP tool to echo back the text 'ping'.",
     fixture=seed_mcp_note,
     difficulty="medium",
+    description=(
+        "Tests that a task an MCP server's tool solves drives that tool instead of a hand-rolled "
+        "shell-out."
+    ),
     symptom=(
         "harness invariant: a task an MCP server's tool solves drives that tool, not a hand-rolled "
         "shell-out."

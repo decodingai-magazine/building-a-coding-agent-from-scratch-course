@@ -47,6 +47,7 @@ CASE = RegressionCase(
     ),
     fixture=_fixture,
     difficulty="medium",
+    description="Tests that a task matching a skill's description dispatches that skill by name.",
     symptom=(
         "harness invariant: a task matching a skill's description dispatches that skill by name."
     ),

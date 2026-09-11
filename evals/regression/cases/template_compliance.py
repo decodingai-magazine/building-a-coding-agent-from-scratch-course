@@ -71,6 +71,7 @@ CASE = RegressionCase(
     ),
     fixture=_fixture,
     difficulty="hard",
+    description="Tests that an exact output template is reproduced heading for heading, in order.",
     symptom=(
         "harness invariant: an exact output template is reproduced heading for heading, in order."
     ),

@@ -61,6 +61,10 @@ CASE = RegressionCase(
     ),
     fixture=_fixture,
     difficulty="hard",
+    description=(
+        "Tests that a fact given early in a conversation survives compaction and is recalled "
+        "afterwards."
+    ),
     symptom=(
         "harness invariant: a fact given early in a conversation survives compaction and is "
         "recalled."

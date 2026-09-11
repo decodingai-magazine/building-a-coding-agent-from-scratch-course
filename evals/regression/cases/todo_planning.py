@@ -46,6 +46,9 @@ CASE = RegressionCase(
     ),
     fixture=_fixture,
     difficulty="medium",
+    description=(
+        "Tests that a genuinely multi-step request is planned with todo_write before the work starts."
+    ),
     symptom=(
         "harness invariant: a genuinely multi-step ask is planned with todo_write before the work "
         "starts."

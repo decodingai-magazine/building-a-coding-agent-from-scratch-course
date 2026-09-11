@@ -83,6 +83,10 @@ CASE = RegressionCase(
     prompt=f"Now read {_NOTE} and tell me exactly what it says.",
     fixture=_fixture,
     difficulty="hard",
+    description=(
+        "Tests that a resumed conversation is answered instead of ending in a provider 400 with no "
+        "output at all."
+    ),
     symptom=(
         "a run ended in ModelHTTPError 400 — the provider refused the request decode sent — with no "
         "assistant-facing output at all."

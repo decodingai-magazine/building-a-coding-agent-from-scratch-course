@@ -54,6 +54,10 @@ CASE = RegressionCase(
     ),
     fixture=_fixture,
     difficulty="medium",
+    description=(
+        "Tests that a naming convention stated only in the workspace's AGENTS.md is obeyed "
+        "unprompted."
+    ),
     symptom=(
         "harness invariant: a convention stated only in the Workspace's AGENTS.md is obeyed "
         "unprompted."

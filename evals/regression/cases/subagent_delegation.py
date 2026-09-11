@@ -63,6 +63,10 @@ CASE = RegressionCase(
     ),
     fixture=_fixture,
     difficulty="medium",
+    description=(
+        "Tests that an explicit delegation request spawns a subagent through the agent tool instead "
+        "of exploring solo."
+    ),
     symptom=(
         "harness invariant: an explicit 'delegate this' drives the agent tool instead of a solo "
         "exploration."

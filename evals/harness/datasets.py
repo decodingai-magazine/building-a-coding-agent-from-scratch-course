@@ -3,9 +3,9 @@
 The Opik datasets are the axes every ``evaluate()`` run scores against. ``decode-benchmark-v2`` gets
 one item per Benchmark Task — its key, its slice labels, the prompt VERBATIM and a ``checksum`` over
 the whole task folder; ``decode-regression-v2`` gets one item per Regression Case (``case_id`` /
-``difficulty`` / ``tags`` / ``symptom`` / ``source_trace_id``). The heavy assets (``environment/``,
-``tests/``, ``solution/``, case fixtures) stay on disk; the item only needs what a human filters,
-sorts and reads an Experiment by.
+``difficulty`` / ``tags`` / ``description`` / ``symptom`` / ``source_trace_id``). The heavy assets
+(``environment/``, ``tests/``, ``solution/``, case fixtures) stay on disk; the item only needs what a
+human filters, sorts and reads an Experiment by.
 
 A Regression Case registers TWICE from ONE definition (ADR-0022 §8): the dataset item above, which
 the deterministic metrics gate, and a ``decode-regression-suite`` Test Suite item carrying the case's
@@ -164,17 +164,19 @@ class RegressionSurfaces:
 
 
 def regression_dataset_item(case: RegressionCase) -> dict[str, Any]:
-    """The Opik dataset item for one case: its key, tier, slice tags, symptom, provenance (§8).
+    """The Opik dataset item: key, tier, slice tags, description, symptom, provenance (§8).
 
-    ``symptom`` rides along so an Experiment row says what the case exists to catch without a
-    checkout, and ``source_trace_id`` is the LIVE trace a MINED case came from (``None`` for an
-    invented one — never a placeholder). ``tags`` is copied into a fresh list so the item never
-    aliases the case's mutable field.
+    ``description`` is the one-sentence what-it-tests line, so an Experiment row reads as a case list
+    rather than a column of ids; ``symptom`` rides along beside it so the row also says what the case
+    exists to CATCH, both without a checkout. ``source_trace_id`` is the LIVE trace a MINED case came
+    from (``None`` for an invented one — never a placeholder). ``tags`` is copied into a fresh list so
+    the item never aliases the case's mutable field.
     """
     return {
         "case_id": case.id,
         "difficulty": case.difficulty,
         "tags": list(case.tags),
+        "description": case.description,
         "symptom": case.symptom,
         "source_trace_id": case.source_trace_id,
     }
@@ -184,12 +186,20 @@ def regression_suite_item(case: RegressionCase) -> dict[str, Any]:
     """The Opik Test Suite item for one case: the run keys plus its ONE assertion (§8).
 
     ``data`` is what the suite task fn is handed (the prompt it drives the agent with, the case id it
-    resolves the case by, the tier it is sliced on); ``assertions`` is the case's natural-language
-    quality bar. The bar is a rubric, not judge-visible input — it states what "good" looks like
-    WITHOUT naming the expected value, so a judge reading ``input``/``output`` cannot cheat off it.
+    resolves the case by, the tier it is sliced on, and the description a human reads the item by);
+    ``assertions`` is the case's natural-language quality bar. The bar is a rubric, not judge-visible
+    input — it states what "good" looks like WITHOUT naming the expected value, so a judge reading
+    ``input``/``output`` cannot cheat off it. The description is safe to carry here for the same
+    reason the prompt is not the whole story: ``evals.harness.test_suite.suite_task_fn`` rebuilds
+    ``input`` as the PROMPT alone, so nothing else in ``data`` ever reaches the judge.
     """
     return {
-        "data": {"prompt": case.prompt, "case_id": case.id, "difficulty": case.difficulty},
+        "data": {
+            "prompt": case.prompt,
+            "case_id": case.id,
+            "difficulty": case.difficulty,
+            "description": case.description,
+        },
         "assertions": [case.assertion],
     }
 

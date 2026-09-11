@@ -79,6 +79,9 @@ class RegressionCase:
     grade the run's behavior. ``difficulty`` places the case in a tier (easy = single-tool discipline,
     medium = planning / delegation / skills / memory / web / lsp, hard = compaction, the gate,
     destructive caution, judged answers, the json contract) so one tier can be run and reported alone.
+    ``description`` is the plain what-it-tests line, ONE sentence opening ``"Tests that …"`` /
+    ``"Tests whether …"`` and at most 160 characters — the line a reader skims the case table by
+    (``evals/regression/README.md``), and the line the Opik dataset item carries.
     ``symptom`` is the one-line regression this case exists to catch — an INVENTED case phrases it as
     ``"harness invariant: <one line>"``, a MINED one names the bad behavior the trace showed.
     ``assertion`` is that same bar in English: it becomes the Test Suite item's assertion, the
@@ -103,6 +106,7 @@ class RegressionCase:
     fixture: FixtureBuilder
     metrics: Sequence[Any]
     difficulty: Difficulty
+    description: str
     symptom: str
     assertion: str
     gate_mode: PermissionMode = PermissionMode.BYPASS
@@ -125,9 +129,14 @@ class RegressionCase:
 
         A case with no metrics would run the agent and score nothing — a silent no-op in the suite; a
         blank id/prompt is as unusable here as it is for a benchmark task; an unknown ``difficulty``
-        would drop the case out of every ``--difficulty`` slice; a blank ``symptom`` leaves a reader
-        with no idea what regression the case catches; and a blank ``assertion`` would register an
-        ungraded Test Suite item. All fail loudly at construction rather than at run time.
+        would drop the case out of every ``--difficulty`` slice; a blank ``description`` leaves the
+        case table with an empty row; a blank ``symptom`` leaves a reader with no idea what
+        regression the case catches; and a blank ``assertion`` would register an ungraded Test Suite
+        item. All fail loudly at construction rather than at run time.
+
+        The ``description``'s SHAPE (one ``Tests that …`` sentence, ≤ 160 chars, no ``|``) is held by
+        ``tests/unit/evals/regression/test_case.py`` over the loaded registry rather than here: it is
+        a house style for the shipped cases, not a contract a hand-built case must satisfy.
         """
         if not self.id.strip():
             raise ValueError("RegressionCase.id must not be blank")
@@ -140,6 +149,8 @@ class RegressionCase:
                 f"RegressionCase {self.id!r}: difficulty must be one of "
                 f"{', '.join(DIFFICULTIES)}, got {self.difficulty!r}"
             )
+        if not self.description.strip():
+            raise ValueError(f"RegressionCase {self.id!r}: description must not be blank")
         if not self.symptom.strip():
             raise ValueError(f"RegressionCase {self.id!r}: symptom must not be blank")
         if not self.assertion.strip():

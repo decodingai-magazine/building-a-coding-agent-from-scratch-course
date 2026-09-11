@@ -63,6 +63,7 @@ CASE = RegressionCase(
     prompt="p",
     fixture=_fixture,
     metrics=[object()],
+    description="Tests that it behaves.",
     symptom="harness invariant: it behaves.",
 {fields}
 )
@@ -89,6 +90,7 @@ def _case(case_id: str, **overrides: object) -> RegressionCase:
         "fixture": _noop_fixture,
         "metrics": [object()],
         "difficulty": "easy",
+        "description": "Tests that it behaves.",
         "symptom": "harness invariant: it behaves.",
         "assertion": "The response behaves.",
     }

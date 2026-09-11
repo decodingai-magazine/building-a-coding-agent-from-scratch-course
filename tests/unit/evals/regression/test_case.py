@@ -1,8 +1,12 @@
 """Contract tests for the ``RegressionCase`` declaration (ADR-0022 §8; ADR-0017 §6).
 
 Pure and offline: constructing a case validates its own invariants (non-blank id / prompt, at least
-one metric, a real difficulty tier, a non-blank symptom and assertion) and defaults to the headless
-``BYPASS`` posture, so the simplest case is the seven fields every case must answer for.
+one metric, a real difficulty tier, a non-blank description, symptom and assertion) and defaults to
+the headless ``BYPASS`` posture, so the simplest case is the eight fields every case must answer for.
+
+The shipped registry's ``description`` house style — ONE ``Tests that …`` sentence, ≤ 160 characters,
+no ``|`` — is held at the bottom of this file, over every loaded case: the contract only refuses a
+BLANK description, the style is what keeps the README's case table readable and generatable.
 """
 
 from __future__ import annotations
@@ -13,22 +17,29 @@ import pytest
 
 from decode.permissions.types import PermissionMode
 from evals.regression.case import DIFFICULTIES, RegressionCase
+from evals.regression.loader import load_cases
 
 
 def _noop_fixture(_workspace: Path) -> None:
     """A do-nothing fixture — enough to construct a case in these contract tests."""
 
 
-def _case(**overrides: object) -> RegressionCase:
-    base = {
+def _case_fields() -> dict[str, object]:
+    """The minimal field set every contract test builds on — one per REQUIRED field."""
+    return {
         "id": "c1",
         "prompt": "do the thing",
         "fixture": _noop_fixture,
         "metrics": [object()],
         "difficulty": "easy",
+        "description": "Tests that the agent uses the tool instead of shelling out.",
         "symptom": "harness invariant: the agent shells out instead of using the tool.",
         "assertion": "The response reports the file's contents.",
     }
+
+
+def _case(**overrides: object) -> RegressionCase:
+    base = _case_fields()
     base.update(overrides)
     return RegressionCase(**base)  # type: ignore[arg-type]
 
@@ -130,3 +141,68 @@ def test_blank_assertion_is_rejected() -> None:
     """The assertion IS the Test Suite item's quality bar; blank would register an ungraded item."""
     with pytest.raises(ValueError, match="assertion must not be blank"):
         _case(assertion="")
+
+
+def test_blank_description_is_rejected() -> None:
+    """A blank description leaves the README's case table with an empty row (the error names the id)."""
+    with pytest.raises(ValueError, match="'c1': description must not be blank"):
+        _case(description="   ")
+
+
+def test_a_case_without_a_description_cannot_be_constructed() -> None:
+    """``description`` is REQUIRED — omitting it is a TypeError, not a silently empty column."""
+    base = {key: value for key, value in _case_fields().items() if key != "description"}
+
+    with pytest.raises(TypeError, match="description"):
+        RegressionCase(**base)  # type: ignore[arg-type]
+
+
+# --- the shipped registry's description house style -------------------------------------------------
+
+# Long enough for a real sentence, short enough to sit in a README table cell without wrapping it.
+MAX_DESCRIPTION_CHARS = 160
+
+# The two openings a what-it-tests line may take. Anything else ("Checks…", "The agent…") drifts the
+# table into mixed voice.
+DESCRIPTION_PREFIXES = ("Tests that ", "Tests whether ")
+
+# The human-readable half of the registry: ``scripts/gen_eval_tables.py`` writes one row per case
+# here, so a case added without regenerating it fails below.
+REGRESSION_README = Path(__file__).resolve().parents[4] / "evals" / "regression" / "README.md"
+
+
+@pytest.mark.parametrize("case", load_cases(), ids=lambda case: case.id)
+def test_every_shipped_case_describes_itself_in_one_short_sentence(case: RegressionCase) -> None:
+    """One sentence, ``Tests that …``, ≤ 160 chars, no ``|`` — the README table's contract (§8)."""
+    description = case.description
+
+    assert description.startswith(DESCRIPTION_PREFIXES), (
+        f"{case.id}: description must start with one of {DESCRIPTION_PREFIXES}, got {description!r}"
+    )
+    assert len(description) <= MAX_DESCRIPTION_CHARS, (
+        f"{case.id}: description is {len(description)} chars, over {MAX_DESCRIPTION_CHARS}"
+    )
+    assert description.endswith("."), f"{case.id}: description must end in a full stop"
+    assert ". " not in description, (
+        f"{case.id}: description must be ONE sentence, got {description!r}"
+    )
+    assert "|" not in description, f"{case.id}: a pipe would break the README's markdown table row"
+
+
+def test_every_shipped_case_description_is_unique() -> None:
+    """Two cases sharing a line means one of them is not described — the table would repeat itself."""
+    descriptions = [case.description for case in load_cases()]
+
+    assert len(set(descriptions)) == len(descriptions)
+
+
+def test_every_shipped_case_description_appears_in_the_readme_table() -> None:
+    """The README's case table is generated from this registry; it must not go stale (§8)."""
+    readme = REGRESSION_README.read_text(encoding="utf-8")
+
+    missing = [case.id for case in load_cases() if case.description not in readme]
+
+    assert not missing, (
+        f"{REGRESSION_README.name} has no description row for: {missing} — "
+        "run `uv run python scripts/gen_eval_tables.py`"
+    )

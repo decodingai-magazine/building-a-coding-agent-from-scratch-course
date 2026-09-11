@@ -27,6 +27,9 @@ CASE = RegressionCase(
     prompt=f"What does the file {_NOTES} say? Read it and tell me.",
     fixture=_fixture,
     difficulty="easy",
+    description=(
+        "Tests that asking what a file says drives the read tool rather than a bash cat shell-out."
+    ),
     symptom=(
         "harness invariant: asking what a file says drives the read tool, never a `bash cat` "
         "shell-out."

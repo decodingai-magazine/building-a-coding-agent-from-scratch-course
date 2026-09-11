@@ -58,6 +58,9 @@ CASE = RegressionCase(
     ),
     fixture=_fixture,
     difficulty="hard",
+    description=(
+        "Tests that an answer-only-as-JSON contract yields raw JSON matching the requested schema."
+    ),
     symptom=(
         "harness invariant: an 'answer ONLY as JSON' contract yields raw JSON matching the schema."
     ),

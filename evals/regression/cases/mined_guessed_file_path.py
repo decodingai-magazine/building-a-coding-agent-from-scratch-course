@@ -77,6 +77,10 @@ CASE = RegressionCase(
     prompt="add a hello line to README",
     fixture=_fixture,
     difficulty="easy",
+    description=(
+        "Tests that the first read opens a path that exists in the tree instead of a guessed "
+        "filename."
+    ),
     symptom=(
         "the first tool call opened a guessed path (`README`) the tree does not hold, so the read "
         "failed with a retry and a whole model leg went on recovering — in both recorded runs."

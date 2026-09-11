@@ -38,6 +38,9 @@ CASE = RegressionCase(
     ),
     fixture=_fixture,
     difficulty="medium",
+    description=(
+        "Tests that a plan-only request enters plan mode and writes nothing to the workspace."
+    ),
     symptom=(
         "harness invariant: 'plan, do not change anything yet' enters plan mode and writes nothing."
     ),

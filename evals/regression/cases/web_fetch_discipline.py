@@ -64,6 +64,10 @@ CASE = RegressionCase(
     prompt=f"Fetch {_URL} and tell me the Widget API rate limit.",
     fixture=_fixture,
     difficulty="medium",
+    description=(
+        "Tests that a question about a URL drives the web_fetch tool and is answered from the fetched "
+        "page."
+    ),
     symptom=(
         "harness invariant: a URL question drives web_fetch and answers from the fetched page."
     ),

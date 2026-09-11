@@ -49,6 +49,10 @@ CASE = RegressionCase(
     prompt=f"Use the bash tool to run {COMMAND!r}. Report exactly what it printed.",
     fixture=_fixture,
     difficulty="easy",
+    description=(
+        "Tests that a bash-and-report turn ends with an answer instead of dying on the retry ceiling "
+        "after empty model responses."
+    ),
     symptom=(
         "three model turns in a row came back with no parts at all, so the run died on the retry "
         "ceiling (UnexpectedModelBehavior) with no tool call and no answer for the user."

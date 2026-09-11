@@ -11,6 +11,45 @@ Twenty-one **invented** cases ship as the harness-invariant floor, tiered 5 easy
 skipped — see "Mined cases" below). Nothing was dropped in the v2 migration or to make room for a
 mined case; what changed is that every case now carries its tier, its symptom and its assertion.
 
+## The cases
+
+One line per declared case — its id, its tier, and what it tests. Generated from the loader by
+`scripts/gen_eval_tables.py` (`--check` verifies without writing);
+`tests/unit/evals/regression/test_case.py` fails `make ci` when a loaded case's description is
+missing here, so the table cannot drift behind the registry. The `symptom` a case catches and the
+`assertion` it is judged on live in the case module beside it.
+
+<!-- BEGIN GENERATED TABLE — scripts/gen_eval_tables.py -->
+
+| Case | Tier | What it tests |
+|---|---|---|
+| `01-read-vs-cat` | easy | Tests that the agent reads a file with the read tool instead of shelling out to cat. |
+| `02-grep-vs-bash` | easy | Tests that the agent locates a function definition with the grep tool instead of shelling out to bash grep. |
+| `03-edit-precision` | easy | Tests that changing one config value produces a surgical edit rather than a whole-file rewrite. |
+| `04-diff-minimality` | hard | Tests that a small rename stays a small diff, with no opportunistic rewriting of the rest of the module. |
+| `05-web-fetch-discipline` | medium | Tests that a question about a URL drives the web_fetch tool and is answered from the fetched page. |
+| `06-lsp-diagnostics` | medium | Tests that a request to check a file for type errors drives the lsp tool and reports the diagnostic it returns. |
+| `07-plan-mode-discipline` | medium | Tests that a plan-only request enters plan mode and writes nothing to the workspace. |
+| `08-todo-planning` | medium | Tests that a genuinely multi-step request is planned with todo_write before the work starts. |
+| `09-subagent-delegation` | medium | Tests that an explicit delegation request spawns a subagent through the agent tool instead of exploring solo. |
+| `10-skill-dispatch` | medium | Tests that a task matching a skill's description dispatches that skill by name. |
+| `11-step-efficiency` | easy | Tests that a trivial one-file request finishes in a few steps without asking the user a needless question. |
+| `12-mcp-tool-usage` | medium | Tests that a task an MCP server's tool solves drives that tool instead of a hand-rolled shell-out. *(skipped)* |
+| `13-permission-deny-respect` | hard | Tests that a denied write is respected and the denial is reported to the user. |
+| `14-destructive-caution` | hard | Tests that a wipe-everything request is never executed blindly but gated or refused. |
+| `15-memory-obedience` | medium | Tests that a naming convention stated only in the workspace's AGENTS.md is obeyed unprompted. |
+| `16-compaction-survival` | hard | Tests that a fact given early in a conversation survives compaction and is recalled afterwards. |
+| `17-grounded-answer` | hard | Tests that a question about a seeded document is answered from that document rather than from the model's priors. |
+| `18-no-hallucinated-files` | hard | Tests that a question about a file that does not exist is answered honestly instead of invented. |
+| `19-template-compliance` | hard | Tests that an exact output template is reproduced heading for heading, in order. |
+| `20-json-output-contract` | hard | Tests that an answer-only-as-JSON contract yields raw JSON matching the requested schema. |
+| `21-empty-model-response` | easy | Tests that a bash-and-report turn ends with an answer instead of dying on the retry ceiling after empty model responses. |
+| `22-guessed-file-path` | easy | Tests that the first read opens a path that exists in the tree instead of a guessed filename. |
+| `23-bad-request-400` | hard | Tests that a resumed conversation is answered instead of ending in a provider 400 with no output at all. *(skipped)* |
+| `smoke-read-tool` | easy | Tests that asking what a file says drives the read tool rather than a bash cat shell-out. |
+
+<!-- END GENERATED TABLE -->
+
 ## The case contract
 
 One case is a `RegressionCase` (`evals/regression/case.py`) — pure data, no control flow:
@@ -22,6 +61,7 @@ One case is a `RegressionCase` (`evals/regression/case.py`) — pure data, no co
 | `fixture` | `Callable[[Path], None]` — seeds the fresh temp Workspace (files, `AGENTS.md`, `.decode/settings.json`). |
 | `metrics` | The Opik metric instances that grade the run (from `evals/harness/metrics.py`, Opik built-ins, or G-Eval judges). At least one. |
 | **`difficulty`** | `easy` \| `medium` \| `hard` — the Difficulty Tier `--difficulty` slices on (required). |
+| **`description`** | One sentence, `Tests that …` / `Tests whether …`, ≤ 160 chars: what this case tests, in plain words. It rides onto the Opik dataset item and into the table above (required, non-blank). |
 | **`symptom`** | One line: the regression this case catches. An invented case phrases it `"harness invariant: <one line>"`; a mined one names the bad behavior its trace showed (required). |
 | **`assertion`** | The same bar in English — it becomes the Test Suite item's assertion, judged on the agent's ANSWER. States the quality without naming the expected value, so a judge cannot cheat off it (required, non-blank). |
 | `gate_mode` | `PermissionMode` — defaults to `BYPASS`. |
@@ -65,6 +105,7 @@ CASE = RegressionCase(
     prompt="There is a type error in buggy.py. Find and fix it.",
     fixture=seed_type_error,
     difficulty="medium",
+    description="Tests that a reported type error is located with the tools and then fixed.",
     symptom="harness invariant: a reported type error is located with the tools, then fixed.",
     assertion="The response reports the type error it fixed and where it was.",
     metrics=[ToolCalledMetric("read")],

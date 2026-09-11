@@ -42,6 +42,7 @@ def _case(
         "fixture": lambda _w: None,
         "metrics": [object()],
         "difficulty": "easy",
+        "description": "Tests that it does it.",
         "symptom": "harness invariant: it does it.",
         "assertion": "The response says it did it.",
         "tags": tags or ["behavior"],
@@ -158,7 +159,9 @@ def test_sync_of_no_tasks_creates_dataset_but_inserts_nothing(mocker) -> None:
     assert result is dataset
 
 
-def test_regression_dataset_item_carries_the_key_tier_tags_symptom_and_provenance() -> None:
+def test_regression_dataset_item_carries_the_key_tier_tags_description_symptom_and_provenance() -> (
+    None
+):
     """The v2 item (ADR-0022 §8): what a human filters, sorts and READS an experiment row by."""
     item = regression_dataset_item(
         _case("smoke-read-tool", tags=["read-discipline"], source_trace_id="trace-7")
@@ -168,9 +171,21 @@ def test_regression_dataset_item_carries_the_key_tier_tags_symptom_and_provenanc
         "case_id": "smoke-read-tool",
         "difficulty": "easy",
         "tags": ["read-discipline"],
+        "description": "Tests that it does it.",
         "symptom": "harness invariant: it does it.",
         "source_trace_id": "trace-7",
     }
+
+
+def test_every_shipped_case_reaches_the_dataset_with_its_description() -> None:
+    """The point of the field: an Experiment row reads as a case list, not a column of ids."""
+    from evals.regression.loader import load_cases
+
+    cases = load_cases()
+    dataset_items, _ = regression_items(cases)
+
+    assert [item["description"] for item in dataset_items] == [case.description for case in cases]
+    assert all(item["description"].startswith("Tests") for item in dataset_items)
 
 
 def test_an_invented_case_carries_no_source_trace() -> None:
@@ -183,7 +198,12 @@ def test_regression_suite_item_is_the_prompt_keys_and_the_assertion() -> None:
     item = regression_suite_item(_case("01-read-vs-cat", difficulty="medium"))
 
     assert item == {
-        "data": {"prompt": "do it", "case_id": "01-read-vs-cat", "difficulty": "medium"},
+        "data": {
+            "prompt": "do it",
+            "case_id": "01-read-vs-cat",
+            "difficulty": "medium",
+            "description": "Tests that it does it.",
+        },
         "assertions": ["The response says it did it."],
     }
 

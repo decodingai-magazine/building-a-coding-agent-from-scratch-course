@@ -54,6 +54,7 @@ def _read_case(**overrides: object) -> RegressionCase:
         "metrics": [ToolCalledMetric("read")],
         "max_requests": 6,
         "difficulty": "easy",
+        "description": "Tests that reading a file uses the read tool.",
         "symptom": "harness invariant: reading a file uses the read tool.",
         "assertion": "The response reports what the file says.",
     }

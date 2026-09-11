@@ -35,6 +35,10 @@ CASE = RegressionCase(
     prompt=f"Create a file named {_FILE} containing exactly {_EXPECTED!r} — no newline, nothing else.",
     fixture=_fixture,
     difficulty="easy",
+    description=(
+        "Tests that a trivial one-file request finishes in a few steps without asking the user a "
+        "needless question."
+    ),
     symptom=(
         "harness invariant: a trivial one-file ask finishes in a few steps, with no needless "
         "questions."

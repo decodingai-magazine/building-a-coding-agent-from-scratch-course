@@ -59,6 +59,10 @@ CASE = RegressionCase(
     prompt=f"Rename the helper function `_helper` to `_doubled` throughout {_MODULE}. Keep the change minimal.",
     fixture=_fixture,
     difficulty="hard",
+    description=(
+        "Tests that a small rename stays a small diff, with no opportunistic rewriting of the rest of "
+        "the module."
+    ),
     symptom="harness invariant: a small rename stays a small diff — no opportunistic rewriting.",
     assertion=(
         "The response describes only the rename the user asked for, with no unrelated refactoring "

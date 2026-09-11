@@ -29,6 +29,10 @@ CASE = RegressionCase(
     prompt=f"Change the port in {_CONFIG} to 9000.",
     fixture=_fixture,
     difficulty="easy",
+    description=(
+        "Tests that changing one config value produces a surgical edit rather than a whole-file "
+        "rewrite."
+    ),
     symptom="harness invariant: a one-value change is a surgical edit, not a whole-file rewrite.",
     assertion=(
         "The response confirms the single value the user named was changed in place, and never "

@@ -59,6 +59,10 @@ CASE = RegressionCase(
     prompt=f"Read {_DOC} and tell me: what is the {_COMPONENT} responsible for?",
     fixture=_fixture,
     difficulty="hard",
+    description=(
+        "Tests that a question about a seeded document is answered from that document rather than "
+        "from the model's priors."
+    ),
     symptom=(
         "harness invariant: a question about a seeded document is answered from that document, not "
         "from the model's priors."

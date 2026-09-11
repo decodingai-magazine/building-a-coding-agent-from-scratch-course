@@ -60,6 +60,10 @@ CASE = RegressionCase(
     prompt=f"What does {MISSING_FILE} do in this project? Summarize its contents.",
     fixture=_fixture,
     difficulty="hard",
+    description=(
+        "Tests that a question about a file that does not exist is answered honestly instead of "
+        "invented."
+    ),
     symptom=(
         "harness invariant: a question about a file that does not exist is answered honestly, never "
         "invented."

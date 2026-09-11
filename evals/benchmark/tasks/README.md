@@ -16,6 +16,40 @@ at the bottom of this file is their machine-checked summary
 (`tests/unit/evals/fixtures/tasks/001-greeting`) stays the smallest complete example of everything
 below.
 
+## The tasks
+
+One line per task — its id, its tier, its category, and the `[task] description` from its
+`task.toml`. Generated from the loader by `scripts/gen_eval_tables.py` (`--check` verifies
+without writing); `tests/unit/evals/benchmark/test_suite_shape.py` fails `make ci` when a loaded
+task's description is missing here. What each Verifier MEASURES is the audit table at the bottom
+of this file.
+
+<!-- BEGIN GENERATED TABLE — scripts/gen_eval_tables.py -->
+
+| Task | Tier | Category | What it tests |
+|---|---|---|---|
+| `001-find-and-replace` | easy | Operations | Change one value in a config file and leave every other line untouched. |
+| `002-regex-extraction` | easy | Software | Extract the unique email addresses out of free-form prose into a sorted file. |
+| `003-csv-to-json` | easy | Software | Convert a small CSV file into a typed JSON array of objects. |
+| `004-markdown-toc` | easy | Software | Fill a markdown file's empty Table of Contents with anchor links to its headings. |
+| `005-encoding-normalize` | easy | Software | Re-save two legacy-encoded text files as UTF-8 without changing their text. |
+| `006-log-forensics` | easy | Security | Write a script that reports the client IPs with five or more 404s in an access log. |
+| `007-fix-failing-test` | easy | Software | Fix the bug in a small module so its whole unittest suite passes. |
+| `008-dependency-repair` | medium | Software | Repair a broken import so a small Python program runs and prints its two lines again. |
+| `009-multi-file-rename` | medium | Software | Rename a public function across every module and test that references it. |
+| `011-json-schema-migration` | medium | Software | Migrate a JSON dataset from its v1 array shape to the v2 object schema. |
+| `012-makefile-doctor` | medium | Operations | Repair a Makefile whose build target has a space-indented recipe and a missing prerequisite. |
+| `013-sqlite-analyst` | medium | Science | Query a SQLite database and record the customer with the highest total revenue. |
+| `014-cli-flag-add` | medium | Software | Add a --json output mode to an argparse CLI without changing its text mode. |
+| `015-secret-scrub` | hard | Security | Move two hardcoded secrets into environment variables with a minimal diff. |
+| `016-implement-from-spec` | hard | Software | Implement merge_intervals from its docstring so the whole hidden suite passes. |
+| `017-flaky-test-hunt` | hard | Software | Fix the shared mutable state that makes a two-test suite order-dependent. |
+| `018-git-bisect-revert` | hard | Operations | Find the commit that broke the suite and revert it without rewriting history. |
+| `019-patch-conflict-resolve` | hard | Software | Resolve a stale patch against a changed file so both intentions survive. |
+| `020-build-small-tool` | hard | Software | Build a word-frequency CLI: case-insensitive, punctuation-stripped, top-N ordered. |
+
+<!-- END GENERATED TABLE -->
+
 ## Folder layout
 
 ```
