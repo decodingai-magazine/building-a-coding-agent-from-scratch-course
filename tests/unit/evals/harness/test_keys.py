@@ -77,6 +77,34 @@ def test_modal_provider_requires_the_endpoint_url(mocker):
     assert keys.eval_keys_missing() == ["MODAL_ENDPOINT_URL"]
 
 
+# --- require_provider=False: the Opik-only live-project commands (task 163) -------------------------
+
+
+def test_an_opik_only_caller_does_not_need_the_provider_key(mocker):
+    """``evals mine`` / ``online-rule create`` run no inference — the repo's own ``.env`` case.
+
+    ``LLM_PROVIDER=modal`` with no ``MODAL_ENDPOINT_URL`` is what the committed ``.env`` ships; a
+    read-only trace query must not be blocked on an endpoint it never calls.
+    """
+    mocker.patch.object(settings, "llm_provider", "modal")
+    mocker.patch.object(
+        settings, "opik_api_key", SimpleNamespace(get_secret_value=lambda: "opik-key")
+    )
+    mocker.patch.object(settings, "modal_endpoint_url", "")
+
+    assert keys.eval_keys_missing(require_provider=False) == []
+    # The default is byte-identical to before: every other caller still demands the provider key.
+    assert keys.eval_keys_missing() == ["MODAL_ENDPOINT_URL"]
+
+
+def test_an_opik_only_caller_still_needs_the_opik_key(mocker):
+    mocker.patch.object(settings, "llm_provider", "modal")
+    mocker.patch.object(settings, "opik_api_key", SimpleNamespace(get_secret_value=lambda: " "))
+    mocker.patch.object(settings, "modal_endpoint_url", "")
+
+    assert keys.eval_keys_missing(require_provider=False) == ["OPIK_API_KEY"]
+
+
 # --- main(): the Makefile guard exit contract -------------------------------------------------------
 
 

@@ -53,9 +53,10 @@ from kitaru.task.importer import (
     TokenUsage,
 )
 
+from importers.opik_spans import is_tool_span, tool_span_name
+
 MAX_PAYLOAD_BYTES = 50 * 1024 * 1024
 MAX_TRACE_RECORDS = 100_000
-_TOOL_MSG_PREFIX = "running tool: "
 
 
 def _enc(component: str) -> str:
@@ -116,16 +117,15 @@ def _cost(span: dict[str, Any]) -> Decimal | None:
 
 
 def _node_semantics(span: dict[str, Any]) -> tuple[NodeType, str | None]:
-    """(node type, tool name) from explicit provider evidence, never from names alone."""
+    """(node type, tool name) from explicit provider evidence, never from names alone.
+
+    Tool detection + naming live in :mod:`importers.opik_spans` — the ONE reader ``evals mine``
+    shares (task 163), so the two cannot drift when pydantic-ai renames an attribute.
+    """
     if span.get("type") == "llm":
         return NodeType.LLM_CALL, None
-    metadata = span.get("metadata") or {}
-    if isinstance(metadata, dict) and metadata.get("gen_ai.operation.name") == "execute_tool":
-        msg = metadata.get("logfire.msg")
-        tool = None
-        if isinstance(msg, str) and msg.startswith(_TOOL_MSG_PREFIX):
-            tool = msg[len(_TOOL_MSG_PREFIX) :] or None
-        return NodeType.TOOL_CALL, tool
+    if is_tool_span(span):
+        return NodeType.TOOL_CALL, tool_span_name(span)
     return NodeType.SPAN, None
 
 

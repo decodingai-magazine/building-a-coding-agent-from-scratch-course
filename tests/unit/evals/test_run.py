@@ -7,6 +7,7 @@ is pulled in lazily by the tracks that need it, so ``--help`` never needs keys o
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -536,3 +537,263 @@ def test_python_m_evals_help_runs():
     )
     assert result.returncode == 0, result.stderr
     assert "benchmark" in result.stdout
+
+
+def test_help_lists_the_two_live_project_commands():
+    """``online-rule`` and ``mine`` are part of the CLI surface (task 163)."""
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "online-rule" in result.output
+    assert "mine" in result.output
+
+
+def test_online_rule_create_skips_friendly_without_keys(mocker):
+    """No keys → ONE skip line, exit 0, and nothing reaches Opik (ADR-0017 §9)."""
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["OPIK_API_KEY"])
+    create = mocker.patch("evals.harness.online_rule.create_response_quality_rule")
+
+    result = CliRunner().invoke(cli, ["online-rule", "create"])
+
+    assert result.exit_code == 0
+    assert "evals online-rule: skipped — set OPIK_API_KEY" in result.output
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("argv", "patched"),
+    [
+        (["online-rule", "create"], "evals.harness.online_rule.create_response_quality_rule"),
+        (["mine"], "evals.harness.mine.open_source"),
+    ],
+    ids=["online-rule-create", "mine"],
+)
+def test_the_opik_only_commands_do_not_demand_an_inference_key(mocker, argv, patched):
+    """Neither command makes an inference call, so the preflight runs ``require_provider=False``.
+
+    Under the repo's committed ``.env`` (``LLM_PROVIDER=modal``) the full preflight would name
+    ``MODAL_ENDPOINT_URL`` and skip a read-only query that never touches Modal (task 163 QA).
+    """
+    guard = mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["OPIK_API_KEY"])
+    mocker.patch(patched)
+
+    result = CliRunner().invoke(cli, argv)
+
+    assert result.exit_code == 0
+    assert guard.call_args.kwargs == {"require_provider": False}
+
+
+def test_online_rule_create_forwards_every_flag(mocker):
+    """Each flag lands on ``create_response_quality_rule``; the created id is printed."""
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    outcome = mocker.Mock(
+        action="created", project="decode-prod", model="gemini-2.5-flash", rule_id="rule-1"
+    )
+    create = mocker.patch(
+        "evals.harness.online_rule.create_response_quality_rule", return_value=outcome
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "online-rule",
+            "create",
+            "--project",
+            "decode-prod",
+            "--model",
+            "gemini-2.5-flash",
+            "--sampling",
+            "0.5",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert create.call_args.kwargs == {
+        "project": "decode-prod",
+        "model": "gemini-2.5-flash",
+        "sampling": 0.5,
+        "dry_run": False,
+    }
+    assert "created response_quality (rule-1) in decode-prod" in result.output
+
+
+def test_online_rule_create_reports_an_existing_rule_without_creating_one(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    outcome = mocker.Mock(action="exists", project="decode-prod", model="m", rule_id="rule-0")
+    mocker.patch("evals.harness.online_rule.create_response_quality_rule", return_value=outcome)
+
+    result = CliRunner().invoke(cli, ["online-rule", "create"])
+
+    assert result.exit_code == 0
+    assert "already exists: rule-0" in result.output
+
+
+def test_online_rule_create_reports_an_underivable_judge_model_as_one_line(mocker):
+    """The openrouter/modal routes refuse with one line naming ``--model`` — no traceback."""
+    from evals.harness.online_rule import OnlineRuleError
+
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch(
+        "evals.harness.online_rule.create_response_quality_rule",
+        side_effect=OnlineRuleError("cannot derive an Opik judge model — pass --model <id>."),
+    )
+
+    result = CliRunner().invoke(cli, ["online-rule", "create"])
+
+    assert result.exit_code == 1
+    assert "pass --model" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_online_rule_create_reports_an_invalid_opik_key(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch(
+        "evals.harness.online_rule.create_response_quality_rule", side_effect=_api_error(401)
+    )
+
+    result = CliRunner().invoke(cli, ["online-rule", "create"])
+
+    _assert_friendly_opik_key_error(result)
+
+
+def test_mine_skips_friendly_without_keys(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["OPIK_API_KEY"])
+    open_source = mocker.patch("evals.harness.mine.open_source")
+
+    result = CliRunner().invoke(cli, ["mine"])
+
+    assert result.exit_code == 0
+    assert "evals mine: skipped — set OPIK_API_KEY" in result.output
+    open_source.assert_not_called()
+
+
+def test_mine_forwards_its_flags_and_prints_one_table_per_signature(mocker):
+    from evals.harness.mine import Signature, SignatureGroup, TraceHit
+
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    source = mocker.Mock(project="decode-prod")
+    mocker.patch("evals.harness.mine.open_source", return_value=source)
+    signature = Signature(preset="errors", error="Boom", last_tool="bash", model="gemini-2.5-flash")
+    hit = TraceHit(
+        signature=signature,
+        id="trace-1",
+        thread_id="thread-1",
+        start_time=None,
+        git_sha=None,
+        model="gemini-2.5-flash",
+        error="Boom",
+    )
+    # Patch target is the HARNESS function `evals.harness.mine.mine` (the CLI imports it lazily,
+    # inside the command body, as `mine_traces`) — not the Click command, which is also named `mine`.
+    mine_traces = mocker.patch(
+        "evals.harness.mine.mine", return_value=[SignatureGroup(signature=signature, traces=(hit,))]
+    )
+
+    result = CliRunner().invoke(
+        cli, ["mine", "--preset", "denied", "--since", "2026-09-04T00:00:00Z", "--limit", "7"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert mine_traces.call_args.kwargs == {
+        "preset": "denied",
+        "since": "2026-09-04T00:00:00Z",
+        "limit": 7,
+    }
+    assert "trace-1" in result.output
+    assert "1 trace(s) in 1 signature(s) from decode-prod" in result.output
+
+
+def test_mine_json_emits_the_group_document(mocker):
+    from evals.harness.mine import Signature, SignatureGroup, TraceHit
+
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch("evals.harness.mine.open_source", return_value=mocker.Mock(project="decode-prod"))
+    signature = Signature(preset="errors", error="Boom", last_tool=None, model=None)
+    hit = TraceHit(
+        signature=signature,
+        id="trace-1",
+        thread_id=None,
+        start_time=None,
+        git_sha=None,
+        model=None,
+        error="Boom",
+    )
+    mocker.patch(
+        "evals.harness.mine.mine", return_value=[SignatureGroup(signature=signature, traces=(hit,))]
+    )
+
+    result = CliRunner().invoke(cli, ["mine", "--json"])
+
+    assert result.exit_code == 0, result.output
+    document = json.loads(result.output)
+    assert document == [
+        {
+            "signature": "errors | Boom | - | -",
+            "count": 1,
+            "traces": [
+                {
+                    "id": "trace-1",
+                    "thread_id": None,
+                    "start_time": None,
+                    "git_sha": None,
+                    "model": None,
+                    "error": "Boom",
+                }
+            ],
+        }
+    ]
+
+
+def test_mine_says_so_when_nothing_matched(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch("evals.harness.mine.open_source", return_value=mocker.Mock(project="decode-prod"))
+    mocker.patch("evals.harness.mine.mine", return_value=[])
+
+    result = CliRunner().invoke(cli, ["mine", "--preset", "long"])
+
+    assert result.exit_code == 0
+    assert "evals mine: no long traces in decode-prod." in result.output
+
+
+def test_mine_rejects_a_naive_since_as_one_line(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch("evals.harness.mine.open_source", return_value=mocker.Mock(project="decode-prod"))
+
+    result = CliRunner().invoke(cli, ["mine", "--since", "2026-09-04T00:00:00"])
+
+    assert result.exit_code == 1
+    assert "timezone-aware" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_mine_reports_an_invalid_opik_key(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch("evals.harness.mine.open_source", side_effect=_api_error(401))
+
+    result = CliRunner().invoke(cli, ["mine"])
+
+    _assert_friendly_opik_key_error(result)
+
+
+def test_the_new_live_commands_help_imports_no_opik():
+    """``online-rule create --help`` and ``mine --help`` render with no keys and no network."""
+    code = (
+        "import sys\n"
+        "from click.testing import CliRunner\n"
+        "from evals.run import cli\n"
+        "for argv in (['online-rule', 'create', '--help'], ['mine', '--help']):\n"
+        "    result = CliRunner().invoke(cli, argv)\n"
+        "    assert result.exit_code == 0, result.output\n"
+        "assert '--sampling' in CliRunner().invoke(cli, ['online-rule', 'create', '--help']).output\n"
+        "assert '--preset' in CliRunner().invoke(cli, ['mine', '--help']).output\n"
+        "leaked = sorted(m for m in sys.modules if 'opik' in m)\n"
+        "assert not leaked, leaked\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        env=_subprocess_env(),
+    )
+    assert result.returncode == 0, result.stderr

@@ -1,0 +1,112 @@
+{
+  "trace": {
+    "id": "1f0a0b1e-0000-4000-8000-000000000201",
+    "name": "decode_run",
+    "thread_id": "1f0a0b1e-0000-4000-8000-0000000002aa",
+    "start_time": "2026-09-11 09:05:00.000000+00:00",
+    "end_time": "2026-09-11 09:05:31.000000+00:00",
+    "has_tool_spans": true,
+    "error_info": null,
+    "input": {"input": "anonymised task prompt (gate-denied run)"},
+    "output": {"output": "anonymised assistant answer"},
+    "metadata": {
+      "integration": "pydantic-ai",
+      "logfire.msg": "decode_run",
+      "thread_id": "1f0a0b1e-0000-4000-8000-0000000002aa",
+      "git_sha": "5c46f38b5f56b39606a454b704b79d50a7500000",
+      "model": "gemini-2.5-flash",
+      "sandbox_mode": "none",
+      "decode_env": "prod"
+    },
+    "usage": {"prompt_tokens": 12000, "completion_tokens": 400, "total_tokens": 12400}
+  },
+  "spans": [
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000214",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000201",
+      "name": "execute_tool glob",
+      "type": "tool",
+      "start_time": "2026-09-11 09:05:20.000000+00:00",
+      "end_time": "2026-09-11 09:05:20.100000+00:00",
+      "input": {"gen_ai.tool.call.arguments": {"pattern": "*"}},
+      "output": {"gen_ai.tool.call.result": "note.txt\nother.txt"},
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "execute_tool",
+        "logfire.msg": "running tool: glob",
+        "name": "agent"
+      }
+    },
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000211",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000201",
+      "name": "execute_tool write",
+      "type": "tool",
+      "start_time": "2026-09-11 09:05:05.000000+00:00",
+      "end_time": "2026-09-11 09:05:05.020000+00:00",
+      "input": {
+        "gen_ai.tool.call.arguments": {"path": "out.txt", "content": "hi\n"},
+        "pydantic_ai.tool.deferral.name": "ApprovalRequired"
+      },
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "execute_tool",
+        "logfire.msg": "running tool: write",
+        "name": "agent"
+      }
+    },
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000213",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000201",
+      "name": "execute_tool glob",
+      "type": "tool",
+      "start_time": "2026-09-11 09:05:15.000000+00:00",
+      "end_time": "2026-09-11 09:05:15.020000+00:00",
+      "input": {
+        "gen_ai.tool.call.arguments": {"pattern": "*"},
+        "pydantic_ai.tool.deferral.name": "ApprovalRequired"
+      },
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "execute_tool",
+        "logfire.msg": "running tool: glob",
+        "name": "agent"
+      }
+    },
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000212",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000201",
+      "name": "execute_tool bash",
+      "type": "tool",
+      "start_time": "2026-09-11 09:05:10.000000+00:00",
+      "end_time": "2026-09-11 09:05:10.020000+00:00",
+      "input": {
+        "gen_ai.tool.call.arguments": {"command": "ls"},
+        "pydantic_ai.tool.deferral.name": "ApprovalRequired"
+      },
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "execute_tool",
+        "logfire.msg": "running tool: bash",
+        "name": "agent"
+      }
+    },
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000215",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000201",
+      "name": "chat gemini-2.5-flash",
+      "type": "llm",
+      "start_time": "2026-09-11 09:05:25.000000+00:00",
+      "end_time": "2026-09-11 09:05:29.000000+00:00",
+      "model": "gemini-2.5-flash",
+      "provider": "google_ai",
+      "input": {"messages": [{"role": "user", "parts": [{"type": "tool_call_response", "name": "write", "result": "The user denied this tool call."}]}]},
+      "output": {"messages": [{"role": "assistant", "parts": [{"type": "text", "content": "anonymised"}]}]},
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "chat",
+        "logfire.msg": "chat gemini-2.5-flash"
+      }
+    }
+  ]
+}

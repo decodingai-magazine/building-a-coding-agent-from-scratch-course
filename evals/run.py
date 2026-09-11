@@ -283,6 +283,158 @@ def online(filter_string: str | None) -> None:
     click.echo(f"evals online: scored {len(lines)} thread(s) in {live_project_name()}.")
 
 
+@cli.group("online-rule")
+def online_rule() -> None:
+    """Manage the Opik ONLINE RULE that scores live traces as they arrive (ADR-0022 §13)."""
+
+
+@online_rule.command("create")
+@click.option(
+    "--project",
+    default=None,
+    help="Opik project for the rule [default: the LIVE project, settings.opik_project_name].",
+)
+@click.option(
+    "--model",
+    default=None,
+    help="Judge model id as your Opik workspace spells it [default: from the eval routing].",
+)
+@click.option(
+    "--sampling",
+    type=click.FloatRange(min=0.0, max=1.0),
+    default=1.0,
+    show_default=True,
+    help="Fraction of incoming traces the rule scores.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the exact create payload and write nothing.",
+)
+def online_rule_create(
+    project: str | None, model: str | None, sampling: float, dry_run: bool
+) -> None:
+    """Create the `response_quality` LLM-as-judge online rule, idempotently (ADR-0022 §13).
+
+    The README's seven-step UI walkthrough as one command: it resolves the LIVE project, looks for
+    a rule already named `response_quality` (prints `already exists: <id>` and stops if there is
+    one), else creates the LLM-as-judge rule carrying the qualitative prompt from
+    `evals.harness.online_rule.RESPONSE_QUALITY_PROMPT`. Skips friendly (no error) without
+    `OPIK_API_KEY` — the judge runs on Opik's own provider, so no inference key is needed here; Opik
+    + the harness are imported lazily so `--help` never needs keys or a network.
+    """
+    from evals.harness.keys import eval_keys_missing
+    from evals.harness.online_rule import (
+        RULE_NAME,
+        OnlineRuleError,
+        create_response_quality_rule,
+    )
+
+    # Opik-only: the rule's judge runs on the workspace's own provider, so no inference key here.
+    missing = eval_keys_missing(require_provider=False)
+    if missing:
+        click.echo(
+            "evals online-rule: skipped — set " + ", ".join(missing) + " to create the online rule."
+        )
+        return
+
+    try:
+        with opik_boundary():
+            outcome = create_response_quality_rule(
+                project=project, model=model, sampling=sampling, dry_run=dry_run
+            )
+    except OnlineRuleError as exc:
+        raise click.ClickException(f"evals online-rule: {exc}") from exc
+
+    if outcome.action == "dry-run":
+        click.echo(outcome.payload or "")
+        click.echo(
+            f"evals online-rule: dry run — would create {RULE_NAME} in {outcome.project} "
+            f"on judge model {outcome.model}."
+        )
+        return
+    if outcome.action == "exists":
+        click.echo(f"evals online-rule: already exists: {outcome.rule_id} (in {outcome.project}).")
+        return
+    click.echo(
+        f"evals online-rule: created {RULE_NAME} ({outcome.rule_id}) in {outcome.project} "
+        f"on judge model {outcome.model}."
+    )
+
+
+@cli.command()
+@click.option(
+    "--preset",
+    type=click.Choice(["errors", "low-quality", "long", "denied", "all"]),
+    default="errors",
+    show_default=True,
+    help="Which regression shape to mine for.",
+)
+@click.option(
+    "--since",
+    default=None,
+    help="Only traces after this tz-aware ISO timestamp (e.g. 2026-09-04T00:00:00Z).",
+)
+@click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=50,
+    show_default=True,
+    help="Traces fetched per preset (also the window the client-side presets rank within).",
+)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit the groups as JSON.")
+def mine(preset: str, since: str | None, limit: int, as_json: bool) -> None:
+    """Mine the LIVE project for regressions worth turning into cases (ADR-0022 §8).
+
+    Searches the live Opik project (never `EVAL_PROJECT_NAME`) with the preset's filter, clusters
+    every hit by its Signature — (preset, error, last tool, model) — and prints one table per
+    signature with the trace ids to pick from; `--json` emits the same groups, uncapped, for task
+    164's case authoring. Read-only, so it skips friendly (no error) without `OPIK_API_KEY` alone;
+    Opik + the harness are imported lazily so `--help` never needs keys or a network (ADR-0017 §1).
+    """
+    from evals.harness.keys import eval_keys_missing
+    from evals.harness.mine import (
+        MineError,
+        groups_as_json,
+        mine_console,
+        open_source,
+        render_group_table,
+    )
+
+    # Opik-only: mining is a read-only trace query, never an inference call.
+    missing = eval_keys_missing(require_provider=False)
+    if missing:
+        click.echo("evals mine: skipped — set " + ", ".join(missing) + " to search live traces.")
+        return
+
+    from evals.harness.mine import mine as mine_traces
+
+    try:
+        with opik_boundary():
+            source = open_source()
+            groups = mine_traces(source, preset=preset, since=since, limit=limit)
+    except MineError as exc:
+        raise click.ClickException(f"evals mine: {exc}") from exc
+
+    if as_json:
+        click.echo(groups_as_json(groups))
+        return
+
+    if not groups:
+        click.echo(f"evals mine: no {preset} traces in {source.project}.")
+        return
+
+    console = mine_console()
+    for group in groups:
+        console.print(render_group_table(group))
+    total = sum(group.count for group in groups)
+    click.echo(
+        f"evals mine: {total} trace(s) in {len(groups)} signature(s) from {source.project} "
+        f"(preset {preset})."
+    )
+
+
 @cli.command()
 @click.option(
     "--benchmark/--no-benchmark",
