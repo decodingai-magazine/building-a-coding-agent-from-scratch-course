@@ -65,6 +65,21 @@ make eval-benchmark ARGS='--job-name nightly-3 --model gemini-2.5-pro'
 
 > ✅ A Rich table — one row per task (`n`, `pass@1`, at `k > 1` also `pass@k` / `pass^k` / `flaky`, `~$/trial`, `infra`), a section per tier, a total row — then one line naming the experiment and the trial dirs. In Opik: one experiment row over the `decode-benchmark-v2` dataset, tagged with model, provider, git sha, sandbox and `kitaru_agent_id`.
 
+### Running the agent on the Modal endpoint
+
+Two different knobs both say "modal": `--sandbox modal` is where the agent's **tools** run (the remote sandbox rung, [03](03_sandboxing.md)); `LLM_PROVIDER=modal` is which **model** the agent talks to (your own endpoint, [02](02_modal_endpoints.md)). They combine freely. For the model side:
+
+```bash
+LLM_PROVIDER=modal make eval-benchmark ARGS='--threads 1'          # agent on the endpoint, docker sandbox
+LLM_PROVIDER=modal EVAL_JUDGE_PROVIDER=modal make eval-regression  # agent and judge on the endpoint
+```
+
+- **Keep the endpoint at min 1 container** while a run is in flight (Modal dashboard → the endpoint → scaling). At min 0 the first trial waits out a cold start, and a container that dies mid-run answers `503` to every trial after it.
+- **`--threads 1` on a single-container endpoint.** Two concurrent trials against one container produced a request that never returned; decode's client has no per-request timeout, so that trial ran to its full agent timeout (600 s), graded on the base commit as `agent_fail`, and left its sandbox container behind (`docker ps`, `docker rm -f <id>`). Rerun alone it passed in 61 s.
+- The regression cases run host-native and one at a time, so no thread knob applies there.
+
+Which Opik project a run writes to never depends on the provider: benchmark and regression experiments always land under `decode-evals` (their datasets live there); only the online track ([§4](#4-online-eval-and-the-mining-loop)) reads the **live** project, `decode-<DECODE_ENV>`.
+
 ### The Trial Dir — evidence on disk, always
 
 Written in a `finally`, so even a trial that blew up leaves its evidence, under the job name:
@@ -114,6 +129,8 @@ python -m evals suite --difficulty hard         # the same cases, judged on thei
 ```
 
 > ✅ The gate (`evals/regression/test_thresholds.py`) prints one table **per tier** and gates **globally**: tool discipline ≥ 0.8, judges ≥ 0.7. A drop against the previous experiment WARNs. The experiment is `decode-regression-gate`, or `decode-regression-gate-<tier>` for a filtered run, so a tier's baseline stays its own.
+
+**Editing a case re-syncs it.** A case's prompt, metrics, tier, symptom, assertion or description change its checksum. Both `make eval-regression` and `python -m evals regression` sync their selection before grading, so the fresh item is what gets graded; the stale item stays in Opik (it never deletes) and is ignored, and the Test Suite is minted under a new name. A `RegressionSelectionError` naming a case means Opik has not reflected the insert yet — rerun.
 
 **Two surfaces, on purpose.** One case definition registers twice: as a `decode-regression-v2` dataset item that deterministic metrics score (`python -m evals regression`), and as an item in the `decode-regression-suite-<8 hex>` Test Suite (named after the synced cases' content, so an edit mints a fresh suite rather than a second, twice-judged item) whose English `assertion` an LLM judge checks against the answer (`python -m evals suite`, gated on `pass_rate` ≥ 0.8). Numbers catch exact regressions cheaply; assertions catch "the answer got worse in a way no single number captures". The contrast is the lesson — neither replaces the other.
 
