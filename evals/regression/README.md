@@ -189,6 +189,12 @@ Options:
 `suite` takes the same two filters; `sync` takes `--difficulty` as well, so a tier is synced and run
 as one set.
 
+Dataset items are **versioned by checksum** (`case_checksum()` over the case's id, tier, tags, symptom,
+assertion, description and prompt): editing a case mints a new item beside the old one — Opik never
+deletes — and a run selects only the item matching the case on disk, so a stale item is ignored, never
+deleted, and never graded twice. A selected case with no matching item stops the run with a
+`RegressionSelectionError` telling you to re-run `python -m evals sync --regression`.
+
 Each run is one Opik experiment under `EVAL_PROJECT_NAME` (`decode-evals`), named
 `decode-regression-gate` — or `decode-regression-gate-<tier>` for a filtered one, so a tier's baseline
 compares against that tier and never against the whole suite. Every case declares its own metrics;

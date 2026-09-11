@@ -19,6 +19,7 @@ from evals.harness.datasets import (
     REGRESSION_SUITE_NAME,
     SUITE_EXECUTION_POLICY,
     benchmark_dataset_item,
+    case_checksum,
     regression_dataset_item,
     regression_items,
     regression_suite_item,
@@ -174,7 +175,54 @@ def test_regression_dataset_item_carries_the_key_tier_tags_description_symptom_a
         "description": "Tests that it does it.",
         "symptom": "harness invariant: it does it.",
         "source_trace_id": "trace-7",
+        "checksum": case_checksum(
+            _case("smoke-read-tool", tags=["read-discipline"], source_trace_id="trace-7")
+        ),
     }
+
+
+def test_case_checksum_is_stable_across_calls() -> None:
+    """Same declaration ⇒ same checksum, so Opik's content dedupe leaves the item alone."""
+    case = _case()
+
+    assert case_checksum(case) == case_checksum(_case())
+    assert len(case_checksum(case)) == 64  # sha256 hexdigest
+
+
+def test_case_checksum_changes_when_the_description_changes() -> None:
+    """Editing a case must mint a NEW checksum — that is what makes the stale item skippable."""
+    before = case_checksum(_case())
+
+    assert case_checksum(_case(description="Tests that it does it TWICE.")) != before
+
+
+def test_case_checksum_changes_with_any_graded_field() -> None:
+    """Every field a human reads or a judge grades versions the item — not just the description."""
+    before = case_checksum(_case())
+    edits: list[dict[str, object]] = [
+        {"case_id": "c2"},
+        {"difficulty": "hard"},
+        {"tags": ["other"]},
+        {"symptom": "harness invariant: it does something else."},
+        {"assertion": "The response says something else."},
+        {"prompt": "do it differently"},
+    ]
+
+    for edit in edits:
+        case_id = str(edit.pop("case_id", "c1"))
+        assert case_checksum(_case(case_id, **edit)) != before, edit
+
+
+def test_case_checksum_ignores_the_fixture_and_the_provenance() -> None:
+    """A callable has no stable hash across processes, and provenance is not what the case ASKS.
+
+    Hashing either would mint a fresh item on every sync (the fixture's ``repr`` carries a memory
+    address), which is exactly the duplicate-item bug the checksum exists to stop.
+    """
+    before = case_checksum(_case())
+
+    assert case_checksum(_case(fixture=lambda _w: None)) == before
+    assert case_checksum(_case(source_trace_id="trace-9")) == before
 
 
 def test_every_shipped_case_reaches_the_dataset_with_its_description() -> None:
@@ -198,14 +246,35 @@ def test_regression_suite_item_is_the_prompt_keys_and_the_assertion() -> None:
     item = regression_suite_item(_case("01-read-vs-cat", difficulty="medium"))
 
     assert item == {
+        "description": "Tests that it does it.",
         "data": {
             "prompt": "do it",
             "case_id": "01-read-vs-cat",
             "difficulty": "medium",
-            "description": "Tests that it does it.",
         },
         "assertions": ["The response says it did it."],
     }
+
+
+def test_the_suite_items_description_rides_at_item_level_not_in_data() -> None:
+    """``data.description`` collides with Opik's OWN kwarg and makes ``sync --regression`` exit 1.
+
+    ``opik`` 2.2.36 builds the suite's dataset item as ``DatasetItem(description=..., **item["data"])``
+    — a ``description`` inside ``data`` is therefore a hard ``TypeError`` ("got multiple values for
+    keyword argument"), taking the whole sync down with it.
+    """
+    item = regression_suite_item(_case())
+
+    assert "description" not in item["data"]
+    assert item["description"] == "Tests that it does it."
+
+
+def test_the_suite_item_is_not_versioned_by_a_checksum() -> None:
+    """Surface (b) takes no item filter: a ``checksum`` there would mint a second BILLED item."""
+    item = regression_suite_item(_case())
+
+    assert "checksum" not in item
+    assert "checksum" not in item["data"]
 
 
 def test_regression_item_tags_are_copied_not_aliased() -> None:

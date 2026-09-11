@@ -21,6 +21,7 @@ from decode.config.settings import settings
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.rules import Rule, RuleSet
 from decode.permissions.types import PermissionMode
+from evals.harness.datasets import case_checksum
 from evals.harness.metrics import ToolCalledMetric
 from evals.harness.regression import (
     GATE_EXPERIMENT_NAME,
@@ -60,6 +61,11 @@ def _read_case(**overrides: object) -> RegressionCase:
     }
     base.update(overrides)
     return RegressionCase(**base)  # type: ignore[arg-type]
+
+
+def _item(item_id: str, case: RegressionCase) -> dict[str, str]:
+    """A FRESH dataset item for ``case`` — what the checksum-scoped selection matches on."""
+    return {"id": item_id, "case_id": case.id, "checksum": case_checksum(case)}
 
 
 def test_task_fn_runs_a_case_and_returns_the_metric_payload(install_model):
@@ -305,7 +311,7 @@ def test_run_regression_wires_evaluate(mocker):
     evaluate = mocker.patch("opik.evaluation.evaluate")
     opik_cls = mocker.patch("opik.Opik")
     dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [{"id": "item-1", "case_id": case.id}]
+    dataset.get_items.return_value = [_item("item-1", case)]
 
     result = run_regression(case_id=case.id)
 
@@ -332,7 +338,7 @@ def test_run_regression_leaves_the_project_to_the_dataset(mocker):
     opik_cls = mocker.patch("opik.Opik")
     dataset = opik_cls.return_value.get_or_create_dataset.return_value
     dataset.project_name = settings.eval_project_name
-    dataset.get_items.return_value = [{"id": "item-1", "case_id": case.id}]
+    dataset.get_items.return_value = [_item("item-1", case)]
 
     run_regression(case_id=case.id)
 
@@ -347,7 +353,7 @@ def test_run_regression_names_the_project_for_a_dataset_without_one(mocker):
     opik_cls = mocker.patch("opik.Opik")
     dataset = opik_cls.return_value.get_or_create_dataset.return_value
     dataset.project_name = None
-    dataset.get_items.return_value = [{"id": "item-1", "case_id": case.id}]
+    dataset.get_items.return_value = [_item("item-1", case)]
 
     run_regression(case_id=case.id)
 
@@ -361,7 +367,7 @@ def test_a_full_run_uses_the_stable_gate_experiment_name(mocker):
     evaluate = mocker.patch("opik.evaluation.evaluate")
     opik_cls = mocker.patch("opik.Opik")
     dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [{"id": "item-1", "case_id": case.id}]
+    dataset.get_items.return_value = [_item("item-1", case)]
 
     run_regression()
 
@@ -376,10 +382,7 @@ def test_a_tier_run_gets_its_own_experiment_name_and_config(mocker):
     evaluate = mocker.patch("opik.evaluation.evaluate")
     opik_cls = mocker.patch("opik.Opik")
     dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [
-        {"id": "item-1", "case_id": "easy-case"},
-        {"id": "item-2", "case_id": "hard-case"},
-    ]
+    dataset.get_items.return_value = [_item("item-1", easy), _item("item-2", hard)]
 
     run_regression(difficulty="hard")
 
@@ -397,7 +400,7 @@ def test_an_explicit_experiment_name_wins(mocker):
     evaluate = mocker.patch("opik.evaluation.evaluate")
     opik_cls = mocker.patch("opik.Opik")
     dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [{"id": "item-1", "case_id": case.id}]
+    dataset.get_items.return_value = [_item("item-1", case)]
 
     run_regression(case_id=case.id, experiment_name="one-off")
 
@@ -410,6 +413,59 @@ def test_scoped_name_appends_the_slice_and_prefers_the_case_id():
     assert scoped_name("base", difficulty="hard") == "base-hard"
     assert scoped_name("base", case_id="17-grounded-answer") == "base-17-grounded-answer"
     assert scoped_name("base", case_id="c", difficulty="hard") == "base-c"
+
+
+def test_a_stale_item_with_the_same_case_id_is_never_selected(mocker):
+    """The defect: Opik never deletes, so an edited case leaves a second item with the same id.
+
+    Without the checksum both ids reach ``evaluate`` and the case is graded TWICE — double cost and a
+    duplicated row on every gate run after the edit.
+    """
+    case = _read_case(id="edited-case")
+    mocker.patch("evals.harness.regression.load_cases", return_value=[case])
+    evaluate = mocker.patch("opik.evaluation.evaluate")
+    opik_cls = mocker.patch("opik.Opik")
+    dataset = opik_cls.return_value.get_or_create_dataset.return_value
+    dataset.get_items.return_value = [
+        {"id": "stale", "case_id": case.id, "checksum": "0" * 64},
+        _item("fresh", case),
+    ]
+
+    run_regression(case_id=case.id)
+
+    assert evaluate.call_args.kwargs["dataset_item_ids"] == ["fresh"]
+
+
+def test_run_regression_raises_when_a_case_has_no_fresh_item(mocker):
+    """The mirror of the empty-selection guard: a stale-only match must never run the WHOLE dataset.
+
+    ``evaluate(dataset_item_ids=None)`` bills every item, so an unmatched case stops the run with the
+    sync command the operator needs.
+    """
+    case = _read_case(id="unsynced-case")
+    mocker.patch("evals.harness.regression.load_cases", return_value=[case])
+    evaluate = mocker.patch("opik.evaluation.evaluate")
+    opik_cls = mocker.patch("opik.Opik")
+    dataset = opik_cls.return_value.get_or_create_dataset.return_value
+    dataset.get_items.return_value = [{"id": "stale", "case_id": case.id, "checksum": "0" * 64}]
+
+    with pytest.raises(RegressionSelectionError, match=case.id):
+        run_regression(case_id=case.id)
+
+    evaluate.assert_not_called()
+
+
+def test_the_no_fresh_item_error_names_the_sync_command(mocker):
+    """A friendly stop tells the operator what to RUN, not just that something is missing."""
+    case = _read_case(id="unsynced-case")
+    mocker.patch("evals.harness.regression.load_cases", return_value=[case])
+    mocker.patch("opik.evaluation.evaluate")
+    opik_cls = mocker.patch("opik.Opik")
+    dataset = opik_cls.return_value.get_or_create_dataset.return_value
+    dataset.get_items.return_value = []
+
+    with pytest.raises(RegressionSelectionError, match=r"evals sync --regression"):
+        run_regression()
 
 
 def test_run_regression_raises_when_no_case_matches(mocker):
@@ -428,10 +484,7 @@ def test_run_regression_excludes_skip_guarded_cases(mocker):
     evaluate = mocker.patch("opik.evaluation.evaluate")
     opik_cls = mocker.patch("opik.Opik")
     dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [
-        {"id": "item-1", "case_id": "runs"},
-        {"id": "item-2", "case_id": "skipped"},
-    ]
+    dataset.get_items.return_value = [_item("item-1", runnable), _item("item-2", skipped)]
 
     run_regression()
 

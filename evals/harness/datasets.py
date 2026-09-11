@@ -14,11 +14,17 @@ natural-language ``assertion``, which an LLM judge grades — the contrast ADR-0
 surfaces, while :func:`sync_regression_dataset` writes the dataset ALONE so the money-costing gate
 run never depends on the Test Suite API being reachable.
 
-The ``checksum`` is the item's version marker. Opik dedupes an ``insert`` by CONTENT hash, so a task
-whose folder is unchanged re-syncs to the same item, while an EDITED task mints a new item beside the
-old one (Opik never deletes the stale one). A Benchmark Job therefore selects the item whose checksum
-matches what is on disk right now (``evals.harness.benchmark``) — without it, one ``--task`` run
-would evaluate every historical version of that task.
+The ``checksum`` is the item's version marker, and BOTH datasets carry one. Opik dedupes an ``insert``
+by CONTENT hash, so an unchanged task/case re-syncs to the same item, while an EDITED one mints a new
+item beside the old one (Opik never deletes the stale one). Each run therefore selects the item whose
+checksum matches what is declared right now — ``evals.harness.benchmark`` over :func:`task_checksum`,
+``evals.harness.regression`` over :func:`case_checksum` — and stops loudly when a selected task/case
+has no fresh item. Without that scoping, one re-synced case is graded once per historical version:
+double cost and duplicated rows on every gate run after an edit.
+
+Surface (b) is deliberately checksum-FREE: ``opik.run_tests`` takes no item filter and runs every item
+of the suite it is handed, so a ``checksum`` in the suite item would mint a second item and bill the
+judge twice rather than version anything.
 
 Dataset names are code constants, not settings (ADR-0017 §2) — a suite version is a property of the
 suite, not an operator knob. Both syncs are idempotent: ``get_or_create`` never duplicates the dataset
@@ -169,8 +175,12 @@ def regression_dataset_item(case: RegressionCase) -> dict[str, Any]:
     ``description`` is the one-sentence what-it-tests line, so an Experiment row reads as a case list
     rather than a column of ids; ``symptom`` rides along beside it so the row also says what the case
     exists to CATCH, both without a checkout. ``source_trace_id`` is the LIVE trace a MINED case came
-    from (``None`` for an invented one — never a placeholder). ``tags`` is copied into a fresh list so
-    the item never aliases the case's mutable field.
+    from (``None`` for an invented one — never a placeholder). ``checksum`` versions the item exactly
+    as the benchmark's does (see the module docstring): an EDITED case lands as a new item beside its
+    stale predecessor, and :func:`evals.harness.regression._selected_item_ids` runs only the one whose
+    checksum matches the case on disk — without it a re-synced case would be graded once per
+    historical version. ``tags`` is copied into a fresh list so the item never aliases the case's
+    mutable field.
     """
     return {
         "case_id": case.id,
@@ -179,26 +189,71 @@ def regression_dataset_item(case: RegressionCase) -> dict[str, Any]:
         "description": case.description,
         "symptom": case.symptom,
         "source_trace_id": case.source_trace_id,
+        "checksum": case_checksum(case),
     }
+
+
+def case_checksum(case: RegressionCase) -> str:
+    """sha256 over a Regression Case's stable content — the item's version marker (ADR-0022 §8).
+
+    The regression analogue of :func:`task_checksum`: a Benchmark Task's content is a folder, a case's
+    content is its declaration, so this hashes the fields that define what the case ASKS and how it is
+    JUDGED — ``id`` / ``difficulty`` / ``tags`` / ``symptom`` / ``assertion`` / ``description`` /
+    ``prompt``. Every field is ``\0``-terminated so ``description="ab", symptom=""`` cannot collide
+    with ``description="a", symptom="b"``, and the variable-length ``tags`` are preceded by their
+    COUNT so a tag list cannot shift the fields behind it into another case's digest. Tags keep
+    declaration order (a reordering IS an edit of the item's content, which is what Opik dedupes on).
+
+    Deliberately NOT hashed: the ``fixture`` callable and the other run knobs (a function has no
+    stable hash across processes — ``repr`` carries a memory address, so hashing it would mint a new
+    item on every sync), and ``source_trace_id``. A case whose provenance alone changes therefore
+    keeps its checksum while minting a second item; selecting the FIRST match keeps that pair from
+    billing twice (:func:`evals.harness.regression._selected_item_ids`).
+    """
+    digest = hashlib.sha256()
+    parts: tuple[str, ...] = (
+        case.id,
+        case.difficulty,
+        str(len(case.tags)),
+        *case.tags,
+        case.symptom,
+        case.assertion,
+        case.description,
+        case.prompt,
+    )
+    for part in parts:
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def regression_suite_item(case: RegressionCase) -> dict[str, Any]:
     """The Opik Test Suite item for one case: the run keys plus its ONE assertion (§8).
 
     ``data`` is what the suite task fn is handed (the prompt it drives the agent with, the case id it
-    resolves the case by, the tier it is sliced on, and the description a human reads the item by);
-    ``assertions`` is the case's natural-language quality bar. The bar is a rubric, not judge-visible
-    input — it states what "good" looks like WITHOUT naming the expected value, so a judge reading
-    ``input``/``output`` cannot cheat off it. The description is safe to carry here for the same
-    reason the prompt is not the whole story: ``evals.harness.test_suite.suite_task_fn`` rebuilds
-    ``input`` as the PROMPT alone, so nothing else in ``data`` ever reaches the judge.
+    resolves the case by, and the tier it is sliced on); ``assertions`` is the case's natural-language
+    quality bar. The bar is a rubric, not judge-visible input — it states what "good" looks like
+    WITHOUT naming the expected value, so a judge reading ``input``/``output`` cannot cheat off it.
+    Carrying anything extra is safe for the same reason the prompt is not the whole story:
+    ``evals.harness.test_suite.suite_task_fn`` rebuilds ``input`` as the PROMPT alone, so nothing else
+    ever reaches the judge.
+
+    The ``description`` rides at ITEM level, never inside ``data``: opik 2.2.36 builds the suite's
+    dataset item as ``DatasetItem(description=..., **item["data"])``, so a ``description`` key in
+    ``data`` is a hard ``TypeError`` ("got multiple values for keyword argument") that takes the whole
+    ``python -m evals sync --regression`` down with it. Item level is where Opik reserves the key
+    anyway, so the line a human reads the item by still shows up in the UI.
+
+    Deliberately NOT carried: the ``checksum`` the dataset item is versioned by. ``opik.run_tests``
+    takes no item filter and runs every item of the suite it is handed, so a checksum here would mint
+    a second item and bill the judge twice instead of versioning anything.
     """
     return {
+        "description": case.description,
         "data": {
             "prompt": case.prompt,
             "case_id": case.id,
             "difficulty": case.difficulty,
-            "description": case.description,
         },
         "assertions": [case.assertion],
     }

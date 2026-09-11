@@ -68,7 +68,12 @@ GATE_EXPERIMENT_NAME = "decode-regression-gate"
 
 
 class RegressionSelectionError(Exception):
-    """No regression case matched the ``--case`` filter — a loud, friendly stop."""
+    """Nothing safe to run: no case matched the filters, or a matched case has no fresh item.
+
+    Both halves are the same loud, friendly stop as the benchmark's
+    :class:`~evals.harness.benchmark.BenchmarkSelectionError` — an empty selection would otherwise
+    become ``dataset_item_ids=None``, i.e. a silent paid run over every item in the dataset.
+    """
 
 
 class CaseScopedMetric(BaseMetric):
@@ -286,11 +291,14 @@ def run_regression(
 
     Loads every case, applies the optional ``--case`` / ``--difficulty`` filters, upserts the
     selection into ``decode-regression-v2`` (the dataset ALONE — a billed gate run never depends on
-    the Test Suite API), and calls ``evaluate`` scoped (via ``dataset_item_ids``) to just those items
-    with the case-scoped metrics. ``experiment_scoring_functions=[mean_per_metric]`` writes one mean
-    per metric onto the Experiment row, so the run's aggregate is readable without re-deriving it.
-    Runs single-threaded — the ``bash`` executor seam is process-global. Raises
-    :class:`RegressionSelectionError` when nothing matches.
+    the Test Suite API), and calls ``evaluate`` scoped (via ``dataset_item_ids``) to the items whose
+    ``checksum`` matches the cases declared on disk, with the case-scoped metrics. Opik never deletes a
+    superseded item, so without that scoping an EDITED case would be graded once per historical
+    version — double cost and duplicated rows. ``experiment_scoring_functions=[mean_per_metric]``
+    writes one mean per metric onto the Experiment row, so the run's aggregate is readable without
+    re-deriving it. Runs single-threaded — the ``bash`` executor seam is process-global. Raises
+    :class:`RegressionSelectionError` when the filters match no runnable case OR when a matched case
+    has no fresh dataset item (``dataset_item_ids=None`` would run the WHOLE dataset).
 
     ``experiment_name`` defaults to :func:`scoped_name` over the filters — one STABLE name per SLICE
     (``decode-regression-gate`` for the whole suite, ``decode-regression-gate-hard`` for a tier), so
@@ -301,7 +309,7 @@ def run_regression(
     from opik.evaluation import evaluate
 
     from evals.harness.benchmark import evaluate_project_name
-    from evals.harness.datasets import sync_regression_dataset
+    from evals.harness.datasets import case_checksum, sync_regression_dataset
 
     all_cases = load_cases()
     selected = runnable_cases(select_cases(all_cases, case_id=case_id, difficulty=difficulty))
@@ -313,7 +321,15 @@ def run_regression(
 
     client = client or opik.Opik()
     dataset = sync_regression_dataset(selected, client=client)
-    item_ids = _selected_item_ids(dataset, {case.id for case in selected})
+    item_ids = _selected_item_ids(dataset, {case.id: case_checksum(case) for case in selected})
+    missing = {case.id for case in selected} - set(item_ids)
+    if missing:
+        # Never a silent WHOLE-dataset experiment: ``evaluate(dataset_item_ids=None)`` runs every
+        # item, so an empty/partial match must stop the run rather than quietly bill 22 cases.
+        raise RegressionSelectionError(
+            "the sync did not produce a matching dataset item for "
+            f"{sorted(missing)} in {dataset.name!r} — re-run `python -m evals sync --regression`."
+        )
 
     cases_by_id = {case.id: case for case in all_cases}
     task_fn = make_regression_task_fn(cases_by_id)
@@ -326,7 +342,7 @@ def run_regression(
         experiment_name=experiment_name
         or scoped_name(GATE_EXPERIMENT_NAME, case_id=case_id, difficulty=difficulty),
         project_name=evaluate_project_name(dataset),
-        dataset_item_ids=item_ids or None,
+        dataset_item_ids=list(item_ids.values()),
         task_threads=1,
     )
 
@@ -343,19 +359,26 @@ def scoped_name(base: str, *, case_id: str | None = None, difficulty: str | None
     return f"{base}-{slice_name}" if slice_name else base
 
 
-def _selected_item_ids(dataset: Any, selected_ids: set[str]) -> list[str]:
-    """The dataset item ids whose ``case_id`` is in ``selected_ids`` — scopes ``evaluate`` to the run.
+def _selected_item_ids(dataset: Any, checksums: dict[str, str]) -> dict[str, str]:
+    """``{case_id: item id}`` for the items whose ``checksum`` matches the case declared on disk.
 
-    Reads the just-synced dataset's items and keeps those the filter selected, so a run over the shared
-    ``decode-regression-v2`` dataset executes only the chosen cases. An item missing an ``id`` (an
-    unexpected Opik shape) is skipped rather than crashing the run.
+    The mirror of :func:`evals.harness.benchmark._selected_item_ids`, and for the same reason: Opik's
+    ``insert`` dedupes by content hash but never deletes, so an EDITED case leaves its stale item in
+    ``decode-regression-v2`` forever. Matching on ``case_id`` ALONE would hand ``evaluate`` both ids
+    and grade that case twice — double cost, duplicated rows. Matching on ``(case_id, checksum)``
+    selects the current version and simply never selects a stale one (it stays in the dataset as
+    history). ONE id per case (the first match), which also keeps the two items a provenance-only edit
+    mints from billing twice; an item missing an ``id`` (an unexpected Opik shape) is skipped, and a
+    case with no matching item is absent — :func:`run_regression` turns that into a loud stop.
     """
-    items = dataset.get_items()
-    return [
-        item["id"]
-        for item in items
-        if item.get("case_id") in selected_ids and item.get("id") is not None
-    ]
+    selected: dict[str, str] = {}
+    for item in dataset.get_items():
+        case_id = item.get("case_id")
+        if case_id in selected or item.get("id") is None:
+            continue
+        if checksums.get(case_id) == item.get("checksum"):
+            selected[case_id] = item["id"]
+    return selected
 
 
 def _scoring_metrics(cases: list[RegressionCase]) -> list[BaseMetric]:
