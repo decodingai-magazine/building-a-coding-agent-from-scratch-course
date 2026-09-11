@@ -35,7 +35,7 @@ self-containment, the bootstrap idempotency, the task verifiers or the trace fix
       `evals.harness.verifier.grade_checkout` instead of re-implementing it; `_read_reward` deleted;
       the edge-case suites (`test_verifier_edge_cases_{easy,medium,hard}.py`) still pass.
 - [x] Tester re-runs full QA suite and PASSES (including the new regression test for Blocker 1).
-- [ ] PA re-runs acceptance review and ACCEPTS.
+- [x] PA re-runs acceptance review and ACCEPTS.
 - [ ] PR Reviewer re-runs and reports `NO BLOCKERS`.
 
 ## Blockers (detail)
@@ -463,3 +463,45 @@ $ uv run kitaru importer test --entrypoint parser --payload importers/fixtures/o
 **Notes**
 - Non-finite ONLY — no `[0, 1]` range check was added; clamping is a behavior change beyond the note.
 
+### [PA] 2026-09-11 17:10 — Acceptance Review, round 2 (feature evals-v2, PR #68 @ 41a74f5)
+
+**VERDICT: ACCEPT**
+
+Scope: did the rollup regress anything accepted in round 1 (`tasks/done/167-…md`), is the new env
+contract usable by a task author, is the ADR-0022 §3 note accurate, are the three skipped Nits
+acceptable product-wise. Keyless — read the diff of `41a74f5`, the README, the ADR, the 19 tasks'
+scripts; no eval launched.
+
+- **Env contract, task-author POV** (`evals/benchmark/tasks/README.md:131-135, 179-180`): one bullet
+  in the Verifier section names the exact allow-list (`PATH`/`HOME`/`TMPDIR`/`LANG`/`LC_*` +
+  `VERIFIER_DIR`), points at `verifier.py::host_script_env`, says it also binds `setup.sh` and
+  `solve.sh`, and ends in the rule an author needs ("read a value from the checkout, never from the
+  environment"); the audit checklist repeats it for `solve.sh`. Readable, and it matches the code.
+- **No task relies on a dropped var.** Grepped every `$VAR` in the 19 × 3 scripts: the only env
+  reference is `$VERIFIER_DIR` (19 hits); `TAB` in 012's `setup.sh` is a local. 015's `test.sh` sets
+  its own `API_KEY`/`DB_PASSWORD` before reading them. Read 013 and 018 end to end: 013 is stdlib
+  `sqlite3` + a hard-coded expected name, no env; 018's `setup.sh` sets its own `user.name`/
+  `user.email`/`commit.gpgsign` in the seed repo, `solve.sh` passes `-c` identity, `test.sh` only
+  reads history (`log`/`merge-base`/`show`/`rev-list`/`rev-parse`). The oracle gate
+  (`tests/unit/evals/benchmark/test_oracle_sanity.py`) is parametrised over every task the loader
+  discovers, both directions, and was green in the SWE's and Tester's `make ci` (3078 passed).
+- **ADR-0022 §3 note**: accurate on substance — allow-list matches `HOST_SCRIPT_ENV_ALLOW_LIST` +
+  `LC_` prefix; "the two repo-inspecting Verifiers" is right (only 015 and 018 shell out to `git`;
+  009/019 mention `.git` in comments/path filters only); `GIT_*`/`PYTHONPATH` dropped by omission.
+  One misquote fixed by PA in this review: the note quoted §3 as "bare bash", §3 says "bare
+  `python3`". §1's "`KITARU_TASK_ID` stripped" still holds with the list grown to four
+  (`trial.py::STRIPPED_ENV_VARS` records why each).
+- **Round-1 behaviours re-checked**: `--summary-json` still carries `kitaru_session_id: null`
+  (literal, pinned by test; ADR §10 note unchanged); `result.json` / experiment `git_sha` same value
+  through `decode.observability.git_sha`; the benchmark sandbox now holds no PAT for a local Seed
+  Repo — the ADR-0016 direction, no user-visible change; `read_reward` turning `nan`/`inf` into a
+  verifier ERROR is what §3 already promised ("non-numeric reward is a verifier error").
+- **Skipped Nits 2/5/6** — acceptable: none is user-visible (an optional-arg fallback with one
+  caller; a covered argv slice; a 7× in-memory re-fold on a cold path whose collapse would touch
+  the paid `evaluate()` contract without a way to verify it keylessly). Not worth a re-review cycle.
+
+Adjacent, not blocking (SWE-owned README, next touch): the Seed Repo section's `setup.sh` step (item
+2) and the Oracle section do not themselves mention the allow-listed env — an author writing
+`setup.sh` first learns of it from the Verifier bullet. One clause in each would close the gap.
+
+Hand off to the PR Reviewer for the `NO BLOCKERS` re-run.

@@ -280,7 +280,7 @@ changes a decision, and each is where a reader should look when the text and the
   them; the two repo-inspecting Verifiers only read history, which needs no git identity. The
   seeder's `setup.sh` and the Oracle's `solve.sh` run with the same env
   (`evals/harness/verifier.py::host_script_env`) — for those two it is §3's reproducibility claim
-  ("reproducible from the Trial Dir with a bare bash"), not containment.
+  ("reproducible from the Trial Dir with a bare `python3`"), not containment.
 - **§1 vs §4, the timeout/no-summary collision.** §4 makes a timeout an agent failure and "died
   before its summary" an Infra Error; a timed-out run usually has both. The shipped rule: **timeout
   wins** — the partial branch is graded and the trial is `agent_fail` with the reason naming both

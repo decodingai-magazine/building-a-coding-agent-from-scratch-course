@@ -592,3 +592,8 @@ Reviewed 373 files, ~+35.9k/-6.6k lines (PR #68, `feat/evals-v2` @ `f389cd5`). B
   optional `state`; strip `SANDBOX_GIT_TOKEN` from the trial child env; importer `_build_node` old
   spelling only; bootstrap `argv[5:]` / `Runner = Any`; seven scoring fns recompute `_total`;
   `[PA]` glossary row for `Signature`; no `test_verifier.py`; `os.killpg(process.pid)`).
+
+### [PA] 2026-09-11 17:10 — Acceptance Review, round 2
+
+**VERDICT: ACCEPT** — after rollup 169 (`41a74f5`). Evidence in
+`tasks/done/169-pr-review-rollup-evals-v2.md` (`[PA] … round 2`). Hand off to the PR Reviewer.
