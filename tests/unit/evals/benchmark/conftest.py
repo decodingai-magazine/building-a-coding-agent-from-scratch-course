@@ -63,16 +63,33 @@ def seed_workspace(tmp_path: Path) -> SeedWorkspace:
 
 @pytest.fixture
 def grade_workspace(seed_workspace: SeedWorkspace) -> GradeWorkspace:
-    """Seed a task, write ``files`` into the workspace as the submitted answer, and grade it."""
+    """Seed a task, put the submitted answer in the workspace, and grade it.
 
-    def _grade(task_id: str, *, files: dict[str, str]) -> VerifierResult:
+    An answer is ``files`` (path -> content) and/or ``post_setup``, a bash snippet run in the
+    workspace — some tasks' deliverable is a git ACTION (018's revert), not a passive file, and a
+    ``git revert`` cannot be expressed as a file to drop in.
+    """
+
+    def _grade(
+        task_id: str, *, files: dict[str, str] | None = None, post_setup: str | None = None
+    ) -> VerifierResult:
         task = load_benchmark_task(BENCHMARK_TASKS_DIR / task_id)
         workspace = seed_workspace(task_id)
 
-        for name, content in files.items():
+        for name, content in (files or {}).items():
             target = workspace / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
+
+        if post_setup is not None:
+            acted = subprocess.run(
+                ["bash", "-c", post_setup],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert acted.returncode == 0, f"post_setup failed: {acted.stdout}{acted.stderr}"
 
         # LAST, exactly as ADR-0022 §3 grades: a test file the answer planted is overwritten here.
         shutil.copytree(task.tests_dir, workspace / TESTS_DIR_NAME, dirs_exist_ok=True)
