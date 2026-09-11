@@ -102,8 +102,8 @@ def benchmark(
     """Run the outcome benchmark as an Opik experiment (ADR-0017 §3,4,5,8).
 
     Each selected task runs the real agent in a fresh isolated Workspace ``--trials`` times, grades
-    each run with the hidden ``verify.sh`` oracle, and scores it with the code metrics (+ a single
-    task's G-Eval judges) under ``settings.eval_project_name``. The trial aggregates
+    each run with the hidden ``tests/test.sh`` Verifier, and scores it with the code metrics under
+    ``settings.eval_project_name``. The trial aggregates
     (pass@1 / pass@k / pass^k / flakiness + cost) are attached to the experiment and printed as a Rich
     summary table. Opik + the harness are imported lazily so ``--help`` never needs keys or a
     network (ADR-0017 §1).

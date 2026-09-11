@@ -7,7 +7,7 @@ Needs `OPIK_API_KEY` ([01 §2](01_install_and_usage.md#2-add-a-key)) plus your p
 | Track | Answers | Graded by | Run |
 |---|---|---|---|
 | Demo Skills | does it impress? | you | `/demo-N-...` in the REPL |
-| Benchmark | does it work? | hidden `verify.sh` oracles | `make eval-benchmark` |
+| Benchmark | does it work? | hidden `tests/test.sh` Verifiers | `make eval-benchmark` |
 | Regression probes | does it work the way we designed? | code metrics + threshold gate | `make eval-regression` |
 | Online eval | is live traffic still good? | an LLM judge over emitted traces | `python -m evals online` |
 
@@ -26,7 +26,7 @@ Six skills under `.decode/skills/demo-N-*/`, run as in [01 §4](01_install_and_u
 
 ## 2. Benchmark
 
-Each task runs the real agent in a fresh Workspace; a hidden `verify.sh` grades PASS/FAIL. One run = one Opik experiment.
+Each task runs the real agent in a fresh Workspace; a hidden `tests/test.sh` Verifier grades a reward in `[0, 1]`. One run = one Opik experiment.
 
 ```bash
 make eval-benchmark                                   # whole suite, docker sandbox, 1 trial

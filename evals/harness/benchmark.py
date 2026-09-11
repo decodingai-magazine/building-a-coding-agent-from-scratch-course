@@ -5,14 +5,14 @@ Two pieces sit on top of the sandbox lifecycle (:mod:`evals.harness.sandbox`) an
 
 * :func:`make_benchmark_task_fn` builds the sync Opik task fn — for one dataset item it runs the real
   agent in a fresh sandbox Workspace under a BYPASS gate, grades it with the hidden oracle, and
-  returns the flat payload the landed code metrics (:mod:`evals.harness.metrics`) and per-task judges
-  consume: ``output`` / ``tool_calls`` / ``steps`` / token counts / a ``verify`` result / ``max_steps``
+  returns the flat payload the landed code metrics (:mod:`evals.harness.metrics`) consume:
+  ``output`` / ``tool_calls`` / ``steps`` / token counts / a ``verify`` result / ``max_steps``
   / ``agent_error`` / ``infra_error``. The task fn NEVER raises: a crashed agent run grades as
   fail-with-reason (``agent_error``), and a sandbox that never came up — daemon down, bad creds —
   grades as fail-with-reason too (``infra_error``), because Opik's ``evaluate`` gives task fns no
   per-item isolation, so one raise would abort the whole experiment.
 * :func:`run_benchmark` loads + filters the tasks, upserts them into ``decode-benchmark-v1``, and
-  calls ``opik.evaluation.evaluate`` with the code metrics + (single-task) judges,
+  calls ``opik.evaluation.evaluate`` with the code metrics,
   ``experiment_config`` carrying the agent model, provider, git sha and sandbox, and
   ``project_name=settings.eval_project_name`` so eval runs never pollute live REPL tracing.
 
@@ -73,10 +73,9 @@ def _run_and_grade(task: BenchmarkTask, *, sandbox: str) -> dict[str, Any]:
     Wraps the WHOLE sandbox lifecycle (creation included), because Opik's ``evaluate`` runs task fns
     in a plain list comprehension with no per-item isolation — one raised task fn aborts the entire
     experiment. So a sandbox that never came up (docker daemon down, bad modal creds) is caught here
-    into ``infra_error``; the item then carries no verify result, which
-    :class:`~evals.harness.metrics.VerifyOracleMetric` grades ``0.0`` with a reason. A crashed AGENT
-    run (the sandbox was fine) is the narrower ``agent_error`` case, handled in
-    :func:`_run_in_sandbox` so the oracle still grades the Workspace.
+    into ``infra_error``; the item then carries no verify result at all. A crashed AGENT run (the
+    sandbox was fine) is the narrower ``agent_error`` case, handled in :func:`_run_in_sandbox` so the
+    Verifier still grades the Workspace.
     """
     try:
         return _run_in_sandbox(task, sandbox=sandbox)
@@ -106,7 +105,7 @@ def _run_in_sandbox(task: BenchmarkTask, *, sandbox: str) -> dict[str, Any]:
     with benchmark_sandbox(task, sandbox=sandbox) as run:
         try:
             record = run_agent_once_sync(
-                task.prompt,
+                task.instruction,
                 cwd=run.workspace,
                 gate_mode=PermissionMode.BYPASS,
                 max_requests=task.max_steps,
@@ -135,15 +134,15 @@ def _payload(
     agent_error: str | None,
     infra_error: str | None,
 ) -> dict[str, Any]:
-    """The flat output dict the landed metrics + judges read (ADR-0017 §4).
+    """The flat output dict the landed metrics read (ADR-0017 §4).
 
     ``tool_calls`` is de-dataclassed to plain ``{"name", "args"}`` dicts so the payload is
-    JSON-serializable for Opik storage; ``verify`` is the ``{"exit_code", "stdout"}`` shape
-    :class:`~evals.harness.metrics.VerifyOracleMetric` maps. Two distinct failure channels, both
-    absorbed by the metrics' ``**ignored_kwargs``: ``agent_error`` names a crashed agent run (the
-    oracle still ran); ``infra_error`` names a sandbox that never came up or could not be graded, in
-    which case ``verify.exit_code`` is ``None`` and the oracle metric grades ``0.0`` with a reason. A
-    ``None`` record degrades every run field to its empty default.
+    JSON-serializable for Opik storage; ``verify`` carries the Verifier's ``{"exit_code", "stdout"}``
+    (the reward metric that reads it lands with the trial runner, tasks 160-161). Two distinct failure
+    channels, both absorbed by the metrics' ``**ignored_kwargs``: ``agent_error`` names a crashed
+    agent run (the Verifier still ran); ``infra_error`` names a sandbox that never came up or could
+    not be graded, in which case ``verify.exit_code`` is ``None``. A ``None`` record degrades every
+    run field to its empty default.
     """
     tool_calls = (
         [{"name": call.name, "args": call.args} for call in record.tool_calls] if record else []
@@ -174,7 +173,7 @@ def run_benchmark(
 
     Loads every task, applies the ``--task`` / ``--difficulty`` filters, upserts the selection into
     ``decode-benchmark-v1``, and calls ``evaluate`` scoped (via ``dataset_item_ids``) to just those
-    items with the code metrics + single-task judges. ``trials`` rides Opik's own ``trial_count`` axis
+    items with the code metrics. ``trials`` rides Opik's own ``trial_count`` axis
     (``k`` runs per item); after the run, the trial aggregates (pass@1/pass@k/pass^k/flakiness + cost,
     :mod:`evals.harness.aggregates`) are attached to the experiment as trace feedback scores — the
     1.9.8 stand-in for the removed ``experiment_scoring_functions`` (ADR-0017 §8; task-107 log). A
@@ -187,6 +186,7 @@ def run_benchmark(
     from opik.evaluation import evaluate
 
     from evals.harness.datasets import sync_benchmark_dataset
+    from evals.harness.metrics import MaxStepsMetric
 
     if trials < 1:
         # Guard BEFORE evaluate: opik's evaluate(trial_count<1) range()-loops zero times and returns
@@ -210,7 +210,7 @@ def run_benchmark(
     result = evaluate(
         dataset=dataset,
         task=task_fn,
-        scoring_metrics=_scoring_metrics(selected),
+        scoring_metrics=[MaxStepsMetric()],
         experiment_config=experiment_config(sandbox),
         project_name=settings.eval_project_name,
         nb_samples=nb_samples,
@@ -266,24 +266,6 @@ def _selected_item_ids(dataset: Any, selected_ids: set[str]) -> list[str]:
         for item in items
         if item.get("task_id") in selected_ids and item.get("id") is not None
     ]
-
-
-def _scoring_metrics(tasks: list[BenchmarkTask]) -> list[Any]:
-    """The metric list for the run: the code oracles always, plus a single task's G-Eval judges.
-
-    ``evaluate`` applies one metric list to every item, so per-task judges are only sound when the run
-    targets exactly one task (``--task <id>``); a multi-task run uses the code metrics alone (a
-    task-15 judge grading task-1 output would be meaningless — ADR-0017 §7).
-    """
-    from evals.harness.judges import make_judge
-    from evals.harness.metrics import MaxStepsMetric, VerifyOracleMetric
-
-    metrics: list[Any] = [VerifyOracleMetric(), MaxStepsMetric()]
-    if len(tasks) == 1:
-        metrics += [
-            make_judge(spec.task_introduction, spec.evaluation_criteria) for spec in tasks[0].judges
-        ]
-    return metrics
 
 
 def experiment_config(sandbox: str) -> dict[str, Any]:

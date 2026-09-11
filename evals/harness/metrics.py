@@ -3,7 +3,7 @@
 Every metric here subclasses :class:`opik.evaluation.metrics.base_metric.BaseMetric` and returns a
 :class:`~opik.evaluation.metrics.score_result.ScoreResult` — a ``value`` in ``[0, 1]`` plus a
 human-readable ``reason``. They grade the mechanical, code-decidable facts of a run (which tool was
-used, whether the hidden oracle passed, how many steps, how big the diff); anything a machine cannot
+used, how many steps, how big the diff); anything a machine cannot
 score — quality, groundedness, minimal-diff judgement — is a G-Eval judge instead
 (``evals/harness/judges.py``).
 
@@ -187,36 +187,6 @@ class ToolNotCalledMetric(BaseMetric):
             name=self.name,
             value=0.0 if called else 1.0,
             reason=f"{self.tool_name!r} {'was' if called else 'was NOT'} called; tools used: {names}.",
-        )
-
-
-class VerifyOracleMetric(BaseMetric):
-    """Map the runner's recorded verify result to ``1.0`` (exit 0 = PASS) or ``0.0``.
-
-    The metric never RUNS anything — the task fn already ran ``verify.sh`` in the sandbox after the
-    agent finished (ADR-0017 §5) and recorded ``{"exit_code": ..., "stdout": ...}``. Here we only
-    map that recorded result. A missing / malformed ``verify`` mapping (no integer ``exit_code``)
-    scores a graceful ``0.0``.
-    """
-
-    def __init__(self, name: str | None = None) -> None:
-        super().__init__(name=name or "verify_oracle", track=False)
-
-    def score(self, verify: Any = None, **ignored_kwargs: Any) -> ScoreResult:
-        exit_code = verify.get("exit_code") if isinstance(verify, dict) else None
-        if not isinstance(exit_code, int) or isinstance(exit_code, bool):
-            return ScoreResult(
-                name=self.name,
-                value=0.0,
-                reason="No verify result recorded (missing or non-integer exit_code).",
-            )
-        stdout = str(verify.get("stdout", "")) if isinstance(verify, dict) else ""
-        passed = exit_code == 0
-        snippet = stdout.strip()[:200]
-        return ScoreResult(
-            name=self.name,
-            value=1.0 if passed else 0.0,
-            reason=f"verify.sh exit_code={exit_code} ({'PASS' if passed else 'FAIL'}). stdout: {snippet!r}",
         )
 
 

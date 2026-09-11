@@ -4,13 +4,13 @@ The benchmark runner drives decode's real ``SandboxExecutor`` seam. These fakes 
 zero infra: :class:`FakeExecutor` duck-types the executor methods the eval sandbox uses
 (``start`` / ``run`` / ``file_backend`` / ``aclose``) over an in-memory filesystem, and records an
 ordered ``ops`` log so a test can assert the seed → run → inject → verify → teardown sequence and,
-crucially, that the hidden ``verify.sh`` is ABSENT while the agent runs and present only at grade time.
+crucially, that the hidden ``tests/test.sh`` is ABSENT while the agent runs and present only at grade time.
 
 Installed exactly as the real backend is: a test patches ``decode.sandbox.select_executor`` to return
 a :class:`FakeExecutor`, so ``warm_executor`` wires it into the ``decode.tools.bash`` module seam and
 the agent's ``bash`` calls route straight to :meth:`FakeExecutor.run`. ``start`` mirrors the modal
-bootstrap — it loads the host Workspace tree into the in-memory fs — so seeded ``setup/`` files are
-visible from the first command while ``verify/`` is not.
+bootstrap — it loads the host Workspace tree into the in-memory fs — so seeded ``environment/``
+files are visible from the first command while ``tests/`` is not.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from typing import Any
 
 from decode.tools.exec import ExecResult
 
-# The hidden oracle's entrypoint (kept local so the fake needs no eval imports).
-_VERIFY_SCRIPT = "verify.sh"
+# The Verifier's entrypoint, relative to the Workspace (kept local: the fake needs no eval imports).
+_VERIFY_SCRIPT = "tests/test.sh"
 
 
 @dataclass
@@ -48,8 +48,8 @@ class FakeExecutor:
 
     ``ops`` records every seam call in order — ``("start", ...)``, ``("run", command,
     verify_present)``, ``("inject", rel)``, ``("aclose",)`` — so a test asserts the lifecycle order
-    and the verify-absent-during-run invariant. ``verify_result`` is the scripted
-    :class:`~decode.tools.exec.ExecResult` returned for ``bash verify.sh`` at grade time.
+    and the verifier-absent-during-run invariant. ``verify_result`` is the scripted
+    :class:`~decode.tools.exec.ExecResult` returned for the ``tests/test.sh`` run at grade time.
     """
 
     verify_result: ExecResult = field(
@@ -77,7 +77,7 @@ class FakeExecutor:
                 self.fs[path.relative_to(workspace).as_posix()] = path.read_bytes()
 
     async def run(self, command: str, *, cwd: Path, timeout_s: float) -> ExecResult:
-        """Record the command with a snapshot of whether ``verify.sh`` is present, then reply."""
+        """Record the command with a snapshot of whether ``tests/test.sh`` is present, then reply."""
         verify_present = _VERIFY_SCRIPT in self.fs
         self.ops.append(("run", command, verify_present))
         if _VERIFY_SCRIPT in command:

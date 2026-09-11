@@ -3,8 +3,8 @@
 No infra and no keys: the sandbox seam is the in-memory :class:`~support.fake_sandbox.FakeExecutor`
 (``install_fake``), the agent runs a scripted model (``install_model``), and ``opik.evaluation.evaluate``
 / ``opik.Opik`` are mocked. The tests cover the task-fn payload shape, the crashed-run ``agent_error``
-surfacing, the ``evaluate`` wiring (scoped dataset ids, code metrics + single-task judge,
-``experiment_config`` with model + git sha, single-threaded), and the selection filters.
+surfacing, the ``evaluate`` wiring (scoped dataset ids, code metrics, ``experiment_config`` with model
++ git sha, single-threaded), and the selection filters.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def test_task_fn_returns_the_metric_payload(greeting_task_dir: Path, install_fak
 
 
 def test_task_fn_records_a_failing_verify(greeting_task_dir: Path, install_fake, install_model):
-    """A non-zero ``verify.sh`` rides the payload as ``verify.exit_code`` so the oracle metric fails it."""
+    """A non-zero Verifier run rides the payload as ``verify.exit_code`` for the reward metric."""
     task = load_benchmark_task(greeting_task_dir)
     install_fake(FakeExecutor(verify_result=ExecResult("FAIL: nope\n", "", 1, timed_out=False)))
     install_model(bash_then_finish("true", "done"))
@@ -60,7 +60,7 @@ def test_task_fn_records_a_failing_verify(greeting_task_dir: Path, install_fake,
 def test_task_fn_surfaces_a_crashed_agent(greeting_task_dir: Path, install_fake, install_model):
     """A crashed agent run grades as fail-with-reason (``agent_error`` set), not silently empty.
 
-    The verify oracle still runs at grade time, so the item is graded rather than aborted — the
+    The Verifier still runs at grade time, so the item is graded rather than aborted — the
     task-103 QA gap closed at the evals layer (ADR-0017 §4).
     """
     task = load_benchmark_task(greeting_task_dir)
@@ -82,12 +82,10 @@ def test_task_fn_returns_a_graded_payload_when_the_sandbox_never_comes_up(
 
     The blocking QA-round-1 bug: Opik's ``evaluate`` runs task fns with no per-item isolation, so with
     ``task_threads=1`` a raised task fn aborts the ENTIRE experiment. ``make_benchmark_task_fn`` must
-    catch a sandbox-creation failure into ``infra_error`` and still return a payload the oracle grades
-    ``0`` — the analogue of the sandbox-level ``test_teardown_and_mode_restore_run_on_failure`` but at
+    catch a sandbox-creation failure into ``infra_error`` and still return a payload with no reward —
+    the analogue of the sandbox-level ``test_teardown_and_mode_restore_run_on_failure`` but at
     ``select_executor``/backend-``start`` raising (task 106).
     """
-    from evals.harness.metrics import VerifyOracleMetric
-
     task = load_benchmark_task(greeting_task_dir)
     fake = FakeExecutor(start_error="docker daemon unreachable")
     install_fake(fake)
@@ -100,17 +98,13 @@ def test_task_fn_returns_a_graded_payload_when_the_sandbox_never_comes_up(
     assert "docker daemon unreachable" in payload["infra_error"]
     assert payload["agent_error"] is None
     assert payload["verify"] == {"exit_code": None, "stdout": ""}
-    # The oracle metric grades the no-verify result 0.0 with a reason (never a crash).
-    score = VerifyOracleMetric().score(verify=payload["verify"])
-    assert score.value == 0.0
-    assert score.reason
     # Teardown ran and the process-global seam / mode were restored despite the failure.
     assert fake.closed
     assert settings.sandbox_mode == previous_mode
 
 
 def test_run_benchmark_wires_evaluate(mocker, greeting_task_dir: Path):
-    """``run_benchmark`` scopes ``evaluate`` to the selected item with the code metrics + judge + config."""
+    """``run_benchmark`` scopes ``evaluate`` to the selected item with the code metrics + config."""
     task = load_benchmark_task(greeting_task_dir)
     mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
     evaluate = mocker.patch("opik.evaluation.evaluate")
@@ -127,9 +121,7 @@ def test_run_benchmark_wires_evaluate(mocker, greeting_task_dir: Path):
     assert kwargs["dataset_item_ids"] == ["item-1"]
     assert kwargs["task_threads"] == 1  # the bash seam is process-global — no concurrent task fns
     metric_names = [type(metric).__name__ for metric in kwargs["scoring_metrics"]]
-    assert "VerifyOracleMetric" in metric_names
-    assert "MaxStepsMetric" in metric_names
-    assert any("GEval" in name for name in metric_names)  # greeting ships a 'tone' judge
+    assert metric_names == ["MaxStepsMetric"]  # the reward metric lands with the trial runner (161)
     config = kwargs["experiment_config"]
     assert config["agent_model"]
     assert config["git_sha"]
@@ -236,10 +228,10 @@ def test_run_benchmark_survives_an_aggregate_attach_failure(mocker, greeting_tas
     assert result is evaluate.return_value  # the run still returns cleanly
 
 
-def test_run_benchmark_multi_task_omits_per_task_judges(mocker, greeting_task_dir: Path):
-    """A run spanning >1 task uses code metrics only — a per-task judge can't grade another's output."""
+def test_run_benchmark_scopes_evaluate_to_every_selected_item(mocker, greeting_task_dir: Path):
+    """An unfiltered run evaluates every task's dataset item, not just the first."""
     task = load_benchmark_task(greeting_task_dir)
-    other = task.model_copy(update={"id": "002-other"})
+    other = task.model_copy(update={"task": task.task.model_copy(update={"name": "002-other"})})
     mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task, other])
     evaluate = mocker.patch("opik.evaluation.evaluate")
     opik_cls = mocker.patch("opik.Opik")
@@ -252,8 +244,6 @@ def test_run_benchmark_multi_task_omits_per_task_judges(mocker, greeting_task_di
     run_benchmark(sandbox="docker")
 
     _, kwargs = evaluate.call_args
-    metric_names = [type(metric).__name__ for metric in kwargs["scoring_metrics"]]
-    assert not any("GEval" in name for name in metric_names)
     assert set(kwargs["dataset_item_ids"]) == {"a", "b"}
 
 

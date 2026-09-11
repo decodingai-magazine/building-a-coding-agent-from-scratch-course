@@ -25,7 +25,6 @@ from evals.harness.metrics import (
     ToolCalledMetric,
     ToolNotCalledMetric,
     ToolNotSucceededMetric,
-    VerifyOracleMetric,
 )
 
 
@@ -56,7 +55,6 @@ def _assert_well_formed(result: ScoreResult) -> None:
     [
         ToolCalledMetric("read"),
         ToolNotCalledMetric("read"),
-        VerifyOracleMetric(),
         MaxStepsMetric(),
         DiffLinesMetric(max_lines=5),
         FileDiffLinesMetric(path="config.py", baseline="PORT = 8000\n", max_lines=2),
@@ -83,7 +81,6 @@ def test_metrics_never_install_the_opik_track_decorator(mocker) -> None:
 
     ToolCalledMetric("read")
     ToolNotCalledMetric("write")
-    VerifyOracleMetric()
     MaxStepsMetric()
     DiffLinesMetric(max_lines=5)
     FileDiffLinesMetric(path="config.py", baseline="PORT = 8000\n", max_lines=2)
@@ -149,34 +146,6 @@ def test_tool_not_called_missing_field_scores_one() -> None:
     result = ToolNotCalledMetric("read").score()
     _assert_well_formed(result)
     assert result.value == 1.0
-
-
-# --- VerifyOracleMetric ----------------------------------------------------------------------
-
-
-def test_verify_oracle_pass_on_exit_zero() -> None:
-    result = VerifyOracleMetric().score(verify={"exit_code": 0, "stdout": "PASS: all checks"})
-    _assert_well_formed(result)
-    assert result.value == 1.0
-    assert "PASS" in result.reason
-
-
-def test_verify_oracle_fail_on_nonzero_exit() -> None:
-    result = VerifyOracleMetric().score(verify={"exit_code": 1, "stdout": "FAIL: missing file"})
-    _assert_well_formed(result)
-    assert result.value == 0.0
-
-
-def test_verify_oracle_missing_field_is_graceful_zero() -> None:
-    result = VerifyOracleMetric().score()
-    _assert_well_formed(result)
-    assert result.value == 0.0
-
-
-def test_verify_oracle_malformed_field_is_graceful_zero() -> None:
-    result = VerifyOracleMetric().score(verify={"stdout": "no exit code here"})
-    _assert_well_formed(result)
-    assert result.value == 0.0
 
 
 # --- MaxStepsMetric --------------------------------------------------------------------------
