@@ -51,6 +51,7 @@ from typing import Any, Literal
 from pydantic import SecretStr
 
 from decode.config.settings import Settings, settings
+from decode.observability import git_sha as resolve_git_sha
 from evals.harness.seed import seed_task_repo
 from evals.harness.task_loader import BenchmarkTask
 from evals.harness.verifier import (
@@ -77,9 +78,16 @@ SIGINT_GRACE_S = 60.0
 SIGKILL_REAP_S = 10.0
 
 # Env vars a trial must NOT inherit: a Kitaru Worker Task id or replay id would make the child think
-# it is a replay (and hard-fail on recording), and an ambient SANDBOX_REPO would clone the wrong repo
-# over the Seed Repo the trial just built (ADR-0022 §1).
-STRIPPED_ENV_VARS: tuple[str, ...] = ("KITARU_TASK_ID", "SANDBOX_REPO", "KITARU_REPLAY_ID")
+# it is a replay (and hard-fail on recording), an ambient SANDBOX_REPO would clone the wrong repo
+# over the Seed Repo the trial just built (ADR-0022 §1), and SANDBOX_GIT_TOKEN would hand the model's
+# sandbox the operator's GitHub PAT for a Seed Repo that is a LOCAL PATH with nothing to authenticate
+# against (ADR-0016: the Worker holds only the credential it actually needs).
+STRIPPED_ENV_VARS: tuple[str, ...] = (
+    "KITARU_TASK_ID",
+    "SANDBOX_REPO",
+    "KITARU_REPLAY_ID",
+    "SANDBOX_GIT_TOKEN",
+)
 
 # The Trial Dir's fixed layout (ADR-0022 §7); ``home`` is the subprocess's throwaway Harness Home.
 SEED_DIR_NAME = "seed"
@@ -249,11 +257,13 @@ def child_env(
     NOT the ADR-0016 anti-pattern: that forbids pouring config into the sandbox WORKER; this is the
     harness handing its own child process its own config.
 
-    Three overrides and three removals make the child a trial rather than a normal run: the sandbox
-    mode is the trial's rung, tracing goes to the eval project (live tracing is never polluted) and
-    the headless runtime is on; a Kitaru Worker Task / replay id and an ambient ``SANDBOX_REPO``
-    would each make the child do something other than this trial. ``KITARU_AGENT_ID`` passes
-    through untouched — recording rides the Recording Seam exactly as it does for a user's run.
+    Three overrides and :data:`STRIPPED_ENV_VARS` make the child a trial rather than a normal run:
+    the sandbox mode is the trial's rung, tracing goes to the eval project (live tracing is never
+    polluted) and the headless runtime is on; a Kitaru Worker Task / replay id and an ambient
+    ``SANDBOX_REPO`` would each make the child do something other than this trial, and the
+    operator's ``SANDBOX_GIT_TOKEN`` has nothing to authenticate to against a local Seed Repo.
+    ``KITARU_AGENT_ID`` passes through untouched — recording rides the Recording Seam exactly as it
+    does for a user's run.
 
     ``workspace_dir`` PINS the child's Workspace, and is set LAST so it beats the exported setting.
     ``sandbox_workspace_dir`` defaults to the relative ``.decode/sandbox``, which each child already
@@ -290,17 +300,13 @@ def agent_info(*, sandbox: str, model: str | None) -> dict[str, Any]:
 
 
 def git_sha() -> str:
-    """The current commit sha, or ``"unknown"`` if git is unavailable (never crash a trial on it)."""
-    try:
-        completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return "unknown"
-    return completed.stdout.strip() if completed.returncode == 0 else "unknown"
+    """The launch checkout's commit sha, or ``"unknown"`` — decode's own helper, not a second one.
+
+    The no-arg spelling is what ``benchmark.py`` re-exports for ``regression.py``; the resolution
+    itself is :func:`decode.observability.git_sha` (cached per directory, timeout-bounded), so the
+    sha a ``result.json`` carries and the sha a trace's metadata carries can never drift apart.
+    """
+    return resolve_git_sha(str(Path.cwd()))
 
 
 def decode_version() -> str:
@@ -400,9 +406,13 @@ def _wait_with_timeout(process: subprocess.Popen[bytes], task: BenchmarkTask) ->
 
 
 def _signal_group(process: subprocess.Popen[bytes], sig: signal.Signals) -> None:
-    """Signal the child's whole process group, tolerating a child that just exited on its own."""
+    """Signal the child's whole process group, tolerating a child that just exited on its own.
+
+    The pid IS the pgid: the child was started with ``start_new_session=True``, so reading it back
+    through ``getpgid`` would only add a call that can race the reaped pid.
+    """
     with suppress(ProcessLookupError, PermissionError, OSError):
-        os.killpg(os.getpgid(process.pid), sig)
+        os.killpg(process.pid, sig)
 
 
 def _read_summary(path: Path) -> dict[str, Any] | None:

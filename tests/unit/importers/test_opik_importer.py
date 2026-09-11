@@ -110,6 +110,72 @@ def test_a_tool_span_whose_message_lost_its_name_degrades_to_none() -> None:
     assert tool_span_name(span) is None
 
 
+@pytest.mark.parametrize(
+    ("fixture", "span_name", "arguments", "result"),
+    [
+        # The CURRENT instrumentation spelling (live decode-prod, 2026-09).
+        ("denied_gate", "execute_tool glob", {"pattern": "*"}, "note.txt\nother.txt"),
+        # The OLDER spelling the Kitaru importer was written against (2026-08 sample).
+        ("long_run", "execute_tool bash", {"command": "pytest -q"}, "Exit code: 0."),
+    ],
+)
+def test_an_imported_tool_node_is_unwrapped_under_either_spelling(
+    fixture: str, span_name: str, arguments: dict[str, Any], result: str
+) -> None:
+    """``_build_node`` reads the payload through the ONE reader, so a current span imports unwrapped.
+
+    Before task 169 it unwrapped only ``tool_arguments`` / ``tool_response``, so a span recorded by
+    today's instrumentation landed in Kitaru with the ``gen_ai.tool.call.*`` envelope still on it.
+    """
+    from importers.opik_importer import _build_node
+
+    spans = [s for s in load(fixture)["spans"] if s["name"] == span_name]
+    span = next(s for s in spans if not tool_span_deferred(s))
+
+    node = _build_node(span, [], "workspace", span["trace_id"])
+
+    assert node.inputs == arguments
+    assert node.outputs == result
+
+
+def test_a_deferred_call_imports_with_its_deferral_evidence_intact() -> None:
+    """Unwrapping must not cost the node the ONE fact that makes it a denial (task 169).
+
+    A deferred span carries the arguments AND ``pydantic_ai.tool.deferral.name`` in the same
+    ``input`` dict, so unwrapping to the arguments alone would drop "this call never ran".
+    """
+    from importers.opik_importer import _build_node
+
+    span = next(
+        s
+        for s in load("denied_gate")["spans"]
+        if s["name"] == "execute_tool write" and tool_span_deferred(s)
+    )
+
+    node = _build_node(span, [], "workspace", span["trace_id"])
+
+    assert node.inputs == span["input"]
+    assert node.outputs is None
+
+
+def test_an_imported_tool_node_keeps_an_unrecognised_payload_whole() -> None:
+    """Neither spelling present — the raw dict rides, rather than being dropped."""
+    from importers.opik_importer import _build_node
+
+    span = {
+        "id": "s-1",
+        "name": "execute_tool glob",
+        "metadata": {"gen_ai.operation.name": "execute_tool", "logfire.msg": "running tool: glob"},
+        "input": {"something_else": 1},
+        "output": {"another": 2},
+    }
+
+    node = _build_node(span, [], "workspace", "t-1")
+
+    assert node.inputs == {"something_else": 1}
+    assert node.outputs == {"another": 2}
+
+
 def test_the_parser_reads_tool_semantics_through_the_same_reader() -> None:
     """ONE definition, two callers (task 163 AC3): ``parse`` and ``evals mine`` read it the same."""
     from kitaru.task.importer import NodeType

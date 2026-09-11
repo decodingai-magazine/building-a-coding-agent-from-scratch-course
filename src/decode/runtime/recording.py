@@ -179,24 +179,6 @@ def worker_session_failure(error: BaseException) -> RecordingUnavailableError:
     )
 
 
-def recorded_session_id(agent: object) -> str | None:
-    """The Kitaru Session id of a recorded run, if the adapter publishes one — today it does not.
-
-    ``KitaruAgent`` creates the Session LAZILY inside ``run`` and keeps it in its capability's
-    internal state; adapter 0.2.1 exposes no public accessor for it. So this is best-effort by
-    design: it reads only PUBLIC attributes (a private one would break silently on the next adapter
-    release, and read a value decode has no contract on), and returns ``None`` when there is none —
-    which is the normal answer. Nothing depends on it: the join between an Opik trace, a Kitaru
-    Session and a Session Branch is the decode session id (= Kitaru ``session_name``), and this
-    field only saves an operator one lookup when the adapter starts publishing it (ADR-0022 §10).
-    """
-    for name in ("kitaru_session_id", "session_id"):
-        value = getattr(agent, name, None)
-        if value is not None:
-            return str(value)
-    return None
-
-
 def one_line(error: BaseException) -> str:
     """``error`` as a single short line: the cause, never a multi-line HTML body or a traceback.
 

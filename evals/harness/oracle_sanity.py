@@ -23,6 +23,7 @@ from evals.harness.verifier import (
     VERIFIER_DIR_NAME,
     VerifierResult,
     grade_checkout,
+    host_script_env,
 )
 
 # Wall clock for ``solution/solve.sh`` (the Verifier's own cap is the task's ``verifier.timeout_sec``).
@@ -69,7 +70,11 @@ def run_verifier(task: BenchmarkTask, workspace: Path, *, with_solution: bool) -
 
 
 def _run_oracle(task: BenchmarkTask, workspace: Path) -> None:
-    """Apply the gold answer to a fresh seed; a broken Oracle is loud, never a silent reward 0."""
+    """Apply the gold answer to a fresh seed; a broken Oracle is loud, never a silent reward 0.
+
+    Under the Verifier's own allow-listed env (:func:`~evals.harness.verifier.host_script_env`): the
+    gate claims the Oracle earns 1 from a bare shell, so it must not read one operator's ``.env``.
+    """
     try:
         result = subprocess.run(
             ["bash", str(task.oracle_script)],
@@ -77,6 +82,7 @@ def _run_oracle(task: BenchmarkTask, workspace: Path) -> None:
             capture_output=True,
             text=True,
             timeout=ORACLE_TIMEOUT_S,
+            env=host_script_env(),
             check=False,
         )
     except subprocess.TimeoutExpired as exc:

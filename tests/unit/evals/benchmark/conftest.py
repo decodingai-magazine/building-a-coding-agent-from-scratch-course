@@ -4,9 +4,11 @@ The oracle gate (``test_oracle_sanity.py``) only ever drives the two extremes �
 ``solution/`` and an untouched seed. The edge-case suites need the middle: a workspace holding a
 *plausible but wrong* answer (must earn ``0``) or an *alternative-correct* one (must earn ``1``).
 :func:`grade_workspace` is that seam, and it reproduces grade time exactly as
-:func:`~evals.harness.oracle_sanity.run_verifier` defines it — seed, drop the answer in, overlay
-``tests/`` LAST, run ``bash tests/test.sh`` with ``VERIFIER_DIR`` set — with the Oracle step swapped
-for the caller's files.
+:func:`~evals.harness.oracle_sanity.run_verifier` defines it — by CALLING the same
+:func:`~evals.harness.verifier.grade_checkout` (overlay ``tests/`` LAST, empty ``$VERIFIER_DIR``,
+``bash tests/test.sh`` under an allow-listed env, one float in ``reward.txt``) with the Oracle step
+swapped for the caller's files. A hand copy of those steps would let the suites grade differently
+from the real tasks.
 
 Both fixtures return the same :class:`~evals.harness.oracle_sanity.VerifierResult` the gate asserts
 on, so a surprise is debuggable from stdout/stderr and a ``reward`` of ``None`` (a verifier ERROR)
@@ -15,26 +17,16 @@ can never be mistaken for a correctly-refused answer.
 
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from evals.harness.oracle_sanity import (
-    REWARD_FILE_NAME,
-    VERIFIER_DIR_NAME,
-    VerifierResult,
-)
+from evals.harness.oracle_sanity import VerifierResult
 from evals.harness.seed import seed_task_repo
-from evals.harness.task_loader import (
-    BENCHMARK_TASKS_DIR,
-    TESTS_DIR_NAME,
-    VERIFIER_SCRIPT_NAME,
-    load_benchmark_task,
-)
+from evals.harness.task_loader import BENCHMARK_TASKS_DIR, load_benchmark_task
+from evals.harness.verifier import grade_checkout
 
 # ``seed_workspace(task_id)`` -> the freshly seeded Seed Repo directory.
 SeedWorkspace = Callable[[str], Path]
@@ -91,40 +83,11 @@ def grade_workspace(seed_workspace: SeedWorkspace) -> GradeWorkspace:
             )
             assert acted.returncode == 0, f"post_setup failed: {acted.stdout}{acted.stderr}"
 
-        # LAST, exactly as ADR-0022 §3 grades: a test file the answer planted is overwritten here.
-        shutil.copytree(task.tests_dir, workspace / TESTS_DIR_NAME, dirs_exist_ok=True)
-
-        verifier_dir = workspace / VERIFIER_DIR_NAME
-        shutil.rmtree(verifier_dir, ignore_errors=True)
-        verifier_dir.mkdir(parents=True)
-        completed = subprocess.run(
-            ["bash", f"{TESTS_DIR_NAME}/{VERIFIER_SCRIPT_NAME}"],
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            timeout=task.verifier_timeout_sec,
-            env={**os.environ, "VERIFIER_DIR": str(verifier_dir)},
-            check=False,
-        )
-        return VerifierResult(
-            reward=_read_reward(verifier_dir),
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            timed_out=False,
-        )
+        # THE grade-time step both real graders drive — overlay, empty $VERIFIER_DIR, run, parse.
+        # A timeout comes back as ``timed_out`` here too, instead of escaping the fixture.
+        return grade_checkout(task, workspace)
 
     return _grade
-
-
-def _read_reward(verifier_dir: Path) -> float | None:
-    """The single float in ``$VERIFIER_DIR/reward.txt``; ``None`` if missing, empty or non-numeric."""
-    reward_path = verifier_dir / REWARD_FILE_NAME
-    if not reward_path.is_file():
-        return None
-    try:
-        return float(reward_path.read_text(encoding="utf-8", errors="replace").strip())
-    except ValueError:
-        return None
 
 
 @pytest.fixture

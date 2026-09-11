@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from evals.harness.task_loader import SETUP_SCRIPT_NAME, BenchmarkTask
+from evals.harness.verifier import host_script_env
 
 # Wall clock for a task's ``environment/setup.sh``.
 SETUP_TIMEOUT_S = 300.0
@@ -88,7 +89,11 @@ def _copy_environment(task: BenchmarkTask, dest: Path) -> None:
 
 
 def _run_setup_script(task: BenchmarkTask, dest: Path) -> None:
-    """Run the task's ``environment/setup.sh`` with ``dest`` as cwd; a non-zero exit is fatal."""
+    """Run the task's ``environment/setup.sh`` with ``dest`` as cwd; a non-zero exit is fatal.
+
+    The allow-listed host env (:func:`~evals.harness.verifier.host_script_env`), same as the
+    Verifier's: a seed that only reproduces on the laptop whose ``.env`` it read is not a Seed Repo.
+    """
     try:
         result = subprocess.run(
             ["bash", str(task.setup_script)],
@@ -96,6 +101,7 @@ def _run_setup_script(task: BenchmarkTask, dest: Path) -> None:
             capture_output=True,
             text=True,
             timeout=SETUP_TIMEOUT_S,
+            env=host_script_env(),
             check=False,
         )
     except subprocess.TimeoutExpired as exc:

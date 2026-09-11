@@ -40,6 +40,26 @@ def _git(dest: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def test_setup_sh_runs_with_the_allow_listed_host_env(tmp_path: Path, monkeypatch) -> None:
+    """A seed reads no operator secret: ``setup.sh`` gets the Verifier's allow-list, not ``.env``."""
+    monkeypatch.setenv("SECRET_SENTINEL", "sk-sentinel-do-not-leak")
+    task = load_benchmark_task(
+        write_task_dir(
+            tmp_path / "001-synthetic",
+            setup_script=(
+                f"#!/usr/bin/env bash\n# {CANARY_LINE}\nset -uo pipefail\n"
+                'printf "%s" "${SECRET_SENTINEL:-}" > sentinel.txt\n'
+                'printf "%s" "${PATH:-}" > path.txt\n'
+            ),
+        )
+    )
+
+    seed_task_repo(task, tmp_path / "seed")
+
+    assert (tmp_path / "seed" / "sentinel.txt").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "seed" / "path.txt").read_text(encoding="utf-8") != ""
+
+
 # --- the created branch -----------------------------------------------------------------------
 
 

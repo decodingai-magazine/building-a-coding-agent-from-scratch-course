@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import SecretStr
 from support.benchmark_tasks import CANARY_LINE, write_task_dir
 from support.fake_decode import FAKE_BRANCH, write_fake_decode
 
@@ -407,6 +408,25 @@ def test_trial_imports_nothing_from_the_sandbox_or_tool_packages() -> None:
     assert not [name for name in imported if name.startswith(("decode.sandbox", "decode.tools"))]
 
 
+def test_git_sha_delegates_to_the_products_one_rev_parse_helper(mocker) -> None:
+    """ONE ``git rev-parse HEAD`` helper in the repo (task 169): the trial stamps with decode's.
+
+    ``decode.observability.git_sha`` is cached per directory and timeout-bounded; the trial keeps
+    only the no-arg spelling ``benchmark.py`` / ``regression.py`` re-export.
+    """
+    resolve = mocker.patch.object(trial_module, "resolve_git_sha", return_value="c0ffee")
+
+    assert trial_module.git_sha() == "c0ffee"
+    resolve.assert_called_once_with(str(Path.cwd()))
+
+
+def test_the_trial_carries_no_second_rev_parse_implementation() -> None:
+    """The duplicate the delegation replaced must not creep back in beside it."""
+    source = Path(trial_module.__file__).read_text(encoding="utf-8")
+
+    assert "rev-parse" not in source
+
+
 # --------------------------------------------------------------------------- the child env
 
 
@@ -431,6 +451,21 @@ def test_child_env_applies_the_trial_overrides_and_removals() -> None:
     assert env["PATH"] == "/usr/bin"
     for stripped in ("KITARU_TASK_ID", "KITARU_REPLAY_ID", "SANDBOX_REPO"):
         assert stripped not in env
+
+
+def test_child_env_hands_the_sandbox_no_github_pat(tmp_path: Path) -> None:
+    """A Seed Repo is a local path — a benchmark sandbox has nothing to authenticate to (task 169).
+
+    ``_settings_env`` exports every explicitly-set field, so an operator whose ``.env`` carries
+    ``SANDBOX_GIT_TOKEN`` would otherwise hand the model's sandbox their GitHub PAT on every trial
+    (ADR-0016: the Worker holds only the credential the user deliberately gives it).
+    """
+    config = Settings(_env_file=None, sandbox_git_token=SecretStr("ghp-operator-pat"))
+
+    env = child_env(sandbox="docker", env={"SANDBOX_GIT_TOKEN": "ghp-ambient"}, config=config)
+
+    assert "SANDBOX_GIT_TOKEN" not in env
+    assert "ghp-operator-pat" not in "".join(env.values())
 
 
 def test_child_env_pins_the_workspace_under_the_trials_own_home(tmp_path: Path) -> None:

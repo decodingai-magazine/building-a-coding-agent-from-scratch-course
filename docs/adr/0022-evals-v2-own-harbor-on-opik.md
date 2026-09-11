@@ -272,6 +272,15 @@ changes a decision, and each is where a reader should look when the text and the
   `metadata` (`observability/tracing.py::OPIK_METADATA_PREFIX`), which is what `evals mine` filters
   on. `kitaru_session_id` is omitted rather than `None`: adapter 0.2.1 exposes no public accessor for
   it, so it is absent in practice, exactly as §10 allows ("the join never depends on it").
+- **§3, the grade step's trust boundary.** A Verifier runs the AGENT'S OWN code on the host
+  (`python3 -m unittest` over agent-edited modules), so it gets an ALLOW-LISTED environment —
+  `PATH`, `HOME`, `TMPDIR`, `LANG`/`LC_*`, plus `VERIFIER_DIR` — never the parent's `os.environ`,
+  which in the benchmark process carries the operator's keys (opik imports litellm, whose
+  `load_dotenv()` copies the repo `.env` in). `PYTHONPATH`/`PYTHONHOME` and `GIT_*` are dropped with
+  them; the two repo-inspecting Verifiers only read history, which needs no git identity. The
+  seeder's `setup.sh` and the Oracle's `solve.sh` run with the same env
+  (`evals/harness/verifier.py::host_script_env`) — for those two it is §3's reproducibility claim
+  ("reproducible from the Trial Dir with a bare bash"), not containment.
 - **§1 vs §4, the timeout/no-summary collision.** §4 makes a timeout an agent failure and "died
   before its summary" an Infra Error; a timed-out run usually has both. The shipped rule: **timeout
   wins** — the partial branch is graded and the trial is `agent_fail` with the reason naming both

@@ -211,6 +211,11 @@ def _bounded_metadata(span: dict[str, Any]) -> dict[str, Any]:
     return {k: metadata[k] for k in keep if metadata.get(k) is not None}
 
 
+def _first_not_none(unwrapped: Any, raw: Any) -> Any:
+    """The unwrapped payload when a reader recognised the envelope, else what the span carried."""
+    return raw if unwrapped is None else unwrapped
+
+
 def _build_node(
     span: dict[str, Any],
     children: list[ImportedNode],
@@ -222,10 +227,13 @@ def _build_node(
     model = span.get("model") if isinstance(span.get("model"), str) else None
     inputs = span.get("input")
     outputs = span.get("output")
-    if node_type is NodeType.TOOL_CALL and isinstance(inputs, dict):
-        inputs = inputs.get("tool_arguments", inputs)
-    if node_type is NodeType.TOOL_CALL and isinstance(outputs, dict):
-        outputs = outputs.get("tool_response", outputs)
+    if node_type is NodeType.TOOL_CALL and not tool_span_deferred(span):
+        # Through the ONE reader, so an imported node is unwrapped under EITHER instrumentation
+        # spelling; an envelope neither reader recognises rides whole rather than being dropped.
+        # A DEFERRED span keeps its input whole: the arguments and the ``ApprovalRequired`` marker
+        # share that dict, and unwrapping would cost the node the fact that the call never ran.
+        inputs = _first_not_none(tool_span_arguments(span), inputs)
+        outputs = _first_not_none(tool_span_result(span), outputs)
     return ImportedNode(
         external_id=f"{instance}/{_enc(trace_id)}/{_enc(str(span['id']))}",
         trace_id=trace_id,

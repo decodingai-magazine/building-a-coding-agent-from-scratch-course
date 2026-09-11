@@ -128,6 +128,11 @@ and runs the Verifier there. The agent's own edits to any test file are therefor
 - It MUST write **`$VERIFIER_DIR/reward.txt`** containing exactly one float in `[0, 1]`. The **exit
   code is informational** — only `reward.txt` grades. Write it on every path (don't `set -e` your way
   past it). An absent, empty or non-numeric reward is a verifier ERROR, not a zero.
+- Its **environment is an allow-list**, not the operator's: `PATH`, `HOME`, `TMPDIR`, `LANG`/`LC_*`
+  and `VERIFIER_DIR` — nothing else (`evals/harness/verifier.py::host_script_env`). A Verifier runs
+  the agent's own code on the host, so it gets no key, no token and no `PYTHONPATH`; the same env is
+  what `environment/setup.sh` and `solution/solve.sh` run with. Read a value from the checkout, never
+  from the environment.
 - It may use only `bash`, `python3` + the standard library (including `sqlite3`), and `git` — no
   `pytest`, no third-party imports, no network — so a reward is reproducible from a Trial Dir with a
   bare `python3`.
@@ -171,7 +176,8 @@ Every task passes this before it lands (ADR-0022 §2).
       tolerant where content is the deliverable; runs hidden tests from `tests/`; honours
       `[verifier.tests]`; tolerates the Hand-back capture commit; oracle → 1 and nop → 0 proven by
       `make ci`; F2P tests fail on base (the nop direction proves it).
-- [ ] **solution/solve.sh** — fresh seed → reward 1; no network.
+- [ ] **solution/solve.sh** — fresh seed → reward 1; no network; reads no env var beyond the
+      allow-list above (it runs with the Verifier's environment).
 - [ ] **SWE-bench shape (where a test file exists)** — the seed's test file is `unittest.TestCase`
       style; the hidden copy under `tests/` is the graded one; node ids are
       `<module>.<Class>.<method>`; hidden tests are applied AFTER the agent's changes.

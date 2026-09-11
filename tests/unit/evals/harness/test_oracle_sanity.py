@@ -43,6 +43,20 @@ def test_verifier_dir_is_an_existing_empty_dir(tmp_path: Path) -> None:
     assert listing[0] == str(tmp_path / "workspace" / ".verifier")  # empty dir, absolute path
 
 
+def test_the_oracle_runs_with_the_allow_listed_host_env(tmp_path: Path, monkeypatch) -> None:
+    """The gate claims the Oracle earns 1 from a bare shell — so ``solve.sh`` gets no operator env."""
+    monkeypatch.setenv("SECRET_SENTINEL", "sk-sentinel-do-not-leak")
+    task = _task(
+        tmp_path,
+        solve_script=_script('printf "%s" "${SECRET_SENTINEL:-}" > sentinel.txt'),
+        test_script=_script('printf "1\\n" > "$VERIFIER_DIR/reward.txt"'),
+    )
+
+    run_verifier(task, tmp_path / "workspace", with_solution=True)
+
+    assert (tmp_path / "workspace" / "sentinel.txt").read_text(encoding="utf-8") == ""
+
+
 def test_hidden_tests_are_overlaid_last(tmp_path: Path) -> None:
     """An agent that plants its own ``tests/test.sh`` is inert: the hidden copy overwrites it."""
     task = _task(

@@ -572,3 +572,23 @@ is root-caused at one choke point with a regression test; `git ls-remote --heads
 PA-owned edits made in this review: task 168 re-groomed; ADR-0022 appendix "§8 shortfall" refreshed to
 the current numbers and task 168; one glossary phrase (Benchmark Task calibration) aligned with the
 appendix. Hand off to the PR Reviewer.
+
+### [PR Reviewer] 2026-09-11 12:27 — Review
+
+**VERDICT: BLOCKERS**
+
+Reviewed 373 files, ~+35.9k/-6.6k lines (PR #68, `feat/evals-v2` @ `f389cd5`). Blockers: 3; Nits: 9.
+
+- BLOCKERS: filed rollup task `tasks/169-pr-review-rollup-evals-v2.md`. Pipeline re-runs from the
+  inner loop on the rollup; re-invoke me after PA ACCEPT + re-push.
+  1. [Standards — security] `evals/harness/verifier.py` runs the Verifier — which executes
+     agent-written code host-side — with the harness's full `os.environ` (incl. the `.env` litellm's
+     `load_dotenv()` copies in). Scrub to an allow-list + regression test.
+  2. [Clean code] `git rev-parse HEAD` helper duplicated: `evals/harness/trial.py::git_sha` vs the
+     new `decode.observability.git_sha`.
+  3. [Clean code] `tests/unit/evals/benchmark/conftest.py::grade_workspace` re-implements
+     `verifier.grade_checkout` + `read_reward`.
+- Nits are listed in the rollup (recording `recorded_session_id` speculative accessor; `_run_task`
+  optional `state`; strip `SANDBOX_GIT_TOKEN` from the trial child env; importer `_build_node` old
+  spelling only; bootstrap `argv[5:]` / `Runner = Any`; seven scoring fns recompute `_total`;
+  `[PA]` glossary row for `Signature`; no `test_verifier.py`; `os.killpg(process.pid)`).

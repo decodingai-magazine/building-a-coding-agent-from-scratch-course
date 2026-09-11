@@ -48,7 +48,7 @@ from decode.entities import events
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
-from decode.runtime.recording import one_line, recorded_session_id, wrap_for_recording
+from decode.runtime.recording import one_line, wrap_for_recording
 from decode.runtime.summary import ExitReason, build_summary, summarize_usage, write_summary
 from decode.tools.askuser import deny_user_question_resolver
 from decode.tools.bash import close_executor, warm_executor
@@ -204,7 +204,6 @@ class _RunState:
     """
 
     messages: list[ModelMessage] = field(default_factory=list)
-    kitaru_session_id: str | None = None
     output: str = ""
     exit_reason: ExitReason = "error"
     error: str | None = None
@@ -223,8 +222,8 @@ async def _run_task(
     """Run ONE task to completion through the bypass agent and return its final text (ADR-0019 §1).
 
     ``state`` is the caller's summary scratchpad (ADR-0022 §1): the captured message history, the
-    Kitaru Session id when the adapter exposes one. It is filled in as the run goes, so the
-    ``finally`` upstairs can report a run that never returned.
+    output, how the run ended. It is filled in as the run goes, so the ``finally`` upstairs can
+    report a run that never returned.
     """
     state = state if state is not None else _RunState()
     tool_scope = await _prepare_headless_tool_scope(repo, local)
@@ -240,7 +239,6 @@ async def _run_task(
     # stays exactly the agent's answer (ADR-0019 §1).
     if recording_notice is not None:
         click.echo(recording_notice, err=True)
-    state.kitaru_session_id = recorded_session_id(agent)
     deps = _build_headless_deps(tool_scope, model)
     # One root span per run, keyed on the run's session id (a nullcontext when tracing is off), plus
     # the metadata an eval filters and joins traces on (ADR-0022 §10).
@@ -248,7 +246,7 @@ async def _run_task(
         RUN_SPAN_NAME,
         thread_id=session_id,
         input=task,
-        metadata=observability.trace_metadata(model, kitaru_session_id=state.kitaru_session_id),
+        metadata=observability.trace_metadata(model),
     ) as span:
         # ``capture_run_messages`` is the only source that survives a raising run: the result object
         # does not exist when the request ceiling fires or the provider errors, but the messages the
@@ -343,7 +341,9 @@ def run_headless_task(
                 summary_json,
                 build_summary(
                     session_id=session_id,
-                    kitaru_session_id=state.kitaru_session_id,
+                    # Always null: the adapter publishes no public Session accessor, and the
+                    # join is the decode session id = Kitaru ``session_name`` (ADR-0022 §10).
+                    kitaru_session_id=None,
                     exit_reason=state.exit_reason,
                     error=state.error,
                     usage=summarize_usage(state.messages),
