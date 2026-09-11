@@ -39,6 +39,11 @@ CASE = RegressionCase(
         FileDiffLinesMetric(path=_CONFIG, baseline=_CONFIG_BODY, max_lines=2),
         MaxStepsMetric(),
     ],
-    max_requests=6,
+    # Calibrated from observation (task 167), not guessed: three solo runs against the default
+    # model spent 7 / 6 / 5 legs (Opik experiments 01a09015-6c72-7f67-8612-09114ad16b04,
+    # 01a09016-be55-782a-b0af-7fd01dbb4e00, 01a09017-54d2-731b-a743-d2fd1fb8d58e), so the budget
+    # is max + 1 — headroom for the spread, two legs over the easy tier's usual 6 because the model
+    # reliably re-reads (``glob`` / ``read``) around the one ``edit`` the case grades.
+    max_requests=8,
     tags=["edit-precision", "tool-discipline"],
 )

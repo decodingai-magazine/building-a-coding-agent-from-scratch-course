@@ -64,6 +64,12 @@ CASE = RegressionCase(
         ),
         MaxStepsMetric(),
     ],
+    # NOT raised (task 167, rule 3). Three solo runs against the default model all hit a 12-leg
+    # observation ceiling (Opik experiments 01a0901a-cc6d-7a78-8d88-f96609bb1eb4,
+    # 01a0901b-b82b-7664-87ec-f249a0139c99, 01a0901c-8baa-798b-ac93-0ebd7c28b06c): the skill is
+    # dispatched within the first three legs, then the agent burns the rest hunting with ``bash``
+    # for the changelog the prompt names and the fixture never seeds. A fixture defect (task
+    # 168), not a stale budget, so the cap stays where it is.
     max_requests=6,
     tags=["skill-dispatch", "progressive-disclosure"],
 )

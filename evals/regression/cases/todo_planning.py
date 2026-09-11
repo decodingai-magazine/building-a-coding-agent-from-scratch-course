@@ -64,6 +64,12 @@ CASE = RegressionCase(
         ),
         MaxStepsMetric(),
     ],
+    # NOT raised (task 167, rule 3). Three solo runs against the default model all hit a 12-leg
+    # observation ceiling (Opik experiments 01a09018-02fe-7845-99ea-68fb9f9077f9,
+    # 01a09018-e538-7761-aaf6-f126f1736a80, 01a09019-ceb2-7861-b399-e87e7d136fea): ``todo_write``
+    # fires by leg 4-5 and both behavior metrics score 1.0, but the prompt then bills the agent
+    # for IMPLEMENTING all three changes. The case grades planning and pays for execution — a
+    # case-design defect (task 168), not a stale budget, so the cap stays where it is.
     max_requests=6,
     tags=["planning", "todo-write"],
 )

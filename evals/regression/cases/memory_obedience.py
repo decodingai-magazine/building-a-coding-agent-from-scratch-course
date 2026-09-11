@@ -71,6 +71,15 @@ CASE = RegressionCase(
         ),
         MaxStepsMetric(),
     ],
-    max_requests=5,
+    # Calibrated from observation (task 167), not guessed: three solo runs against the default
+    # model spent 7 / 7 / 9 legs (Opik experiments 01a09021-336b-7ea2-81ae-e9fec07a38c9,
+    # 01a09021-e557-7da0-81d5-adbf4f291db3, 01a09022-77ca-71dd-8bcb-a03920a599b1), so the budget
+    # is max + 1. Those legs are real work: one ``write`` plus the model's own todo bookkeeping
+    # and a verification ``bash`` — no thrash to hide behind the cap. CAVEAT: the gate run that
+    # followed (01a09043-1a9c-77f7-a22c-0e6ad9fdcc87) reported 11 = cap + 1, i.e. a CENSORED run whose
+    # true cost is unknown, so the full observed spread is 7 / 7 / 8 / 9 / >=10 and this may not be a
+    # clean calibration case after all. Not re-raised off one censored sample (that is the guesswork
+    # the three-run rule forbids) — see the late-signal note in task 168.
+    max_requests=10,
     tags=["memory-obedience", "instruction-following"],
 )

@@ -32,7 +32,7 @@ One case is a `RegressionCase` (`evals/regression/case.py`) — pure data, no co
 | `context` | Optional `Callable[[Path], ContextManager]` — a live resource entered **around** the run (e.g. the `http.server` web-fetch fixture). |
 | `settings_overrides` | Settings forced for the duration of one run (the compaction case shrinks the context window). |
 | `enable_compaction` | Wire the auto-compaction cascade for this run. |
-| `max_requests` | Optional model-request cap so a runaway run stops gracefully. |
+| `max_requests` | Optional model-request cap so a runaway run stops gracefully — a stop, never a grader of quality. **Observed, never guessed:** run the case alone three times (`python -m evals regression --case <id>`), set `max(legs) + 1`, and name the experiment ids at the call site so the next model bump can tell a calibrated number from an invented one. A case that needs far more legs than its tier's neighbours is a broken CASE (wrong prompt, thin fixture, flailing behavior), not a stale cap — say so and file it instead of inflating the number. |
 | `tags` | Slice labels carried onto the Opik dataset item. |
 | `skip_reason` | Declared but not yet runnable (case 12, MCP): stays in the registry, never runs, never registers. |
 | **`source_trace_id` / `thread_id` / `fixed_in`** | Mined-case provenance — the Opik trace + thread the case came from and the commit that fixed it. `None` on an invented case. |

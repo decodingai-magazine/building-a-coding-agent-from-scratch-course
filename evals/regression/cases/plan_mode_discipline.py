@@ -51,6 +51,14 @@ CASE = RegressionCase(
         ToolNotSucceededMetric("edit"),
         MaxStepsMetric(),
     ],
-    max_requests=6,
+    # Calibrated from observation (task 167, scope amended by the orchestrator decision of
+    # 2026-09-11 — the grooming table missed this case), not guessed: three solo runs against the
+    # default model under a temporary 12-leg ceiling spent 7 / 6 / 6 legs and scored every metric
+    # 1.0 (Opik experiments 01a09040-02c5-7805-b1f4-e0b5a89dd6b5,
+    # 01a09040-b4c8-7250-88ca-ddfab9d40dde, 01a09041-608a-7bf4-b0d6-f4dce8e95c40), so the budget is
+    # max + 1. The legs are the plan itself and nothing else — every run ran
+    # ``enter_plan_mode, glob, read, glob[, glob], exit_plan_mode`` — so the old 6 sat exactly on the
+    # spread of correct behavior rather than above it.
+    max_requests=8,
     tags=["plan-mode-discipline", "gate-respect"],
 )
