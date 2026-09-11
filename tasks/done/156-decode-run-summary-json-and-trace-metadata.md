@@ -291,3 +291,9 @@ summary.json
   changed files.
 
 **VERDICT: PASS**
+
+### [PA] 2026-09-11 21:30 — Acceptance Review
+
+**VERDICT: ACCEPT** — feature-level review of evals-v2 (tasks 155–167, PR #68); evidence and the
+per-AC-group walk-through are in `tasks/done/167-regression-step-budgets-recalibration.md`'s log.
+Hand off to the PR Reviewer.

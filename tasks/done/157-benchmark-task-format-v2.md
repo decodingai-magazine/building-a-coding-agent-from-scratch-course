@@ -180,3 +180,9 @@ discovered real tasks: []
 - No blocking security or convention issues: no `shell=True` anywhere in the new harness code, all `subprocess.run` calls use argv lists (immune to shell metacharacter injection from task ids/paths), types are annotated throughout, no `print()` in library code, `SecretStr`/secrets posture unaffected (this task touches no credentials).
 
 **VERDICT: PASS**
+
+### [PA] 2026-09-11 21:30 — Acceptance Review
+
+**VERDICT: ACCEPT** — feature-level review of evals-v2 (tasks 155–167, PR #68); evidence and the
+per-AC-group walk-through are in `tasks/done/167-regression-step-budgets-recalibration.md`'s log.
+Hand off to the PR Reviewer.

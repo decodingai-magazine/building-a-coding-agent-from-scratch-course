@@ -485,3 +485,9 @@ $ git status --short
 **VERDICT: PASS**
 
 Both round-1 FAILs are fixed and independently re-proven: (1) the importer is now self-contained (only non-stdlib import is `kitaru.task.importer`), the two new regression pins are load-bearing (red-proofed live against a reintroduced sibling import, reverted byte-exact), and a live import through a Worker I started myself from a foreign cwd succeeded (`ready`) on a fresh trace; (2) all four dangling-reference fixes now name real, verified symbols (`desired_versions`, its no-stat behavior, the laptop-only entrypoint check) rather than another invented flag. Full suite green (2945/0, 1 pre-existing skip), format/lint clean, `--help` still opik/kitaru-free, no scope creep in the diff. AC7 remains `[HUMAN]` and open, as scoped.
+
+### [PA] 2026-09-11 21:30 — Acceptance Review
+
+**VERDICT: ACCEPT** — feature-level review of evals-v2 (tasks 155–167, PR #68); evidence and the
+per-AC-group walk-through are in `tasks/done/167-regression-step-budgets-recalibration.md`'s log.
+Hand off to the PR Reviewer.

@@ -296,8 +296,13 @@ changes a decision, and each is where a reader should look when the text and the
   calibrated to that model, so `05_evals.md` and the benchmark README say it that way and add the
   rule the numbers need: compare runs on ONE provider — the same tasks read higher on the gemini
   route.
-- **§8, one open shortfall.** The first full `decode-regression-gate` run scored `max_steps` 0.737
-  against its 0.8 floor: five *invented* cases carry `max_requests` budgets written for an earlier
-  model. No threshold was lowered and no case was skipped — the recalibration is
-  [`tasks/167-regression-step-budgets-recalibration.md`](../../tasks/167-regression-step-budgets-recalibration.md).
+- **§8, one open shortfall.** The regression gate is RED at merge: the last full
+  `decode-regression-gate` run scored `max_steps` 0.684 (13/19, floor 0.8) and `g_eval_metric` 0.571
+  (4/7, floor 0.7), every other metric 1.000. No threshold was lowered and no case was skipped.
+  Task 167 recalibrated the three cases whose budgets were merely stale (`03`, `07`, `15`) from
+  observation; what remains is not drift: two case-design defects (`08` bills execution while grading
+  planning; `10`'s fixture never seeds the changelog its prompt names), a post-denial flail on `13`/`14`
+  that a bigger cap would hide, and a harness defect where a capped run's substituted stop text is
+  scored 0 by the judge, so one over-budget run counts twice. All of it is
+  [`tasks/168-regression-cases-that-outgrew-their-budget.md`](../../tasks/168-regression-cases-that-outgrew-their-budget.md).
 

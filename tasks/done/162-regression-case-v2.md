@@ -385,3 +385,9 @@ the module path and chained `__cause__` are both present, and the fix is covered
 red-then-green parametrized regression test. Full suite green (2723 passed / 1 skipped / 0 warnings),
 scope confined to the loader + its test + the task file (`git status --short src/` empty). Ready to
 commit.
+
+### [PA] 2026-09-11 21:30 — Acceptance Review
+
+**VERDICT: ACCEPT** — feature-level review of evals-v2 (tasks 155–167, PR #68); evidence and the
+per-AC-group walk-through are in `tasks/done/167-regression-step-budgets-recalibration.md`'s log.
+Hand off to the PR Reviewer.

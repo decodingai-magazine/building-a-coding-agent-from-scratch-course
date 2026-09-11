@@ -535,3 +535,40 @@ gate aggregates were independently re-derived from primary sources and matched t
 No threshold was lowered, no `skip_reason` was added, no cap was raised outside the amended scope, and
 the log is transparent about the gate regressing between the two runs (0.789→0.684) for reasons outside
 this task's edits (censoring noise, not a bug this task introduced). Ready to commit.
+
+### [PA] 2026-09-11 21:30 — Acceptance Review (feature evals-v2, tasks 155–167, PR #68)
+
+**VERDICT: ACCEPT**
+
+Reviewed from the course reader's / operator's seat against ADR-0022 and the Tasks Plan, using keyless
+`--help` runs, `make unit-tests` (2945 passed, 1 pre-existing skip), the code paths behind each user
+moment, and the Tester logs' primary evidence (no paid eval launched).
+
+- (a) Benchmark: `make eval-benchmark ARGS='--task 001-find-and-replace'` → one `decode run` subprocess
+  per Trial, host-side pristine-clone Verifier, Trial Dir + `result.json` written in a `finally`,
+  Opik experiment named by the job; the failure taxonomy in `evals/harness/trial.py` matches the
+  runbook table (`agent_ok` / `agent_fail` / `infra_error`, timeout ⇒ `agent_fail`).
+- (b) Regression: `make eval-regression ARGS='--difficulty easy'` syncs and gates one tier; the gate
+  collects keylessly; floors unchanged. Gate is RED today (0.684 / 0.571) — accepted for this feature's
+  scope: the feature is the harness, the red is an honest measurement of the agent under ADR-0022 §8/§9
+  (no threshold lowered, no cap inflated, no case skipped), the causes are diagnosed and now groomed
+  agent-ready in task 168 (judge-poisoning fix + the three late-signal cases added).
+- (c) Online: `online-rule create` (idempotent, `--dry-run`, refuses untranslatable routes with a
+  one-liner) and `mine` (four presets, signatures, `--json`) match `evals/README.md`; mining session
+  NOTES are a worked example.
+- (d) Kitaru: `make kitaru-local` prints the two export lines; `bootstrap_kitaru.py` is
+  read-then-register idempotent; `evals kitaru import` / `cohort from-experiment` refuse with one line
+  where the ADR says they must; importer is self-contained.
+- (e) Docs: glossary rows present and used verbatim across code/docs; deviations from the ADR are all
+  recorded in its Implementation notes; retired vocabulary (`probe`, `verify/`, `task.yaml`,
+  `register_kitaru_agent`) is gone from live docs and code.
+
+`[HUMAN]` items (161 modal leg, 163 sign-off, 164 pick review, 165 replay leg) stay open for the human
+by design; the automatable half of each is independently evidenced. The task-160 hand-back incident
+is root-caused at one choke point with a regression test; `git ls-remote --heads origin
+'refs/heads/decode/*'` is empty. Task 155's private-attribute deviation ledger
+(`Agent._instrument_default` ×4, `_usage` ×2 with no public equivalent) is accepted by PA.
+
+PA-owned edits made in this review: task 168 re-groomed; ADR-0022 appendix "§8 shortfall" refreshed to
+the current numbers and task 168; one glossary phrase (Benchmark Task calibration) aligned with the
+appendix. Hand off to the PR Reviewer.

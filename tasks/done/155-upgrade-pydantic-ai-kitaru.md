@@ -346,3 +346,9 @@ single toolset result: ['foo']
 **VERDICT: PASS**
 
 Both outstanding items from round 1 (5 `_function_toolset.tools` conversions, deviation-ledger accuracy) are fixed and independently verified; the orchestrator's adjudication of the two remaining private-attribute categories (`_instrument_default` ×4, `_usage` ×2) is applied and re-confirmed on the actual pydantic-ai source this round, not just accepted on the SWE's say-so. AC2 closes as `[x]`. Full unit suite green (2434/1 skipped), pre-commit clean, `git status` shows only the expected files, no `src/` change so the integration suite is unaffected and stands at round 1's 113-passed result.
+
+### [PA] 2026-09-11 21:30 — Acceptance Review
+
+**VERDICT: ACCEPT** — feature-level review of evals-v2 (tasks 155–167, PR #68); evidence and the
+per-AC-group walk-through are in `tasks/done/167-regression-step-budgets-recalibration.md`'s log.
+Hand off to the PR Reviewer.

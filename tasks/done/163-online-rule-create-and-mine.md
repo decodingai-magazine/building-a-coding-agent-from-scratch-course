@@ -349,3 +349,9 @@ Error: evals online-rule: no Opik project named 'decode-prod; rm -rf /' — run 
 **VERDICT: PASS**
 
 Both round-1 defects are fixed and independently re-verified against primary sources (installed opik 2.2.36 REST client source, not just the SWE's log) and live against `decode-prod`: the fixture hostname leak is gone (grep-clean, deny-list test proven non-vacuous by a plant-and-revert mutation check) and `resolve_project_id` now uses the exact-match, unpaginated `retrieve_project` endpoint the AC named first. The scoped `eval_keys_missing(require_provider=False)` fix (Tester round-1 note, not a blocking item) is also done cleanly — narrow, tested at the wiring level, and the shared default-path guard is confirmed byte-identical live. Full suite green (2802 passed, 1 pre-existing skip), format/lint clean, no `src/` diff.
+
+### [PA] 2026-09-11 21:30 — Acceptance Review
+
+**VERDICT: ACCEPT** — feature-level review of evals-v2 (tasks 155–167, PR #68); evidence and the
+per-AC-group walk-through are in `tasks/done/167-regression-step-budgets-recalibration.md`'s log.
+Hand off to the PR Reviewer.

@@ -210,3 +210,9 @@ uv run pytest tests/unit     → 2945 passed, 1 skipped in 63.06s
 - No ADR or glossary content was touched by this fix (SWE is read-only there); the checker found no broken link in either.
 - Inbound links checked too (the 14-file scan can only see them as sources, and `05_evals.md` was rewritten): re-ran the checker over all 187 tracked `.md` files (266 links) — 3 hits, none caused by this task and none fixable here. Two are the literal `RESOLVED_URL` placeholder in the untouched `kitaru-guided-tour` / `kitaru-investigation` skills (prose, not a link target). The third is `docs/adr/0008-kitaru-durable-runtime.md:239` → `06_evals_replays.md#9-environments--decode_env-and-the-environment-bucket-optional`: that section died with the Environment Bucket (ADR-0021), and `git show HEAD~1:running_the_code/06_evals_replays.md` confirms 06 had no section 9 before this task either. `docs/adr/` is SWE-read-only — flagged for a PA rollup, not touched.
 - Post-QA cleanup verified, nothing to remove: `docker ps -a --filter name=decode` is empty and no `uv:python3.12-bookworm-slim` sandbox container survives (only the intended `kitaru-local-server-1` / `kitaru-local-db-1` stack and unrelated two-week-old containers); the incident's `.decode/evals/runs/bench-20260911-102217/` Trial Dir is gone — the remaining `bench-*` / `manual-*` dirs predate it and are gitignored (`.gitignore:152`).
+
+### [PA] 2026-09-11 21:30 — Acceptance Review
+
+**VERDICT: ACCEPT** — feature-level review of evals-v2 (tasks 155–167, PR #68); evidence and the
+per-AC-group walk-through are in `tasks/done/167-regression-step-budgets-recalibration.md`'s log.
+Hand off to the PR Reviewer.
