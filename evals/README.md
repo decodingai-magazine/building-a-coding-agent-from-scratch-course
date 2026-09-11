@@ -1,9 +1,37 @@
 # decode eval suite
 
 Course material *about* the agent, not part of it — this `evals/` package never ships in the wheel
-(ADR-0017 §1). It carries four tracks (Demo Skills, Benchmark, Regression Cases, and the online
-track) over the shared Opik harness. The four-track map is [`running_the_code/05_evals.md`](../running_the_code/05_evals.md); this
-README documents the **online eval** track (ADR-0017 §10, task 117).
+(ADR-0017 §1, rebuilt by ADR-0022). It carries four tracks (Demo Skills, Benchmark, Regression Cases,
+and the online track) over the shared Opik harness. The four-track map is
+[`running_the_code/05_evals.md`](../running_the_code/05_evals.md); the task format is
+[`benchmark/tasks/README.md`](benchmark/tasks/README.md) and the case contract
+[`regression/README.md`](regression/README.md). This README documents the **online eval** track
+(ADR-0017 §10) and **Trace Mining** (ADR-0022 §8) — the two commands that read the LIVE project.
+
+## The CLI
+
+Every track is one subcommand of one entrypoint (`evals/run.py`); each subcommand's own `--help`
+carries its flags, and Opik is imported lazily so `--help` needs no key and no network:
+
+```
+$ uv run python -m evals --help
+Usage: python -m evals [OPTIONS] COMMAND [ARGS]...
+
+  decode eval suite — benchmark + regression harness (ADR-0017).
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  benchmark    Run the outcome benchmark as one Opik Experiment (ADR-0022...
+  kitaru       Join decode's Opik traces to Kitaru Sessions (ADR-0022 §11).
+  mine         Mine the LIVE project for regressions worth turning into...
+  online       Score decode's LIVE REPL threads with one...
+  online-rule  Manage the Opik ONLINE RULE that scores live traces as...
+  regression   Run the behavior Regression Cases host-native as an Opik...
+  suite        Run the Opik Test Suite regression surface —...
+  sync         Upsert the eval tracks' Opik surfaces (ADR-0022 §6,8).
+```
 
 ## Online eval — scoring live REPL traffic
 

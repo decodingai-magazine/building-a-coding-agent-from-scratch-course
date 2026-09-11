@@ -259,3 +259,45 @@ flowchart LR
   sync-scores` pushing evaluator results onto Opik traces as feedback scores; a private benchmark
   mined from decode's own merged task PRs (SWE-bench shape: task md = problem statement, parent sha
   = base commit, PR test diff = hidden tests); Python-metric online rules; partial-credit rewards.
+
+## Implementation notes (2026-09-11)
+
+The feature shipped as decided — the benchmark drives `decode run` (§1), nineteen tasks converted
+7/6/6 (§2), grading is host-side on a pristine clone (§3), the oracle gate is keyless in `make ci`
+(§5). These are the points where the code is *more specific* than the Decision above; none of them
+changes a decision, and each is where a reader should look when the text and the code seem to differ.
+
+- **§10, trace metadata spelling.** `trace_metadata()` is landed by `root_span` as one
+  `opik.metadata.<key>` span attribute per field — the only spelling Opik ingests into a span's
+  `metadata` (`observability/tracing.py::OPIK_METADATA_PREFIX`), which is what `evals mine` filters
+  on. `kitaru_session_id` is omitted rather than `None`: adapter 0.2.1 exposes no public accessor for
+  it, so it is absent in practice, exactly as §10 allows ("the join never depends on it").
+- **§1 vs §4, the timeout/no-summary collision.** §4 makes a timeout an agent failure and "died
+  before its summary" an Infra Error; a timed-out run usually has both. The shipped rule: **timeout
+  wins** — the partial branch is graded and the trial is `agent_fail` with the reason naming both
+  facts; only a run that exited without a summary and did **not** time out is an Infra Error
+  (`evals/harness/trial.py`).
+- **§6, where the experiment's project comes from.** opik 2.2.36 resolves an `evaluate()` run's
+  project from the **dataset**, so the datasets are created in `settings.eval_project_name` and
+  `evaluate(project_name=…)` is passed only as the fallback for a dataset that carries none — same
+  project either way, without the duplicate-configuration warning.
+- **§13, the project lookup.** The rule's project id comes from `projects.retrieve_project(name=…)`
+  (exact-match, unpaginated); the obvious `find_projects(name=…)` is a paginated *substring* query
+  that can report an existing project as missing. Rule idempotency is `find_evaluators` plus an
+  exact-name re-filter, as written.
+- **§11, the importer is self-contained.** `importers/opik_importer.py` imports nothing from `evals`:
+  a Kitaru Worker runs it as a registered script, so its parser must stand alone (`opik@3`).
+  `scripts/bootstrap_kitaru.py` registers the agent, both Agent Versions (docker first, `none`
+  second — so a freshly bootstrapped server reads `decode@1` / `decode@2`), the importer and every
+  `evaluators/*.py`.
+- **§2, the calibration wording.** §2 says difficulty is calibrated to "the default provider (a 35B
+  MoE)"; the shipped default is `LLM_PROVIDER=gemini` (ADR-0005 §1, `.env.example`) and the 35B
+  (`Qwen/Qwen3.6-35B-A3B-FP8`) is the model the course *serves on Modal*. The tier ceilings are
+  calibrated to that model, so `05_evals.md` and the benchmark README say it that way and add the
+  rule the numbers need: compare runs on ONE provider — the same tasks read higher on the gemini
+  route.
+- **§8, one open shortfall.** The first full `decode-regression-gate` run scored `max_steps` 0.737
+  against its 0.8 floor: five *invented* cases carry `max_requests` budgets written for an earlier
+  model. No threshold was lowered and no case was skipped — the recalibration is
+  [`tasks/167-regression-step-budgets-recalibration.md`](../../tasks/167-regression-step-budgets-recalibration.md).
+

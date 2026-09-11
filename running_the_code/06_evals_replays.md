@@ -6,8 +6,8 @@ Vocabulary: a run is recorded as a **Session**; humans judge Sessions in an **In
 
 ## 0. Pick a server
 
-A Kitaru Server is **one URL** ([ADR-0022](../docs/adr/0022-evals-v2.md) §10) and everything below is
-identical on either of them: a **local OSS deployment** on your laptop, or the **managed workspace**.
+A Kitaru Server is **one URL** ([ADR-0022](../docs/adr/0022-evals-v2-own-harbor-on-opik.md) §11) and
+everything below is identical on either of them: a **local OSS deployment** on your laptop, or the **managed workspace**.
 
 | | Local OSS server | Managed workspace |
 |---|---|---|
@@ -87,7 +87,7 @@ uv run kitaru evaluator test evaluators/my_check.py --entrypoint evaluate
 uv run python scripts/bootstrap_kitaru.py --server $KITARU_API_URL   # registers every evaluators/*.py
 
 # baseline sweep, no replay
-uv run kitaru session evaluate --tag opik-backfill --evaluator 'my-check@1' --wait
+uv run kitaru session evaluate --tag regression-case --evaluator 'my-check@1' --wait
 ```
 
 A benchmark job's failures freeze themselves — the trials that scored 0, resolved to their recorded

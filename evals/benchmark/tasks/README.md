@@ -64,9 +64,11 @@ Unknown keys are rejected at **every** table — a typo'd field fails loudly rat
 
 ### Tier table
 
-Difficulty is calibrated to the harness's default provider (a 35B MoE), not to a frontier model: an
-easy task should finish reliably, a hard one sometimes. The step cap is never the reason a task
-fails — pass@k over trials is the sensitivity knob.
+Difficulty is calibrated to the open model the course serves on Modal
+(`Qwen/Qwen3.6-35B-A3B-FP8`, a 35B MoE), not to a frontier model: an easy task should finish reliably,
+a hard one sometimes — on the out-of-box `gemini` route the same tasks read higher, so compare runs
+on one provider. The step cap is never the reason a task fails — pass@k over trials is the
+sensitivity knob.
 
 | Tier | `agent.max_steps` | `agent.timeout_sec` | `verifier.timeout_sec` |
 |---|---|---|---|
@@ -173,6 +175,50 @@ Every task passes this before it lands (ADR-0022 §2).
 - [ ] **SWE-bench shape (where a test file exists)** — the seed's test file is `unittest.TestCase`
       style; the hidden copy under `tests/` is the graded one; node ids are
       `<module>.<Class>.<method>`; hidden tests are applied AFTER the agent's changes.
+
+## Running them
+
+One Trial = one `decode run` subprocess against a fresh Seed Repo, then the host-side Verifier; the
+Trial Dir under `.decode/evals/runs/<job>/<task>__<short-id>/` keeps every trial's evidence
+(ADR-0022 §1, §7). Operator guide: [`running_the_code/05_evals.md`](../../../running_the_code/05_evals.md).
+
+```
+$ uv run python -m evals benchmark --help
+Usage: python -m evals benchmark [OPTIONS]
+
+  Run the outcome benchmark as one Opik Experiment (ADR-0022 §1,§3,§6).
+
+  Each selected task runs ``--trials`` Benchmark Trials: a subprocess ``decode
+  run`` against a fresh Seed Repo with ``SANDBOX_MODE=--sandbox``, graded
+  host-side by the hidden ``tests/test.sh`` Verifier on a pristine clone of
+  the handed-back branch, with every trial's evidence left in its Trial Dir
+  under ``.decode/evals/runs/<job>/``. The reward is the score of record;
+  pass@1 / pass@k / pass^k / flakiness / cost ride
+  ``experiment_scoring_functions`` onto the experiment row and are printed
+  here as a Rich table with per-tier rollups. Opik + the harness are imported
+  lazily so ``--help`` never needs keys or a network (ADR-0017 §1).
+
+Options:
+  --task TEXT                     Run only this benchmark task id.
+  --difficulty [easy|medium|hard]
+                                  Run only tasks of this difficulty tier.
+  --sandbox [docker|modal]        The sandbox rung each Trial's `decode run`
+                                  executes in.  [default: docker]
+  --trials INTEGER RANGE          Trials per task (Opik trial_count) — the
+                                  pass@k / pass^k / flakiness axis.  [default:
+                                  1; x>=1]
+  --threads INTEGER RANGE         Trials to run at once (Opik task_threads)
+                                  [default: 1 for docker, 4 for modal].
+                                  [x>=1]
+  --job-name TEXT                 Name the job: the Opik experiment AND the
+                                  Trial Dir parent [default: bench-<UTC
+                                  stamp>].
+  --model TEXT                    Override the model every Trial runs on
+                                  (`decode run --model`).
+  --help                          Show this message and exit.
+```
+
+`make eval-benchmark ARGS='…'` is the same command behind the key preflight.
 
 ## Syncing to Opik
 

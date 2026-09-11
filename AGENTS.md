@@ -58,7 +58,7 @@ Conventions: async I/O for network/DB, sync for CPU; shared models in `entities/
 | Inference | `google-genai` (Gemini) · OpenRouter · Modal | One **LLM Gateway**; OpenRouter OpenAI-compatible. |
 | Observability | `opik` | Tracing + eval harness. |
 | Sandbox / serving | Docker (local) · `modal` (remote) — one `run` seam by `SANDBOX_MODE` | Executors: `none` (host, default) / `docker` / `modal`; docker via CLI (no SDK). gVisor/Kata free daemon-config upgrades; Firecracker non-goal (ADR-0011). Modal also **hosts the harness**: `decode-headless` (remote `decode run` + N attempts + a `nightly` cron + a proxy-authed `webhook` — the app lives in `decode/remote/`, launched from `decode remote …`, ADR-0020 Amendment §10) and `decode-kitaru-worker` (replays off-laptop, agent v3, an operator script) — in-app images, no server (ADR-0020). |
-| Recording / replay | `kitaru[cli,mcp,worker]` + `kitaru-pydantic-ai` | **Recording Seam** (`runtime/recording.py`) wraps `build_agent()` in `KitaruAgent` when configured — REPL and `decode run` alike record Kitaru Sessions on the managed workspace; **Replays** run from the top on an operator's Kitaru Worker (ADR-0019). The adapter caps `pydantic-ai <2.23`, so depend on `pydantic-ai-slim[google,openai]>=2.22,<2.23` — the slim package, never the meta one (ADR-0009 as amended by ADR-0019 §2); lift the pin when the adapter does. |
+| Recording / replay | `kitaru[cli,mcp,worker]` + `kitaru-pydantic-ai` | **Recording Seam** (`runtime/recording.py`) wraps `build_agent()` in `KitaruAgent` when configured — REPL and `decode run` alike record Kitaru Sessions on whatever `KITARU_API_URL` names (local OSS server by default — `make kitaru-local`); **Replays** run from the top on an operator's Kitaru Worker (ADR-0019). Depend on `pydantic-ai-slim[google,openai]>=2.40,<2.41` — the slim package, never the meta one — which is the adapter's own cap (ADR-0009, ADR-0019 §2's `<2.23` lifted by ADR-0022 §12); lift it again when the adapter does. |
 | Datastore | SQLite | Conversation log JSONL today; compaction on it (ADR-0006). SQLite = deferred persistent-store option. |
 
 ## Docs & external services
@@ -78,7 +78,7 @@ Infra access **CLI-only** (no web UIs) — reproducible, spot-checkable:
 - **OpenRouter** — OpenAI-compatible inference; `openrouter` CLI.
 - **Modal** — remote sandbox, open-model serving/inference, and the two harness apps: the Modal Headless App (`decode.remote.app`, driven by `decode remote deploy|run|attempts|logs`) and the Kitaru Worker (`scripts/modal_kitaru_worker.py`); `modal run` / `modal deploy` / `modal secret create` / `modal app logs|stop` / `modal token set`. Runbooks: [`running_the_code/04_deploy.md`](running_the_code/04_deploy.md) (headless app), [`running_the_code/07_evals_replays_deploy.md`](running_the_code/07_evals_replays_deploy.md) (Kitaru Worker).
 - **Opik** — LLM tracing + evals; `opik` CLI.
-- **Kitaru** — session recording + replay on the managed workspace; `kitaru` CLI (`status` / `session` / `replay` / `worker` / `agent` / `cohort`) + `kitaru` skills/docs.
+- **Kitaru** — session recording + replay on whatever `KITARU_API_URL` names (local OSS server by default, `make kitaru-local`); `kitaru` CLI (`status` / `session` / `replay` / `worker` / `agent` / `cohort`) + `kitaru` skills/docs.
 - **Project MCP servers:** *AGENT: fill in any MCP server this project's code talks to and the config it needs.*
 
 ## Running commands
@@ -87,7 +87,7 @@ Core verbs at repo root via [`Makefile`](Makefile) wrapping `uv` — `make help`
 
 **Manual QA order:** `format-fix → lint-fix → format-check → lint-check → pre-commit → unit-tests`.
 
-**Evals** (ADR-0017, never in `make ci`): `make eval-benchmark` (outcome) + `make eval-regression` (behavior gate) — need `OPIK_API_KEY` + the provider key, cost money, skip friendly without; full map in [`running_the_code/05_evals.md`](running_the_code/05_evals.md).
+**Evals** (ADR-0017 as rebuilt by ADR-0022; never in `make ci`): `make eval-benchmark` (19 Terminal-Bench-layout tasks, one Trial = one `decode run` subprocess graded host-side by `tests/test.sh` → `reward.txt`; `--trials/--threads/--difficulty/--job-name/--model`) + `make eval-regression` (21 tiered behavior cases + mined ones, gate 0.8 tool discipline / 0.7 judges), plus `python -m evals suite | mine | online-rule create | online | kitaru …`. Need `OPIK_API_KEY` + the provider key, cost money, skip friendly without; full map in [`running_the_code/05_evals.md`](running_the_code/05_evals.md).
 
 **Deps & env vars.** Runtime: `uv add <pkg>`; dev: `uv add --group dev <pkg>` (PEP 735 — never `[project.optional-dependencies]`). New env vars → `.env.example` + `config/settings.py`; never read `os.environ` deep in call sites.
 
@@ -135,9 +135,10 @@ Manual e2e QA playbook — what to type at each surface and what "working" looks
 
 # Kitaru replay & what-if (operator surface)
 
-Recording and replay are an **operator** surface, not a code path: nothing here runs in CI (ADR-0019, "Test surface"). The managed workspace is `https://f5ee9622-kitaru.cloudinfra.zenml.io` (`kitaru status` names it); runbooks: [`running_the_code/06_evals_replays.md`](running_the_code/06_evals_replays.md) (laptop), [`running_the_code/07_evals_replays_deploy.md`](running_the_code/07_evals_replays_deploy.md) (Modal-hosted Worker).
+Recording and replay are an **operator** surface, not a code path: nothing here runs in CI (ADR-0019, "Test surface"). A **Kitaru Server** is whatever `KITARU_API_URL` names and is disposable — the local OSS deployment (`make kitaru-local` = `kitaru login --local` + `scripts/bootstrap_kitaru.py`) by default, the managed workspace (`https://f5ee9622-kitaru.cloudinfra.zenml.io`, deactivated today) as a URL switch (ADR-0022 §11); `kitaru status` names the current one. Runbooks: [`running_the_code/06_evals_replays.md`](running_the_code/06_evals_replays.md) (laptop), [`running_the_code/07_evals_replays_deploy.md`](running_the_code/07_evals_replays_deploy.md) (Modal-hosted Worker).
 
-- **Record** — export `KITARU_API_URL` + set `KITARU_AGENT_ID`, then any REPL turn or `decode run` files a **Kitaru Session** (`kitaru session get <id>` shows it node by node); freeze a set of them as a **Cohort** (`decode-bad-request-400@1`).
+- **Record** — export `KITARU_API_URL` + set `KITARU_AGENT_ID` (both printed by `make kitaru-local`), then any REPL turn or `decode run` files a **Kitaru Session** (`kitaru session get <id>` shows it node by node); freeze a set of them as a **Cohort** (`decode-bad-request-400@1`).
+- **Join to Opik** — two thin commands over ONE key, the decode session id (ADR-0022 §11): `python -m evals kitaru import <trace-id>…` backfills Sessions for traces decode never recorded, `python -m evals kitaru cohort from-experiment <job>` freezes a benchmark job's reward-0 trials into a Cohort.
 - **Replay** — `kitaru replay create <session-id> --agent decode@<version>` re-runs a Session **from the top** on a **Kitaru Worker** you start yourself (`kitaru worker start` — the server executes nothing). No override = **Baseline Replay**, the control; overrides (model / system prompt / prompt / params) + `--tool-policy` make it a what-if.
 - **Agent Version** — the registered run spec the Worker spawns (`scripts/bootstrap_kitaru.py`, which registers everything decode needs on one server, idempotently): `decode run` with no inline prompt, `SANDBOX_MODE=docker` (laptop) / `none` (Modal Worker), repo clone, Harness Home outside the repo. A code change = a new version.
 - Investigating a bad session, authoring an evaluator → skill **kitaru-investigation**; designing/running a what-if replay or cohort experiment → skill **kitaru-replay-experiment**; pulling sessions in from another trace store → skill **kitaru-importer-builder**.

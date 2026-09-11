@@ -66,8 +66,8 @@ uv run kitaru job watch <JOB_ID>                                    # want: a te
 needs on every create (`LLM_PROVIDER`, `GEMINI_MODEL`, …).
 
 The Agent Version must be **re-registered** first — ADR-0021 §4 dropped `DECODE_ENV` from the run spec, and
-versions are immutable: `uv run python scripts/register_kitaru_agent.py --sandbox-mode none --skip-bin-check
-…`, then pin the new id above and in `--agent decode@<N>`.
+versions are immutable: `uv run python scripts/bootstrap_kitaru.py --server $KITARU_API_URL` (it registers
+BOTH versions, only what is missing), then pin the new id above and in `--agent decode@<N>`.
 
 Then the paper trail:
 
@@ -91,3 +91,14 @@ Split out of the article-6 audit; blocked on an operator-only credential write.
 The Environment Bucket is deleted, so this key no longer gates headless runs: a Modal container reads
 its config from its own Secret and imports no kitaru unless recording is configured. Commands updated
 for the `-<env>` suffixed Secrets, and for the Agent Version re-registration ADR-0021 §4 forces.
+
+### [PA] 2026-09-11 — Note
+One command edited, nothing else: the re-registration step named `scripts/register_kitaru_agent.py`,
+which ADR-0022 §11 deleted — `scripts/bootstrap_kitaru.py` replaced it (it registers the agent, BOTH
+Agent Versions, the `opik` importer and every `evaluators/*.py` on one server, idempotently), so the
+step as written could not be run. Its `--sandbox-mode` / `--skip-bin-check` flags went with the old
+script: the replacement takes `--server` and registers whatever is missing. Flagged, deliberately NOT changed here because this task belongs to another
+feature: the `--evaluate-baselines` flag in the replay command above was renamed to
+`--baseline-evaluation-mode` in kitaru 0.25 (see `running_the_code/06_evals_replays.md` §5), and the
+version numbers `decode@3` are the course workspace's — a freshly bootstrapped server registers the same
+two specs as `decode@1` (docker) / `decode@2` (`none`).

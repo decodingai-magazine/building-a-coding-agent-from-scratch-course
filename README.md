@@ -263,7 +263,7 @@ Running the code costs **$0** if you stick to free tiers:
 | [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (recommended provider, remote sandbox, remote agents)                                           | $30 free credits — enough to run the course                        |
 | OpenRouter (alternative provider)                                                                                                                                | $0 on `:free` models (optional $10 credit raises the daily cap)    |
 | [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)                   | free tier                                                          |
-| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (recording + replays) | free — a managed workspace, nothing to host yourself               |
+| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (recording + replays) | free — the OSS server runs on your laptop (`make kitaru-local`)    |
 
 _**Reading-only? Everything's free!**_
 
@@ -281,9 +281,8 @@ One Python package; each module maps to one part of the architecture:
 .
 ├── docs/
 │   ├── adr/                  # Architecture Decision Records — the "why" of every choice
-│   ├── glossary.md           # one canonical name per concept
-│   └── evals.md              # the four-track eval suite, mapped
-├── evals/                    # benchmark + regression probes + demo skills
+│   └── glossary.md           # one canonical name per concept
+├── evals/                    # benchmark tasks + regression cases + the Opik harness
 ├── tests/{unit,integration}/ # mirrors src/ 1:1; milestone capstones prove each milestone
 └── src/decode/
     ├── cli.py                # Click entrypoint → launches the TUI
@@ -313,7 +312,7 @@ Everything lives under [`running_the_code/`](running_the_code/). Follow them in 
 | [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)           | Serving open models on Modal                                       |
 | [03_sandboxing.md](running_the_code/03_sandboxing.md)                     | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
 | [04_deploy.md](running_the_code/04_deploy.md)                             | The headless harness on Modal — CLI, webhook, cron                 |
-| [05_evals.md](running_the_code/05_evals.md)                               | Benchmarks, regression probes, and online evals                    |
+| [05_evals.md](running_the_code/05_evals.md)                               | Benchmarks, regression cases, and online evals                     |
 | [06_evals_replays.md](running_the_code/06_evals_replays.md)               | Kitaru on your laptop: record, replay & the full evals loop        |
 | [07_evals_replays_deploy.md](running_the_code/07_evals_replays_deploy.md) | The Kitaru Worker on Modal — replays off-laptop                    |
 

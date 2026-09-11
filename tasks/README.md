@@ -8,12 +8,13 @@ File-based task tracker (`TRACKER_MODE: file`). **One markdown file per atomic t
 
 ```
 tasks/
-├── 001-bootstrap-tui.md        # status: done
 ├── 002-agent-loop.md           # status: in-progress
-└── 003-bash-tool.md            # status: pending
+├── 003-bash-tool.md            # status: pending
+└── done/
+    └── 001-bootstrap-tui.md    # status: done
 ```
 
-State lives in the `status:` frontmatter field — **not** in the filename. There is no `done/` folder and no renaming; you edit the field in place.
+State lives in the `status:` frontmatter field — **not** in the filename, which never changes. A finished task is flipped to `status: done` and `git mv`'d into `tasks/done/` in the same commit as its code, so the top level of `tasks/` lists only open work.
 
 ## Task file shape
 

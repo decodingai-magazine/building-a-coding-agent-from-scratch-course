@@ -124,6 +124,30 @@ make eval-regression                                  # sync + the pre-merge thr
 make eval-regression ARGS='--difficulty hard'         # …sliced to one tier (sync AND gate)
 ```
 
+```
+$ uv run python -m evals regression --help
+Usage: python -m evals regression [OPTIONS]
+
+  Run the behavior Regression Cases host-native as an Opik experiment
+  (ADR-0022 §8).
+
+  Each selected case seeds a fresh temp Workspace, runs the real agent HOST-
+  NATIVE (``none`` mode — no docker) under the case's gate policy, and scores
+  its behavior with the case's deterministic metrics. ``--difficulty`` slices
+  the run to one tier and names the experiment after it (``decode-regression-
+  gate-hard``), so a tier's baseline stays its own. Opik + the harness are
+  imported lazily so ``--help`` never needs keys or a network (ADR-0017 §1).
+
+Options:
+  --case TEXT                     Run only this regression case id.
+  --difficulty [easy|medium|hard]
+                                  Run only the cases of this difficulty tier.
+  --help                          Show this message and exit.
+```
+
+`suite` takes the same two filters; `sync` takes `--difficulty` as well, so a tier is synced and run
+as one set.
+
 Each run is one Opik experiment under `EVAL_PROJECT_NAME` (`decode-evals`), named
 `decode-regression-gate` — or `decode-regression-gate-<tier>` for a filtered one, so a tier's baseline
 compares against that tier and never against the whole suite. Every case declares its own metrics;
