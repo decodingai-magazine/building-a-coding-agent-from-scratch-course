@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from evals.harness.driver import ToolCallRecord
 from evals.harness.metrics import (
+    AnsweredWithoutErrorMetric,
     DiffLinesMetric,
     FileDiffLinesMetric,
     FileEqualsMetric,
@@ -23,6 +24,7 @@ from evals.harness.metrics import (
     OutputContainsMetric,
     RewardMetric,
     ToolArgsMetric,
+    ToolArgsNeverMetric,
     ToolCalledMetric,
     ToolNotCalledMetric,
     ToolNotSucceededMetric,
@@ -591,3 +593,120 @@ def test_json_schema_missing_field_is_graceful_zero() -> None:
     result = JsonSchemaMetric(_SampleSchema).score()
     _assert_well_formed(result)
     assert result.value == 0.0
+
+
+# --- AnsweredWithoutErrorMetric ----------------------------------------------------------------
+
+
+def test_answered_without_error_an_answer_and_no_error_scores_one() -> None:
+    result = AnsweredWithoutErrorMetric().score(
+        output="uname printed arm64.", agent_error=None, infra_error=None
+    )
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_answered_without_error_a_crashed_run_scores_zero_and_names_the_error() -> None:
+    # The mined symptom: a terminal error AND no answer (evaluators/decode_bad_request_400.py).
+    result = AnsweredWithoutErrorMetric().score(
+        output="", agent_error="Exceeded maximum output retries (3)", infra_error=None
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+    assert "Exceeded maximum output retries (3)" in (result.reason or "")
+
+
+def test_answered_without_error_an_error_with_partial_output_still_scores_zero() -> None:
+    result = AnsweredWithoutErrorMetric().score(output="partial", agent_error="boom")
+    assert result.value == 0.0
+
+
+def test_answered_without_error_a_blank_answer_scores_zero() -> None:
+    # No crash, but nothing the user can read — the other half of the mined symptom.
+    result = AnsweredWithoutErrorMetric().score(output="   ", agent_error=None)
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_answered_without_error_missing_output_scores_zero() -> None:
+    result = AnsweredWithoutErrorMetric().score()
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_answered_without_error_an_infra_failure_is_unscorable_never_a_pass() -> None:
+    # A fixture/setup failure means the case never ran: Opik must DROP the score (RewardMetric's
+    # rule), not read a None agent_error as a green run.
+    result = AnsweredWithoutErrorMetric().score(
+        output="", agent_error=None, infra_error="fixture raised: no such file"
+    )
+    _assert_well_formed(result)
+    assert result.scoring_failed is True
+    assert "fixture raised: no such file" in (result.reason or "")
+
+
+# --- ToolArgsNeverMetric -----------------------------------------------------------------------
+
+
+def _reads_a_missing_path(args: dict) -> bool:
+    return args.get("path") not in {"README.md", "notes.txt"}
+
+
+def test_tool_args_never_no_matching_call_scores_one() -> None:
+    result = ToolArgsNeverMetric(
+        "read", _reads_a_missing_path, description="a path outside the tree", name="read_exists"
+    ).score(tool_calls=[{"name": "read", "args": {"path": "README.md"}}])
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_tool_args_never_one_matching_call_scores_zero_and_names_the_args() -> None:
+    result = ToolArgsNeverMetric(
+        "read", _reads_a_missing_path, description="a path outside the tree", name="read_exists"
+    ).score(
+        tool_calls=[
+            {"name": "read", "args": {"path": "README"}},
+            {"name": "read", "args": {"path": "README.md"}},
+        ]
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+    assert "README" in (result.reason or "")
+
+
+def test_tool_args_never_tool_not_called_scores_one() -> None:
+    result = ToolArgsNeverMetric(
+        "read", _reads_a_missing_path, description="a path outside the tree", name="read_exists"
+    ).score(tool_calls=[{"name": "glob", "args": {"pattern": "*"}}])
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_tool_args_never_missing_field_scores_one() -> None:
+    # Nothing recorded means the forbidden call trivially never happened (ToolNotCalledMetric's rule).
+    result = ToolArgsNeverMetric(
+        "read", _reads_a_missing_path, description="a path outside the tree", name="read_exists"
+    ).score()
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_tool_args_never_reads_tool_call_record_and_json_string_args() -> None:
+    metric = ToolArgsNeverMetric(
+        "read", _reads_a_missing_path, description="a path outside the tree", name="read_exists"
+    )
+    assert (
+        metric.score(tool_calls=[ToolCallRecord(name="read", args={"path": "README"})]).value == 0.0
+    )
+    assert metric.score(tool_calls=[{"name": "read", "args": '{"path": "README"}'}]).value == 0.0
+
+
+def test_tool_args_never_raising_predicate_is_not_a_violation() -> None:
+    def _boom(args: dict) -> bool:
+        raise KeyError("nope")
+
+    result = ToolArgsNeverMetric("read", _boom, description="explodes", name="read_boom").score(
+        tool_calls=[{"name": "read", "args": {}}]
+    )
+    _assert_well_formed(result)
+    assert result.value == 1.0

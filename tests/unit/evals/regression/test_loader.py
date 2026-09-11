@@ -1,7 +1,7 @@
 """Case registry discovery, selection + validation (ADR-0022 §8; ADR-0017 §6).
 
-Offline: exercises the real ``evals/regression/cases`` registry (all 21 cases load, tiered 5/8/8, the
-skip-guarded one still discoverable) plus the extraction / selection / validation helpers with
+Offline: exercises the real ``evals/regression/cases`` registry (the 21-case invented floor loads,
+tiered 5/8/8, with the mined cases beside it and the skip-guarded ones still discoverable) plus the extraction / selection / validation helpers with
 constructed inputs, so a duplicate id, a module with no ``CASE``, or a non-case value all fail loudly.
 """
 
@@ -35,6 +35,13 @@ EXPECTED_EASY_IDS = {
     "03-edit-precision",
     "11-step-efficiency",
 }
+
+# Mined cases (task 164) land BESIDE the invented floor, tagged ``mined`` — the counts above are the
+# floor's, never the registry's total, so mining one more case never edits a tier count.
+EXPECTED_MINED_EASY_IDS = {"21-empty-model-response", "22-guessed-file-path"}
+
+# Declared but never run: the MCP case (no tool factory yet) and mined case zero (no 400 to reproduce).
+EXPECTED_SKIPPED_IDS = {"12-mcp-tool-usage", "23-bad-request-400"}
 
 
 # A case module the loader will import for the error-path test: the ``CASE`` is constructed at import
@@ -110,16 +117,27 @@ def test_a_missing_cases_dir_yields_no_cases(tmp_path: Path) -> None:
     assert load_cases(tmp_path / "does-not-exist") == []
 
 
-def test_the_registry_is_21_cases_tiered_five_eight_eight() -> None:
-    """Every ADR-0017 probe is KEPT and tiered — nothing was dropped in the v2 migration (§8)."""
-    cases = load_cases()
+def test_the_invented_floor_is_21_cases_tiered_five_eight_eight() -> None:
+    """Every ADR-0017 probe is KEPT and tiered — nothing was dropped, for v2 or for a mined case (§8)."""
+    invented = [case for case in load_cases() if "mined" not in case.tags]
 
     counts = {tier: 0 for tier in EXPECTED_TIER_COUNTS}
-    for case in cases:
+    for case in invented:
         counts[case.difficulty] += 1
 
-    assert len(cases) == 21
+    assert len(invented) == 21
     assert counts == EXPECTED_TIER_COUNTS
+
+
+def test_mined_cases_land_beside_the_floor_never_inside_it() -> None:
+    """A mined case is additive: the registry grows, the invented floor does not move (§8)."""
+    cases = load_cases()
+    mined = [case for case in cases if "mined" in case.tags]
+
+    assert mined, "the mining session's cases are part of the registry"
+    assert len(cases) == 21 + len(mined)
+    for case in mined:
+        assert case.fixed_in, case.id
 
 
 def test_every_case_declares_a_symptom_and_an_assertion() -> None:
@@ -138,14 +156,15 @@ def test_the_skip_guarded_case_is_still_discoverable_but_never_runnable() -> Non
     assert mcp.skip_reason
     assert mcp.difficulty == "medium"
     assert mcp not in runnable_cases(cases)
-    assert len(runnable_cases(cases)) == 20
+    assert {case.id for case in cases if case.skip_reason} == EXPECTED_SKIPPED_IDS
+    assert len(runnable_cases(cases)) == len(cases) - len(EXPECTED_SKIPPED_IDS)
 
 
-def test_difficulty_easy_selects_exactly_the_five_easy_cases() -> None:
+def test_difficulty_easy_selects_the_five_easy_cases_plus_the_mined_ones() -> None:
     """``--difficulty easy`` is the tier slice the CLI and the gate ritual both run on (§8)."""
     selected = select_cases(load_cases(), difficulty="easy")
 
-    assert {case.id for case in selected} == EXPECTED_EASY_IDS
+    assert {case.id for case in selected} == EXPECTED_EASY_IDS | EXPECTED_MINED_EASY_IDS
 
 
 def test_select_cases_filters_by_id_and_tier_and_defaults_to_everything() -> None:

@@ -148,6 +148,55 @@ class ToolArgsMetric(BaseMetric):
             return False
 
 
+class ToolArgsNeverMetric(BaseMetric):
+    """Score ``1.0`` when NO recorded call to ``tool_name`` has args satisfying ``predicate``.
+
+    The negative half of :class:`ToolArgsMetric` — the same pairing :class:`ToolCalledMetric` /
+    :class:`ToolNotCalledMetric` already ships, one rung down at the ARGUMENT level. A mined case
+    needs it: the behavior trace ``01a08614`` showed is "the agent opened a path it never checked
+    existed" (``read("README")`` in a tree whose readme is ``README.md``, burning a retry leg), and
+    that is a fact about EVERY call, not about one — "some call was fine" says nothing. ``predicate``
+    describes the VIOLATION (args that must never appear); ``description`` is the human phrase the
+    ``reason`` cites. A predicate that raises on a malformed args dict counts as NOT a violation (the
+    same graceful posture :class:`ToolArgsMetric` takes for an unmet condition), and a missing /
+    malformed ``tool_calls`` field or a tool never called means the violation trivially never
+    happened — ``1.0``, mirroring :class:`ToolNotCalledMetric`.
+    """
+
+    def __init__(
+        self,
+        tool_name: str,
+        predicate: Callable[[dict[str, Any]], bool],
+        *,
+        description: str,
+        name: str,
+    ) -> None:
+        super().__init__(name=name, track=False)
+        self.tool_name = tool_name
+        self.predicate = predicate
+        self.description = description
+
+    def score(self, tool_calls: Any = None, **ignored_kwargs: Any) -> ScoreResult:
+        calls = _tool_call_args(tool_calls, self.tool_name) or []
+        offenders = [args for args in calls if self._matches(args)]
+        return ScoreResult(
+            name=self.name,
+            value=0.0 if offenders else 1.0,
+            reason=(
+                f"{len(offenders)} call(s) to {self.tool_name!r} used {self.description}: {offenders}."
+                if offenders
+                else f"no call to {self.tool_name!r} used {self.description} ({len(calls)} call(s) checked)."
+            ),
+        )
+
+    def _matches(self, args: dict[str, Any]) -> bool:
+        """Whether ``args`` is a violation — a raising predicate is treated as no violation."""
+        try:
+            return bool(self.predicate(args))
+        except Exception:  # a malformed args dict must not abort scoring — grade it as no violation
+            return False
+
+
 class ToolCalledMetric(BaseMetric):
     """Score ``1.0`` when ``tool_name`` appears in the run's ``tool_calls``, else ``0.0``."""
 
@@ -547,6 +596,59 @@ class ToolNotSucceededMetric(BaseMetric):
             name=self.name,
             value=1.0 if ok else 0.0,
             reason=f"{self.tool_name!r} succeeded {max(succeeded, 0)} time(s) (called {called}, denied {denied_count}).",
+        )
+
+
+class AnsweredWithoutErrorMetric(BaseMetric):
+    """Score ``1.0`` when the run ENDED WITH AN ANSWER and no agent error (ADR-0022 §8).
+
+    The ``agent_error``-absent metric the mined cases grade on, strengthened with the second half of
+    the symptom the traces actually show: every mined failure in ``evals/regression/mining/`` — the
+    empty-model-response crash (``UnexpectedModelBehavior``), the provider ``400`` the Kitaru
+    evaluator ``decode-bad-request-400`` guards — ends with a terminal error AND nothing the user can
+    read. That pair is what ``evaluators/decode_bad_request_400.py`` keys on remotely; this is the
+    same rule offline, over the regression payload: ``agent_error`` empty AND ``output`` a non-blank
+    string.
+
+    ``infra_error`` (a fixture / setup failure, so the case never ran) comes back
+    ``scoring_failed=True`` — Opik drops such a score from aggregation entirely, exactly as
+    :class:`RewardMetric` does for an ``infra_error`` trial. Without that, a broken fixture would
+    report a ``None`` ``agent_error`` and grade as a green run.
+    """
+
+    def __init__(self, name: str | None = None) -> None:
+        super().__init__(name=name or "answered_without_error", track=False)
+
+    def score(
+        self,
+        output: Any = None,
+        agent_error: Any = None,
+        infra_error: Any = None,
+        **ignored_kwargs: Any,
+    ) -> ScoreResult:
+        if infra_error:
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                scoring_failed=True,
+                reason=f"the harness could not run this case: {infra_error}",
+            )
+        if agent_error:
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"the run ended in an agent error: {agent_error}",
+            )
+        if not isinstance(output, str) or not output.strip():
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"the run produced no assistant-facing answer (output={output!r}).",
+            )
+        return ScoreResult(
+            name=self.name,
+            value=1.0,
+            reason=f"the run answered ({len(output)} chars) with no agent error.",
         )
 
 

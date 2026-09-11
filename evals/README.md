@@ -177,6 +177,10 @@ errors | pydantic_ai.exceptions.UsageLimitExceeded | read | gemini-2.5-flash
 "start_time", "git_sha", "model", "error"}]}]` — **uncapped**, because the next step needs every id,
 not the five a table shows. Absent metadata is `null` there, not `"-"`.
 
+Worked example in this repo: the 2026-09-11 session over `decode-prod` —
+[`regression/mining/NOTES.md`](regression/mining/NOTES.md) records every signature it found, the two
+it turned into cases, the three it deliberately skipped and why, beside the raw `--json` output.
+
 From a picked trace: open it in Opik (its `thread_id` is the decode session id), read what the agent
 actually did, then write the case — a prompt, a seeded workspace, and deterministic metrics that
 fail on the behaviour you just saw — into `evals/regression/cases/`, the format
