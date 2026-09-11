@@ -597,3 +597,44 @@ Reviewed 373 files, ~+35.9k/-6.6k lines (PR #68, `feat/evals-v2` @ `f389cd5`). B
 
 **VERDICT: ACCEPT** — after rollup 169 (`41a74f5`). Evidence in
 `tasks/done/169-pr-review-rollup-evals-v2.md` (`[PA] … round 2`). Hand off to the PR Reviewer.
+
+### [PR Reviewer] 2026-09-11 17:40 — Review, round 2
+
+**VERDICT: NO BLOCKERS**
+
+Reviewed 18 files, +984/-104 lines (`f389cd5..99dbc2d`, PR #68 @ `99dbc2d`). Blockers: 0; Nits: 4
+new + 3 round-1 skips accepted.
+
+- Blocker 1 fixed: `verifier.py::host_script_env` (allow-list `PATH`/`HOME`/`TMPDIR`/`LANG` + `LC_*`
+  prefix, plus the caller's names) is the env at all three host-side script sites —
+  `grade_checkout`, `seed.py::_run_setup_script`, `oracle_sanity.py::_run_oracle`; pinned by
+  `test_verifier.py::test_a_parent_secret_never_reaches_the_verifier` (+ the positive allow-list
+  test, the seed test, the oracle test). No `os.environ` passthrough into an agent-code path
+  remains: `trial.py::child_env` is the harness's own decode child (ADR-0022 §1), `_clone_pristine`
+  and `seed.py::_run_git` are git plumbing on trial-owned paths that never execute tree content
+  (hooks are not cloned), `conftest.post_setup` is test-authored and upstream of grading.
+- Blocker 2 fixed: `trial.git_sha()` → `decode.observability.git_sha(str(Path.cwd()))`;
+  `benchmark.py:51` re-export and `regression.py:380` caller unchanged.
+- Blocker 3 fixed: `conftest.grade_workspace` returns `grade_checkout(task, workspace)`; `_read_reward`,
+  `os`, `shutil` and the four grade-time constants gone; `timed_out` is real.
+- Newly touched files walked: importer `_build_node` (reads through `tool_span_arguments` /
+  `tool_span_result`, a DEFERRED span keeps its input whole — three new tests), `trial.py`
+  (`STRIPPED_ENV_VARS` + `SANDBOX_GIT_TOKEN`, `os.killpg(process.pid)`), `headless.py` /
+  `recording.py` (`recorded_session_id` + `_RunState.kitaru_session_id` gone, summary key a literal
+  `None`), `read_reward` non-finite guard, glossary `Signature` row, README env contract, ADR-0022
+  §3 note. Spot-ran `ruff check` + `ruff format --check` (clean) and the 5 touched test files (93
+  passed).
+- NO BLOCKERS — **Nits** (also appended to the PR description under "## Review nits"):
+  1. [Simplicity] `evals/harness/trial.py:455-456` — stale "Catches NaN for free" comment;
+     `read_reward` now rejects NaN upstream.
+  2. [Simplicity] `src/decode/observability/metadata.py:62,77-78` — `trace_metadata`'s
+     `kitaru_session_id` kwarg has no production caller left; only a unit test exercises it.
+  3. [Standards — docs] `evals/benchmark/tasks/README.md:131-135` — `setup.sh` / `solve.sh` get the
+     allow-list *without* `VERIFIER_DIR`; say so (+ PA's note: Seed Repo item 2 and the Oracle
+     section do not mention the env).
+  4. [Simplicity] `tests/unit/evals/harness/test_trial.py:420-425` — source-grep test for
+     `rev-parse` is a lint, not a behaviour test; the delegation test beside it suffices.
+  - Round-1 Nits 2, 5, 6 skipped with reason — accepted (cosmetic / cold path; none meets the
+    Severity Rule).
+
+Pipeline may advance to hand-off.

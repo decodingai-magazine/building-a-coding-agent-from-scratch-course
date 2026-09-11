@@ -36,7 +36,7 @@ self-containment, the bootstrap idempotency, the task verifiers or the trace fix
       the edge-case suites (`test_verifier_edge_cases_{easy,medium,hard}.py`) still pass.
 - [x] Tester re-runs full QA suite and PASSES (including the new regression test for Blocker 1).
 - [x] PA re-runs acceptance review and ACCEPTS.
-- [ ] PR Reviewer re-runs and reports `NO BLOCKERS`.
+- [x] PR Reviewer re-runs and reports `NO BLOCKERS`.
 
 ## Blockers (detail)
 
@@ -505,3 +505,9 @@ Adjacent, not blocking (SWE-owned README, next touch): the Seed Repo section's `
 `setup.sh` first learns of it from the Verifier bullet. One clause in each would close the gap.
 
 Hand off to the PR Reviewer for the `NO BLOCKERS` re-run.
+
+### [PR Reviewer] 2026-09-11 17:40 — Re-review (round 2, PR #68 @ `99dbc2d`)
+
+**VERDICT: NO BLOCKERS** — Blockers 1–3 confirmed fixed on the code (`f389cd5..99dbc2d`); Nits 2/5/6
+skips accepted; 4 new non-blocking nits appended to the PR description. Full entry on
+`tasks/done/167-regression-step-budgets-recalibration.md`.
