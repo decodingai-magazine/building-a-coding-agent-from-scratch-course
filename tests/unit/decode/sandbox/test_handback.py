@@ -281,6 +281,34 @@ def test_non_git_workspace_ships_nothing(tmp_path):
     assert result.pushed is False
 
 
+def test_a_non_git_workspace_inside_a_repo_never_ships_the_enclosing_checkout(tmp_path):
+    """A failed clone must not turn the Harness Home's OWN repo into the thing handed back.
+
+    Regression (task 160): ``git -C <workspace>`` walks UP to the nearest enclosing repository, so a
+    Workspace that is not a repo — a clone that failed, an empty scratch dir — resolved to whatever
+    checkout the Harness Home sits in. The hand-back then ``git add -A``-ed, committed and PUSHED the
+    user's own working tree as a Session Branch. A benchmark Trial Dir lives under ``.decode/``
+    inside the project, so this is the normal case, not an exotic one.
+    """
+    enclosing = _make_git_repo(tmp_path / "enclosing")
+    _git(enclosing, "remote", "add", "origin", str(_make_git_repo(tmp_path / "origin")))
+    (enclosing / "work-in-progress.txt").write_text("uncommitted\n", encoding="utf-8")
+    head_before = _git_out(enclosing, "rev-parse", "HEAD")
+    home = enclosing / "nested" / "home"
+    workspace = workspace_dir(home)  # exists, but is NOT a git repo
+    (workspace / "notes.txt").write_text("a clone that never happened\n", encoding="utf-8")
+
+    result = ship_workspace(home, repo=str(tmp_path / "origin"), session_id="escape-7777")
+
+    assert result.branch is None
+    assert result.pushed is False
+    assert _git_out(enclosing, "rev-parse", "HEAD") == head_before  # nothing was committed
+    assert _git_out(enclosing, "status", "--porcelain")  # …and the WIP is still uncommitted
+    assert not _git_out(enclosing, "branch", "--list", "decode/*")
+    # The guard fires FIRST: nothing downstream of it touched the Workspace either.
+    assert not (workspace / ".git").exists()
+
+
 # re-ship fast-forwards the same deterministic ref
 
 

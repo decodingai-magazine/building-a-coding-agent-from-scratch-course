@@ -195,10 +195,21 @@ def _https_push_target(workspace: Path) -> str | None:
 
 
 def _has_origin(workspace: Path) -> bool:
-    """True if the Workspace is a git repo with an ``origin`` remote to push to.
+    """True if the Workspace ITSELF is a git repo, rooted here, with an ``origin`` to push to.
+
+    The root check is not a formality: ``git -C <dir>`` walks UP to the nearest enclosing repository,
+    so a Workspace that is not a repo — a clone that failed, an empty scratch dir — answers with
+    whatever checkout the Harness Home happens to sit inside. Everything after this guard
+    (``add -A``, the capture commit, the push) would then run against the USER'S own working tree.
+    Comparing ``rev-parse --show-toplevel`` with the Workspace pins the answer to this directory.
 
     Never returns or logs the URL — a remote URL may embed a credential.
     """
+    toplevel = _run_git(workspace, "rev-parse", "--show-toplevel")
+    if toplevel.returncode != 0:
+        return False
+    if Path(toplevel.stdout.strip()).resolve() != workspace.resolve():
+        return False
     return _run_git(workspace, "remote", "get-url", _ORIGIN_REMOTE).returncode == 0
 
 

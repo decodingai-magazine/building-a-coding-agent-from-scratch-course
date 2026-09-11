@@ -1,10 +1,10 @@
-"""Offline tests for the Opik benchmark glue (ADR-0017 §3,4,5; task 106).
+"""Offline tests for the Opik benchmark glue (ADR-0022 §1,§6,§7).
 
-No infra and no keys: the sandbox seam is the in-memory :class:`~support.fake_sandbox.FakeExecutor`
-(``install_fake``), the agent runs a scripted model (``install_model``), and ``opik.evaluation.evaluate``
-/ ``opik.Opik`` are mocked. The tests cover the task-fn payload shape, the crashed-run ``agent_error``
-surfacing, the ``evaluate`` wiring (scoped dataset ids, code metrics, ``experiment_config`` with model
-+ git sha, single-threaded), and the selection filters.
+No infra, no subprocess and no keys: :func:`~evals.harness.trial.run_trial` is mocked (the real thing
+is pinned end-to-end in ``test_trial.py`` against a fake ``decode``) and ``opik.evaluation.evaluate``
+/ ``opik.Opik`` are mocked. The tests cover the trial-to-payload mapping, where a job's Trial Dirs
+land, the ``evaluate`` wiring (scoped dataset ids, code metrics, ``experiment_config`` with model +
+git sha) and the selection filters.
 """
 
 from __future__ import annotations
@@ -12,95 +12,104 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from support.eval_models import bash_then_finish, crashing_model
-from support.fake_sandbox import FakeExecutor
 
 from decode.config.settings import settings
-from decode.tools.exec import ExecResult
 from evals.harness.benchmark import (
     BenchmarkSelectionError,
     _select_tasks,
     experiment_config,
     make_benchmark_task_fn,
+    new_job_dir,
     run_benchmark,
 )
 from evals.harness.task_loader import load_benchmark_task
+from evals.harness.trial import TrialResult
 
 
-def test_task_fn_returns_the_metric_payload(greeting_task_dir: Path, install_fake, install_model):
-    """The happy path: one bash call + a final line → the flat payload the landed metrics read."""
+def test_task_fn_maps_a_trial_onto_the_metric_payload(greeting_task_dir: Path, mocker):
+    """One dataset item = one Trial; the payload is that verdict flattened for the metrics.
+
+    The Trial itself is pinned by ``tests/unit/evals/harness/test_trial.py`` against a fake ``decode``
+    subprocess — here only the mapping and the wiring are under test.
+    """
     task = load_benchmark_task(greeting_task_dir)
-    install_fake(FakeExecutor())  # default verify_result = PASS (exit 0)
-    install_model(bash_then_finish("echo hi", "all done"))
-    task_fn = make_benchmark_task_fn({task.id: task}, sandbox="docker")
+    trial = mocker.patch(
+        "evals.harness.benchmark.run_trial",
+        return_value=TrialResult(
+            task_id=task.id,
+            trial_id="0a1b2c3d",
+            status="agent_ok",
+            reason=None,
+            reward=1.0,
+            timed_out=False,
+            base_sha="a" * 40,
+            branch="decode/0a1b2c3d",
+            agent={"model": "gemini-3.5-flash"},
+            summary={
+                "output": "all done",
+                "requests": 3,
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cost_usd": 0.01,
+            },
+            timings={"seed": 0.1, "run": 1.0, "verify": 0.2},
+            trial_dir=Path("/tmp/runs/job/001__0a1b2c3d"),
+        ),
+    )
+    task_fn = make_benchmark_task_fn(
+        {task.id: task}, sandbox="docker", job_dir=Path("/tmp/runs/job")
+    )
 
     payload = task_fn({"task_id": task.id})
 
+    assert payload["reward"] == 1.0
+    assert payload["status"] == "agent_ok"
     assert payload["output"] == "all done"
-    assert payload["tool_calls"] == [{"name": "bash", "args": {"command": "echo hi"}}]
-    assert payload["steps"] == 2  # the tool leg + the final-text leg
-    assert payload["verify"] == {"exit_code": 0, "stdout": "PASS\n"}
+    assert payload["steps"] == 3
     assert payload["max_steps"] == task.max_steps
-    assert payload["agent_error"] is None
+    assert payload["cost_usd"] == 0.01
+    assert payload["trial_dir"] == "/tmp/runs/job/001__0a1b2c3d"
     assert payload["infra_error"] is None
+    assert trial.call_args.kwargs["sandbox"] == "docker"
+    assert trial.call_args.kwargs["job_dir"] == Path("/tmp/runs/job")
+    assert len(trial.call_args.kwargs["trial_id"]) == 8
 
 
-def test_task_fn_records_a_failing_verify(greeting_task_dir: Path, install_fake, install_model):
-    """A non-zero Verifier run rides the payload as ``verify.exit_code`` for the reward metric."""
+def test_task_fn_carries_an_infra_error_reason(greeting_task_dir: Path, mocker):
+    """An excluded trial must be distinguishable from a lost one without re-deriving the taxonomy."""
     task = load_benchmark_task(greeting_task_dir)
-    install_fake(FakeExecutor(verify_result=ExecResult("FAIL: nope\n", "", 1, timed_out=False)))
-    install_model(bash_then_finish("true", "done"))
-    task_fn = make_benchmark_task_fn({task.id: task}, sandbox="docker")
+    mocker.patch(
+        "evals.harness.benchmark.run_trial",
+        return_value=TrialResult(
+            task_id=task.id,
+            trial_id="0a1b2c3d",
+            status="infra_error",
+            reason="the pristine clone of decode/0a1b2c3d failed",
+            reward=None,
+            timed_out=False,
+            base_sha=None,
+            branch=None,
+            agent={},
+            summary=None,
+            timings={"seed": 0.1, "run": None, "verify": None},
+            trial_dir=Path("/tmp/runs/job/001__0a1b2c3d"),
+        ),
+    )
+    task_fn = make_benchmark_task_fn({task.id: task})
 
     payload = task_fn({"task_id": task.id})
 
-    assert payload["verify"] == {"exit_code": 1, "stdout": "FAIL: nope\n"}
+    assert payload["reward"] is None
+    assert payload["infra_error"] == "the pristine clone of decode/0a1b2c3d failed"
+    assert payload["output"] == ""
+    assert payload["steps"] == 0
 
 
-def test_task_fn_surfaces_a_crashed_agent(greeting_task_dir: Path, install_fake, install_model):
-    """A crashed agent run grades as fail-with-reason (``agent_error`` set), not silently empty.
+def test_a_job_dir_lands_under_the_harness_home():
+    """Trial Dirs are harness artifacts: ``<harness home>/.decode/evals/runs/<job>/`` (ADR-0022 §7)."""
+    job_dir = new_job_dir()
 
-    The Verifier still runs at grade time, so the item is graded rather than aborted — the
-    task-103 QA gap closed at the evals layer (ADR-0017 §4).
-    """
-    task = load_benchmark_task(greeting_task_dir)
-    install_fake(FakeExecutor())
-    install_model(crashing_model("kaboom"))
-    task_fn = make_benchmark_task_fn({task.id: task}, sandbox="docker")
-
-    payload = task_fn({"task_id": task.id})
-
-    assert payload["agent_error"] is not None
-    assert "kaboom" in payload["agent_error"]
-    assert payload["verify"]["exit_code"] == 0  # verify still graded the Workspace
-
-
-def test_task_fn_returns_a_graded_payload_when_the_sandbox_never_comes_up(
-    greeting_task_dir: Path, install_fake
-):
-    """A sandbox that never starts (daemon down / bad creds) grades as fail-with-reason, never raises.
-
-    The blocking QA-round-1 bug: Opik's ``evaluate`` runs task fns with no per-item isolation, so with
-    ``task_threads=1`` a raised task fn aborts the ENTIRE experiment. ``make_benchmark_task_fn`` must
-    catch a sandbox-creation failure into ``infra_error`` and still return a payload with no reward —
-    the analogue of the sandbox-level ``test_teardown_and_mode_restore_run_on_failure`` but at
-    ``select_executor``/backend-``start`` raising (task 106).
-    """
-    task = load_benchmark_task(greeting_task_dir)
-    fake = FakeExecutor(start_error="docker daemon unreachable")
-    install_fake(fake)
-    task_fn = make_benchmark_task_fn({task.id: task}, sandbox="docker")
-    previous_mode = settings.sandbox_mode
-
-    payload = task_fn({"task_id": task.id})  # must NOT raise
-
-    assert payload["infra_error"] is not None
-    assert "docker daemon unreachable" in payload["infra_error"]
-    assert payload["agent_error"] is None
-    assert payload["verify"] == {"exit_code": None, "stdout": ""}
-    # Teardown ran and the process-global seam / mode were restored despite the failure.
-    assert fake.closed
-    assert settings.sandbox_mode == previous_mode
+    assert job_dir.parts[:3] == (str(settings.decode_dir), "evals", "runs")
 
 
 def test_run_benchmark_wires_evaluate(mocker, greeting_task_dir: Path):

@@ -1,44 +1,44 @@
-"""The Opik glue that turns benchmark tasks into an ``evaluate()`` experiment (ADR-0017 §3,4,5; task 106).
+"""The Opik glue that turns benchmark tasks into an ``evaluate()`` experiment (ADR-0022 §1,§6).
 
-Two pieces sit on top of the sandbox lifecycle (:mod:`evals.harness.sandbox`) and the driver
-(:mod:`evals.harness.driver`):
+Two pieces sit on top of the trial runner (:mod:`evals.harness.trial`):
 
-* :func:`make_benchmark_task_fn` builds the sync Opik task fn — for one dataset item it runs the real
-  agent in a fresh sandbox Workspace under a BYPASS gate, grades it with the hidden oracle, and
-  returns the flat payload the landed code metrics (:mod:`evals.harness.metrics`) consume:
-  ``output`` / ``tool_calls`` / ``steps`` / token counts / a ``verify`` result / ``max_steps``
-  / ``agent_error`` / ``infra_error``. The task fn NEVER raises: a crashed agent run grades as
-  fail-with-reason (``agent_error``), and a sandbox that never came up — daemon down, bad creds —
-  grades as fail-with-reason too (``infra_error``), because Opik's ``evaluate`` gives task fns no
-  per-item isolation, so one raise would abort the whole experiment.
-* :func:`run_benchmark` loads + filters the tasks, upserts them into ``decode-benchmark-v1``, and
-  calls ``opik.evaluation.evaluate`` with the code metrics,
-  ``experiment_config`` carrying the agent model, provider, git sha and sandbox, and
-  ``project_name=settings.eval_project_name`` so eval runs never pollute live REPL tracing.
+* :func:`make_benchmark_task_fn` builds the sync Opik task fn — for one dataset item it runs ONE
+  Benchmark Trial (a subprocess ``decode run`` against a fresh Seed Repo, graded host-side on a
+  pristine clone) and returns the flat payload the metrics consume. The task fn NEVER raises, because
+  Opik's ``evaluate`` gives task fns no per-item isolation and one raise would abort the whole
+  experiment; :func:`~evals.harness.trial.run_trial` already guarantees that by returning an
+  ``infra_error`` verdict instead of propagating.
+* :func:`run_benchmark` loads + filters the tasks, upserts them into the Opik dataset, and calls
+  ``opik.evaluation.evaluate`` with the code metrics, ``experiment_config`` carrying the agent model,
+  provider, git sha and sandbox, and ``project_name=settings.eval_project_name`` so eval runs never
+  pollute live REPL tracing.
 
-The sandbox seam is a PROCESS-GLOBAL (one ``decode.tools.bash`` executor), so the benchmark runs
-``evaluate(task_threads=1)`` — concurrent task fns would race on that shared seam. A per-run executor
-seam is the documented upgrade path if benchmark wall-time ever bites.
+ADR-0022 §1 replaced the in-process driver and the sandbox-seam lifecycle this module used to drive
+(ADR-0017 §3,4): a Trial now measures the SHIPPED runtime. The Opik surface itself — the v2 dataset,
+the reward metric, ``experiment_scoring_functions`` and the parallelism policy subprocess trials make
+safe — lands in task 161; what is here is the wiring that keeps the command runnable in between.
 """
 
 from __future__ import annotations
 
 import logging
-import subprocess
 from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from decode.config.settings import settings
-from decode.permissions.types import PermissionMode
-from evals.harness.driver import run_agent_once_sync
-from evals.harness.sandbox import benchmark_sandbox
 from evals.harness.task_loader import BenchmarkTask, load_benchmark_tasks
+
+# ``git_sha`` lives with the trial runner (it stamps every ``result.json``); it is re-exported here
+# because the regression track reads a run's provenance from this module (``regression.py``).
+from evals.harness.trial import TrialResult, git_sha, run_trial
 
 if TYPE_CHECKING:
     import opik
     from opik.evaluation.evaluation_result import EvaluationResult
 
-    from evals.harness.driver import EvalRunRecord
     from evals.harness.task_loader import Difficulty
 
 logger = logging.getLogger(__name__)
@@ -46,117 +46,71 @@ logger = logging.getLogger(__name__)
 # The Opik task fn Opik hands one dataset item and expects one flat output dict back.
 BenchmarkTaskFn = Callable[[dict[str, Any]], dict[str, Any]]
 
+# Where Trial Dirs land: under the Harness Home's ``.decode/`` (already git-ignored), one directory
+# per benchmark run so a job's trials sit together (ADR-0022 §7).
+RUNS_DIR_PARTS = ("evals", "runs")
+
 
 class BenchmarkSelectionError(Exception):
     """No benchmark task matched the ``--task`` / ``--difficulty`` filters — a loud, friendly stop."""
 
 
 def make_benchmark_task_fn(
-    tasks_by_id: dict[str, BenchmarkTask], *, sandbox: str = "docker"
+    tasks_by_id: dict[str, BenchmarkTask],
+    *,
+    sandbox: str = "docker",
+    job_dir: Path | None = None,
 ) -> BenchmarkTaskFn:
-    """Build the sync Opik task fn that runs + grades one item's task (ADR-0017 §3,4,5).
+    """Build the sync Opik task fn that runs + grades one item's task as a Trial (ADR-0022 §1).
 
-    The returned closure looks the task up by ``item["task_id"]``, runs the full sandbox lifecycle,
-    and returns the metric-facing payload. Sync because Opik ``evaluate()`` task fns cannot be async.
+    The returned closure looks the task up by ``item["task_id"]`` and runs one Trial into its own
+    Trial Dir under ``job_dir``. Sync because Opik ``evaluate()`` task fns cannot be async; the trial
+    itself is a subprocess, so nothing here is loop-bound.
     """
+    resolved_job_dir = job_dir if job_dir is not None else new_job_dir()
 
     def benchmark_task_fn(item: dict[str, Any]) -> dict[str, Any]:
         task = tasks_by_id[item["task_id"]]
-        return _run_and_grade(task, sandbox=sandbox)
+        result = run_trial(
+            task,
+            sandbox=sandbox,  # type: ignore[arg-type]  (the cli constrains it to docker|modal)
+            job_dir=resolved_job_dir,
+            trial_id=uuid4().hex[:8],
+        )
+        return trial_payload(result, task)
 
     return benchmark_task_fn
 
 
-def _run_and_grade(task: BenchmarkTask, *, sandbox: str) -> dict[str, Any]:
-    """Run + grade one task, turning ANY failure into a graded payload — never a raise (ADR-0017 §3).
+def new_job_dir() -> Path:
+    """A fresh ``<harness home>/.decode/evals/runs/<utc-timestamp>/`` for one benchmark run."""
+    job = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return Path(settings.decode_dir).joinpath(*RUNS_DIR_PARTS, job)
 
-    Wraps the WHOLE sandbox lifecycle (creation included), because Opik's ``evaluate`` runs task fns
-    in a plain list comprehension with no per-item isolation — one raised task fn aborts the entire
-    experiment. So a sandbox that never came up (docker daemon down, bad modal creds) is caught here
-    into ``infra_error``; the item then carries no verify result at all. A crashed AGENT run (the
-    sandbox was fine) is the narrower ``agent_error`` case, handled in :func:`_run_in_sandbox` so the
-    Verifier still grades the Workspace.
+
+def trial_payload(result: TrialResult, task: BenchmarkTask) -> dict[str, Any]:
+    """The flat output dict the metrics read, straight off one :class:`TrialResult`.
+
+    ``reward`` / ``status`` / ``reason`` are the grade of record (ADR-0022 §3,§4); ``steps`` and
+    ``max_steps`` keep :class:`~evals.harness.metrics.MaxStepsMetric` honest; ``trial_dir`` points a
+    human at the evidence. ``infra_error`` carries the reason ONLY when the harness was at fault, so
+    an excluded trial is distinguishable from a lost one without re-deriving the taxonomy.
     """
-    try:
-        return _run_in_sandbox(task, sandbox=sandbox)
-    except Exception as exc:  # a sandbox-lifecycle failure must not abort the whole experiment
-        logger.exception("[eval] sandbox lifecycle failed for task %s", task.id)
-        return _payload(
-            None,
-            verify_exit=None,
-            verify_stdout="",
-            task=task,
-            agent_error=None,
-            infra_error=f"sandbox lifecycle failed: {exc}",
-        )
-
-
-def _run_in_sandbox(task: BenchmarkTask, *, sandbox: str) -> dict[str, Any]:
-    """Bring up the Workspace, run the agent BYPASS, grade with the hidden oracle (ADR-0008 §2; §5).
-
-    The agent runs BYPASS + headless deny resolvers, capped at ``max_steps`` model requests. A raised
-    agent run is caught into ``agent_error`` so the oracle STILL grades the Workspace (a crash is
-    fail-with-reason, not a skipped grade). A failure to even enter the sandbox, or a failure to
-    grade, propagates to :func:`_run_and_grade`'s ``infra_error`` handler. The Workspace is torn down
-    either way (the ``finally`` in :func:`benchmark_sandbox`).
-    """
-    record: EvalRunRecord | None = None
-    agent_error: str | None = None
-    with benchmark_sandbox(task, sandbox=sandbox) as run:
-        try:
-            record = run_agent_once_sync(
-                task.instruction,
-                cwd=run.workspace,
-                gate_mode=PermissionMode.BYPASS,
-                max_requests=task.max_steps,
-            )
-            agent_error = record.agent_error
-        except Exception as exc:  # a crashed agent still grades — don't skip the oracle
-            logger.exception("[eval] agent run raised for task %s", task.id)
-            agent_error = f"agent run raised: {exc}"
-        verify = run.grade(task)
-    return _payload(
-        record,
-        verify_exit=verify.exit_code,
-        verify_stdout=verify.stdout,
-        task=task,
-        agent_error=agent_error,
-        infra_error=None,
-    )
-
-
-def _payload(
-    record: EvalRunRecord | None,
-    *,
-    verify_exit: int | None,
-    verify_stdout: str,
-    task: BenchmarkTask,
-    agent_error: str | None,
-    infra_error: str | None,
-) -> dict[str, Any]:
-    """The flat output dict the landed metrics read (ADR-0017 §4).
-
-    ``tool_calls`` is de-dataclassed to plain ``{"name", "args"}`` dicts so the payload is
-    JSON-serializable for Opik storage; ``verify`` carries the Verifier's ``{"exit_code", "stdout"}``
-    (the reward metric that reads it lands with the trial runner, tasks 160-161). Two distinct failure
-    channels, both absorbed by the metrics' ``**ignored_kwargs``: ``agent_error`` names a crashed
-    agent run (the Verifier still ran); ``infra_error`` names a sandbox that never came up or could
-    not be graded, in which case ``verify.exit_code`` is ``None``. A ``None`` record degrades every
-    run field to its empty default.
-    """
-    tool_calls = (
-        [{"name": call.name, "args": call.args} for call in record.tool_calls] if record else []
-    )
+    summary = result.summary or {}
     return {
-        "output": record.output if record else "",
-        "tool_calls": tool_calls,
-        "steps": record.steps if record else 0,
-        "input_tokens": record.input_tokens if record else 0,
-        "output_tokens": record.output_tokens if record else 0,
-        "verify": {"exit_code": verify_exit, "stdout": verify_stdout},
+        "output": summary.get("output", ""),
+        "reward": result.reward,
+        "status": result.status,
+        "reason": result.reason,
+        "timed_out": result.timed_out,
+        "branch": result.branch,
+        "steps": summary.get("requests", 0),
         "max_steps": task.max_steps,
-        "agent_error": agent_error,
-        "infra_error": infra_error,
+        "input_tokens": summary.get("input_tokens", 0),
+        "output_tokens": summary.get("output_tokens", 0),
+        "cost_usd": summary.get("cost_usd"),
+        "trial_dir": str(result.trial_dir),
+        "infra_error": result.reason if result.status == "infra_error" else None,
     }
 
 
@@ -295,20 +249,3 @@ def agent_model() -> str:
     if provider == "modal":
         return settings.modal_endpoint_model
     return settings.gemini_model
-
-
-def git_sha() -> str:
-    """The current commit sha, or ``"unknown"`` if git is unavailable (never crash a benchmark on it).
-
-    Public so both experiment tracks (benchmark + regression) label their rows with the same resolver.
-    """
-    try:
-        completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return "unknown"
-    return completed.stdout.strip() if completed.returncode == 0 else "unknown"
