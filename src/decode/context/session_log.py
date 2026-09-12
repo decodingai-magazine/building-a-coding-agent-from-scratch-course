@@ -191,6 +191,78 @@ def resolve_session(sessions_dir: Path, identifier: str) -> Path | None:
     return None
 
 
+@dataclass(slots=True, frozen=True)
+class SessionSummary:
+    """One row of ``decode sessions``: what a session is, without replaying its messages."""
+
+    path: Path
+    session_id: str
+    created_at: datetime
+    turns: int
+
+
+def list_sessions(sessions_dir: Path) -> list[SessionSummary]:
+    """Every session in ``sessions_dir``, most recent first (§9).
+
+    Ordered by the lexicographic filename sort ``load_latest`` already uses (the UTC timestamp
+    prefix makes it chronological), NOT by mtime — an appended-to older session must not jump
+    ahead of what ``--resume`` with no id would pick. Empty or absent directory: ``[]``.
+
+    Tolerant like :func:`load`: a session whose header is truncated or garbage still lists,
+    with its id and time read off the filename, because it is still resumable.
+    """
+    ordered = sorted(_session_files(sessions_dir), key=lambda p: p.name, reverse=True)
+    return [_summarize(path) for path in ordered]
+
+
+def _summarize(path: Path) -> SessionSummary:
+    lines = _read_lines(path)
+    return SessionSummary(
+        path=path,
+        # The filename, not the header: it is what ``resolve_session`` matches a ``--resume``
+        # argument against, so a listed id is always one the user can paste back.
+        session_id=path.stem.split("_", 1)[-1],
+        created_at=_created_at(path, lines),
+        turns=sum(1 for line in lines if _line_type(line) == _MESSAGES_TYPE),
+    )
+
+
+def _read_lines(path: Path) -> list[str]:
+    try:
+        return path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        logger.debug("skipping unreadable session file %s", path)
+        return []
+
+
+def _created_at(path: Path, lines: list[str]) -> datetime:
+    """The session's start time as an aware UTC datetime: header, else filename, else mtime."""
+    if lines:
+        try:
+            header: Any = json.loads(lines[0])
+            if header.get("type") == _HEADER_TYPE:
+                return datetime.fromisoformat(header["created_at"]).astimezone(UTC)
+        except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+            logger.debug("session %s has no readable header; timing from the filename", path.name)
+    try:
+        stamp = path.stem.split("_", 1)[0]
+        return datetime.strptime(stamp, _FILENAME_TS_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return datetime.fromtimestamp(path.stat().st_mtime, UTC)
+
+
+def _line_type(line: str) -> str | None:
+    """The typed discriminator of one log line; ``None`` for a blank or malformed one."""
+    stripped = line.strip()
+    if not stripped:
+        return None
+    try:
+        obj: Any = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    return obj.get("type") if isinstance(obj, dict) else None
+
+
 def _session_files(sessions_dir: Path) -> list[Path]:
     if not sessions_dir.is_dir():
         return []

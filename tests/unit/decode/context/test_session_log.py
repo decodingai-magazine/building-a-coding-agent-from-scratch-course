@@ -443,3 +443,70 @@ def test_create_rejects_a_naive_now(tmp_path: Path):
     naive = datetime(2026, 6, 19, 12, 30)
     with pytest.raises(ValueError, match="timezone-aware"):
         SessionLog.create(tmp_path, cwd=tmp_path, now=naive, session_id=_UUID)
+
+
+# list_sessions — the `decode sessions` listing (most recent first)
+
+
+def _session_at(dir_: Path, hour: int, uuid: str) -> SessionLog:
+    """One session opened at a fixed UTC hour, so filename order is deterministic."""
+    return SessionLog.create(dir_, cwd=dir_, now=_NOW.replace(hour=hour), session_id=UUID(uuid))
+
+
+def test_list_sessions_is_most_recent_first(tmp_path: Path):
+    ids = (f"00000000-0000-0000-0000-00000000000{n}" for n in (1, 2, 3))
+    for hour, uuid in zip((9, 11, 10), ids, strict=True):
+        _session_at(tmp_path, hour, uuid)
+
+    rows = session_log.list_sessions(tmp_path)
+
+    assert [row.created_at.hour for row in rows] == [11, 10, 9]
+    # The newest row is exactly what a bare ``--resume`` would replay.
+    assert rows[0].path == session_log._latest_session_file(tmp_path)
+
+
+def test_list_sessions_counts_only_message_turns(tmp_path: Path):
+    log = _session_at(tmp_path, 9, "00000000-0000-0000-0000-000000000001")
+    log.append_turn(_conversation("hi", "hello"))
+    log.append_turn(_conversation("again", "sure"))
+    log.append_compaction(_summary_message(), _conversation("tail", "ok"))
+    log.append_clear()
+
+    (row,) = session_log.list_sessions(tmp_path)
+
+    assert row.turns == 2  # compaction + clear markers are not turns
+
+
+def test_list_sessions_reads_the_id_and_time_off_the_filename_when_the_header_is_garbage(
+    tmp_path: Path,
+):
+    log = _session_at(tmp_path, 9, "00000000-0000-0000-0000-000000000001")
+    log.path.write_text("{not json at all\n", encoding="utf-8")
+
+    (row,) = session_log.list_sessions(tmp_path)
+
+    # Still resumable, so still listed.
+    assert row.session_id == "00000000-0000-0000-0000-000000000001"
+    assert row.created_at == _NOW.replace(hour=9)
+    assert row.turns == 0
+
+
+def test_list_sessions_created_at_is_timezone_aware_utc(tmp_path: Path):
+    _session_at(tmp_path, 9, "00000000-0000-0000-0000-000000000001")
+
+    (row,) = session_log.list_sessions(tmp_path)
+
+    assert row.created_at.tzinfo is not None
+    assert row.created_at.utcoffset() == UTC.utcoffset(None)
+
+
+def test_list_sessions_ignores_non_session_files(tmp_path: Path):
+    _session_at(tmp_path, 9, "00000000-0000-0000-0000-000000000001")
+    (tmp_path / "notes.txt").write_text("scratch", encoding="utf-8")
+
+    assert len(session_log.list_sessions(tmp_path)) == 1
+
+
+def test_list_sessions_is_empty_for_an_empty_or_absent_directory(tmp_path: Path):
+    assert session_log.list_sessions(tmp_path) == []
+    assert session_log.list_sessions(tmp_path / "nope") == []

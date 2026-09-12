@@ -30,7 +30,7 @@ Feature-specific tables live next to the feature: **sandbox modes** [03_sandboxi
 
 | What you see | What it means | Fix |
 | --- | --- | --- |
-| Agent **describes** the tool instead of using it | pinned model has no tool-calling | back to a shipped default (`Qwen/Qwen3.6-35B-A3B-FP8`, `gemini-3.5-flash`, `openrouter/free`). |
+| Agent **describes** the tool instead of using it | pinned model has no tool-calling | back to a shipped default (`Qwen/Qwen3.6-35B-A3B-FP8`, `gemini-3.8-flash`, `openrouter/free`). |
 | `Decode: no known context window for model …; assuming …` | informational — model not in the static table, probe didn't answer | set `COMPACTION_CONTEXT_WINDOW_TOKENS` to the real window. |
 | `/` shows no demo skills | launched outside the course repo — skills load from the launch directory | relaunch from the repo, or copy `.decode/skills/` into your project. |
 | `--resume` finds nothing | sessions are per-directory | relaunch from the same directory; transcripts in `.decode/sessions/`. |

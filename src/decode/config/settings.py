@@ -47,11 +47,14 @@ _SCRUBBED_SECRET_FIELDS = (
 #
 # Provenance matters — a guessed number reintroduces exactly the bug this table fixes:
 #   * qwen3.6-35b-a3b — 262144, READ from the served endpoint (``GET /v1/models`` → max_model_len).
-#   * gemini-3.5 / gemini-2.5 — 1048576, the published 1M input window for those Flash/Pro lines.
+#   * gemini-3.8 — 1048576, READ from the provider (``models.get("gemini-3.8-flash")`` →
+#     input_token_limit); gemini-3.5 / gemini-2.5 — 1048576, the published 1M input window for
+#     those Flash/Pro lines.
 # Anything absent falls back to :data:`UNKNOWN_MODEL_CONTEXT_WINDOW` with a startup warning; add a
 # row here (with its source) rather than widening a pattern on a hunch.
 MODEL_CONTEXT_WINDOWS: tuple[tuple[str, int], ...] = (
     ("qwen3.6-35b-a3b", 262_144),
+    ("gemini-3.8", 1_048_576),
     ("gemini-3.5", 1_048_576),
     ("gemini-2.5", 1_048_576),
 )
@@ -94,7 +97,7 @@ class Settings(BaseSettings):
 
     # gemini (default): google-genai API-key path.
     gemini_api_key: SecretStr = SecretStr("")
-    gemini_model: str = "gemini-3.5-flash"
+    gemini_model: str = "gemini-3.8-flash"
 
     # openrouter: the default ``openrouter/free`` router spreads across free models and auto-filters
     # for tool-calling, so one congested upstream cannot hard-block with 429s; pin a :free id for a

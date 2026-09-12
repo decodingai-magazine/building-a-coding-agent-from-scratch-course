@@ -22,6 +22,7 @@ from pydantic_ai.exceptions import UsageLimitExceeded  # noqa: E402
 from decode.agent.context_window import resolve_context_window_detail  # noqa: E402
 from decode.agents.loader import load_primary_agent  # noqa: E402
 from decode.config.settings import settings  # noqa: E402
+from decode.context.session_log import list_sessions  # noqa: E402
 from decode.permissions.types import PermissionMode  # noqa: E402
 from decode.remote.cli import remote  # noqa: E402
 from decode.tui.app import run_app  # noqa: E402
@@ -311,7 +312,8 @@ def cli(
 
     Bare ``decode`` (no subcommand) launches the interactive REPL with the flags below — the
     behaviour is identical to the pre-runtime build. ``decode run "<task>"`` (ADR-0019) runs a
-    single task headlessly through the same agent instead.
+    single task headlessly through the same agent instead; ``decode sessions`` lists this
+    directory's sessions for ``--resume``.
 
     In a sandbox mode ``--repo <url-or-local-path>`` clones a repo into the isolated Workspace at
     launch (overriding ``SANDBOX_REPO``); ``--local`` picks a fast local clone (ADR-0012 §3).
@@ -565,6 +567,24 @@ def run(
     click.echo(output)  # stdout: only the clean agent answer (pipe-safe)
     # The Git hand-back (ADR-0012 §8) runs inside ``run_headless_task``, right after the sandbox
     # executor is reaped — the runner process is the one that owns the Workspace.
+
+
+@cli.command("sessions")
+def sessions() -> None:
+    """List this directory's sessions, most recent first.
+
+    A local file listing and nothing more: no provider key, no sandbox backend, no agent is
+    needed to read it. Each row's id is what ``decode --resume <session-id>`` takes.
+    """
+    rows = list_sessions(settings.sessions_dir)
+    if not rows:
+        # Not an error: a directory with no sessions yet is the normal first-run state.
+        click.echo(f"Decode: no sessions yet in {settings.sessions_dir}.")
+        return
+
+    for row in rows:
+        turns = "turn" if row.turns == 1 else "turns"
+        click.echo(f"{row.created_at:%Y-%m-%d %H:%M:%SZ}  {row.session_id}  {row.turns:>4} {turns}")
 
 
 if __name__ == "__main__":

@@ -45,7 +45,7 @@ set -a && . ./.env && set +a
 uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or export it first}" \
   LLM_PROVIDER=gemini \
   GEMINI_API_KEY="$GEMINI_API_KEY" \
-  GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}" \
+  GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.8-flash}" \
   OPIK_API_KEY="$OPIK_API_KEY" \
   OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force

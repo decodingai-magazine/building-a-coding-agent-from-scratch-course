@@ -9,6 +9,8 @@ the settings the factory reads.
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 from click.testing import CliRunner
@@ -18,6 +20,7 @@ from support.settings_env import hermetic_settings
 from decode import cli as cli_mod
 from decode.agent import context_window
 from decode.cli import cli
+from decode.context.session_log import SessionLog
 from decode.permissions.types import PermissionMode
 from decode.tui import app as app_mod
 
@@ -80,10 +83,10 @@ def test_cli_runs_and_exits_zero():
     assert "Decode" in result.output
 
 
-def test_run_and_remote_are_the_only_subcommands():
+def test_run_remote_and_sessions_are_the_only_subcommands():
     """ADR-0019 §1: ``run`` is the whole local headless surface (``replay`` died with the Durable
-    Flow); ``remote`` is its Modal launcher (ADR-0020)."""
-    assert set(cli.commands) == {"run", "remote"}
+    Flow); ``remote`` is its Modal launcher (ADR-0020); ``sessions`` is a local file listing."""
+    assert set(cli.commands) == {"run", "remote", "sessions"}
 
 
 def test_run_subcommand_is_registered_without_breaking_the_bare_repl(mocker):
@@ -1196,3 +1199,53 @@ def test_context_window_notice_describes_the_model_override(notice_settings, moc
 
     assert notice is not None
     assert "acme/unlisted-model-v1" in notice
+
+
+# ``decode sessions`` — the local session listing
+
+
+def _seed_sessions(tmp_path, mocker, hours=(9, 11)):
+    """Open one session per hour under a temp sessions dir the CLI command will read."""
+    sessions_dir = tmp_path / "sessions"
+    mocker.patch.object(cli_mod.settings, "sessions_dir", sessions_dir)
+    for index, hour in enumerate(hours, start=1):
+        SessionLog.create(
+            sessions_dir,
+            cwd=tmp_path,
+            now=datetime(2026, 6, 19, hour, 30, 45, tzinfo=UTC),
+            session_id=UUID(f"0000000{index}-0000-0000-0000-000000000000"),
+        )
+    return sessions_dir
+
+
+def test_sessions_lists_most_recent_first(tmp_path, mocker):
+    _seed_sessions(tmp_path, mocker)
+
+    result = CliRunner().invoke(cli, ["sessions"])
+
+    assert result.exit_code == 0
+    lines = result.output.splitlines()
+    assert [line.split()[1] for line in lines] == ["11:30:45Z", "09:30:45Z"]
+    # The id column is exactly what ``--resume`` takes.
+    assert lines[0].split()[2] == "00000002-0000-0000-0000-000000000000"
+
+
+def test_sessions_reports_an_empty_directory_without_failing(tmp_path, mocker):
+    mocker.patch.object(cli_mod.settings, "sessions_dir", tmp_path / "sessions")
+
+    result = CliRunner().invoke(cli, ["sessions"])
+
+    assert result.exit_code == 0  # no sessions yet is the first-run state, not an error
+    assert "no sessions yet" in result.output
+
+
+def test_sessions_needs_no_provider_key(tmp_path, mocker, monkeypatch):
+    """Listing local files must not run the provider startup guard."""
+    _seed_sessions(tmp_path, mocker, hours=(9,))
+    mocker.patch.object(cli_mod.settings, "gemini_api_key", SecretStr(""))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    result = CliRunner().invoke(cli, ["sessions"])
+
+    assert result.exit_code == 0
+    assert "00000001-0000-0000-0000-000000000000" in result.output
