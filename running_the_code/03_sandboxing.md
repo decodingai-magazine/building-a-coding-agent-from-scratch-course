@@ -2,11 +2,11 @@
 
 By default `bash` runs on your host and file tools edit your working directory. A **Sandbox Mode** moves the whole tool scope, file tools and `bash`, into an isolated `/workspace`. decode's own artifacts (sessions, memory, logs) stay in the launch directory ([ADR-0012](../docs/adr/0012-isolated-workspace.md)).
 
-| `SANDBOX_MODE` | Where tools run | Prerequisite |
-|---|---|---|
-| `none` (default) | host | — |
-| `docker` | one local container per session; `/workspace` = bind mount of `.decode/sandbox/`; guards against accidents, not untrusted code | [Docker Desktop](https://www.docker.com/products/docker-desktop/) running |
-| `modal` | one remote [Modal Sandbox](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng); nothing runs on your machine | `uv run modal token set …` ([02 §1](02_modal_endpoints.md#1-create-the-endpoint)) |
+| `SANDBOX_MODE`   | Where tools run                                                                                                                        | Prerequisite                                                                      |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `none` (default) | host                                                                                                                                   | —                                                                                 |
+| `docker`         | one local container per session; `/workspace` = bind mount of `.decode/sandbox/`; guards against accidents, not untrusted code         | [Docker Desktop](https://www.docker.com/products/docker-desktop/) running         |
+| `modal`          | one remote [Modal Sandbox](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng); nothing runs on your machine | `uv run modal token set …` ([02 §1](02_modal_endpoints.md#1-create-the-endpoint)) |
 
 Fresh-exec in both modes: the filesystem persists across calls, `cd` / `export` do not (chain: `cd /workspace/app && …`).
 
@@ -59,12 +59,12 @@ Cleanup: `rm -rf .decode/sandbox`, revoke the PAT. Same claims without a PAT or 
 
 ## 3. Troubleshooting
 
-| What you see | Fix |
-| --- | --- |
-| `Decode: SANDBOX_MODE=docker but the Docker daemon is not reachable` | start Docker Desktop, or `SANDBOX_MODE=none`. |
-| `Decode: SANDBOX_MODE=modal but Modal credentials are missing` | `uv run modal token set …`. |
-| `Decode: --repo/SANDBOX_REPO clones a repo into the isolated sandbox Workspace …` | `--repo` needs `docker` or `modal`. |
-| `'origin' does not appear to be a git repository` on push | Workspace was already populated, `--repo` ignored: `rm -rf .decode/sandbox`. |
+| What you see                                                                      | Fix                                                                          |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `Decode: SANDBOX_MODE=docker but the Docker daemon is not reachable`              | start Docker Desktop, or `SANDBOX_MODE=none`.                                |
+| `Decode: SANDBOX_MODE=modal but Modal credentials are missing`                    | `uv run modal token set …`.                                                  |
+| `Decode: --repo/SANDBOX_REPO clones a repo into the isolated sandbox Workspace …` | `--repo` needs `docker` or `modal`.                                          |
+| `'origin' does not appear to be a git repository` on push                         | Workspace was already populated, `--repo` ignored: `rm -rf .decode/sandbox`. |
 
 Everything else: [00_troubleshooting.md](00_troubleshooting.md).
 

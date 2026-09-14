@@ -10,15 +10,19 @@ First, create a free account on [Modal](https://modal.com?source=decodingai&camp
 
 Then go to Settings -> API tokens and create a token.
 
-## 2. Create the endpoint
+You will use it to authenticate the Modal CLI and do everything else from the terminal.
 
-Create a token and the LLM endpoint (you have to wait ~5-10 minutes until the dedicated endpoint is deployed for the first time):
+Set the token in your Modal CLI (it's already installed in the uv virtual env):
 
 ```bash
-# 1. Authenticate via your token
 uv run modal token set --token-id <your-token-id> --token-secret <your-token-secret>
+```
 
-# 2. Serve Qwen3.6-35B-A3B-FP8 on a Modal endpoint
+## 2. Create the endpoint
+
+Create a Modal endpoint that serves the `Qwen3.6-35B-A3B-FP8` LLM and automatically picks an NVIDIA H200 GPU (you have to wait ~5–10 minutes until the dedicated endpoint is deployed for the first time):
+
+```bash
 uv run modal endpoint create --model Qwen/Qwen3.6-35B-A3B-FP8 --env main
 ```
 
@@ -30,7 +34,7 @@ uv run modal endpoint list --env main
 
 ## 3. Authenticate the endpoint
 
-To authenticate to the endpoint, mint a proxy token pair:
+To authenticate the HTTP requests the agent loop makes to the endpoint, mint a proxy token pair:
 
 ```bash
 uv run modal workspace proxy-tokens create
@@ -88,7 +92,7 @@ uv run modal endpoint stop <endpoint-id> --env main
 
 Start a decode session and say hello. If you don't get a 4xx or 5xx error, you should be good to go.
 
-Run:
+Run in your terminal:
 
 ```shell
 decode
