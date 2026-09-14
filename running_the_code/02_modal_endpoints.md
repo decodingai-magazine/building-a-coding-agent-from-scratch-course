@@ -114,6 +114,14 @@ Run the same `uv run modal endpoint create --model <model> --env main` command w
 
 The full catalog and benchmarks are in the Modal dashboard; see the docs on [endpoints](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng).
 
+## 8. Troubleshooting
+
+| What you see                                                                  | What it means                                                                                         | Fix                                                                                                                                                                                                                                                                     |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pydantic_ai.exceptions.ModelHTTPError: status_code: 503, model_name: Qwen/…` | Cold start: the endpoint scaled to zero (Min 0), and no container was ready to serve the request yet. | Wait a few minutes for the GPU container to boot, then resend the message. To avoid it, keep a container warm: open the endpoint in the dashboard, go to **AUTOSCALING → Edit → Override**, and set **Min 1** (see [5. Cold starts and cost](#5-cold-starts-and-cost)). |
+
+Everything else: [00_troubleshooting.md](00_troubleshooting.md).
+
 ---
 
 **Next:** [03_sandboxing.md](03_sandboxing.md) — move the agent's tools into an isolated Workspace, work on any repo, get a branch back.
