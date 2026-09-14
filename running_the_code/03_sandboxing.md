@@ -43,6 +43,14 @@ SANDBOX_MODE=docker decode run \
   "list the current dir"
 ```
 
+Or with any other open-source repository, such as Kitaru:
+
+```bash
+rm -rf .decode/sandbox
+SANDBOX_MODE=docker decode \
+  --repo https://github.com/zenml-io/kitaru
+```
+
 ## 2. Optional: Push code to GitHub from the sandbox (`SANDBOX_GIT_TOKEN`)
 
 To give the coding agent write access to your repository (to create branches, push commits, and open PRs) while it works inside the sandbox, you need to issue a Git token, such as a GitHub personal access token (PAT). [More here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
@@ -115,7 +123,7 @@ You can fine-tune the sandbox from your `.env`. All of these are optional:
 | -------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `SANDBOX_REPO`                                     | empty                                           | The repo (URL or local path) cloned into the Workspace at launch. `--repo` overrides it. Empty means an empty Workspace.                                                                               |
 | `SANDBOX_WORKSPACE_DIR`                            | `.decode/sandbox`                               | The host directory that **is** the Workspace (bind-mounted at `/workspace` in Docker). If you change it, delete that directory instead of `.decode/sandbox` in the commands on this page.              |
-| `SANDBOX_IMAGE`                                    | `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` | The container image the tools run in, for both `docker` and `modal`. It must include `bash`. git and `gh` are installed on top by each backend, so swap it for an image with your project's toolchain. |
+| `SANDBOX_IMAGE`                                    | `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` | The container image the tools run in, for both `docker` and `modal`. It must include `bash`. Each backend installs git and `gh` on top, so you can swap it for an image with your project's toolchain. |
 | `SANDBOX_TIMEOUT_S`                                | `600`                                           | `modal` only: the maximum lifetime of the remote sandbox, in seconds, before Modal shuts it down. Docker containers have no lifetime cap.                                                              |
 | `SANDBOX_GIT_USER_NAME` / `SANDBOX_GIT_USER_EMAIL` | `decode` / `decode@localhost`                   | The Git identity preconfigured inside the sandbox, so the agent's `git commit` succeeds. Set it to your own name and email to author the agent's commits as yourself.                                  |
 
@@ -134,14 +142,21 @@ Then you can kick off a session in a remote Modal sandbox by switching `SANDBOX_
 SANDBOX_MODE=modal decode
 ```
 
-Or operate within a GitHub repository:
+Or operate within a GitHub repository, such as decode's own:
 
 ```shell
 SANDBOX_MODE=modal decode \
   --repo https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course
 ```
 
-For write commands, make sure that `SANDBOX_GIT_TOKEN` is set in your `.env`.
+Or Kitaru:
+
+```shell
+SANDBOX_MODE=modal decode \
+  --repo https://github.com/zenml-io/kitaru
+```
+
+For write commands (creating branches, commits, and PRs), make sure that `SANDBOX_GIT_TOKEN` is set in your `.env`.
 
 Test it by asking decode what operating system it is running on:
 

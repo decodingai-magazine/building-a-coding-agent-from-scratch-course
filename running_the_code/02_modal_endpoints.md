@@ -12,7 +12,7 @@ Then go to Settings -> API tokens and create a token.
 
 You will use it to authenticate the Modal CLI and do everything else from the terminal.
 
-Set the token in your Modal CLI (it's already installed in the uv virtual env):
+Set the token in your Modal CLI (the `modal` CLI is already installed in the uv virtual env):
 
 ```bash
 uv run modal token set --token-id <your-token-id> --token-secret <your-token-secret>
@@ -61,8 +61,7 @@ In `.env`, set:
 LLM_PROVIDER=modal
 MODAL_ENDPOINT_URL=https://your-workspace--your-app.modal.run   # go to Modal's dashboard -> Endpoint -> Qwen Endpoint -> Copy endpoint URL (as in the image below)
 MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8
-MODAL_TOKEN_ID=ak-...                                           # both, or neither
-MODAL_TOKEN_SECRET=as-...
+
 MODAL_PROXY_TOKEN_ID=wk-...                                     # both, or neither (an --unauthenticated endpoint)
 MODAL_PROXY_TOKEN_SECRET=ws-...
 ```
@@ -70,10 +69,10 @@ MODAL_PROXY_TOKEN_SECRET=ws-...
 Get the Modal endpoint URL:
 ![](../assets/modal_get_endpoint_url.png)
 
-> [!WARNING]
-> There are two token pairs; do not mix them up: `MODAL_TOKEN_*` authenticate the CLI and are **not** `.env` settings; `MODAL_PROXY_TOKEN_*` are how decode calls the model.
+> [!NOTE]
+> `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` authenticate the CLI, are set only via `modal token set ...`, and are **not** `.env` settings. `MODAL_PROXY_TOKEN_*` are what decode uses to call the model.
 
-Then run `decode` as before.
+Then run `decode` as before to spin up an agent session.
 
 ## 5. Cold starts and cost
 
