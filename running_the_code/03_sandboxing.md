@@ -16,7 +16,7 @@ You can kick off a decode session in an empty sandbox:
 SANDBOX_MODE=docker decode
 ```
 
-Or in a sandbox that pulls a GitHub repository with your Python code and automatically prepares the virtual env for your agent to work in:
+Or in a sandbox that pulls a public GitHub repository with your Python code and automatically prepares the virtual env for your agent to work in:
 
 ```bash
 # --repo clones only into an EMPTY Workspace; a populated one is reused silently
@@ -43,13 +43,17 @@ SANDBOX_MODE=docker decode run \
   "list the current dir"
 ```
 
-Other knobs (`.env`): `SANDBOX_WORKSPACE_DIR` (default `.decode/sandbox`), `SANDBOX_IMAGE` (each backend adds git + `gh`), `SANDBOX_TIMEOUT_S` (modal lifetime), `SANDBOX_GIT_USER_NAME` / `_EMAIL` (in-Workspace commit identity), `SANDBOX_GIT_TOKEN` (below).
-
 ## 2. Optional: Push code to GitHub from the sandbox (`SANDBOX_GIT_TOKEN`)
 
 To give the coding agent write access to your repository (to create branches, push commits, and open PRs) while it works inside the sandbox, you need to issue a Git token, such as a GitHub personal access token (PAT). [More here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
 
-To plug it into decode, set the `SANDBOX_GIT_TOKEN` env var in your `.env` or inject it directly at runtime:
+To plug it into decode, set the `SANDBOX_GIT_TOKEN` env var in your `.env`:
+
+```.env
+SANDBOX_GIT_TOKEN=...
+```
+
+Or inject it directly at runtime:
 
 ```bash
 rm -rf .decode/sandbox
@@ -103,12 +107,24 @@ git push origin \
   --delete decode/<session-id>
 ```
 
-## 4. Cleanup
+## 4. Other sandbox settings
+
+You can fine-tune the sandbox from your `.env`. All of these are optional:
+
+| Env var                                            | Default                                         | Role                                                                                                                                                                                                   |
+| -------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SANDBOX_REPO`                                     | empty                                           | The repo (URL or local path) cloned into the Workspace at launch. `--repo` overrides it. Empty means an empty Workspace.                                                                               |
+| `SANDBOX_WORKSPACE_DIR`                            | `.decode/sandbox`                               | The host directory that **is** the Workspace (bind-mounted at `/workspace` in Docker). If you change it, delete that directory instead of `.decode/sandbox` in the commands on this page.              |
+| `SANDBOX_IMAGE`                                    | `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` | The container image the tools run in, for both `docker` and `modal`. It must include `bash`. git and `gh` are installed on top by each backend, so swap it for an image with your project's toolchain. |
+| `SANDBOX_TIMEOUT_S`                                | `600`                                           | `modal` only: the maximum lifetime of the remote sandbox, in seconds, before Modal shuts it down. Docker containers have no lifetime cap.                                                              |
+| `SANDBOX_GIT_USER_NAME` / `SANDBOX_GIT_USER_EMAIL` | `decode` / `decode@localhost`                   | The Git identity preconfigured inside the sandbox, so the agent's `git commit` succeeds. Set it to your own name and email to author the agent's commits as yourself.                                  |
+
+## 5. Cleanup
 
 1. Remove the sandbox artifacts: `rm -rf .decode/sandbox`.
 2. Revoke the PAT.
 
-## 5. Run remote sandboxes via Modal
+## 6. Run remote sandboxes via Modal
 
 First, follow the Modal setup steps in [02_modal_endpoints.md](./02_modal_endpoints.md) (this takes ~5–10 minutes).
 
@@ -135,7 +151,7 @@ To see your running sandboxes, go to Modal -> Apps -> `decode-sandbox-local` or 
 
 ![](../assets/modal_sandbox_dashboard.png)
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
 | What you see                                                                      | Fix                                                                                         |
 | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
