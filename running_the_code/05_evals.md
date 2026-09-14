@@ -1,15 +1,15 @@
-# 05 — Evals with Opik
+# 05. Evals with Opik
 
 Tracing shows what happened; it cannot say whether a change made the agent better or worse. The eval suite in [`evals/`](../evals/) ([ADR-0017](../docs/adr/0017-decode-eval-suite.md), rebuilt by [ADR-0022](../docs/adr/0022-evals-v2-own-harbor-on-opik.md)) does, on one shared [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) harness.
 
 Needs `OPIK_API_KEY` ([01 §2](01_install_and_usage.md#2-add-a-key)) plus your provider key; Docker for the benchmark. Runs cost money and are never in `make ci`. Missing a key: one line, exit 0. Benchmark and regression runs log under `EVAL_PROJECT_NAME` (`decode-evals`), apart from the live project; the online track deliberately grades the live one.
 
-| Track | Answers | Graded by | Run |
-|---|---|---|---|
-| Demo Skills | does it impress? | you | `/demo-N-...` in the REPL |
-| Benchmark | does it work? | Terminal-Bench-style tasks run through `decode run`, graded host-side by `tests/test.sh` → `reward.txt` | `make eval-benchmark` |
-| Regression Cases | does it work the way we designed? | code metrics + threshold gate (and the same cases judged as English assertions in an Opik Test Suite) | `make eval-regression` · `python -m evals suite` |
-| Online eval | is live traffic still good? | an LLM judge over emitted traces — an always-on Online Rule plus a scripted thread pass | `python -m evals online-rule create` · `python -m evals online` |
+| Track            | Answers                           | Graded by                                                                                               | Run                                                             |
+| ---------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Demo Skills      | does it impress?                  | you                                                                                                     | `/demo-N-...` in the REPL                                       |
+| Benchmark        | does it work?                     | Terminal-Bench-style tasks run through `decode run`, graded host-side by `tests/test.sh` → `reward.txt` | `make eval-benchmark`                                           |
+| Regression Cases | does it work the way we designed? | code metrics + threshold gate (and the same cases judged as English assertions in an Opik Test Suite)   | `make eval-regression` · `python -m evals suite`                |
+| Online eval      | is live traffic still good?       | an LLM judge over emitted traces — an always-on Online Rule plus a scripted thread pass                 | `python -m evals online-rule create` · `python -m evals online` |
 
 Every command lives under one CLI:
 
@@ -37,14 +37,14 @@ Commands:
 
 Six skills under `.decode/skills/demo-N-*/`, run as in [01 §4](01_install_and_usage.md#4-try-a-skill), no Opik needed:
 
-| Skill | Shows off |
-|---|---|
-| `/demo-1-terminal-arcade` | a playable `curses` Snake game in one file |
-| `/demo-2-bug-hunt` | find and fix two seeded bugs until the suite is green |
-| `/demo-3-repo-pulse` | live GitHub API data → single-file dashboard |
-| `/demo-4-review-swarm` | three parallel Explore subagents → one verdict |
+| Skill                        | Shows off                                              |
+| ---------------------------- | ------------------------------------------------------ |
+| `/demo-1-terminal-arcade`    | a playable `curses` Snake game in one file             |
+| `/demo-2-bug-hunt`           | find and fix two seeded bugs until the suite is green  |
+| `/demo-3-repo-pulse`         | live GitHub API data → single-file dashboard           |
+| `/demo-4-review-swarm`       | three parallel Explore subagents → one verdict         |
 | `/demo-5-sandbox-feature-pr` | decode improves decode: sandbox + hand-back → draft PR |
-| `/demo-6-article-kg` | web articles → interactive knowledge graph |
+| `/demo-6-article-kg`         | web articles → interactive knowledge graph             |
 
 ## 2. Benchmark
 
@@ -103,11 +103,11 @@ A reward is reproducible from here with a bare `python3` — no Opik, no docker.
 
 ### Failure taxonomy — what counts and what is thrown out
 
-| `result.json` status | When | Effect on the score |
-|---|---|---|
-| `agent_ok` | reward 1 | numerator + denominator |
-| `agent_fail` | wrong answer, the `--max-requests` ceiling, the agent **timeout**, an `error` exit **that still wrote a summary** | denominator only — a real loss, with a named reason |
-| `infra_error` | seed/clone failed, the sandbox never started, `decode run` died **before** its summary, the Verifier crashed/timed out, an unreadable reward | excluded from **both** — Opik `ScoreResult(scoring_failed=True)`, counted in the `infra` column |
+| `result.json` status | When                                                                                                                                         | Effect on the score                                                                             |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `agent_ok`           | reward 1                                                                                                                                     | numerator + denominator                                                                         |
+| `agent_fail`         | wrong answer, the `--max-requests` ceiling, the agent **timeout**, an `error` exit **that still wrote a summary**                            | denominator only — a real loss, with a named reason                                             |
+| `infra_error`        | seed/clone failed, the sandbox never started, `decode run` died **before** its summary, the Verifier crashed/timed out, an unreadable reward | excluded from **both** — Opik `ScoreResult(scoring_failed=True)`, counted in the `infra` column |
 
 A timeout is never an infra error: the process group gets SIGINT, decode's `finally` hands the partial branch back, and it is graded like any other (so a timed-out run with no summary is still `agent_fail`, reason `the agent timed out after 900s; it never wrote a summary`). A missing or non-numeric `reward.txt` is an error, never a 0.
 
@@ -160,7 +160,7 @@ python -m evals mine --preset all --limit 100 --json                # every id, 
 
 The judge has its own provider knob: `EVAL_JUDGE_PROVIDER` (`gemini` | `openrouter` | `modal`; empty
 follows the agent's `LLM_PROVIDER`, which is what every run before this knob did), with
-`EVAL_JUDGE_MODEL` picking the model *on* that route (a LiteLLM string). So a modal-served agent can
+`EVAL_JUDGE_MODEL` picking the model _on_ that route (a LiteLLM string). So a modal-served agent can
 be graded by a cheap gemini judge — or by your own endpoint, at no per-token cost:
 
 ```bash
@@ -168,7 +168,7 @@ EVAL_JUDGE_PROVIDER=modal make eval-regression   # judge on the Modal endpoint
 ```
 
 When agent and judge providers differ, the preflight asks for **both** keys — one guard serves
-`eval-benchmark` (agent only) and `eval-regression` (agent *and* judge).
+`eval-benchmark` (agent only) and `eval-regression` (agent _and_ judge).
 
 ⚠️ A `modal` judge gives two things up, both forced by the endpoint (SGLang + DFLASH speculative
 decoding): it drops `logprobs`/`top_logprobs`, which the server refuses, so G-Eval parses the score

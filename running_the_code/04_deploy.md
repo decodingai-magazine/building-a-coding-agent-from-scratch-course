@@ -1,4 +1,4 @@
-# 04 — Deploy the headless harness on Modal
+# 04. Deploy the headless harness on Modal
 
 Run `decode run` in a [Modal](https://modal.com?source=decodingai&campaign=harnesseng) container instead of your laptop, triggered from the CLI, a webhook, or a cron ([ADR-0020](../docs/adr/0020-remote-headless-on-modal.md)). No server: a deployed app with nothing running costs nothing.
 

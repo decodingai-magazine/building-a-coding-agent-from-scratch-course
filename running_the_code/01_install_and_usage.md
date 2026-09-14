@@ -1,4 +1,4 @@
-# 01 — Install and run
+# 01. Install and run Decode
 
 Install decode, add one API key, run a first session. ~5 minutes.
 

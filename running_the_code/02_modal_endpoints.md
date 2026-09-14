@@ -1,4 +1,4 @@
-# 02 — Serve your own model on Modal
+# 02. Serve your own model on Modal
 
 Replace the rate-limited free key with an open-weights model you serve yourself. Every lesson is tested against the default below.
 

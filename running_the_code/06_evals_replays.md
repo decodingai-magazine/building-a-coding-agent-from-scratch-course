@@ -1,4 +1,4 @@
-# 06 — Record and replay with Kitaru
+# 06. Record and replay your evals with Kitaru
 
 Replay-based evals on your own traffic with [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs), all from your laptop. ~30 minutes; one provider key; Docker for the replay step.
 
@@ -9,12 +9,12 @@ Vocabulary: a run is recorded as a **Session**; humans judge Sessions in an **In
 A Kitaru Server is **one URL** ([ADR-0022](../docs/adr/0022-evals-v2-own-harbor-on-opik.md) §11) and
 everything below is identical on either of them: a **local OSS deployment** on your laptop, or the **managed workspace**.
 
-| | Local OSS server | Managed workspace |
-|---|---|---|
-| URL | `http://localhost:8000` | `https://f5ee9622-kitaru.cloudinfra.zenml.io` |
-| Start it | `make kitaru-local` (docker compose: the server image + `postgres:16-alpine`) | `uv run kitaru login <url>` (device flow in the browser) |
-| Stop it | `uv run kitaru logout` | — |
-| Reachable from Modal | no (laptop-only Workers) | yes ([07](07_evals_replays_deploy.md)) |
+|                      | Local OSS server                                                              | Managed workspace                                        |
+| -------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------- |
+| URL                  | `http://localhost:8000`                                                       | `https://f5ee9622-kitaru.cloudinfra.zenml.io`            |
+| Start it             | `make kitaru-local` (docker compose: the server image + `postgres:16-alpine`) | `uv run kitaru login <url>` (device flow in the browser) |
+| Stop it              | `uv run kitaru logout`                                                        | —                                                        |
+| Reachable from Modal | no (laptop-only Workers)                                                      | yes ([07](07_evals_replays_deploy.md))                   |
 
 Everything decode needs on a server — the `decode` agent + its two Agent Versions, the `opik`
 importer, every evaluator in `evaluators/` — is ONE idempotent script; `make kitaru-local` runs it
@@ -158,17 +158,17 @@ Designing a what-if: the `kitaru-replay-experiment` skill.
 
 ## 6. Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| `[kitaru] not recording this run: … is unavailable` | `uv run kitaru status`; re-auth with `kitaru login <url>`; check `KITARU_AGENT_ID` is an agent on that workspace. |
-| Records nothing, says nothing | `KITARU_AGENT_ID` empty, or `KITARU_API_URL` in `.env` but not exported. |
-| Replay stays queued | no live Worker (`kitaru worker list`), or the wrong Agent Version (`kitaru agent version list decode`: the docker one is the laptop Worker, the `none` one is the Modal Worker, [07](07_evals_replays_deploy.md)). |
-| `evals kitaru import` waits, then times out | no live Worker — an import is a job, and the server executes nothing. Start one (§4) and re-run. |
-| `evals kitaru cohort`: "recorded no Kitaru Sessions" | the benchmark ran without `KITARU_AGENT_ID` exported; re-run it with both variables exported. |
-| `Decode: set GEMINI_API_KEY in your environment` in a replay | Worker shell had no provider key, or `.env` was sourced in the wrong directory. `pwd`, source, restart the Worker. |
-| Replay fails before the agent starts | Docker down, or stale command path after `make install`: re-run `scripts/bootstrap_kitaru.py`. |
-| `403: Task credentials are not accepted on this route` | `unset KITARU_AGENT_ID` in the Worker shell. |
-| `ModelHTTPError: 503` inside a replay | the pipe works; only the model was gone. `ModuleNotFoundError` / command not found = setup broken. |
+| Symptom                                                      | Fix                                                                                                                                                                                                                |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `[kitaru] not recording this run: … is unavailable`          | `uv run kitaru status`; re-auth with `kitaru login <url>`; check `KITARU_AGENT_ID` is an agent on that workspace.                                                                                                  |
+| Records nothing, says nothing                                | `KITARU_AGENT_ID` empty, or `KITARU_API_URL` in `.env` but not exported.                                                                                                                                           |
+| Replay stays queued                                          | no live Worker (`kitaru worker list`), or the wrong Agent Version (`kitaru agent version list decode`: the docker one is the laptop Worker, the `none` one is the Modal Worker, [07](07_evals_replays_deploy.md)). |
+| `evals kitaru import` waits, then times out                  | no live Worker — an import is a job, and the server executes nothing. Start one (§4) and re-run.                                                                                                                   |
+| `evals kitaru cohort`: "recorded no Kitaru Sessions"         | the benchmark ran without `KITARU_AGENT_ID` exported; re-run it with both variables exported.                                                                                                                      |
+| `Decode: set GEMINI_API_KEY in your environment` in a replay | Worker shell had no provider key, or `.env` was sourced in the wrong directory. `pwd`, source, restart the Worker.                                                                                                 |
+| Replay fails before the agent starts                         | Docker down, or stale command path after `make install`: re-run `scripts/bootstrap_kitaru.py`.                                                                                                                     |
+| `403: Task credentials are not accepted on this route`       | `unset KITARU_AGENT_ID` in the Worker shell.                                                                                                                                                                       |
+| `ModelHTTPError: 503` inside a replay                        | the pipe works; only the model was gone. `ModuleNotFoundError` / command not found = setup broken.                                                                                                                 |
 
 ---
 
