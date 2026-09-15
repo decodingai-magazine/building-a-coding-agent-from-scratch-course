@@ -14,9 +14,9 @@ everything below is identical on either of them: a **local OSS deployment** on y
 | URL                  | `http://localhost:8000`                                                       | `https://f5ee9622-kitaru.cloudinfra.zenml.io`            |
 | Start it             | `make kitaru-local` (docker compose: the server image + `postgres:16-alpine`) | `uv run kitaru login <url>` (device flow in the browser) |
 | Stop it              | `uv run kitaru logout`                                                        | —                                                        |
-| Reachable from Modal | no (laptop-only Workers)                                                      | yes ([07](07_evals_replays_deploy.md))                   |
+| Where Workers run    | your laptop                                                                   | your laptop — the workspace only stores the results      |
 
-Everything decode needs on a server — the `decode` agent + its two Agent Versions, the `opik`
+Everything decode needs on a server — the `decode` agent + its Agent Version, the `opik`
 importer, every evaluator in `evaluators/` — is ONE idempotent script; `make kitaru-local` runs it
 for you, and re-running it changes nothing:
 
@@ -112,8 +112,8 @@ uv run python scripts/bootstrap_kitaru.py --server $KITARU_API_URL   # registers
 uv run kitaru agent version list decode
 ```
 
-Two versions are registered on every server, in this order: `decode@1` = the laptop Worker
-(`SANDBOX_MODE=docker`), `decode@2` = the Modal-hosted Worker's own container (`none`, [07](07_evals_replays_deploy.md)).
+One version is registered on a fresh server: `decode@1` = the laptop Worker (`SANDBOX_MODE=docker`).
+Workers run only on your machine ([ADR-0023](../docs/adr/0023-kitaru-workers-run-locally.md)); a managed workspace stores the Sessions, it executes nothing.
 A moved venv or an edited evaluator registers exactly one new version; everything else is left alone.
 
 A replay inherits the Worker's env, nothing is stored on the workspace: start it from a shell that carries your provider keys and the same `LLM_PROVIDER` / model the sessions were recorded with.
@@ -162,7 +162,7 @@ Designing a what-if: the `kitaru-replay-experiment` skill.
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `[kitaru] not recording this run: … is unavailable`          | `uv run kitaru status`; re-auth with `kitaru login <url>`; check `KITARU_AGENT_ID` is an agent on that workspace.                                                                                                  |
 | Records nothing, says nothing                                | `KITARU_AGENT_ID` empty, or `KITARU_API_URL` in `.env` but not exported.                                                                                                                                           |
-| Replay stays queued                                          | no live Worker (`kitaru worker list`), or the wrong Agent Version (`kitaru agent version list decode`: the docker one is the laptop Worker, the `none` one is the Modal Worker, [07](07_evals_replays_deploy.md)). |
+| Replay stays queued                                          | no live Worker (`kitaru worker list`), or the wrong Agent Version (`kitaru agent version list decode`: pick the one whose env says `SANDBOX_MODE=docker`).                                                        |
 | `evals kitaru import` waits, then times out                  | no live Worker — an import is a job, and the server executes nothing. Start one (§4) and re-run.                                                                                                                   |
 | `evals kitaru cohort`: "recorded no Kitaru Sessions"         | the benchmark ran without `KITARU_AGENT_ID` exported; re-run it with both variables exported.                                                                                                                      |
 | `Decode: set GEMINI_API_KEY in your environment` in a replay | Worker shell had no provider key, or `.env` was sourced in the wrong directory. `pwd`, source, restart the Worker.                                                                                                 |
@@ -172,4 +172,4 @@ Designing a what-if: the `kitaru-replay-experiment` skill.
 
 ---
 
-**Next:** [07_evals_replays_deploy.md](07_evals_replays_deploy.md) — run the Worker on Modal so replays keep going with the laptop closed.
+**Done.** You have the full stack: a coding agent on your own model, sandboxed, deployed, traced, benchmarked, recorded, and replayed. Back to the [course README](../README.md) for the lessons.

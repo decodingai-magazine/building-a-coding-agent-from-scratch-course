@@ -1,17 +1,13 @@
-"""The one image both Modal apps run on, and the fixed layout inside it (ADR-0020 §2).
+"""The image the Modal Headless App runs on, and the fixed layout inside it (ADR-0020 §2).
 
-Two apps need the same container — the Modal Headless App (:mod:`decode.remote.app`) and the
-Modal-hosted Kitaru Worker (``scripts/modal_kitaru_worker.py``) — so the build lives here once
-instead of being copy-pasted into both. It is deploy-time code: imported by ``modal deploy``, never
-by the REPL or ``decode run``.
+Kept apart from :mod:`decode.remote.app` because the launcher needs pieces of it without importing
+``modal``: :func:`repo_root_error` is checked by ``decode remote deploy`` on the laptop, and the
+in-image paths are read by :mod:`decode.remote.headless`. It is deploy-time code otherwise: the
+image itself is built by ``modal deploy``, never by the REPL or ``decode run``.
 
-The layout is the load-bearing part. The Worker spawns replays from an **Agent Version** whose run
-spec names :data:`DECODE_BIN` and :data:`HARNESS_HOME` as absolute in-image paths (registered from a
-laptop that cannot stat them — ``scripts/bootstrap_kitaru.py`` reads the two values from here and
-registers them as-is, checking only the LAPTOP Worker's own entrypoint). A path that
-drifts here is not a test failure, it is every replay failing to spawn, hours later, on a machine
-nobody is watching. Hence: ONE definition, imported by both apps and pinned by unit tests on both
-sides.
+The layout is the load-bearing part: :data:`DECODE_BIN` and :data:`HARNESS_HOME` are the absolute
+in-image paths every remote run spawns from and anchors its harness artifacts to. ONE definition,
+pinned by unit tests.
 
 Built in-app with :class:`modal.Image` — no Dockerfile, no registry (ADR-0020 §2):
 
@@ -20,8 +16,8 @@ Built in-app with :class:`modal.Image` — no Dockerfile, no registry (ADR-0020 
    layer, and the one that survives every source edit.
 3. this repo's source, installed with ``--no-deps`` so layer 2 is re-used verbatim.
 
-``uv_sync`` builds its venv at ``/.uv/.venv``, so both console scripts sit at ONE absolute path no
-``PATH`` set-up in any shell can move: ``decode`` for the harness, ``kitaru`` for the Worker.
+``uv_sync`` builds its venv at ``/.uv/.venv``, so the ``decode`` console script sits at ONE
+absolute path no ``PATH`` set-up in any shell can move.
 
 The build needs the repo CHECKOUT (``pyproject.toml`` + ``uv.lock`` + ``src/``): :data:`REPO_ROOT`
 is resolved from this file, so an installed wheel cannot deploy — ``decode remote deploy`` says so
@@ -53,13 +49,11 @@ NOT_A_CHECKOUT_FORMAT = (
 IMAGE_SOURCE_DIR = "/opt/decode"
 VENV_DIR = "/.uv/.venv"
 
-# The two console scripts an operator surface ever spawns, at absolute in-image paths.
+# The console script a remote run spawns, at an absolute in-image path.
 DECODE_BIN = f"{VENV_DIR}/bin/decode"
-KITARU_BIN = f"{VENV_DIR}/bin/kitaru"
 
 # The Harness Home: every harness artifact (``.decode/sessions``, logs, ``.decode/sandbox``) anchors
-# here, OUTSIDE any repo checkout (ADR-0012 §6). Also the Kitaru Worker's working dir, because it is
-# the cwd every spawned replay inherits.
+# here, OUTSIDE any repo checkout (ADR-0012 §6).
 HARNESS_HOME = "/harness"
 
 # Build artefacts and local state that must never be baked into the image.
@@ -97,17 +91,16 @@ def build_image(
     extra_dirs: Sequence[str] = (),
     extra_packages: Sequence[str] = (),
 ) -> modal.Image:
-    """The image both apps run on: locked deps, this repo's source, the fixed directories.
+    """The headless app's image: locked deps, this repo's source, the fixed directories.
 
     ``extra_dirs`` are created alongside :data:`HARNESS_HOME` — the headless app's harness-side repo
     clone is the only one so far. They are part of the image rather than a runtime ``mkdir`` for the
     same reason the paths are constants: a directory that only exists when some code remembered to
     create it is a directory that is missing the one time it matters.
 
-    ``extra_packages`` are pip requirements an APP needs that decode itself does not — the headless
-    app's webhook endpoint needs ``fastapi``, the Worker needs nothing. They install into the same
-    venv, between the locked deps and the source, so the expensive ``uv_sync`` layer stays shared by
-    both apps and a source edit still rebuilds only the tail.
+    ``extra_packages`` are pip requirements the app needs that decode itself does not — the
+    webhook endpoint needs ``fastapi``. They install into the same venv, between the locked deps and
+    the source, so a source edit still rebuilds only the tail.
 
     ``decode_env`` is BAKED into the image (ADR-0021 §3). It is a deploy-time decision, read from the
     deploying laptop's env, and it already picked this app's name and Secret name — baking it keeps
@@ -143,11 +136,4 @@ def build_image(
         # value that named this app and its Secret, so the three cannot drift. It changes names only
         # — the Secret's process env is still the whole config surface (ADR-0021 §1).
         .env({"DECODE_ENV": decode_env})
-        # LAST, and it has to be: the Worker app lives in the local ``scripts`` package, and a
-        # container's sys.path is not the laptop's — without it the Function dies at import, before
-        # it runs a line (``ModuleNotFoundError: No module named 'scripts'``, found on the worker's
-        # first run). The headless app needs nothing here: ``decode.remote.app`` is part of the
-        # installed package. Modal refuses any build step after an ``add_local_*``, so this stays
-        # the tail.
-        .add_local_python_source("scripts")
     )

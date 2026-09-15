@@ -2,7 +2,7 @@
 
 Startup guards check **presence only** and print one line, never a traceback — match the line you got.
 
-Feature-specific tables live next to the feature: **Modal endpoints** [02_modal_endpoints.md](02_modal_endpoints.md#8-troubleshooting) · **sandbox modes** [03_sandboxing.md](03_sandboxing.md#6-troubleshooting) · **headless harness on Modal** [04_deploy.md](04_deploy.md#8-troubleshooting) · **recording & replays** [06_evals_replays.md](06_evals_replays.md#6-troubleshooting) · **replays on Modal** [07_evals_replays_deploy.md](07_evals_replays_deploy.md#6-troubleshooting).
+Feature-specific tables live next to the feature: **Modal endpoints** [02_modal_endpoints.md](02_modal_endpoints.md#8-troubleshooting) · **sandbox modes** [03_sandboxing.md](03_sandboxing.md#6-troubleshooting) · **headless harness on Modal** [04_deploy.md](04_deploy.md#8-troubleshooting) · **recording & replays** [06_evals_replays.md](06_evals_replays.md#6-troubleshooting).
 
 ## Install
 

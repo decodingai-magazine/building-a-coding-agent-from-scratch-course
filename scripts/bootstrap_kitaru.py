@@ -8,9 +8,9 @@ A Kitaru Server is one URL — the local OSS deployment ``kitaru login --local``
 (``make kitaru-local``), or a managed workspace. Everything decode needs on it is the same on every
 one of them, so it is one script rather than a runbook section of copy-pasted commands:
 
-* the agent ``decode`` and its two Agent Versions — the replay run spec a Worker spawns, one per
-  Worker (``SANDBOX_MODE=docker`` for the laptop, ``none`` for the Modal-hosted Worker's own
-  container — ADR-0019 §4, ADR-0020 §5); this file replaces the DELETED
+* the agent ``decode`` and its Agent Version — the replay run spec the laptop Worker spawns
+  (``SANDBOX_MODE=docker`` over a repo clone — ADR-0019 §4; Workers run only on the operator's
+  machine, ADR-0023); this file replaces the DELETED
   ``scripts/register_kitaru_agent.py``, whose pure builders (:func:`build_run_env`,
   :func:`register_argv`) moved here unchanged;
 * the importer ``opik`` (``importers/opik_importer.py``), which turns an Opik trace export into
@@ -60,9 +60,8 @@ DEFAULT_HARNESS_HOME = Path.home() / ".decode-kitaru-worker"
 # process the Worker kills mid-run is indistinguishable from an agent failure in the replay record.
 DEFAULT_TIMEOUT_SECONDS = 1800
 
-# The Sandbox Modes a Worker can replay under; `docker` first, because it is the laptop default.
-SANDBOX_MODES = ("docker", "none", "modal")
-DEFAULT_SANDBOX_MODE = "docker"
+# The Sandbox Mode every replay runs under: the laptop Worker's docker Workspace (ADR-0023).
+SANDBOX_MODE = "docker"
 
 # The importer that reads an Opik trace export (`python -m evals kitaru import` produces its input).
 IMPORTER_NAME = "opik"
@@ -78,24 +77,12 @@ EVALUATOR_ENTRYPOINT = "evaluate"
 # The connection variable a Kitaru Server is named by when `--server` is not passed (ADR-0019 §3).
 KITARU_API_URL_ENV = "KITARU_API_URL"
 
-# What `kitaru agent get decode` shows an operator, per mode — the one line that tells the laptop
-# version and the Modal-worker version apart. Every mode names its SANDBOX_MODE verbatim.
-_DESCRIPTIONS = {
-    "docker": (
-        "decode run under SANDBOX_MODE=docker over a clone of the course repo; the task arrives in "
-        "KITARU_TASK_INPUTS (ADR-0019 §4)."
-    ),
-    # No apostrophe anywhere in these: the printed argv is shlex-quoted, and one apostrophe turns a
-    # paste-able command into '"'"' noise.
-    "none": (
-        "decode run under SANDBOX_MODE=none inside the Kitaru Worker container (no repo clone — the "
-        "container is the isolation); the task arrives in KITARU_TASK_INPUTS (ADR-0020 §5)."
-    ),
-    "modal": (
-        "decode run under SANDBOX_MODE=modal over a clone of the course repo in a nested Modal "
-        "Sandbox; the task arrives in KITARU_TASK_INPUTS (ADR-0020 §5)."
-    ),
-}
+# What `kitaru agent get decode` shows an operator. No apostrophe anywhere in it: the printed argv is
+# shlex-quoted, and one apostrophe turns a paste-able command into '"'"' noise.
+_DESCRIPTION = (
+    f"decode run under SANDBOX_MODE={SANDBOX_MODE} over a clone of the course repo; the task arrives "
+    "in KITARU_TASK_INPUTS (ADR-0019 §4)."
+)
 
 
 class BootstrapError(Exception):
@@ -104,9 +91,8 @@ class BootstrapError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class VersionSpec:
-    """One Agent Version this server should have: the replay context of one Worker."""
+    """One Agent Version this server should have: the replay context of the laptop Worker."""
 
-    sandbox_mode: str
     decode_bin: Path
     harness_home: Path
     repo: Path
@@ -126,26 +112,19 @@ class Row:
 # --- the pure builders (moved verbatim from the deleted scripts/register_kitaru_agent.py) --------
 
 
-def build_run_env(*, repo: Path, sandbox_mode: str = DEFAULT_SANDBOX_MODE) -> dict[str, str]:
+def build_run_env(*, repo: Path) -> dict[str, str]:
     """The run spec's process env: the replay context, and nothing secret (ADR-0019 §4).
 
     Each key is load-bearing: ``SANDBOX_MODE`` picks the Workspace every tool call runs in, and
     ``SANDBOX_REPO`` makes that Workspace a clone of ``repo``. ``DECODE_ENV`` is deliberately NOT
     here (ADR-0021 §4): it names the environment a replay runs AS, and that is the Worker's to say —
-    a replay spawned by ``decode-kitaru-worker-prod`` should file its traces under ``decode-prod``,
-    not under whatever a registration script guessed months earlier. Provider credentials are NOT
+    a Worker started with ``DECODE_ENV=prod`` should file its traces under ``decode-prod``, not
+    under whatever a registration script guessed months earlier. Provider credentials are NOT
     here either: kitaru's Worker layers the run spec ON TOP of its own ``os.environ``
     (``kitaru/worker/process.py::build_process_env``), so they ride the shell that started the
     Worker — uploading them to the workspace would copy live keys off the host to buy nothing.
-
-    Under ``none`` the repo is dropped entirely: decode rejects a repo when there is no sandbox to
-    clone it into (ADR-0012 §3), so shipping one would fail every spawn at pre-flight. The Worker's
-    container is the isolation and its Harness Home is the tool scope (ADR-0020 §5).
     """
-    env = {"SANDBOX_MODE": sandbox_mode}
-    if sandbox_mode != "none":
-        env["SANDBOX_REPO"] = str(repo)
-    return env
+    return {"SANDBOX_MODE": SANDBOX_MODE, "SANDBOX_REPO": str(repo)}
 
 
 def register_argv(
@@ -155,7 +134,6 @@ def register_argv(
     harness_home: Path,
     repo: Path,
     timeout_seconds: int,
-    sandbox_mode: str = DEFAULT_SANDBOX_MODE,
     server: str | None = None,
 ) -> list[str]:
     """The exact ``kitaru agent version register`` argv for this host.
@@ -172,10 +150,10 @@ def register_argv(
     argv = ["kitaru", "agent", "version", "register", agent]
     argv += ["--command", f"{decode_bin} run"]
     argv += ["--working-dir", str(harness_home)]
-    for key, value in build_run_env(repo=repo, sandbox_mode=sandbox_mode).items():
+    for key, value in build_run_env(repo=repo).items():
         argv += ["--env", f"{key}={value}"]
     argv += ["--timeout-seconds", str(timeout_seconds)]
-    argv += ["--description", _DESCRIPTIONS[sandbox_mode]]
+    argv += ["--description", _DESCRIPTION]
     return _with_server(argv, server)
 
 
@@ -191,7 +169,6 @@ def agent_register_argv(*, agent: str, spec: VersionSpec, server: str | None = N
         harness_home=spec.harness_home,
         repo=spec.repo,
         timeout_seconds=spec.timeout_seconds,
-        sandbox_mode=spec.sandbox_mode,
     )
     argv = ["kitaru", "agent", "register", agent, *version_argv[5:]]
     return _with_server(argv, server)
@@ -299,7 +276,7 @@ def desired_run_spec(spec: VersionSpec) -> dict[str, Any]:
     return {
         "command": f"{spec.decode_bin} run",
         "working_dir": str(spec.harness_home),
-        "env": build_run_env(repo=spec.repo, sandbox_mode=spec.sandbox_mode),
+        "env": build_run_env(repo=spec.repo),
         "timeout_seconds": spec.timeout_seconds,
     }
 
@@ -342,25 +319,12 @@ def evaluator_name(script: Path) -> str:
 
 
 def desired_versions(*, repo: Path, decode_bin: Path, harness_home: Path) -> list[VersionSpec]:
-    """The two Agent Versions every server gets: the laptop Worker, then the Modal one.
+    """The Agent Versions every server gets: the laptop Worker's, so a fresh server names it ``decode@1``.
 
-    Their order IS the version order on a fresh server (docker = v1, none = v2), so the runbooks can
-    name ``decode@1`` for a laptop replay. The Modal Worker's paths come from
-    ``decode.remote.image`` (both Modal apps share that image builder), so moving the venv or the
-    Harness Home in the image changes the registration instead of breaking every replay it claims.
+    Only one: Kitaru Workers run on the operator's machine, never in a container (ADR-0023).
     """
-    from decode.remote.image import DECODE_BIN, HARNESS_HOME
-
     return [
-        VersionSpec(
-            sandbox_mode="docker", decode_bin=decode_bin, harness_home=harness_home, repo=repo
-        ),
-        VersionSpec(
-            sandbox_mode="none",
-            decode_bin=Path(DECODE_BIN),
-            harness_home=Path(HARNESS_HOME),
-            repo=repo,
-        ),
+        VersionSpec(decode_bin=decode_bin, harness_home=harness_home, repo=repo),
     ]
 
 
@@ -519,7 +483,6 @@ def _bootstrap_agent(
             harness_home=spec.harness_home,
             repo=spec.repo,
             timeout_seconds=spec.timeout_seconds,
-            sandbox_mode=spec.sandbox_mode,
             server=server,
         )
         item = _emit(runner, argv, dry_run=dry_run, echo=echo)
@@ -532,7 +495,7 @@ def _version_row(agent: str, spec: VersionSpec, version: Any, action: str) -> Ro
     payload = version if isinstance(version, dict) else {}
     number = payload.get("version")
     return Row(
-        kind=f"agent version ({spec.sandbox_mode})",
+        kind=f"agent version ({SANDBOX_MODE})",
         ref=f"{agent}@{number}" if number else f"{agent}@?",
         id=str(payload.get("id", "-")),
         action=action,
@@ -677,7 +640,7 @@ def main(
         )
     if not dry_run:
         # The laptop Worker chdirs here for every spawn, so it must exist before the first task is
-        # claimed. The Modal Worker's /harness is created by the image build, never here.
+        # claimed.
         harness_home.mkdir(parents=True, exist_ok=True)
 
     click.echo(f"kitaru bootstrap → {target or 'the server in your kitaru login store'}")

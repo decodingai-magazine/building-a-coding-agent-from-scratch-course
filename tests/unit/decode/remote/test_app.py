@@ -137,7 +137,7 @@ def test_the_webhook_rejects_a_bad_run_before_spawning_anything(mocker):
     assert error.value.detail == headless.DOCKER_MODE_MESSAGE
 
 
-def test_the_webhook_image_carries_fastapi_the_worker_image_does_not():
+def test_the_webhook_image_carries_fastapi():
     from decode.remote.image import extra_packages_command
 
     assert any(package.startswith("fastapi") for package in headless.WEB_PACKAGES)

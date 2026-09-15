@@ -226,7 +226,7 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><b>8</b><br/>AI Evals on Steroids via Replays</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 4 — coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a> · <a href="running_the_code/07_evals_replays_deploy.md">07_evals_replays_deploy.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a></td>
   </tr>
 </table>
 
@@ -283,7 +283,7 @@ One Python package; each module maps to one part of the architecture:
 │   ├── adr/                  # Architecture Decision Records — the "why" of every choice
 │   └── glossary.md           # one canonical name per concept
 ├── evals/                    # benchmark tasks + regression cases + the Opik harness
-├── scripts/                  # operator scripts: Kitaru bootstrap + the Modal-hosted Kitaru Worker
+├── scripts/                  # operator scripts: Kitaru bootstrap + eval table generation
 ├── tests/{unit,integration}/ # mirrors src/ 1:1; milestone capstones prove each milestone
 └── src/decode/
     ├── cli.py                # Click entrypoint → launches the TUI
@@ -316,7 +316,6 @@ Everything lives under [`running_the_code/`](running_the_code/). Follow them in 
 | [04_deploy.md](running_the_code/04_deploy.md)                             | The headless harness on Modal — CLI, webhook, cron                 |
 | [05_evals.md](running_the_code/05_evals.md)                               | Benchmarks, regression cases, and online evals                     |
 | [06_evals_replays.md](running_the_code/06_evals_replays.md)               | Kitaru on your laptop: record, replay & the full evals loop        |
-| [07_evals_replays_deploy.md](running_the_code/07_evals_replays_deploy.md) | The Kitaru Worker on Modal — replays off-laptop                    |
 
 ## 🤝 Sponsors
 

@@ -21,13 +21,12 @@ never runs an ephemeral app. Every decision a run is made of lives in :mod:`deco
 
 * **The Function runs the SAME console script a laptop runs** — ``decode run`` as a subprocess — so
   remote behavior cannot drift from local behavior (ADR-0020 §1).
-* **The image is built in-app** (ADR-0020 §2) by :mod:`decode.remote.image`, shared verbatim with
-  the Modal-hosted Kitaru Worker (``scripts/modal_kitaru_worker.py``): ``debian_slim`` +
+* **The image is built in-app** (ADR-0020 §2) by :mod:`decode.remote.image`: ``debian_slim`` +
   ``Image.uv_sync()`` for the locked dependencies, then this repo's source baked on top and installed
   with ``--no-deps``. No checked-in image recipe, no registry. Deps and source are separate layers,
   so editing decode rebuilds only the last two — and a code change needs a re-deploy before the
   next run. The console script therefore exists at ONE deterministic absolute path,
-  :data:`DECODE_BIN` — the same one the Worker's Agent Version is registered with.
+  :data:`decode.remote.image.DECODE_BIN`.
 * **One environment, one deployment** (ADR-0021 §2). ``DECODE_ENV`` is read from the DEPLOYING
   laptop's env, names the app and its Secret — both ``decode-headless-<env>`` — and is baked into
   the image; the Secret carries credentials only. So ``DECODE_ENV=prod decode remote deploy``
@@ -84,11 +83,9 @@ from decode.remote.headless import (
     webhook_response,
     webhook_spawn_kwargs,
 )
-from decode.remote.image import DECODE_BIN, HARNESS_HOME, build_image
+from decode.remote.image import build_image
 
-# The image is built by ``decode.remote.image``, shared with the Modal-hosted Kitaru Worker
-# (``scripts/modal_kitaru_worker.py``) — one build, one layout, one set of absolute paths. The
-# webhook's FastAPI is the only layer the two apps do not share; the locked-deps layer below it is.
+# The image is built by ``decode.remote.image`` — one build, one layout, one set of absolute paths.
 # The environment this deployment IS, read from the deploying laptop once (ADR-0021 §2). It names
 # the app and the Secret below and is baked into the image, so a container can never disagree with
 # the app it runs in about which environment it is.
@@ -98,10 +95,6 @@ IMAGE = build_image(
     decode_env=DECODE_ENV, extra_dirs=(REPO_CLONE_DIR,), extra_packages=WEB_PACKAGES
 )
 SECRET_NAME = secret_name(DECODE_ENV)
-
-# Re-exported: the in-image paths are read from HERE by the Agent Version registration's drift guard
-# (``scripts/bootstrap_kitaru.py::desired_versions``) — defined once, in ``decode.remote.image``.
-__all__ = ["DECODE_BIN", "HARNESS_HOME", "app", "nightly", "run_task", "webhook"]
 
 app = modal.App(app_name(DECODE_ENV))
 

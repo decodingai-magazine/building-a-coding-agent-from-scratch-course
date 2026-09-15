@@ -109,33 +109,13 @@ def test_the_repo_itself_as_harness_home_is_refused():
         _argv(harness_home=REPO)
 
 
-@pytest.mark.parametrize("mode", ["docker", "none", "modal"])
-def test_a_harness_home_inside_the_repo_is_refused_in_every_mode(mode: str):
+def test_a_harness_home_nested_inside_the_repo_is_refused():
     with pytest.raises(ValueError, match="inside the repo"):
-        _argv(harness_home=REPO / "sub", sandbox_mode=mode)
+        _argv(harness_home=REPO / "sub")
 
 
-def test_none_mode_registers_no_sandbox_repo():
-    """decode refuses a repo with no sandbox to clone it into (ADR-0012 §3)."""
-    assert build_run_env(repo=REPO, sandbox_mode="none") == {"SANDBOX_MODE": "none"}
-
-
-def test_none_mode_argv_passes_exactly_one_env_option():
-    argv = _argv(sandbox_mode="none", harness_home=Path("/harness"))
-
-    assert [item for item in argv if item == "--env"] == ["--env"]
-    assert "SANDBOX_REPO" not in " ".join(argv)
-
-
-def test_modal_mode_keeps_the_repo_clone():
-    assert build_run_env(repo=REPO, sandbox_mode="modal")["SANDBOX_REPO"] == str(REPO)
-
-
-@pytest.mark.parametrize("mode", ["docker", "none", "modal"])
-def test_the_description_names_the_mode_it_registers(mode: str):
-    argv = _argv(sandbox_mode=mode, harness_home=Path("/harness"))
-
-    assert f"SANDBOX_MODE={mode}" in _option(argv, "--description")
+def test_the_description_names_the_mode_it_registers():
+    assert "SANDBOX_MODE=docker" in _option(_argv(), "--description")
 
 
 # --- no credential ever leaves the host ------------------------------------------------------------
@@ -177,12 +157,7 @@ def test_the_server_is_named_explicitly_on_every_argv():
 def test_the_first_registration_creates_the_agent_and_its_first_version():
     argv = agent_register_argv(
         agent=DEFAULT_AGENT,
-        spec=VersionSpec(
-            sandbox_mode="docker",
-            decode_bin=REPO / ".venv/bin/decode",
-            harness_home=HOME,
-            repo=REPO,
-        ),
+        spec=VersionSpec(decode_bin=REPO / ".venv/bin/decode", harness_home=HOME, repo=REPO),
         server=SERVER,
     )
 
@@ -194,12 +169,11 @@ def test_the_first_registration_creates_the_agent_and_its_first_version():
 # --- the built spec is one kitaru itself accepts ---------------------------------------------------
 
 
-@pytest.mark.parametrize("mode", ["docker", "none"])
-def test_the_built_spec_validates_against_the_installed_kitaru_run_spec(mode: str):
+def test_the_built_spec_validates_against_the_installed_kitaru_run_spec():
     """The offline proof: an argv these tests accept is one the server's ``RunSpec`` accepts."""
     from kitaru.cli.registration import build_agent_version_request
 
-    argv = _argv(sandbox_mode=mode, harness_home=Path("/harness"))
+    argv = _argv(harness_home=Path("/harness"))
     request = build_agent_version_request(
         command=_option(argv, "--command"),
         entrypoint=None,
@@ -216,26 +190,22 @@ def test_the_built_spec_validates_against_the_installed_kitaru_run_spec(mode: st
 
     assert request.run_spec is not None
     assert request.run_spec.working_dir == "/harness"
-    assert ("SANDBOX_REPO" in request.run_spec.env) is (mode != "none")
+    assert request.run_spec.env["SANDBOX_REPO"] == str(REPO)
 
 
-def test_the_modal_worker_version_uses_the_images_own_paths():
-    """The registration and the image are one contract: the baked venv and /harness."""
-    from decode.remote.image import DECODE_BIN, HARNESS_HOME
-
+def test_every_server_gets_only_the_laptop_workers_version():
+    """Kitaru Workers run on the operator's machine only (ADR-0023): one docker spec, their paths."""
     specs = desired_versions(repo=REPO, decode_bin=REPO / ".venv/bin/decode", harness_home=HOME)
 
-    assert [spec.sandbox_mode for spec in specs] == ["docker", "none"]
-    assert specs[1].decode_bin == Path(DECODE_BIN)
-    assert specs[1].harness_home == Path(HARNESS_HOME)
+    assert specs == [
+        VersionSpec(decode_bin=REPO / ".venv/bin/decode", harness_home=HOME, repo=REPO)
+    ]
 
 
 # --- what "already registered" means ---------------------------------------------------------------
 
 
-DOCKER_SPEC = VersionSpec(
-    sandbox_mode="docker", decode_bin=REPO / ".venv/bin/decode", harness_home=HOME, repo=REPO
-)
+DOCKER_SPEC = VersionSpec(decode_bin=REPO / ".venv/bin/decode", harness_home=HOME, repo=REPO)
 
 
 def registered_version(number: int = 1) -> dict[str, Any]:
@@ -261,22 +231,25 @@ def test_an_identical_run_spec_is_recognised_through_the_servers_own_defaults():
 
 
 def test_a_moved_venv_is_not_the_same_version():
-    moved = VersionSpec(
-        sandbox_mode="docker",
-        decode_bin=Path("/elsewhere/decode"),
-        harness_home=HOME,
-        repo=REPO,
-    )
+    moved = VersionSpec(decode_bin=Path("/elsewhere/decode"), harness_home=HOME, repo=REPO)
 
     assert matching_version([registered_version()], moved) is None
 
 
-def test_a_different_sandbox_mode_is_not_the_same_version():
-    other = VersionSpec(
-        sandbox_mode="none", decode_bin=REPO / ".venv/bin/decode", harness_home=HOME, repo=REPO
-    )
+def retired_modal_worker_version(number: int) -> dict[str, Any]:
+    """The `none` version the deleted Modal-hosted Worker registered (ADR-0023): same command shape."""
+    version = registered_version(number)
+    version["run_spec"] = {
+        **version["run_spec"],
+        "command": "/.uv/.venv/bin/decode run",
+        "working_dir": "/harness",
+        "env": {"SANDBOX_MODE": "none"},
+    }
+    return version
 
-    assert matching_version([registered_version()], other) is None
+
+def test_a_different_sandbox_mode_is_not_the_same_version():
+    assert matching_version([retired_modal_worker_version(1)], DOCKER_SPEC) is None
 
 
 def test_a_script_is_matched_on_the_digest_of_the_bytes_it_would_upload(tmp_path):
@@ -481,7 +454,7 @@ def _bootstrap(fake: FakeKitaru, repo_tree: Path, **overrides: Any) -> list[Row]
     return bootstrap(**{**kwargs, **overrides})
 
 
-def test_a_fresh_server_gets_the_agent_two_versions_the_importer_and_every_evaluator(repo_tree):
+def test_a_fresh_server_gets_the_agent_its_version_the_importer_and_every_evaluator(repo_tree):
     fake = FakeKitaru()
 
     rows = _bootstrap(fake, repo_tree)
@@ -490,18 +463,11 @@ def test_a_fresh_server_gets_the_agent_two_versions_the_importer_and_every_evalu
     assert kinds == [
         "agent",
         "agent version (docker)",
-        "agent version (none)",
         "importer",
         "evaluator",
     ]
-    assert [row.action for row in rows] == [
-        "created",
-        "registered",
-        "registered",
-        "registered",
-        "registered",
-    ]
-    assert [row.ref for row in rows][1:3] == ["decode@1", "decode@2"]
+    assert [row.action for row in rows] == ["created", "registered", "registered", "registered"]
+    assert rows[1].ref == "decode@1"
 
 
 def test_rerunning_registers_nothing_and_prints_the_same_table(repo_tree):
@@ -525,6 +491,18 @@ def test_an_existing_agent_is_reused_never_re_created(repo_tree):
     assert not [call for call in fake.calls if call[1:3] == ["agent", "register"]]
 
 
+def test_a_server_still_carrying_the_retired_modal_worker_version_registers_nothing(repo_tree):
+    """Regression (ADR-0023): the docker spec still matches among old versions; `none` is left alone."""
+    fake = FakeKitaru(agent=True, versions=[registered_version(2), retired_modal_worker_version(3)])
+
+    rows = _bootstrap(fake, repo_tree)
+
+    assert not [call for call in fake.writes() if call[1] == "agent"]
+    assert [(row.ref, row.action) for row in rows if row.kind.startswith("agent version")] == [
+        ("decode@2", "exists")
+    ]
+
+
 def test_a_moved_venv_registers_exactly_one_new_agent_version(repo_tree):
     fake = FakeKitaru()
     _bootstrap(fake, repo_tree)
@@ -533,10 +511,7 @@ def test_a_moved_venv_registers_exactly_one_new_agent_version(repo_tree):
     rows = _bootstrap(fake, repo_tree, decode_bin=Path("/new/venv/bin/decode"))
 
     assert len(fake.writes()) == before + 1
-    assert [row.action for row in rows if row.kind.startswith("agent version")] == [
-        "registered",
-        "exists",
-    ]
+    assert [row.action for row in rows if row.kind.startswith("agent version")] == ["registered"]
 
 
 def test_an_edited_evaluator_registers_one_new_version(repo_tree):
@@ -575,7 +550,7 @@ def test_dry_run_against_an_unreachable_server_still_shows_the_full_bootstrap(re
 
     rows = _bootstrap(unreachable, repo_tree, dry_run=True, echo=printed.append)
 
-    assert len(rows) == 5
+    assert len(rows) == 4
     assert any("agent register decode" in line for line in printed)
 
 
