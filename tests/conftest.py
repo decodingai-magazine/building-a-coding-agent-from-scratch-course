@@ -9,11 +9,10 @@ import os
 os.environ["DECODE_LOG_FILE"] = ""
 
 # Pin the environment suffix for the whole suite BEFORE any module that BAKES it at import time
-# (ADR-0021 §1, task 155). ``scripts/modal_kitaru_worker.py`` and ``decode/remote/app.py`` both read
-# ``DECODE_ENV`` from ``os.environ`` at import to name their app + Secret, and the ``settings``
-# singleton is built at import too — all three are fixed long before the autouse
-# :func:`_default_decode_env` fixture (below) can monkeypatch anything, so a developer with
-# ``DECODE_ENV=prod`` exported saw 7 worker-script failures no one else got.
+# (ADR-0021 §1, task 155). ``decode/remote/app.py`` reads ``DECODE_ENV`` from ``os.environ`` at
+# import to name its app + Secret, and the ``settings`` singleton is built at import too — both are
+# fixed long before the autouse :func:`_default_decode_env` fixture (below) can monkeypatch anything,
+# so a developer with ``DECODE_ENV=prod`` exported saw failures no one else got.
 # PINNED, not deleted, on purpose: importing litellm (opik pulls it in, so the evals tests do) runs
 # ``load_dotenv()``, which copies the repo ``.env`` into ``os.environ`` — a deleted var comes right
 # back as whatever ``.env`` says, an already-present one is left alone. The per-test fixture still

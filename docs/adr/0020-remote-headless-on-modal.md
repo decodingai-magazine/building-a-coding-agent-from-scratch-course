@@ -1,7 +1,8 @@
 # 0020. Remote headless on Modal — Modal executes, Kitaru stays the record/replay plane
 
-**Status:** Accepted
+**Status:** Accepted — superseded in part by [ADR-0023](0023-kitaru-workers-run-locally.md)
 **Date:** 2026-08-22
+**Superseded:** 2026-09-15 — **§5 and the `decode-kitaru-worker` half of §4 are dead.** Kitaru Workers run only on the operator's machine; the Modal-hosted Worker, its Secret, its `none` Agent Version and its runbook are deleted (ADR-0023). Everything about the Modal Headless App stands.
 
 Builds on [ADR-0019](0019-kitaru-replay-runtime.md) (unchanged) and finishes retiring the
 surfaces its Decision left behind (07_infra's stale GCP story, the `remote` dependency group,
