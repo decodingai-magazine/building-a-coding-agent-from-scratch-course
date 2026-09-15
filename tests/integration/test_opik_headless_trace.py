@@ -22,6 +22,7 @@ module flag so nothing leaks across tests.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -94,8 +95,15 @@ def _model_spans(spans: list[dict]) -> list[dict]:
 
 
 def _tool_spans(spans: list[dict]) -> list[dict]:
-    """The tool-call spans — ``execute_tool <name>`` under pydantic-ai 2.x instrumentation."""
-    return [s for s in spans if s["name"].startswith("execute_tool")]
+    """The tool-call spans, selected the way the Opik importer selects them.
+
+    Not by span *name*: ``importers/opik_importer.py`` maps a span to a ``tool_call`` node when its
+    metadata says ``gen_ai.operation.name == "execute_tool"``, and reads the tool's name out of
+    ``logfire.msg``. Selecting here on the same attribute means an upstream change to either fact
+    (the pydantic-ai upgrade of task 155 is exactly when that could happen) fails this test instead
+    of silently producing a trace the importer would classify as a plain ``span``.
+    """
+    return [s for s in spans if s["attributes"].get("gen_ai.operation.name") == "execute_tool"]
 
 
 def test_a_headless_run_is_one_decode_run_root_with_nested_spans_and_usage(
@@ -142,6 +150,36 @@ def test_a_headless_run_is_one_decode_run_root_with_nested_spans_and_usage(
     assert any(tokens and tokens > 0 for tokens in input_tokens), input_tokens
 
 
+def test_a_tool_span_carries_what_the_opik_importer_reads(active_tracing, monkeypatch):
+    """The Opik → Kitaru importer's detection contract, pinned on a real run (task 155, AC6).
+
+    ``importers/opik_importer.py`` turns an Opik span into a ``tool_call`` node on exactly two
+    facts, and nothing else: metadata ``gen_ai.operation.name == "execute_tool"``, and a
+    ``logfire.msg`` of the form ``running tool: <name>`` that the tool's name is parsed out of.
+    Both are pydantic-ai instrumentation details, so a version bump can move them without a single
+    other test going red — and the damage would only show up as a Kitaru session whose tool calls
+    all imported as anonymous spans. This asserts them on the spans a real headless run emits.
+    """
+    Path(_READ_TARGET).write_text(_READ_CONTENTS, encoding="utf-8")
+    _patch_agent(
+        monkeypatch,
+        [
+            ModelResponse(parts=[ToolCallPart(tool_name="read", args={"path": _READ_TARGET})]),
+            ModelResponse(parts=[TextPart(content="read the spec")]),
+        ],
+    )
+
+    hl.run_headless_task("read the spec then report")
+
+    spans = active_tracing.exporter.exported_spans_as_dict()
+    tool_spans = _tool_spans(spans)
+    assert len(tool_spans) == 1, [s["name"] for s in spans]
+    attributes = tool_spans[0]["attributes"]
+    assert attributes["gen_ai.operation.name"] == "execute_tool"
+    # The name the importer parses — the prefix and the tool name, verbatim (_TOOL_MSG_PREFIX).
+    assert attributes["logfire.msg"] == "running tool: read"
+
+
 def test_each_run_gets_its_own_root_span_and_thread_id(active_tracing, monkeypatch):
     """Two runs are two traces: the session id is minted per run, never shared."""
     _patch_agent(monkeypatch, [ModelResponse(parts=[TextPart(content="first")])])
@@ -168,3 +206,42 @@ def test_an_inactive_run_emits_zero_spans_and_returns_the_same_output(capfire, m
 
     assert hl.run_headless_task("run without tracing") == "done, untraced"
     assert capfire.exporter.exported_spans_as_dict() == [], "an inactive run must emit no spans"
+
+
+def test_the_root_span_carries_the_eval_join_metadata(active_tracing, monkeypatch):
+    """ADR-0022 §10: git_sha / model / sandbox_mode / decode_env ride on the exported root span.
+
+    These are the fields Trace Mining filters and joins on, and they must land in the TRACE's
+    metadata — which on Opik's OTLP ingestion means the ``opik.metadata.<key>`` attribute and
+    nothing else (an unmapped bare attribute is dropped; verified against a live trace, task 156).
+    A root span's metadata is the trace's, so asserting the exported attribute here is asserting the
+    whole of decode's side of that contract.
+    """
+    _patch_agent(monkeypatch, [ModelResponse(parts=[TextPart(content="done")])])
+
+    hl.run_headless_task("do it", model="gemini-2.5-pro")
+
+    root = _roots_named(active_tracing.exporter.exported_spans_as_dict(), hl.RUN_SPAN_NAME)[0]
+    attributes = root["attributes"]
+    prefix = tracing.OPIK_METADATA_PREFIX
+    # THIS run's model, not the configured default.
+    assert attributes[f"{prefix}model"] == "gemini-2.5-pro"
+    assert attributes[f"{prefix}sandbox_mode"] == settings.sandbox_mode
+    assert attributes[f"{prefix}decode_env"] == settings.decode_env
+    assert attributes[f"{prefix}git_sha"]  # a sha, or the explicit "unknown" — never missing
+    # ``kitaru_session_id`` is absent unless the adapter published one (0.2.1 does not).
+    assert f"{prefix}kitaru_session_id" not in attributes
+
+
+def test_a_traced_run_also_writes_its_summary(active_tracing, monkeypatch, tmp_path):
+    """The two ground-truth surfaces agree: the summary's session id IS the trace's thread id."""
+    _patch_agent(monkeypatch, [ModelResponse(parts=[TextPart(content="done")])])
+    target = tmp_path / "summary.json"
+
+    assert hl.run_headless_task("do it", summary_json=target) == "done"
+
+    summary = json.loads(target.read_text(encoding="utf-8"))
+    root = _roots_named(active_tracing.exporter.exported_spans_as_dict(), hl.RUN_SPAN_NAME)[0]
+    assert summary["session_id"] == root["attributes"]["thread_id"]
+    assert summary["exit_reason"] == "completed"
+    assert summary["requests"] == 1

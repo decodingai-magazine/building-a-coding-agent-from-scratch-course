@@ -47,11 +47,14 @@ _SCRUBBED_SECRET_FIELDS = (
 #
 # Provenance matters — a guessed number reintroduces exactly the bug this table fixes:
 #   * qwen3.6-35b-a3b — 262144, READ from the served endpoint (``GET /v1/models`` → max_model_len).
-#   * gemini-3.5 / gemini-2.5 — 1048576, the published 1M input window for those Flash/Pro lines.
+#   * gemini-3.8 — 1048576, READ from the provider (``models.get("gemini-3.8-flash")`` →
+#     input_token_limit); gemini-3.5 / gemini-2.5 — 1048576, the published 1M input window for
+#     those Flash/Pro lines.
 # Anything absent falls back to :data:`UNKNOWN_MODEL_CONTEXT_WINDOW` with a startup warning; add a
 # row here (with its source) rather than widening a pattern on a hunch.
 MODEL_CONTEXT_WINDOWS: tuple[tuple[str, int], ...] = (
     ("qwen3.6-35b-a3b", 262_144),
+    ("gemini-3.8", 1_048_576),
     ("gemini-3.5", 1_048_576),
     ("gemini-2.5", 1_048_576),
 )
@@ -94,7 +97,7 @@ class Settings(BaseSettings):
 
     # gemini (default): google-genai API-key path.
     gemini_api_key: SecretStr = SecretStr("")
-    gemini_model: str = "gemini-3.5-flash"
+    gemini_model: str = "gemini-3.8-flash"
 
     # openrouter: the default ``openrouter/free`` router spreads across free models and auto-filters
     # for tool-calling, so one congested upstream cannot hard-block with 429s; pin a :free id for a
@@ -267,7 +270,12 @@ class Settings(BaseSettings):
 
     # --- Evals (ADR-0017) — the eval suite is NOT shipped in the wheel, but its judges + Opik
     # project are read from this SAME Settings surface so the harness needs no config of its own. ---
-    # The LiteLLM model string G-Eval judges run on; empty derives it from ``llm_provider`` (task 104).
+    # The provider the eval JUDGE runs on, independent of the agent's ``llm_provider``; empty (the
+    # default) follows it, so today's behaviour is unchanged. Judging a modal-served agent with a
+    # gemini judge — or the reverse — is one env var, not a code change (ADR-0022 §7).
+    eval_judge_provider: Literal["", "gemini", "openrouter", "modal"] = ""
+    # The LiteLLM model string G-Eval judges run on; empty derives it from the judge provider above
+    # (``eval_judge_provider`` or ``llm_provider``) — task 104.
     eval_judge_model: str = ""
     # The Opik project eval runs log under — kept distinct from the live-REPL project (ADR-0014) so
     # eval traces never mix into ``decode-<env>``.

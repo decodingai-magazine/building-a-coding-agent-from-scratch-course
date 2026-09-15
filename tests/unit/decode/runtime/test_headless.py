@@ -10,6 +10,8 @@ loop, the host-side Hand-back, and Opik tracing init. No kitaru, no local stack,
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +20,7 @@ from uuid import UUID
 
 import pytest
 from pydantic_ai import DeferredToolRequests
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import ModelResponse, RetryPromptPart, TextPart, ToolCallPart
 from support.kitaru_recording import install_fake_recording_stack
 from support.runtime_agents import make_scripted_agent
@@ -276,9 +279,9 @@ def test_the_run_goes_through_the_recording_seam_named_by_its_session_id(monkeyp
     spans: list[str | None] = []
     real_root_span = hl.observability.root_span
 
-    def _root_span(name, *, thread_id=None, input=None):
+    def _root_span(name, *, thread_id=None, **kwargs):
         spans.append(thread_id)
-        return real_root_span(name, thread_id=thread_id, input=input)
+        return real_root_span(name, thread_id=thread_id, **kwargs)
 
     monkeypatch.setattr(hl.observability, "root_span", _root_span)
 
@@ -385,9 +388,9 @@ def test_the_run_opens_one_root_span_whose_thread_id_is_the_hand_back_session_id
     spans: list[dict] = []
     real_root_span = hl.observability.root_span
 
-    def _root_span(name, *, thread_id=None, input=None):
+    def _root_span(name, *, thread_id=None, input=None, **kwargs):
         spans.append({"name": name, "thread_id": thread_id, "input": input})
-        return real_root_span(name, thread_id=thread_id, input=input)
+        return real_root_span(name, thread_id=thread_id, input=input, **kwargs)
 
     monkeypatch.setattr(hl.observability, "root_span", _root_span)
     monkeypatch.setattr(hl.settings, "sandbox_mode", "docker")
@@ -601,3 +604,188 @@ def test_a_hand_back_failure_never_fails_a_completed_run(monkeypatch, mocker, ca
         assert hl.run_headless_task("do it", repo="/some/repo") == "done"
 
     assert "hand-back failed" in caplog.text
+
+
+# --- the run summary: `--summary-json` (ADR-0022 §1) ---------------------------------------------
+
+
+def _summary(path: Path) -> dict:
+    """The written summary as a dict — one JSON object, nothing else in the file."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_a_completed_run_writes_its_summary_after_the_hand_back(monkeypatch, mocker, tmp_path):
+    """The summary carries the Session Branch, so it is written AFTER the Hand-back that made it."""
+    order: list[str] = []
+    monkeypatch.setattr(hl.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(hl, "_prepare_headless_tool_scope", AsyncMock(return_value=Path.cwd()))
+    mocker.patch(
+        "decode.sandbox.handback.ship_workspace",
+        side_effect=lambda *a, **k: (
+            order.append("ship")
+            or SimpleNamespace(branch="decode/abc12345", pushed=True, message="handed back")
+        ),
+    )
+    _patch_agent(monkeypatch, [_text("the answer")])
+    target = tmp_path / "trial" / "agent" / "summary.json"
+
+    assert hl.run_headless_task("do it", repo="/some/repo", summary_json=target) == "the answer"
+
+    summary = _summary(target)
+    assert order == ["ship"]
+    assert summary["exit_reason"] == "completed"
+    assert summary["error"] is None
+    assert summary["output"] == "the answer"
+    assert summary["handback"] == {"branch": "decode/abc12345", "pushed": True}
+    assert summary["requests"] == 1
+    assert summary["input_tokens"] > 0
+    assert UUID(summary["session_id"])  # the run's session id — the Opik thread + branch id
+
+
+def test_the_summary_session_id_is_the_hand_back_session_id(monkeypatch, mocker, tmp_path):
+    """One id joins the summary, the trace thread and the Session Branch (ADR-0022 §10)."""
+    monkeypatch.setattr(hl.settings, "sandbox_mode", "docker")
+    monkeypatch.setattr(hl, "_prepare_headless_tool_scope", AsyncMock(return_value=Path.cwd()))
+    ship = mocker.patch(
+        "decode.sandbox.handback.ship_workspace",
+        return_value=SimpleNamespace(branch="decode/x", pushed=False, message="local only"),
+    )
+    _patch_agent(monkeypatch, [_text("done")])
+    target = tmp_path / "summary.json"
+
+    hl.run_headless_task("do it", repo="/some/repo", summary_json=target)
+
+    assert _summary(target)["session_id"] == ship.call_args.kwargs["session_id"]
+
+
+def test_a_capped_run_reports_the_requests_it_actually_spent(monkeypatch, tmp_path):
+    """AC2: usage comes from the run's messages, so the ``request_limit`` path is not blank."""
+    _patch_agent(monkeypatch, [_call("read", path="missing.txt"), _text("done")])
+    target = tmp_path / "summary.json"
+
+    with pytest.raises(UsageLimitExceeded):
+        hl.run_headless_task("do it", max_requests=1, summary_json=target)
+
+    summary = _summary(target)
+    assert summary["exit_reason"] == "request_limit"
+    assert summary["error"] is None, "a cap is not an error — the run did exactly what it was told"
+    assert summary["requests"] == 1
+    assert summary["input_tokens"] > 0
+    assert summary["output"] == ""
+
+
+def test_a_failed_run_names_its_exception_type_and_message(monkeypatch, tmp_path):
+    class _BoomAgent:
+        async def run(self, *_args, **_kwargs):
+            raise RuntimeError("the provider fell over")
+
+    monkeypatch.setattr(hl, "_build_headless_agent", lambda model=None: _BoomAgent())
+    target = tmp_path / "summary.json"
+
+    with pytest.raises(RuntimeError):
+        hl.run_headless_task("do it", summary_json=target)
+
+    summary = _summary(target)
+    assert summary["exit_reason"] == "error"
+    assert summary["error"] == "RuntimeError: the provider fell over"
+    assert summary["requests"] == 0
+    assert summary["handback"] is None
+
+
+def test_the_summary_reports_a_null_kitaru_session_id(monkeypatch, tmp_path):
+    """The adapter exposes no public Session accessor, so the join stays the decode session id."""
+    _patch_agent(monkeypatch, [_text("done")])
+    target = tmp_path / "summary.json"
+
+    hl.run_headless_task("do it", summary_json=target)
+
+    assert _summary(target)["kitaru_session_id"] is None
+
+
+def test_without_the_flag_no_summary_file_is_written(monkeypatch, tmp_path, capsys):
+    """AC5: byte-identical behaviour without ``--summary-json`` — no file, same stdout."""
+    _patch_agent(monkeypatch, [_text("done")])
+    before = sorted(p.name for p in tmp_path.iterdir())
+
+    assert hl.run_headless_task("do it") == "done"
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == before
+    assert list(tmp_path.rglob("*.json")) == []
+    assert capsys.readouterr().out == ""
+
+
+def test_a_summary_write_failure_never_changes_the_runs_outcome(monkeypatch, tmp_path, caplog):
+    """Evidence, not a guard: an unwritable path costs one warning and nothing else."""
+    _patch_agent(monkeypatch, [_text("done")])
+    blocked = tmp_path / "file.txt"
+    blocked.write_text("not a directory", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        assert hl.run_headless_task("do it", summary_json=blocked / "summary.json") == "done"
+
+    assert caplog.records
+
+
+def test_the_root_span_carries_the_eval_join_metadata(monkeypatch, mocker):
+    """ADR-0022 §10: git_sha / model / sandbox_mode / decode_env ride on the run's root span."""
+    captured: dict[str, object] = {}
+
+    def _root_span(name, **kwargs):
+        captured.update(kwargs)
+        return contextlib.nullcontext()
+
+    monkeypatch.setattr(hl.observability, "root_span", _root_span)
+    _patch_agent(monkeypatch, [_text("done")])
+
+    hl.run_headless_task("do it", model="gemini-2.5-pro")
+
+    metadata = captured["metadata"]
+    assert set(metadata) >= {"git_sha", "model", "sandbox_mode", "decode_env"}
+    assert metadata["model"] == "gemini-2.5-pro"
+
+
+def test_a_worker_task_recording_failure_still_leaves_a_summary(monkeypatch, tmp_path):
+    """AC4's fourth path: the run dies before the agent, and the ``finally`` still reports it.
+
+    A Kitaru Worker Task whose workspace is unreachable fails hard (an unrecorded replay would be a
+    lying experiment) — but the harness that launched it still gets the honest ``error`` summary
+    rather than a missing file, which it would have to read as "the process died".
+    """
+    install_fake_recording_stack(monkeypatch, probe_error=ConnectionError("connection refused"))
+    monkeypatch.setattr(hl.settings, "kitaru_agent_id", AGENT_ID)
+    monkeypatch.setenv("KITARU_API_URL", "https://kitaru.example.invalid")
+    monkeypatch.setenv("KITARU_TASK_ID", "0f9d1a3e-0000-4000-8000-000000000001")
+    _patch_agent(monkeypatch, [_text("never reached")])
+    target = tmp_path / "summary.json"
+
+    with pytest.raises(RecordingUnavailableError):
+        hl.run_headless_task("record me", summary_json=target)
+
+    summary = _summary(target)
+    assert summary["exit_reason"] == "error"
+    assert summary["error"].startswith("RecordingUnavailableError: ")
+    assert summary["requests"] == 0  # it never reached the model
+    assert summary["output"] == ""
+
+
+def test_a_recorded_run_still_reports_its_usage(monkeypatch, tmp_path):
+    """A recorded run's summary must not come back blank — the benchmark records every trial.
+
+    ``capture_run_messages`` is bound around ``agent.run`` where ``agent`` may be the Recording
+    Seam's ``KitaruAgent`` wrapper, so this pins the WIRING: the capture is established before the
+    wrapped run and survives the extra delegation layer. The fake adapter really delegates to the
+    wrapped agent (see ``support.kitaru_recording``), which is the property under test; the real
+    adapter's own behaviour needs a Kitaru workspace and lives in the operator surface.
+    """
+    install_fake_recording_stack(monkeypatch)
+    monkeypatch.setattr(hl.settings, "kitaru_agent_id", AGENT_ID)
+    monkeypatch.setenv("KITARU_API_URL", "https://kitaru.example.invalid")
+    _patch_agent(monkeypatch, [_text("recorded answer")])
+    target = tmp_path / "summary.json"
+
+    assert hl.run_headless_task("record me", summary_json=target) == "recorded answer"
+
+    summary = _summary(target)
+    assert summary["requests"] == 1
+    assert summary["input_tokens"] > 0
+    assert summary["output"] == "recorded answer"

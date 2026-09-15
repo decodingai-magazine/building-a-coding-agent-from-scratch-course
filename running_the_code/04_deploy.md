@@ -1,4 +1,4 @@
-# 04 — Deploy the headless harness on Modal
+# 04. Deploy the headless harness on Modal
 
 Run `decode run` in a [Modal](https://modal.com?source=decodingai&campaign=harnesseng) container instead of your laptop, triggered from the CLI, a webhook, or a cron ([ADR-0020](../docs/adr/0020-remote-headless-on-modal.md)). No server: a deployed app with nothing running costs nothing.
 
@@ -45,7 +45,7 @@ set -a && . ./.env && set +a
 uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or export it first}" \
   LLM_PROVIDER=gemini \
   GEMINI_API_KEY="$GEMINI_API_KEY" \
-  GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}" \
+  GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.8-flash}" \
   OPIK_API_KEY="$OPIK_API_KEY" \
   OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force

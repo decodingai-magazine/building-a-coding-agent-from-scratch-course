@@ -1,0 +1,79 @@
+{
+  "trace": {
+    "id": "1f0a0b1e-0000-4000-8000-000000000101",
+    "name": "decode_run",
+    "thread_id": "1f0a0b1e-0000-4000-8000-0000000001aa",
+    "start_time": "2026-09-10 22:38:50.211000+00:00",
+    "end_time": "2026-09-10 22:38:58.902000+00:00",
+    "has_tool_spans": true,
+    "error_info": {
+      "exception_type": "pydantic_ai.exceptions.UsageLimitExceeded",
+      "message": "The next request would exceed the request_limit of 1.\nConsider raising the limit.",
+      "traceback": "Traceback (most recent call last):\n  File \"<anonymised>\", line 1, in <module>\n"
+    },
+    "input": {"input": "anonymised task prompt (request-capped run)"},
+    "output": {"output": ""},
+    "metadata": {
+      "integration": "pydantic-ai",
+      "logfire.msg": "decode_run",
+      "thread_id": "1f0a0b1e-0000-4000-8000-0000000001aa",
+      "git_sha": "5c46f38b5f56b39606a454b704b79d50a7500000",
+      "model": "gemini-2.5-flash",
+      "sandbox_mode": "none",
+      "decode_env": "prod"
+    },
+    "usage": {"prompt_tokens": 4955, "completion_tokens": 165, "total_tokens": 5120},
+    "feedback_scores": [{"name": "response_quality", "value": 3.0}]
+  },
+  "spans": [
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000112",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000101",
+      "name": "execute_tool read",
+      "type": "tool",
+      "start_time": "2026-09-10 22:38:55.100000+00:00",
+      "end_time": "2026-09-10 22:38:55.190000+00:00",
+      "input": {"gen_ai.tool.call.arguments": {"path": "README.md"}},
+      "output": {"gen_ai.tool.call.result": "1\tanonymised file body"},
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "execute_tool",
+        "logfire.msg": "running tool: read",
+        "name": "agent"
+      }
+    },
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000111",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000101",
+      "name": "execute_tool glob",
+      "type": "tool",
+      "start_time": "2026-09-10 22:38:52.400000+00:00",
+      "end_time": "2026-09-10 22:38:52.480000+00:00",
+      "input": {"gen_ai.tool.call.arguments": {"pattern": "*.md"}},
+      "output": {"gen_ai.tool.call.result": "README.md"},
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "execute_tool",
+        "logfire.msg": "running tool: glob",
+        "name": "agent"
+      }
+    },
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000113",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000101",
+      "name": "chat gemini-2.5-flash",
+      "type": "llm",
+      "start_time": "2026-09-10 22:38:56.000000+00:00",
+      "end_time": "2026-09-10 22:38:58.000000+00:00",
+      "model": "gemini-2.5-flash",
+      "provider": "google_ai",
+      "input": {"messages": [{"role": "user", "parts": [{"type": "text", "content": "anonymised"}]}]},
+      "output": {"messages": [{"role": "assistant", "parts": [{"type": "text", "content": "anonymised"}]}]},
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "chat",
+        "logfire.msg": "chat gemini-2.5-flash"
+      }
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-"""decode eval suite — demos, benchmark, regression probes, Opik harness (ADR-0017).
+"""decode eval suite — demos, benchmark, Regression Cases, Opik harness (ADR-0017).
 
 Top-level package on purpose: eval code is course material *about* the agent, not part of it, so
 it lives beside ``src/`` and is never shipped in the wheel (``[tool.hatch.build.targets.wheel]``

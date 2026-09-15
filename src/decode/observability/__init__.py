@@ -7,6 +7,7 @@ this package is cheap and side-effect-free — nothing is configured until :func
 
 from __future__ import annotations
 
+from decode.observability.metadata import git_sha, trace_metadata
 from decode.observability.tracing import (
     init_tracing,
     is_tracing_active,
@@ -15,4 +16,12 @@ from decode.observability.tracing import (
     root_span,
 )
 
-__all__ = ["init_tracing", "is_tracing_active", "record_output", "reset_tracing", "root_span"]
+__all__ = [
+    "git_sha",
+    "init_tracing",
+    "is_tracing_active",
+    "record_output",
+    "reset_tracing",
+    "root_span",
+    "trace_metadata",
+]

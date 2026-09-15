@@ -6,6 +6,20 @@
 
 from __future__ import annotations
 
-from decode.context.session_log import SessionLog, load, load_latest, resolve_session
+from decode.context.session_log import (
+    SessionLog,
+    SessionSummary,
+    list_sessions,
+    load,
+    load_latest,
+    resolve_session,
+)
 
-__all__ = ["SessionLog", "load", "load_latest", "resolve_session"]
+__all__ = [
+    "SessionLog",
+    "SessionSummary",
+    "list_sessions",
+    "load",
+    "load_latest",
+    "resolve_session",
+]

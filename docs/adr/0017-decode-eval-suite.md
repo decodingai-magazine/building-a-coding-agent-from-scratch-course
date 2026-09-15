@@ -3,6 +3,8 @@
 Status: Accepted
 Date: 2026-07-13
 
+Partially superseded by [ADR-0022](0022-evals-v2-own-harbor-on-opik.md) — §3, §4 (benchmark only), §5, §7, §8.
+
 ## Context
 
 decode has tracing (ADR-0014) but no way to answer "did this change make the agent better or

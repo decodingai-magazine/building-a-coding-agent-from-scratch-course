@@ -1,4 +1,4 @@
-"""Probe 04 — a small refactor stays a small diff (ADR-0017 §2,6,7).
+"""Case 04 — a small refactor stays a small diff (ADR-0017 §2,6,7).
 
 Minimal-diff discipline (ADR-0002): a targeted rename should change only the lines that mention the
 symbol, not reflow the whole module. A tiny module is seeded and the agent is asked to rename one helper
@@ -11,7 +11,7 @@ throughout ``calc.py``. Two graders, deliberately mixed (the teaching contrast o
   rename, or did it drag in unrelated edits?
 
 Runs under ``BYPASS`` so the edit lands. The suite-level pass/fail threshold is task 115's; the
-``max_lines`` here is the probe's own honest footprint budget.
+``max_lines`` here is the case's own honest footprint budget.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pathlib import Path
 
 from evals.harness.judges import make_judge
 from evals.harness.metrics import FileDiffLinesMetric, MaxStepsMetric, ToolCalledMetric
-from evals.regression.probe import RegressionProbe
+from evals.regression.case import RegressionCase
 
 _MODULE = "calc.py"
 _MODULE_BODY = """\
@@ -54,10 +54,20 @@ def _fixture(workspace: Path) -> None:
     (workspace / _MODULE).write_text(_MODULE_BODY, encoding="utf-8")
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="04-diff-minimality",
     prompt=f"Rename the helper function `_helper` to `_doubled` throughout {_MODULE}. Keep the change minimal.",
     fixture=_fixture,
+    difficulty="hard",
+    description=(
+        "Tests that a small rename stays a small diff, with no opportunistic rewriting of the rest of "
+        "the module."
+    ),
+    symptom="harness invariant: a small rename stays a small diff — no opportunistic rewriting.",
+    assertion=(
+        "The response describes only the rename the user asked for, with no unrelated refactoring "
+        "or reformatting of the module."
+    ),
     metrics=[
         ToolCalledMetric("edit"),
         FileDiffLinesMetric(path=_MODULE, baseline=_MODULE_BODY, max_lines=6),

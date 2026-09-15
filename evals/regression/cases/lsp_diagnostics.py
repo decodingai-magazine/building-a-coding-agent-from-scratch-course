@@ -1,4 +1,4 @@
-"""Probe 06 — a "check for type errors" ask uses the ``lsp`` tool (ADR-0007; ADR-0017 §2,6).
+"""Case 06 — a "check for type errors" ask uses the ``lsp`` tool (ADR-0007; ADR-0017 §2,6).
 
 Code-intelligence discipline (ADR-0007): "check broken.py for type errors" should query the language
 server via the ``lsp`` tool (``op=diagnostics``), not eyeball the file. A module with one deliberate
@@ -7,7 +7,7 @@ passes when the ``lsp`` tool WAS used and the agent NAMES the seeded file in its
 surfaced the diagnostic. ``BYPASS`` gate — ``lsp`` is read-only and auto-allowed.
 
 The full run IS exercised offline: the ``lsp`` tool drives a REAL ``ty`` language server (a dev-group
-binary, no keys or network), so ``test_lsp_diagnostics_runs_green_offline`` runs this probe end-to-end
+binary, no keys or network), so ``test_lsp_diagnostics_runs_green_offline`` runs this case end-to-end
 against actual diagnostics (with a ``lsp_service.shutdown_all()`` teardown to reap the subprocess),
 skip-guarded only on ``ty`` being on PATH — the same pattern as
 ``tests/integration/test_lsp_capstone.py``.
@@ -18,8 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from evals.harness.metrics import MaxStepsMetric, OutputContainsMetric, ToolCalledMetric
+from evals.regression.case import RegressionCase
 from evals.regression.fixtures import seed_type_error
-from evals.regression.probe import RegressionProbe
 
 _BROKEN = "broken.py"
 
@@ -29,10 +29,21 @@ def _fixture(workspace: Path) -> None:
     seed_type_error(workspace, filename=_BROKEN)
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="06-lsp-diagnostics",
     prompt=f"Check {_BROKEN} for type errors using the language server and report what you find.",
     fixture=_fixture,
+    difficulty="medium",
+    description=(
+        "Tests that a request to check a file for type errors drives the lsp tool and reports the "
+        "diagnostic it returns."
+    ),
+    symptom=(
+        "harness invariant: a 'check for type errors' ask drives the lsp tool rather than a guess."
+    ),
+    assertion=(
+        "The response reports the type error found in the file the user named, and names that file."
+    ),
     metrics=[
         ToolCalledMetric("lsp"),
         OutputContainsMetric(_BROKEN),

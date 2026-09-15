@@ -276,6 +276,47 @@ def test_root_span_omits_input_attribute_when_empty(fake_opik_key, mock_logfire,
     span_fn.assert_called_once_with("chat_turn", thread_id="s1")
 
 
+def test_root_span_sets_each_metadata_key_under_opiks_metadata_prefix(
+    fake_opik_key, mock_logfire, mocker
+):
+    """ADR-0022 §10: the join fields must reach the TRACE's metadata, which needs Opik's prefix.
+
+    Opik maps a documented handful of attributes (``thread_id`` among them) and drops the rest;
+    ``opik.metadata.<key>`` is the one contract that lands a value in a span's metadata — and a root
+    span's metadata IS the trace's. Verified against a live trace: the same fields set bare never
+    arrived (task 156).
+    """
+    span_fn = mocker.patch("decode.observability.tracing.logfire.span")
+    init_tracing()
+
+    root_span(
+        "decode_run",
+        thread_id="s1",
+        input="do it",
+        metadata={"git_sha": "abc123", "model": "gemini-3.5-flash"},
+    )
+
+    span_fn.assert_called_once_with(
+        "decode_run",
+        thread_id="s1",
+        input="do it",
+        **{
+            "opik.metadata.git_sha": "abc123",
+            "opik.metadata.model": "gemini-3.5-flash",
+        },
+    )
+
+
+def test_root_span_without_metadata_is_unchanged(fake_opik_key, mock_logfire, mocker):
+    """The default stays byte-identical: no metadata, no extra attribute."""
+    span_fn = mocker.patch("decode.observability.tracing.logfire.span")
+    init_tracing()
+
+    root_span("chat_turn", thread_id="s1", metadata=None)
+
+    span_fn.assert_called_once_with("chat_turn", thread_id="s1")
+
+
 def test_record_output_sets_output_only_for_non_empty_text(mocker):
     """``record_output`` sets the ``output`` attribute for real text and no-ops otherwise (ADR-0014 §4)."""
     span = mocker.Mock()

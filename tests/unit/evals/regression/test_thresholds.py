@@ -24,6 +24,7 @@ from evals.regression.thresholds import (
     format_deltas,
     format_failures,
     latest_baseline,
+    scores_by_tier,
     scores_from_aggregation,
     threshold_for,
 )
@@ -226,3 +227,73 @@ def test_format_deltas_marks_regressions() -> None:
 
     assert "a" in message
     assert "b" in message
+
+
+class _Score:
+    """A stand-in for opik's ``ScoreResult`` — the fields the per-tier report reads."""
+
+    def __init__(self, name: str, value: float, scoring_failed: bool = False) -> None:
+        self.name = name
+        self.value = value
+        self.scoring_failed = scoring_failed
+
+
+class _Case:
+    """A stand-in for opik's ``TestCase`` — the item content carries the case id."""
+
+    def __init__(self, case_id: str | None) -> None:
+        self.dataset_item_content = {"case_id": case_id} if case_id else {}
+        self.task_output: dict[str, object] = {}
+
+
+class _Result:
+    """A stand-in for opik's ``TestResult`` — one item's case plus its scores."""
+
+    def __init__(self, case_id: str | None, scores: list[_Score]) -> None:
+        self.test_case = _Case(case_id)
+        self.score_results = scores
+
+
+_TIERS = {"01-read-vs-cat": "easy", "11-step-efficiency": "easy", "17-grounded-answer": "hard"}
+
+
+def test_scores_by_tier_averages_each_metric_within_its_tier() -> None:
+    """The per-tier report: one mean per metric per tier, over a hand-built result matrix (§8)."""
+    results = [
+        _Result("01-read-vs-cat", [_Score("tool_called_read", 1.0), _Score("max_steps", 1.0)]),
+        _Result("11-step-efficiency", [_Score("max_steps", 0.0)]),
+        _Result("17-grounded-answer", [_Score(JUDGE_METRIC_NAME, 0.75)]),
+    ]
+
+    by_tier = scores_by_tier(results, _TIERS)
+
+    assert by_tier == {
+        "easy": {"tool_called_read": 1.0, "max_steps": 0.5},
+        "hard": {JUDGE_METRIC_NAME: 0.75},
+    }
+
+
+def test_scores_by_tier_ignores_a_metric_that_failed_to_score() -> None:
+    """A metric that CRASHED scored nothing; folding its 0.0 in would read as a regression."""
+    results = [
+        _Result("01-read-vs-cat", [_Score("max_steps", 1.0)]),
+        _Result("11-step-efficiency", [_Score("max_steps", 0.0, scoring_failed=True)]),
+    ]
+
+    assert scores_by_tier(results, _TIERS) == {"easy": {"max_steps": 1.0}}
+
+
+def test_scores_by_tier_skips_items_with_no_known_tier() -> None:
+    """An unknown / missing case id has no tier to report under — it is left out, never mis-filed."""
+    results = [
+        _Result(None, [_Score("max_steps", 1.0)]),
+        _Result("99-not-a-case", [_Score("max_steps", 0.0)]),
+        _Result("17-grounded-answer", [_Score("max_steps", 1.0)]),
+    ]
+
+    assert scores_by_tier(results, _TIERS) == {"hard": {"max_steps": 1.0}}
+
+
+def test_scores_by_tier_of_an_empty_run_is_empty() -> None:
+    """No results, no report — the ritual asserts the GLOBAL gate is non-empty, not this."""
+    assert scores_by_tier([], _TIERS) == {}

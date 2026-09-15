@@ -3,7 +3,7 @@
 Every metric here subclasses :class:`opik.evaluation.metrics.base_metric.BaseMetric` and returns a
 :class:`~opik.evaluation.metrics.score_result.ScoreResult` — a ``value`` in ``[0, 1]`` plus a
 human-readable ``reason``. They grade the mechanical, code-decidable facts of a run (which tool was
-used, whether the hidden oracle passed, how many steps, how big the diff); anything a machine cannot
+used, how many steps, how big the diff); anything a machine cannot
 score — quality, groundedness, minimal-diff judgement — is a G-Eval judge instead
 (``evals/harness/judges.py``).
 
@@ -30,6 +30,8 @@ from typing import Any
 
 from opik.evaluation.metrics.base_metric import BaseMetric
 from opik.evaluation.metrics.score_result import ScoreResult
+
+from evals.harness.aggregates import DEFAULT_PASS_METRIC, INFRA_ERROR_STATUS
 
 
 def _tool_call_names(tool_calls: Any) -> list[str] | None:
@@ -94,9 +96,9 @@ def _coerce_args_dict(args: Any) -> dict[str, Any]:
 class ToolArgsMetric(BaseMetric):
     """Score ``1.0`` when SOME recorded call to ``tool_name`` has args satisfying ``predicate``.
 
-    :class:`ToolCalledMetric` only proves a tool WAS called; some probes need to grade the CALL's
+    :class:`ToolCalledMetric` only proves a tool WAS called; some cases need to grade the CALL's
     arguments — a genuinely multi-step plan is ``todo_write`` with ``>= 3`` items, a skill-dispatch
-    probe wants the ``skill`` tool called with the RIGHT ``name``. ``predicate`` is a plain
+    case wants the ``skill`` tool called with the RIGHT ``name``. ``predicate`` is a plain
     ``dict -> bool`` callable evaluated against each matching call's decoded args; the metric passes
     when any one call satisfies it. ``description`` is the human phrase the ``reason`` cites (e.g.
     "at least 3 todo items"). A predicate that raises on a malformed args dict is treated as an
@@ -146,6 +148,55 @@ class ToolArgsMetric(BaseMetric):
             return False
 
 
+class ToolArgsNeverMetric(BaseMetric):
+    """Score ``1.0`` when NO recorded call to ``tool_name`` has args satisfying ``predicate``.
+
+    The negative half of :class:`ToolArgsMetric` — the same pairing :class:`ToolCalledMetric` /
+    :class:`ToolNotCalledMetric` already ships, one rung down at the ARGUMENT level. A mined case
+    needs it: the behavior trace ``01a08614`` showed is "the agent opened a path it never checked
+    existed" (``read("README")`` in a tree whose readme is ``README.md``, burning a retry leg), and
+    that is a fact about EVERY call, not about one — "some call was fine" says nothing. ``predicate``
+    describes the VIOLATION (args that must never appear); ``description`` is the human phrase the
+    ``reason`` cites. A predicate that raises on a malformed args dict counts as NOT a violation (the
+    same graceful posture :class:`ToolArgsMetric` takes for an unmet condition), and a missing /
+    malformed ``tool_calls`` field or a tool never called means the violation trivially never
+    happened — ``1.0``, mirroring :class:`ToolNotCalledMetric`.
+    """
+
+    def __init__(
+        self,
+        tool_name: str,
+        predicate: Callable[[dict[str, Any]], bool],
+        *,
+        description: str,
+        name: str,
+    ) -> None:
+        super().__init__(name=name, track=False)
+        self.tool_name = tool_name
+        self.predicate = predicate
+        self.description = description
+
+    def score(self, tool_calls: Any = None, **ignored_kwargs: Any) -> ScoreResult:
+        calls = _tool_call_args(tool_calls, self.tool_name) or []
+        offenders = [args for args in calls if self._matches(args)]
+        return ScoreResult(
+            name=self.name,
+            value=0.0 if offenders else 1.0,
+            reason=(
+                f"{len(offenders)} call(s) to {self.tool_name!r} used {self.description}: {offenders}."
+                if offenders
+                else f"no call to {self.tool_name!r} used {self.description} ({len(calls)} call(s) checked)."
+            ),
+        )
+
+    def _matches(self, args: dict[str, Any]) -> bool:
+        """Whether ``args`` is a violation — a raising predicate is treated as no violation."""
+        try:
+            return bool(self.predicate(args))
+        except Exception:  # a malformed args dict must not abort scoring — grade it as no violation
+            return False
+
+
 class ToolCalledMetric(BaseMetric):
     """Score ``1.0`` when ``tool_name`` appears in the run's ``tool_calls``, else ``0.0``."""
 
@@ -190,36 +241,6 @@ class ToolNotCalledMetric(BaseMetric):
         )
 
 
-class VerifyOracleMetric(BaseMetric):
-    """Map the runner's recorded verify result to ``1.0`` (exit 0 = PASS) or ``0.0``.
-
-    The metric never RUNS anything — the task fn already ran ``verify.sh`` in the sandbox after the
-    agent finished (ADR-0017 §5) and recorded ``{"exit_code": ..., "stdout": ...}``. Here we only
-    map that recorded result. A missing / malformed ``verify`` mapping (no integer ``exit_code``)
-    scores a graceful ``0.0``.
-    """
-
-    def __init__(self, name: str | None = None) -> None:
-        super().__init__(name=name or "verify_oracle", track=False)
-
-    def score(self, verify: Any = None, **ignored_kwargs: Any) -> ScoreResult:
-        exit_code = verify.get("exit_code") if isinstance(verify, dict) else None
-        if not isinstance(exit_code, int) or isinstance(exit_code, bool):
-            return ScoreResult(
-                name=self.name,
-                value=0.0,
-                reason="No verify result recorded (missing or non-integer exit_code).",
-            )
-        stdout = str(verify.get("stdout", "")) if isinstance(verify, dict) else ""
-        passed = exit_code == 0
-        snippet = stdout.strip()[:200]
-        return ScoreResult(
-            name=self.name,
-            value=1.0 if passed else 0.0,
-            reason=f"verify.sh exit_code={exit_code} ({'PASS' if passed else 'FAIL'}). stdout: {snippet!r}",
-        )
-
-
 class MaxStepsMetric(BaseMetric):
     """Score ``1.0`` when the run's ``steps`` is within the item's ``max_steps`` budget, else ``0.0``.
 
@@ -243,6 +264,53 @@ class MaxStepsMetric(BaseMetric):
             name=self.name,
             value=1.0 if within else 0.0,
             reason=f"steps={steps} {'<=' if within else '>'} max_steps={max_steps}.",
+        )
+
+
+class RewardMetric(BaseMetric):
+    """The benchmark's grade of record: the Verifier's reward, or a FAILED score (ADR-0022 §3,§4).
+
+    One Trial = one score. ``agent_ok`` / ``agent_fail`` are graded outcomes and carry the reward the
+    ``tests/test.sh`` Verifier wrote (``1.0`` / ``0.0``; every task is binary) with the trial's own
+    one-line ``reason``. An ``infra_error`` — the harness failing, not the agent — comes back as
+    ``scoring_failed=True``: Opik's aggregation skips such a score entirely, so the trial leaves both
+    the numerator and the denominator, which is exactly the taxonomy's rule. A graded status with no
+    numeric reward is unscorable too: a ``None`` reward must NEVER be read as a zero.
+
+    The ``status`` / ``reward`` / ``reason`` parameters are matched by name against the task fn's
+    payload (:func:`evals.harness.benchmark.trial_payload`); everything else is absorbed, so a
+    payload that lost a field scores a failed score instead of aborting the run.
+    """
+
+    def __init__(self, name: str | None = None) -> None:
+        super().__init__(name=name or DEFAULT_PASS_METRIC, track=False)
+
+    def score(
+        self,
+        status: Any = None,
+        reward: Any = None,
+        reason: Any = None,
+        **ignored_kwargs: Any,
+    ) -> ScoreResult:
+        detail = str(reason) if reason else None
+        if status == INFRA_ERROR_STATUS:
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                scoring_failed=True,
+                reason=detail or "the harness could not run or grade this trial",
+            )
+        if not isinstance(reward, (int, float)) or isinstance(reward, bool):
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                scoring_failed=True,
+                reason=f"the trial reported no numeric reward (status={status!r}, reward={reward!r}).",
+            )
+        return ScoreResult(
+            name=self.name,
+            value=float(reward),
+            reason=detail or f"the Verifier scored {float(reward)}.",
         )
 
 
@@ -280,9 +348,9 @@ class FileDiffLinesMetric(BaseMetric):
     The regression task-fn records the run's final Workspace as ``file_state`` (a
     ``{path: content}`` snapshot), NOT a unified ``diff`` — so :class:`DiffLinesMetric` (which reads a
     ``diff`` string a benchmark run computes) has nothing to grade on a regression payload. This metric
-    closes that gap: it holds the probe's known ``baseline`` for ``path`` and, at score time, diffs it
+    closes that gap: it holds the case's known ``baseline`` for ``path`` and, at score time, diffs it
     against ``file_state[path]`` and counts changed lines with the SAME counter
-    :class:`DiffLinesMetric` uses — so an edit-precision / minimal-diff probe grades on how much of the
+    :class:`DiffLinesMetric` uses — so an edit-precision / minimal-diff case grades on how much of the
     seeded file the agent actually rewrote. A single-line replacement is one ``-`` plus one ``+`` = two
     changed lines. ``path`` absent from the snapshot (the agent never wrote it, or deleted it) or a
     missing / malformed ``file_state`` scores a graceful ``0.0``.
@@ -324,7 +392,7 @@ class FileEqualsMetric(BaseMetric):
     """Score ``1.0`` when ``file_state[path]`` equals ``expected`` byte-for-byte (as text), else ``0.0``.
 
     The exact-match counterpart to :class:`FileDiffLinesMetric` (which grades a line-count budget): a
-    step-efficiency probe asks for a file containing EXACTLY a value, so a trailing newline or extra
+    step-efficiency case asks for a file containing EXACTLY a value, so a trailing newline or extra
     prose is a fail, not a within-threshold pass. Reads the run's ``file_state`` snapshot the
     regression task-fn records ({path: content}); ``path`` absent (never written / deleted) or a
     missing / malformed ``file_state`` scores a graceful ``0.0``.
@@ -361,7 +429,7 @@ class FileEqualsMetric(BaseMetric):
 class NewFileNameMetric(BaseMetric):
     """Score ``1.0`` when the run created ≥1 file matching ``suffix`` AND every one obeys ``predicate``.
 
-    The memory-obedience probe (a seeded ``AGENTS.md`` rule such as "every new Python file's name starts
+    The memory-obedience case (a seeded ``AGENTS.md`` rule such as "every new Python file's name starts
     with ``dc_``") grades on the NAME of the file the agent chose, not its content — so neither
     :class:`FileEqualsMetric` (a known path) nor a tool-arg check fits. This metric reads the run's
     ``file_state`` snapshot, keeps the paths ending in ``suffix``, and passes only when at least one such
@@ -424,13 +492,13 @@ class NewFileNameMetric(BaseMetric):
 class JsonSchemaMetric(BaseMetric):
     """Score ``1.0`` when the run's ``output`` is JSON that validates against a pydantic ``schema``.
 
-    The JSON-output-contract probe asks the agent to answer ONLY as JSON matching a schema; grading it
+    The JSON-output-contract case asks the agent to answer ONLY as JSON matching a schema; grading it
     needs BOTH that the text parses as JSON (Opik's ``IsJson`` built-in covers that) AND that the parsed
     object satisfies the declared shape. This metric closes the second half: it ``json.loads`` the
     ``output`` and calls ``schema.model_validate`` on the result. Any failure — non-string output, a
     parse error, a validation error, or JSON that is not an object the model accepts — is a graceful
     ``0.0`` with a reason, never a raise (the contract is strict on purpose: a ```` ```json ```` fence or
-    trailing prose breaks the parse, which is the point of an output-contract probe). ``track=False`` for
+    trailing prose breaks the parse, which is the point of an output-contract case). ``track=False`` for
     the same offline reason as the rest.
     """
 
@@ -471,8 +539,8 @@ class JsonSchemaMetric(BaseMetric):
 class OutputContainsMetric(BaseMetric):
     """Score ``1.0`` when ``needle`` appears in the run's final assistant ``output`` text.
 
-    Case-insensitive by default (an agent may phrase the answer in any casing). Used where a probe's
-    behavior is confirmed by the agent NAMING something in its answer — e.g. the LSP-diagnostics probe
+    Case-insensitive by default (an agent may phrase the answer in any casing). Used where a case's
+    behavior is confirmed by the agent NAMING something in its answer — e.g. the LSP-diagnostics case
     asserts the seeded error is surfaced in the reply. A missing / non-string ``output`` scores a
     graceful ``0.0``.
     """
@@ -502,7 +570,7 @@ class OutputContainsMetric(BaseMetric):
 class ToolNotSucceededMetric(BaseMetric):
     """Score ``1.0`` when ``tool_name`` never SUCCEEDED — not called, or every call the gate denied.
 
-    Stricter-than-absent counterpart to :class:`ToolNotCalledMetric`: a plan-mode probe wants "zero
+    Stricter-than-absent counterpart to :class:`ToolNotCalledMetric`: a plan-mode case wants "zero
     SUCCESSFUL write/edit calls", which a denied attempt still satisfies (the agent tried to edit but
     ``enter_plan_mode`` had flipped the gate to ``PLAN``, so the write was denied and never landed).
     Reads ``tool_calls`` (every attempt) and ``denied_tools`` (the gate-denied ones); the tool
@@ -528,6 +596,59 @@ class ToolNotSucceededMetric(BaseMetric):
             name=self.name,
             value=1.0 if ok else 0.0,
             reason=f"{self.tool_name!r} succeeded {max(succeeded, 0)} time(s) (called {called}, denied {denied_count}).",
+        )
+
+
+class AnsweredWithoutErrorMetric(BaseMetric):
+    """Score ``1.0`` when the run ENDED WITH AN ANSWER and no agent error (ADR-0022 §8).
+
+    The ``agent_error``-absent metric the mined cases grade on, strengthened with the second half of
+    the symptom the traces actually show: every mined failure in ``evals/regression/mining/`` — the
+    empty-model-response crash (``UnexpectedModelBehavior``), the provider ``400`` the Kitaru
+    evaluator ``decode-bad-request-400`` guards — ends with a terminal error AND nothing the user can
+    read. That pair is what ``evaluators/decode_bad_request_400.py`` keys on remotely; this is the
+    same rule offline, over the regression payload: ``agent_error`` empty AND ``output`` a non-blank
+    string.
+
+    ``infra_error`` (a fixture / setup failure, so the case never ran) comes back
+    ``scoring_failed=True`` — Opik drops such a score from aggregation entirely, exactly as
+    :class:`RewardMetric` does for an ``infra_error`` trial. Without that, a broken fixture would
+    report a ``None`` ``agent_error`` and grade as a green run.
+    """
+
+    def __init__(self, name: str | None = None) -> None:
+        super().__init__(name=name or "answered_without_error", track=False)
+
+    def score(
+        self,
+        output: Any = None,
+        agent_error: Any = None,
+        infra_error: Any = None,
+        **ignored_kwargs: Any,
+    ) -> ScoreResult:
+        if infra_error:
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                scoring_failed=True,
+                reason=f"the harness could not run this case: {infra_error}",
+            )
+        if agent_error:
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"the run ended in an agent error: {agent_error}",
+            )
+        if not isinstance(output, str) or not output.strip():
+            return ScoreResult(
+                name=self.name,
+                value=0.0,
+                reason=f"the run produced no assistant-facing answer (output={output!r}).",
+            )
+        return ScoreResult(
+            name=self.name,
+            value=1.0,
+            reason=f"the run answered ({len(output)} chars) with no agent error.",
         )
 
 

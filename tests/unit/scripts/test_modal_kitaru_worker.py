@@ -35,12 +35,20 @@ API_KEY = "ZENPROKEY_notarealkey_0123456789"
 
 
 def _configured_env(**overrides: str) -> dict[str, str]:
-    """A container env shaped like the ``decode-kitaru-worker`` Secret's (no agent id)."""
+    """A container env shaped like the ``decode-kitaru-worker`` Secret's (no agent id).
+
+    ``DECODE_ENV`` is the one value here that must AGREE with the deployment, so it is derived from
+    the module's own constant instead of hardcoded: a Secret that contradicts it is refused at
+    startup (ADR-0021 §3), and the module constant is baked from ``os.environ`` at import — the one
+    thing a test cannot monkeypatch after the fact. Hardcoding ``"local"`` made every test below
+    fail for a developer with ``DECODE_ENV=prod`` in their shell or ``.env`` (task 155); the suite
+    now pins the ambient value in ``tests/conftest.py``, and this keeps the file honest on its own.
+    """
     env = {
         "KITARU_API_URL": WORKSPACE_URL,
         "KITARU_API_KEY": API_KEY,
         "GEMINI_API_KEY": "gem-notreal",
-        "DECODE_ENV": "local",
+        "DECODE_ENV": mkw.DECODE_ENV,
     }
     env.update(overrides)
     return env

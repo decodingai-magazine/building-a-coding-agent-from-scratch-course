@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from evals.harness.driver import ToolCallRecord
 from evals.harness.metrics import (
+    AnsweredWithoutErrorMetric,
     DiffLinesMetric,
     FileDiffLinesMetric,
     FileEqualsMetric,
@@ -21,11 +22,12 @@ from evals.harness.metrics import (
     MaxStepsMetric,
     NewFileNameMetric,
     OutputContainsMetric,
+    RewardMetric,
     ToolArgsMetric,
+    ToolArgsNeverMetric,
     ToolCalledMetric,
     ToolNotCalledMetric,
     ToolNotSucceededMetric,
-    VerifyOracleMetric,
 )
 
 
@@ -56,7 +58,6 @@ def _assert_well_formed(result: ScoreResult) -> None:
     [
         ToolCalledMetric("read"),
         ToolNotCalledMetric("read"),
-        VerifyOracleMetric(),
         MaxStepsMetric(),
         DiffLinesMetric(max_lines=5),
         FileDiffLinesMetric(path="config.py", baseline="PORT = 8000\n", max_lines=2),
@@ -83,7 +84,6 @@ def test_metrics_never_install_the_opik_track_decorator(mocker) -> None:
 
     ToolCalledMetric("read")
     ToolNotCalledMetric("write")
-    VerifyOracleMetric()
     MaxStepsMetric()
     DiffLinesMetric(max_lines=5)
     FileDiffLinesMetric(path="config.py", baseline="PORT = 8000\n", max_lines=2)
@@ -151,34 +151,6 @@ def test_tool_not_called_missing_field_scores_one() -> None:
     assert result.value == 1.0
 
 
-# --- VerifyOracleMetric ----------------------------------------------------------------------
-
-
-def test_verify_oracle_pass_on_exit_zero() -> None:
-    result = VerifyOracleMetric().score(verify={"exit_code": 0, "stdout": "PASS: all checks"})
-    _assert_well_formed(result)
-    assert result.value == 1.0
-    assert "PASS" in result.reason
-
-
-def test_verify_oracle_fail_on_nonzero_exit() -> None:
-    result = VerifyOracleMetric().score(verify={"exit_code": 1, "stdout": "FAIL: missing file"})
-    _assert_well_formed(result)
-    assert result.value == 0.0
-
-
-def test_verify_oracle_missing_field_is_graceful_zero() -> None:
-    result = VerifyOracleMetric().score()
-    _assert_well_formed(result)
-    assert result.value == 0.0
-
-
-def test_verify_oracle_malformed_field_is_graceful_zero() -> None:
-    result = VerifyOracleMetric().score(verify={"stdout": "no exit code here"})
-    _assert_well_formed(result)
-    assert result.value == 0.0
-
-
 # --- MaxStepsMetric --------------------------------------------------------------------------
 
 
@@ -206,6 +178,87 @@ def test_max_steps_missing_field_is_graceful_zero() -> None:
     result = MaxStepsMetric().score(steps=3)
     _assert_well_formed(result)
     assert result.value == 0.0
+
+
+# --- RewardMetric ----------------------------------------------------------------------------
+
+
+def test_reward_metric_scores_a_won_trial() -> None:
+    """``agent_ok`` ⇒ the Verifier's reward IS the score of record (ADR-0022 §3)."""
+    result = RewardMetric().score(status="agent_ok", reward=1.0, reason=None)
+
+    assert result.name == "reward"
+    assert result.value == 1.0
+    assert result.scoring_failed is False
+
+
+def test_reward_metric_scores_a_lost_trial_with_its_reason() -> None:
+    """An agent failure is a real 0 in the denominator, and the row says WHY (ADR-0022 §4)."""
+    result = RewardMetric().score(
+        status="agent_fail", reward=0.0, reason="the run hit its 15-request ceiling"
+    )
+
+    assert result.value == 0.0
+    assert result.scoring_failed is False
+    assert "ceiling" in result.reason
+
+
+def test_reward_metric_marks_an_infra_error_as_scoring_failed() -> None:
+    """An Infra Error is excluded, not zeroed — Opik's own axis for "this was not measurable"."""
+    result = RewardMetric().score(
+        status="infra_error", reward=None, reason="the Verifier timed out after 600s"
+    )
+
+    assert result.value == 0.0
+    assert result.scoring_failed is True
+    assert "Verifier" in result.reason
+
+
+def test_reward_metric_marks_a_missing_reward_as_scoring_failed() -> None:
+    """A graded status with no number cannot be read as a 0 — it is unscorable (ADR-0022 §3)."""
+    result = RewardMetric().score(status="agent_fail", reward=None, reason=None)
+
+    assert result.scoring_failed is True
+
+
+def test_reward_metric_is_graceful_on_a_missing_payload() -> None:
+    """Opik hands the metric whatever the task fn returned; a shapeless payload never raises."""
+    result = RewardMetric().score()
+
+    assert result.value == 0.0
+    assert result.scoring_failed is True
+
+
+def test_opik_excludes_a_failed_reward_from_the_aggregate() -> None:
+    """The ADR-0022 §4 rule, proven against the INSTALLED opik: a failed score is not a 0.
+
+    ``calculate_aggregated_statistics`` is what feeds Opik's per-experiment / per-item score view;
+    it skips ``scoring_failed`` results entirely, so an Infra Error leaves the mean of the two graded
+    trials at 0.5 rather than dragging it to 0.33.
+    """
+    from opik.evaluation.score_statistics import calculate_aggregated_statistics
+    from opik.evaluation.test_case import TestCase
+    from opik.evaluation.test_result import TestResult
+
+    metric = RewardMetric()
+    scores = [
+        metric.score(status="agent_ok", reward=1.0, reason=None),
+        metric.score(status="agent_fail", reward=0.0, reason="wrong answer"),
+        metric.score(status="infra_error", reward=None, reason="the sandbox did not start"),
+    ]
+    results = [
+        TestResult(
+            test_case=TestCase(trace_id=f"t{i}", dataset_item_id="item-1", task_output={}),
+            score_results=[score],
+            trial_id=i,
+        )
+        for i, score in enumerate(scores)
+    ]
+
+    aggregated = calculate_aggregated_statistics(results)
+
+    assert aggregated["reward"].values == [1.0, 0.0]  # the infra trial is absent entirely
+    assert aggregated["reward"].mean == 0.5
 
 
 # --- DiffLinesMetric -------------------------------------------------------------------------
@@ -540,3 +593,120 @@ def test_json_schema_missing_field_is_graceful_zero() -> None:
     result = JsonSchemaMetric(_SampleSchema).score()
     _assert_well_formed(result)
     assert result.value == 0.0
+
+
+# --- AnsweredWithoutErrorMetric ----------------------------------------------------------------
+
+
+def test_answered_without_error_an_answer_and_no_error_scores_one() -> None:
+    result = AnsweredWithoutErrorMetric().score(
+        output="uname printed arm64.", agent_error=None, infra_error=None
+    )
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_answered_without_error_a_crashed_run_scores_zero_and_names_the_error() -> None:
+    # The mined symptom: a terminal error AND no answer (evaluators/decode_bad_request_400.py).
+    result = AnsweredWithoutErrorMetric().score(
+        output="", agent_error="Exceeded maximum output retries (3)", infra_error=None
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+    assert "Exceeded maximum output retries (3)" in (result.reason or "")
+
+
+def test_answered_without_error_an_error_with_partial_output_still_scores_zero() -> None:
+    result = AnsweredWithoutErrorMetric().score(output="partial", agent_error="boom")
+    assert result.value == 0.0
+
+
+def test_answered_without_error_a_blank_answer_scores_zero() -> None:
+    # No crash, but nothing the user can read — the other half of the mined symptom.
+    result = AnsweredWithoutErrorMetric().score(output="   ", agent_error=None)
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_answered_without_error_missing_output_scores_zero() -> None:
+    result = AnsweredWithoutErrorMetric().score()
+    _assert_well_formed(result)
+    assert result.value == 0.0
+
+
+def test_answered_without_error_an_infra_failure_is_unscorable_never_a_pass() -> None:
+    # A fixture/setup failure means the case never ran: Opik must DROP the score (RewardMetric's
+    # rule), not read a None agent_error as a green run.
+    result = AnsweredWithoutErrorMetric().score(
+        output="", agent_error=None, infra_error="fixture raised: no such file"
+    )
+    _assert_well_formed(result)
+    assert result.scoring_failed is True
+    assert "fixture raised: no such file" in (result.reason or "")
+
+
+# --- ToolArgsNeverMetric -----------------------------------------------------------------------
+
+
+def _reads_a_missing_path(args: dict) -> bool:
+    return args.get("path") not in {"README.md", "notes.txt"}
+
+
+def test_tool_args_never_no_matching_call_scores_one() -> None:
+    result = ToolArgsNeverMetric(
+        "read", _reads_a_missing_path, description="a path outside the tree", name="read_exists"
+    ).score(tool_calls=[{"name": "read", "args": {"path": "README.md"}}])
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_tool_args_never_one_matching_call_scores_zero_and_names_the_args() -> None:
+    result = ToolArgsNeverMetric(
+        "read", _reads_a_missing_path, description="a path outside the tree", name="read_exists"
+    ).score(
+        tool_calls=[
+            {"name": "read", "args": {"path": "README"}},
+            {"name": "read", "args": {"path": "README.md"}},
+        ]
+    )
+    _assert_well_formed(result)
+    assert result.value == 0.0
+    assert "README" in (result.reason or "")
+
+
+def test_tool_args_never_tool_not_called_scores_one() -> None:
+    result = ToolArgsNeverMetric(
+        "read", _reads_a_missing_path, description="a path outside the tree", name="read_exists"
+    ).score(tool_calls=[{"name": "glob", "args": {"pattern": "*"}}])
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_tool_args_never_missing_field_scores_one() -> None:
+    # Nothing recorded means the forbidden call trivially never happened (ToolNotCalledMetric's rule).
+    result = ToolArgsNeverMetric(
+        "read", _reads_a_missing_path, description="a path outside the tree", name="read_exists"
+    ).score()
+    _assert_well_formed(result)
+    assert result.value == 1.0
+
+
+def test_tool_args_never_reads_tool_call_record_and_json_string_args() -> None:
+    metric = ToolArgsNeverMetric(
+        "read", _reads_a_missing_path, description="a path outside the tree", name="read_exists"
+    )
+    assert (
+        metric.score(tool_calls=[ToolCallRecord(name="read", args={"path": "README"})]).value == 0.0
+    )
+    assert metric.score(tool_calls=[{"name": "read", "args": '{"path": "README"}'}]).value == 0.0
+
+
+def test_tool_args_never_raising_predicate_is_not_a_violation() -> None:
+    def _boom(args: dict) -> bool:
+        raise KeyError("nope")
+
+    result = ToolArgsNeverMetric("read", _boom, description="explodes", name="read_boom").score(
+        tool_calls=[{"name": "read", "args": {}}]
+    )
+    _assert_well_formed(result)
+    assert result.value == 1.0

@@ -9,10 +9,13 @@ request is issued just by building the agent — every provider constructs offli
 """
 
 import inspect
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import AsyncOpenAI
 from pydantic import SecretStr
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.messages import (
@@ -40,6 +43,10 @@ from decode.entities.agent_def import AgentDef
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.gate import PermissionGate
 from decode.tools import agent as agent_tool_module
+
+# A gateway-shaped id (``vendor/model``) for the offline OpenAI-compatible model the wire-shape test
+# drives — OpenAIProvider splits on the prefix to pick a model profile.
+_STRICT_MODEL_ID = "some-vendor/strict-openai-compatible"
 
 
 class _StubSpawnAgent:
@@ -96,6 +103,44 @@ def _deps(cwd: Path, *, active_agent: AgentDef | None = None) -> AgentDeps:
     )
 
 
+def _recording_openai_model(requests: list[dict]) -> OpenAIChatModel:
+    """An ``OpenAIChatModel`` that records the request body it would POST — no socket, no key.
+
+    The ONE place decode's assembled instructions turn into wire-format ``system`` messages is
+    ``OpenAIChatModel``'s message mapping, so the "strict OpenAI-compatible servers accept exactly
+    one ``system`` message" constraint can only be asserted on the payload itself. httpx's
+    ``MockTransport`` answers every POST with a minimal valid chat completion, so the run completes
+    against the real model class and the real mapping while staying offline.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-recorded",
+                "object": "chat.completion",
+                "created": 1_700_000_000,
+                "model": _STRICT_MODEL_ID,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 1, "total_tokens": 12},
+            },
+        )
+
+    client = AsyncOpenAI(
+        base_url="https://strict-endpoint.example.com/v1",
+        api_key="EMPTY",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    return OpenAIChatModel(_STRICT_MODEL_ID, provider=OpenAIProvider(openai_client=client))
+
+
 def _tool_names_called(messages: list[object]) -> set[str]:
     """Every tool name the model actually called across ``messages`` (the visible-tool proof)."""
     called: set[str] = set()
@@ -121,7 +166,7 @@ def test_build_agent_uses_google_model_with_configured_id(mocker):
     assert agent.model.model_name == "gemini-2.5-flash"
     # Generative-Language API key path, NOT Vertex: the provider's system name is "google" under
     # pydantic-ai 2.x (it was "google-gla" on 1.x, before the pin moved; ADR-0019 §2).
-    assert isinstance(agent.model._provider, GoogleProvider)
+    assert isinstance(agent.model.provider, GoogleProvider)
     assert agent.model.system == "google"
 
 
@@ -164,27 +209,45 @@ def test_build_agent_includes_deferred_tool_requests_in_output(mocker):
     assert DeferredToolRequests in output_types
 
 
-def test_build_agent_registers_a_single_instructions_hook(mocker):
-    """ONE instructions source → ONE ``system`` message (regression guard).
+async def test_a_built_agent_sends_exactly_one_system_message_on_the_wire(tmp_path, mocker):
+    """ONE instructions source → ONE ``system`` message on the wire (regression guard).
 
     decode's base + active persona + memory + Skills Catalog are assembled inside a single
     ``@agent.instructions`` hook, NOT registered as separate sources, because
     ``OpenAIChatModel`` emits one ``system`` message per instruction source and strict
     OpenAI-compatible servers reject more than one — the vLLM chat template behind a Modal Auto
     Endpoint (and some OpenRouter models) raise "System message must be at the beginning." on the
-    second one. So there is no static ``instructions=`` string and exactly one callable entry; the
-    content of each part is asserted by the per-part injection tests below.
+    second one.
+
+    Asserted at the wire, on the request body an OpenAI-compatible server would receive, rather
+    than on ``Agent``'s private instruction list: the private attribute is not a contract (it moved
+    shape between pydantic-ai 2.22 and 2.40, task 155) and the joined ``ModelRequest.instructions``
+    string cannot see the difference — two sources with different content join into one string and
+    still read as one. The number of ``role: "system"`` entries in the payload IS the constraint,
+    so this test breaks exactly when a future ``instructions=`` string or a second
+    ``@agent.instructions`` hook would break a real vLLM endpoint. The content of each part is
+    asserted by the per-part injection tests below.
     """
+    # Pin the provider: ``build_agent`` reads settings, and a developer's ``.env`` (LLM_PROVIDER=modal)
+    # must not decide which branch this test builds before ``override`` swaps the model out.
+    mocker.patch("decode.agent.factory.settings.llm_provider", "gemini", create=False)
     mocker.patch(
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
+    (tmp_path / "AGENTS.md").write_text("PROJECT RULE: run the tests", encoding="utf-8")
+    requests: list[dict] = []
 
     agent = build_agent()
+    with agent.override(model=_recording_openai_model(requests)):
+        result = await agent.run("hi", deps=_deps(tmp_path))
 
-    static_strings = [p for p in agent._instructions if isinstance(p, str)]
-    callables = [p for p in agent._instructions if callable(p)]
-    assert static_strings == []  # no separate static base → no extra system message
-    assert len(callables) == 1  # the single assembled-instructions hook
+    assert result.output == "ok"
+    assert len(requests) == 1, requests
+    system_messages = [m for m in requests[0]["messages"] if m["role"] == "system"]
+    assert len(system_messages) == 1, requests[0]["messages"]
+    # ...and it really is the whole assembled block: base prompt + the memory layered on top.
+    assert "decode" in system_messages[0]["content"].lower()
+    assert "PROJECT RULE: run the tests" in system_messages[0]["content"]
 
 
 async def test_memory_is_injected_into_the_first_request_instructions(tmp_path, mocker):
@@ -336,7 +399,7 @@ def test_the_provider_key_comes_from_settings_for_gemini(mocker):
 
     agent = build_agent()
 
-    assert agent.model._provider.client._api_client.api_key == "settings-gemini-key"
+    assert agent.model.provider.client._api_client.api_key == "settings-gemini-key"
 
 
 def test_the_provider_key_comes_from_settings_for_openrouter(mocker):
@@ -351,7 +414,7 @@ def test_the_provider_key_comes_from_settings_for_openrouter(mocker):
 
     agent = build_agent()
 
-    assert agent.model._provider.client.api_key == "settings-openrouter-key"
+    assert agent.model.provider.client.api_key == "settings-openrouter-key"
 
 
 async def test_memory_injection_is_evaluated_per_run(tmp_path, mocker):
@@ -548,8 +611,8 @@ async def test_skills_catalog_is_injected_regardless_of_active_agent(tmp_path, m
 # these tests assert the model *type* + the client *shape* (base_url / headers / placeholder
 # api_key) with ``mocker.patch``ed settings, never a live call (ADR-0005 Consequences).
 #
-# The attribute paths below were verified against the installed openai 2.43 / pydantic-ai 2.22:
-# the custom modal client is reachable at ``agent.model._provider.client``; httpx normalizes the
+# The attribute paths below were verified against the installed openai 3.13 / pydantic-ai 2.40:
+# the custom modal client is reachable at ``agent.model.provider.client``; httpx normalizes the
 # ``base_url`` with a trailing slash (``.../v1`` round-trips as ``.../v1/``); ``default_headers``
 # carries the Modal proxy headers; ``api_key`` reads back the secret / ``"EMPTY"`` placeholder.
 
@@ -632,7 +695,7 @@ def test_modal_authenticated_client_carries_both_proxy_headers(mocker):
 
     agent = build_agent()
 
-    client = agent.model._provider.client
+    client = agent.model.provider.client
     assert str(client.base_url) == f"{_MODAL_URL}/v1/"
     headers = dict(client.default_headers)
     assert headers["Modal-Key"] == "wk-id"
@@ -646,7 +709,7 @@ def test_modal_unauthenticated_client_has_no_modal_headers_and_placeholder_api_k
 
     agent = build_agent()
 
-    client = agent.model._provider.client
+    client = agent.model.provider.client
     assert str(client.base_url) == f"{_MODAL_URL}/v1/"
     headers = dict(client.default_headers)
     assert "Modal-Key" not in headers
@@ -719,9 +782,9 @@ def test_gemini_override_keeps_the_google_provider_and_settings_key(mocker):
 
     assert model.model_name == "gemini-2.5-pro"
     assert isinstance(model, GoogleModel)
-    assert isinstance(model._provider, GoogleProvider)
+    assert isinstance(model.provider, GoogleProvider)
     # The auth path is byte-identical: the provider still carries the settings-sourced key.
-    assert model._provider.client._api_client.api_key == "test-key"
+    assert model.provider.client._api_client.api_key == "test-key"
 
 
 def test_openrouter_override_keeps_the_openrouter_provider_and_key(mocker):
@@ -731,8 +794,8 @@ def test_openrouter_override_keeps_the_openrouter_provider_and_key(mocker):
 
     assert model.model_name == "some-vendor/some-openrouter-id"
     assert isinstance(model, OpenAIChatModel)
-    assert isinstance(model._provider, OpenRouterProvider)
-    assert model._provider.client.api_key == "or-key"
+    assert isinstance(model.provider, OpenRouterProvider)
+    assert model.provider.client.api_key == "or-key"
 
 
 def test_modal_override_keeps_the_custom_client_and_proxy_headers(mocker):
@@ -742,8 +805,8 @@ def test_modal_override_keeps_the_custom_client_and_proxy_headers(mocker):
 
     assert model.model_name == "some-modal-id"
     assert isinstance(model, OpenAIChatModel)
-    assert isinstance(model._provider, OpenAIProvider)
-    client = model._provider.client
+    assert isinstance(model.provider, OpenAIProvider)
+    client = model.provider.client
     assert str(client.base_url) == f"{_MODAL_URL}/v1/"
     headers = dict(client.default_headers)
     assert headers["Modal-Key"] == "wk-id"

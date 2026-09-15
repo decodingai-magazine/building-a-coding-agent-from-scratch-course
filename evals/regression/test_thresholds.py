@@ -14,12 +14,19 @@ exits 0. The skip predicate is the suite's ONE shared, provider-aware, settings-
 track uses — so an openrouter/modal operator's run is gated on the RIGHT key, not a hardcoded
 ``GEMINI_API_KEY`` (which would let the gate vacuously skip and ``make`` exit 0 having gated nothing).
 
-The module stays thin on purpose. It runs the probe suite ONCE (a session-scoped fixture over
+``--difficulty easy|medium|hard`` (``evals/regression/conftest.py``) slices the run to one Difficulty
+Tier, so ``make eval-regression ARGS='--difficulty hard'`` bills eight cases instead of twenty. The
+tier is forwarded to ``run_regression``, which names the experiment after the slice
+(``decode-regression-gate-hard``) so a tier's baseline is compared against that tier, never the suite.
+
+The module stays thin on purpose. It runs the case suite ONCE (a session-scoped fixture over
 :func:`evals.harness.regression.run_regression`) and then delegates every judgement to the pure,
 offline-tested helpers in :mod:`evals.regression.thresholds`:
 
 * the absolute per-metric threshold table is the HARD gate — :func:`evaluate_thresholds` fails the run
-  when any metric falls below its floor (tool-discipline ≥ 0.8, judges ≥ 0.7);
+  when any metric falls below its floor (tool-discipline ≥ 0.8, judges ≥ 0.7). It gates GLOBALLY: the
+  floors are the same whichever tiers ran (ADR-0022 §8 — thresholds are reported per tier, gated once);
+* the per-tier report is a READABLE signal — one table per tier via the same WARN channel;
 * the baseline compare is a SOFT signal — it fetches the previous experiment by its stable name and
   WARNs on per-metric regressions, but never fails the gate (usable on day one with no baseline).
 """
@@ -33,6 +40,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from evals.harness.keys import eval_keys_missing
+from evals.regression.loader import load_cases
 from evals.regression.thresholds import (
     BaselineCandidate,
     baseline_scores_from_feedback,
@@ -40,7 +48,9 @@ from evals.regression.thresholds import (
     evaluate_thresholds,
     format_deltas,
     format_failures,
+    format_tier_scores,
     latest_baseline,
+    scores_by_tier,
     scores_from_aggregation,
 )
 
@@ -50,17 +60,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The stable experiment name every regression run shares, so ``get_experiments_by_name`` can find the
-# previous run to compare against. Kept distinct from the dataset name (``decode-regression-v1``).
-EXPERIMENT_NAME = "decode-regression-gate"
-
 # Slack that absorbs judge noise before a per-metric dip is WARNed as a baseline regression.
 BASELINE_TOLERANCE = 0.05
 
 
 @pytest.fixture(scope="session")
-def regression_result() -> EvaluationResult:
-    """Run the whole probe suite ONCE and hand its Opik result to every gate test (ADR-0017 §6).
+def difficulty(pytestconfig: pytest.Config) -> str | None:
+    """The ``--difficulty`` tier this run is sliced to (``None`` = the whole suite)."""
+    return pytestconfig.getoption("difficulty")
+
+
+@pytest.fixture(scope="session")
+def regression_result(difficulty: str | None) -> EvaluationResult:
+    """Run the selected case suite ONCE and hand its Opik result to every gate test (ADR-0017 §6).
 
     Skips with a clear reason (exit 0) when a required key is absent, so the ritual is safe to invoke
     on a machine without eval credentials. The skip predicate is the shared, provider-aware
@@ -74,7 +86,7 @@ def regression_result() -> EvaluationResult:
 
     from evals.harness.regression import run_regression
 
-    return run_regression(experiment_name=EXPERIMENT_NAME)
+    return run_regression(difficulty=difficulty)
 
 
 def test_regression_meets_absolute_thresholds(regression_result: EvaluationResult) -> None:
@@ -84,25 +96,42 @@ def test_regression_meets_absolute_thresholds(regression_result: EvaluationResul
     report = evaluate_thresholds(scores)
 
     assert not report.empty, (
-        "no metrics were graded — the probe suite did not run any probe; "
-        "check probe registration and that the run actually executed."
+        "no metrics were graded — the case suite did not run any case; "
+        "check case registration and that the run actually executed."
     )
     assert report.passed, format_failures(report)
 
 
-def test_baseline_compare_surfaces_deltas(regression_result: EvaluationResult) -> None:
+def test_per_tier_scores_are_reported(regression_result: EvaluationResult) -> None:
+    """The readable signal: one table per Difficulty Tier, WARNed, never gated (ADR-0022 §8)."""
+    tiers = {case.id: case.difficulty for case in load_cases()}
+
+    by_tier = scores_by_tier(regression_result.test_results, tiers)
+
+    _warn(format_tier_scores(by_tier))
+    # Not a gate (the floors stay global) — but an empty report means the dataset items and the
+    # registry disagree on case ids, which would print a table of nothing forever.
+    assert by_tier, "no result carried a known case id — the dataset and the registry disagree."
+
+
+def test_baseline_compare_surfaces_deltas(
+    regression_result: EvaluationResult, difficulty: str | None
+) -> None:
     """The soft signal: WARN on per-metric regressions vs the last experiment, never fail (§6)."""
     import opik
 
+    from evals.harness.regression import GATE_EXPERIMENT_NAME, scoped_name
+
+    experiment_name = scoped_name(GATE_EXPERIMENT_NAME, difficulty=difficulty)
     scores = scores_from_aggregation(
         regression_result.aggregate_evaluation_scores().aggregated_scores
     )
     baseline = _load_baseline(
-        opik.Opik(), experiment_name=EXPERIMENT_NAME, current_id=regression_result.experiment_id
+        opik.Opik(), experiment_name=experiment_name, current_id=regression_result.experiment_id
     )
 
     if baseline is None:
-        _warn(f"no prior '{EXPERIMENT_NAME}' experiment with scores — baseline compare skipped.")
+        _warn(f"no prior '{experiment_name}' experiment with scores — baseline compare skipped.")
         return
 
     deltas = compare_to_baseline(scores, baseline.scores, tolerance=BASELINE_TOLERANCE)

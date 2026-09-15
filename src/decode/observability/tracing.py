@@ -10,7 +10,7 @@ OpenTelemetry SDK, so polluting the global env could redirect its telemetry too.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
@@ -27,6 +27,12 @@ logger = logging.getLogger(__name__)
 # The Comet-cloud OTLP base used when ``opik_url_override`` is unset; the exporter appends
 # ``/v1/traces``, a self-hosted Opik overrides the whole base (ADR-0014 §2).
 _CLOUD_OTLP_BASE = "https://www.comet.com/opik/api/v1/private/otel"
+
+# Opik's documented span-attribute prefix for "put this in the span's metadata" — and a ROOT span's
+# metadata is the trace's metadata (docs: integrations/opentelemetry, "Opik-specific span
+# attributes"). NOT ours to rename: an attribute set without it is dropped on ingestion, which is
+# why the four join fields ride prefixed while ``thread_id`` — a key Opik maps itself — does not.
+OPIK_METADATA_PREFIX = "opik.metadata."
 
 # Idempotency flag: ``logfire.configure`` installs a PROCESS-GLOBAL TracerProvider, so a second
 # configure would stack a second exporter. Cleared by :func:`reset_tracing` (test hermeticity).
@@ -139,7 +145,11 @@ def is_tracing_active() -> bool:
 
 
 def root_span(
-    name: str, *, thread_id: str | None = None, input: str | None = None
+    name: str,
+    *,
+    thread_id: str | None = None,
+    input: str | None = None,
+    metadata: Mapping[str, str] | None = None,
 ) -> AbstractContextManager[Any]:
     """Open a root span named ``name`` when tracing is active, else a ``nullcontext`` (ADR-0014 §4-5).
 
@@ -148,12 +158,22 @@ def root_span(
     Opik buckets it into the **trace's** INPUT
     (a prefix match on the attribute key) — without it the Thread view renders blank rows. The
     paired :func:`record_output` sets the ``output`` half. Call sites open this unconditionally.
+
+    ``metadata`` (:func:`decode.observability.trace_metadata`) is set key by key as a FLAT
+    ``opik.metadata.<key>`` attribute, which is Opik's documented contract for landing a value in a
+    span's ``metadata`` — and the root span's metadata is the **trace's** metadata, which is what an
+    eval filters traces on (ADR-0022 §10). The prefix is load-bearing, not decoration: a plain
+    unmapped attribute is dropped on ingestion (``thread_id`` survives only because it is one of the
+    few keys Opik maps itself), so ``git_sha`` set bare never reaches a trace at all.
     """
     if not _active:
         return nullcontext()
     attributes: dict[str, Any] = {"thread_id": thread_id}
     if isinstance(input, str) and input:
         attributes["input"] = input
+    attributes.update(
+        {f"{OPIK_METADATA_PREFIX}{key}": value for key, value in (metadata or {}).items()}
+    )
     return logfire.span(name, **attributes)
 
 

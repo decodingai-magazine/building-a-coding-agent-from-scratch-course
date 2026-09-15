@@ -63,7 +63,7 @@ def test_serve_page_serves_the_body_then_shuts_down() -> None:
 
 
 def test_serve_page_honours_a_fixed_port() -> None:
-    # A probe whose prompt cites the URL verbatim needs a deterministic port, not an ephemeral one.
+    # A case whose prompt cites the URL verbatim needs a deterministic port, not an ephemeral one.
     with serve_page("<html>fixed</html>", port=8479) as url:
         assert url == "http://127.0.0.1:8479"
         fetched = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
@@ -120,11 +120,11 @@ def test_seed_mcp_note_writes_the_documentation_note(tmp_path: Path) -> None:
     path = seed_mcp_note(tmp_path)
 
     assert path == tmp_path / "MCP_FIXTURE.md"
-    assert "MCP tool-usage probe" in path.read_text(encoding="utf-8")
+    assert "MCP tool-usage case" in path.read_text(encoding="utf-8")
 
 
 def test_mcp_stdio_server_stub_raises_until_mcp_ships(tmp_path: Path) -> None:
-    # The stub guards against wiring the MCP probe in before fastmcp + decode's MCP factory land.
+    # The stub guards against wiring the MCP case in before fastmcp + decode's MCP factory land.
     with (
         pytest.raises(NotImplementedError, match="no MCP tool factory yet"),
         mcp_stdio_server_stub(tmp_path),

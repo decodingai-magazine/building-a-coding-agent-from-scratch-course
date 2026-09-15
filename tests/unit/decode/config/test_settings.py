@@ -79,7 +79,7 @@ def test_defaults(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
     s = Settings(_env_file=None)
-    assert s.gemini_model == "gemini-3.5-flash"
+    assert s.gemini_model == "gemini-3.8-flash"
     assert s.max_output_lines == 2000
     assert s.max_output_bytes == 50_000
     assert s.memory_max_lines == 200
@@ -258,7 +258,7 @@ def test_compaction_defaults(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     s = Settings(_env_file=None)
     assert s.compaction_enabled is True
-    assert s.compaction_context_window_tokens == 1_048_576  # derived: gemini-3.5-flash
+    assert s.compaction_context_window_tokens == 1_048_576  # derived: gemini-3.8-flash
     assert s.compaction_reserve_fraction == 0.20
     assert s.microcompaction_reserve_fraction == 0.40
     assert s.compaction_keep_recent_tokens == 20_000
@@ -740,7 +740,7 @@ def test_context_window_is_derived_from_the_gemini_model(monkeypatch):
     s = Settings(_env_file=None)
 
     assert s.llm_provider == "gemini"
-    assert s.active_model == "gemini-3.5-flash"
+    assert s.active_model == "gemini-3.8-flash"
     assert s.compaction_context_window_tokens == 1_048_576
     assert s.context_window_is_assumed is False
     # Derived, not explicit — the mark must not be forged (same contract as opik_project_name).
@@ -810,10 +810,10 @@ def test_active_model_follows_the_provider(monkeypatch):
     _clear_model_env(monkeypatch)
     monkeypatch.setenv("OPENROUTER_MODEL", "some/router-model")
     monkeypatch.setenv("MODAL_ENDPOINT_MODEL", "some/modal-model")
-    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
 
     for provider, expected in (
-        ("gemini", "gemini-3.5-flash"),
+        ("gemini", "gemini-3.8-flash"),
         ("openrouter", "some/router-model"),
         ("modal", "some/modal-model"),
     ):

@@ -38,6 +38,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.usage import RunUsage
+from support.registered_tools import registered_tools
 
 from decode.agent.deps import AgentDeps
 from decode.agent.factory import build_agent
@@ -160,7 +161,7 @@ def test_agent_registers_with_a_raised_retry_budget(mocker):
         "decode.agent.factory.settings.gemini_api_key", SecretStr("test-key"), create=False
     )
     built = build_agent()
-    assert built._function_toolset.tools["agent"].max_retries == by_name["agent"].retries
+    assert registered_tools(built)["agent"].max_retries == by_name["agent"].retries
 
 
 def test_agent_is_a_known_tool_name():
@@ -180,7 +181,7 @@ def test_build_agent_registers_agent_and_sets_the_seam(mocker):
     )
     built = build_agent()
 
-    assert "agent" in built._function_toolset.tools
+    assert "agent" in registered_tools(built)
     # The factory wired the seam after registration (ADR-0013 §6): the tool can spawn from it.
     assert agent_module._require_main_agent() is built
 
@@ -625,7 +626,7 @@ def test_the_registered_tool_description_states_the_input_contract(mocker):
     )
     built = build_agent()
 
-    description = built._function_toolset.tools[AGENT_TOOL_NAME].description
+    description = registered_tools(built)[AGENT_TOOL_NAME].description
     assert description
     lowered = description.lower()
     # (a) the per-prompt shape: question + scope + what the report must contain.

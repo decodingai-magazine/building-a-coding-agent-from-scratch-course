@@ -1,0 +1,57 @@
+{
+  "trace": {
+    "id": "1f0a0b1e-0000-4000-8000-000000000301",
+    "name": "decode_run",
+    "thread_id": "1f0a0b1e-0000-4000-8000-0000000003aa",
+    "start_time": "2026-09-11 11:00:00.000000+00:00",
+    "end_time": "2026-09-11 11:09:00.000000+00:00",
+    "has_tool_spans": true,
+    "error_info": null,
+    "input": {"input": "anonymised task prompt (long run)"},
+    "output": {"output": "anonymised assistant answer"},
+    "metadata": {
+      "integration": "pydantic-ai",
+      "logfire.msg": "decode_run",
+      "thread_id": "1f0a0b1e-0000-4000-8000-0000000003aa",
+      "git_sha": "5c46f38b5f56b39606a454b704b79d50a7500000",
+      "model": "gemini-2.5-flash",
+      "sandbox_mode": "docker",
+      "decode_env": "prod"
+    },
+    "usage": {"prompt_tokens": 480000, "completion_tokens": 20000, "total_tokens": 500000}
+  },
+  "spans": [
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000311",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000301",
+      "name": "execute_tool bash",
+      "type": "tool",
+      "start_time": "2026-09-11 11:08:00.000000+00:00",
+      "end_time": "2026-09-11 11:08:30.000000+00:00",
+      "input": {"tool_arguments": {"command": "pytest -q"}},
+      "output": {"tool_response": "Exit code: 0."},
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "execute_tool",
+        "logfire.msg": "running tool: bash",
+        "name": "agent"
+      }
+    },
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000312",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000301",
+      "name": "execute_tool edit",
+      "type": "tool",
+      "start_time": "2026-09-11 11:02:00.000000+00:00",
+      "end_time": "2026-09-11 11:02:10.000000+00:00",
+      "input": {"tool_arguments": {"path": "registry.py"}},
+      "output": {"tool_response": "Edited registry.py."},
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "execute_tool",
+        "logfire.msg": "running tool: edit",
+        "name": "agent"
+      }
+    }
+  ]
+}

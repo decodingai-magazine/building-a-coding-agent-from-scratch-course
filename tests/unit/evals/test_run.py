@@ -7,6 +7,7 @@ is pulled in lazily by the tracks that need it, so ``--help`` never needs keys o
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -40,29 +41,90 @@ def test_help_lists_the_eval_tracks():
 
 
 def test_benchmark_subcommand_invokes_run_benchmark(mocker):
-    """``evals benchmark`` forwards its filters to ``run_benchmark`` and reports the project (task 106)."""
+    """``evals benchmark`` forwards every flag to ``run_benchmark`` and reports where to look."""
     run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+    run_benchmark.return_value.job_dir = Path(".decode/evals/runs/bench-x")
+    run_benchmark.return_value.experiment_name = "bench-x"
 
-    result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--sandbox", "docker"])
+    result = CliRunner().invoke(
+        cli,
+        [
+            "benchmark",
+            "--task",
+            "001-find-and-replace",
+            "--difficulty",
+            "easy",
+            "--sandbox",
+            "modal",
+            "--trials",
+            "3",
+            "--threads",
+            "2",
+            "--job-name",
+            "bench-x",
+            "--model",
+            "qwen-x",
+        ],
+    )
 
     assert result.exit_code == 0, result.output
     _, kwargs = run_benchmark.call_args
-    assert kwargs["task_id"] == "001-greeting"
-    assert kwargs["sandbox"] == "docker"
+    assert kwargs == {
+        "task_id": "001-find-and-replace",
+        "difficulty": "easy",
+        "sandbox": "modal",
+        "trials": 3,
+        "threads": 2,
+        "job_name": "bench-x",
+        "model": "qwen-x",
+    }
     assert "decode-evals" in result.output
+    assert "bench-x" in result.output
+    assert ".decode/evals/runs/bench-x" in result.output
 
 
-def test_benchmark_subcommand_forwards_trials_and_prints_the_summary(mocker):
-    """``benchmark --trials 3`` forwards ``trials`` and prints the Rich aggregate table (ADR-0017 §8)."""
+def test_benchmark_subcommand_refuses_a_traversing_job_name(mocker):
+    """``--job-name '../../evil'`` is refused BEFORE any (billed) trial starts.
+
+    The name is both a directory under ``.decode/evals/runs/`` and the Opik experiment name, so a
+    ``..`` component would write Trial Dirs outside the harness tree.
+    """
     run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+
+    result = CliRunner().invoke(cli, ["benchmark", "--job-name", "../../evil"])
+
+    assert result.exit_code != 0
+    assert "--job-name" in result.output
+    run_benchmark.assert_not_called()
+
+
+def test_benchmark_subcommand_defaults_are_the_cheap_ones(mocker):
+    """No flags: one trial, docker, and the harness picks the job name + thread policy."""
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+
+    result = CliRunner().invoke(cli, ["benchmark"])
+
+    assert result.exit_code == 0, result.output
+    _, kwargs = run_benchmark.call_args
+    assert kwargs["sandbox"] == "docker"
+    assert kwargs["trials"] == 1
+    assert kwargs["threads"] is None  # resolved per sandbox by run_benchmark
+    assert kwargs["job_name"] is None
+    assert kwargs["model"] is None
+    assert kwargs["difficulty"] is None
+
+
+def test_benchmark_subcommand_prints_the_summary_table(mocker):
+    """``--trials 3`` labels the table's columns with the real k (ADR-0022 §6)."""
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+    run_benchmark.return_value.job_dir = Path(".decode/evals/runs/bench-x")
 
     result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--trials", "3"])
 
     assert result.exit_code == 0, result.output
-    _, kwargs = run_benchmark.call_args
-    assert kwargs["trials"] == 3
-    # The summary table renders even on the mock result (graceful-empty), naming the trial count.
+    # The table renders even on the mock result (graceful-empty), naming the trial count.
     assert "trial(s)" in result.output
+    assert "pass@3" in result.output
 
 
 @pytest.mark.parametrize("trials", ["0", "-1"])
@@ -81,11 +143,21 @@ def test_benchmark_subcommand_rejects_a_non_positive_trials(mocker, trials):
     run_benchmark.assert_not_called()
 
 
-def test_benchmark_subcommand_rejects_a_non_positive_nb_samples(mocker):
-    """``--nb-samples 0`` is a friendly range error too — never a silent zero-item cap."""
+def test_benchmark_subcommand_rejects_a_non_positive_threads(mocker):
+    """``--threads 0`` is a friendly range error too — never a silent zero-worker run."""
     run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
 
-    result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--nb-samples", "0"])
+    result = CliRunner().invoke(cli, ["benchmark", "--threads", "0"])
+
+    assert result.exit_code != 0
+    run_benchmark.assert_not_called()
+
+
+def test_benchmark_subcommand_has_no_nb_samples_flag(mocker):
+    """``--nb-samples`` is gone: a job is scoped by ``--task`` / ``--difficulty`` (ADR-0022 §6)."""
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+
+    result = CliRunner().invoke(cli, ["benchmark", "--nb-samples", "1"])
 
     assert result.exit_code != 0
     run_benchmark.assert_not_called()
@@ -107,15 +179,34 @@ def test_benchmark_subcommand_reports_an_empty_selection(mocker):
 
 
 def test_regression_subcommand_invokes_run_regression(mocker):
-    """``evals regression --probe X`` forwards the id to ``run_regression`` and reports the project."""
+    """``evals regression --case X`` forwards the id to ``run_regression`` and reports the project."""
     run_regression = mocker.patch("evals.harness.regression.run_regression")
 
-    result = CliRunner().invoke(cli, ["regression", "--probe", "smoke-read-tool"])
+    result = CliRunner().invoke(cli, ["regression", "--case", "smoke-read-tool"])
 
     assert result.exit_code == 0, result.output
     _, kwargs = run_regression.call_args
-    assert kwargs["probe_id"] == "smoke-read-tool"
+    assert kwargs["case_id"] == "smoke-read-tool"
+    assert kwargs["difficulty"] is None
     assert "decode-evals" in result.output
+
+
+def test_regression_subcommand_forwards_the_difficulty_tier(mocker):
+    """``evals regression --difficulty hard`` slices the paid run to one tier (ADR-0022 §8)."""
+    run_regression = mocker.patch("evals.harness.regression.run_regression")
+
+    result = CliRunner().invoke(cli, ["regression", "--difficulty", "hard"])
+
+    assert result.exit_code == 0, result.output
+    assert run_regression.call_args.kwargs["difficulty"] == "hard"
+
+
+def test_regression_subcommand_rejects_an_unknown_tier():
+    """A typo'd tier is a friendly ``Invalid value`` before any billed run starts."""
+    result = CliRunner().invoke(cli, ["regression", "--difficulty", "trivial"])
+
+    assert result.exit_code != 0
+    assert "Invalid value" in result.output
 
 
 def test_regression_subcommand_reports_an_empty_selection(mocker):
@@ -124,31 +215,37 @@ def test_regression_subcommand_reports_an_empty_selection(mocker):
 
     mocker.patch(
         "evals.harness.regression.run_regression",
-        side_effect=RegressionSelectionError("no regression probe matched"),
+        side_effect=RegressionSelectionError("no regression case matched"),
     )
 
-    result = CliRunner().invoke(cli, ["regression", "--probe", "nope"])
+    result = CliRunner().invoke(cli, ["regression", "--case", "nope"])
 
     assert result.exit_code != 0
-    assert "no regression probe matched" in result.output
+    assert "no regression case matched" in result.output
 
 
 def test_suite_subcommand_runs_and_reports_pass_rate(mocker):
     """``evals suite`` runs the Test Suite, reports the pass rate + project, and exits clean above bar."""
     run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
-    run_test_suite.return_value = mocker.Mock(pass_rate=1.0)
+    run_test_suite.return_value = mocker.Mock(
+        suite_name="decode-regression-suite-abcd1234", result=mocker.Mock(pass_rate=1.0)
+    )
 
     result = CliRunner().invoke(cli, ["suite"])
 
     assert result.exit_code == 0, result.output
     assert "pass rate 100%" in result.output
     assert "decode-evals" in result.output
+    # The resolved suite name is the run's breadcrumb: it says exactly which items were billed.
+    assert "decode-regression-suite-abcd1234" in result.output
 
 
 def test_suite_subcommand_gates_non_zero_below_the_bar(mocker):
     """A pass rate under the suite bar is a friendly non-zero exit — the regression gate fires (§6)."""
     run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
-    run_test_suite.return_value = mocker.Mock(pass_rate=0.5)
+    run_test_suite.return_value = mocker.Mock(
+        suite_name="decode-regression-suite-abcd1234", result=mocker.Mock(pass_rate=0.5)
+    )
 
     result = CliRunner().invoke(cli, ["suite"])
 
@@ -156,19 +253,32 @@ def test_suite_subcommand_gates_non_zero_below_the_bar(mocker):
     assert "below the bar" in result.output
 
 
-def test_suite_subcommand_reports_the_version_gate_when_opik_is_too_old(mocker):
-    """On the pinned opik 1.9.8 the surface exits with a clear versioned message, not a traceback."""
-    from evals.harness.test_suite import SuiteUnavailableError
+def test_suite_subcommand_forwards_the_case_and_tier_filters(mocker):
+    """``suite`` takes the SAME ``--case`` / ``--difficulty`` slice ``regression`` does (§8)."""
+    run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
+    run_test_suite.return_value = mocker.Mock(
+        suite_name="decode-regression-suite-abcd1234", result=mocker.Mock(pass_rate=1.0)
+    )
+
+    result = CliRunner().invoke(cli, ["suite", "--difficulty", "hard"])
+
+    assert result.exit_code == 0, result.output
+    assert run_test_suite.call_args.kwargs == {"case_id": None, "difficulty": "hard"}
+
+
+def test_suite_subcommand_reports_an_empty_selection(mocker):
+    """A ``SuiteSelectionError`` becomes a friendly non-zero CLI error, not a traceback."""
+    from evals.harness.test_suite import SuiteSelectionError
 
     mocker.patch(
         "evals.harness.test_suite.run_test_suite",
-        side_effect=SuiteUnavailableError("Opik Test Suites need opik>=2.0"),
+        side_effect=SuiteSelectionError("no runnable regression case matched"),
     )
 
-    result = CliRunner().invoke(cli, ["suite"])
+    result = CliRunner().invoke(cli, ["suite", "--case", "nope"])
 
     assert result.exit_code != 0
-    assert "opik>=2.0" in result.output
+    assert "no runnable regression case matched" in result.output
 
 
 def test_online_subcommand_prints_thread_scores(mocker):
@@ -230,25 +340,59 @@ def test_online_subcommand_reports_no_threads(mocker):
     assert "no threads to score in decode-prod" in result.output
 
 
-def test_sync_regression_upserts_probe_items(mocker):
-    """``evals sync --regression --no-benchmark`` syncs the probe registry into the regression dataset."""
-    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_dataset")
-    probe = mocker.Mock()
-    mocker.patch("evals.regression.loader.load_probes", return_value=[probe])
+def test_sync_regression_upserts_both_surfaces(mocker):
+    """``evals sync --regression --no-benchmark`` writes the v2 dataset AND the Test Suite (§8)."""
+    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    sync_regression.return_value.suite_name = "decode-regression-suite-abcd1234"
+    case = mocker.Mock(skip_reason=None, difficulty="easy")
+    mocker.patch("evals.regression.loader.load_cases", return_value=[case])
 
     result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--regression"])
 
     assert result.exit_code == 0, result.output
-    sync_regression.assert_called_once_with([probe])
-    assert "decode-regression-v1" in result.output
+    sync_regression.assert_called_once_with([case])
+    assert "decode-regression-v2" in result.output
+    # The echo names the CONTENT-VERSIONED suite the sync resolved, never a guess at it.
+    assert "decode-regression-suite-abcd1234" in result.output
+
+
+def test_sync_regression_skips_a_skip_guarded_case(mocker):
+    """The Opik surfaces carry what actually RUNS; the registry keeps the blocked case visible."""
+    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    runnable = mocker.Mock(skip_reason=None, difficulty="easy")
+    skipped = mocker.Mock(skip_reason="MCP has not shipped", difficulty="medium")
+    skipped.id = "12-mcp-tool-usage"
+    mocker.patch("evals.regression.loader.load_cases", return_value=[runnable, skipped])
+
+    result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--regression"])
+
+    assert result.exit_code == 0, result.output
+    sync_regression.assert_called_once_with([runnable])
+    # The echo names the skip, so "upserted 1" vs "2 case(s) available" explains itself.
+    assert "1 skipped: 12-mcp-tool-usage" in result.output
+
+
+def test_sync_forwards_the_difficulty_tier_to_both_tracks(mocker):
+    """``make eval-regression ARGS='--difficulty hard'`` syncs the same tier the gate then runs."""
+    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    easy = mocker.Mock(skip_reason=None, difficulty="easy")
+    hard = mocker.Mock(skip_reason=None, difficulty="hard")
+    mocker.patch("evals.regression.loader.load_cases", return_value=[easy, hard])
+
+    result = CliRunner().invoke(
+        cli, ["sync", "--no-benchmark", "--regression", "--difficulty", "hard"]
+    )
+
+    assert result.exit_code == 0, result.output
+    sync_regression.assert_called_once_with([hard])
 
 
 def test_sync_default_syncs_both_datasets(mocker):
     """Plain ``evals sync`` upserts BOTH the benchmark and the regression datasets."""
     sync_benchmark = mocker.patch("evals.harness.datasets.sync_benchmark_dataset")
-    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_dataset")
+    sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
     mocker.patch("evals.harness.task_loader.load_benchmark_tasks", return_value=[])
-    mocker.patch("evals.regression.loader.load_probes", return_value=[])
+    mocker.patch("evals.regression.loader.load_cases", return_value=[])
 
     result = CliRunner().invoke(cli, ["sync"])
 
@@ -296,16 +440,16 @@ def test_regression_subcommand_reports_an_invalid_opik_key(mocker):
     """The headline ``make eval-regression`` ritual: a wrong key stays friendly (twice-flagged; task 121)."""
     mocker.patch("evals.harness.regression.run_regression", side_effect=_api_error(401))
 
-    result = CliRunner().invoke(cli, ["regression", "--probe", "05-web-fetch-discipline"])
+    result = CliRunner().invoke(cli, ["regression", "--case", "05-web-fetch-discipline"])
 
     _assert_friendly_opik_key_error(result)
 
 
 def test_sync_subcommand_reports_an_invalid_opik_key(mocker):
     """``evals sync`` (the first thing ``make eval-regression`` runs) friendly-fails on a wrong key."""
-    probe = mocker.Mock()
-    mocker.patch("evals.regression.loader.load_probes", return_value=[probe])
-    mocker.patch("evals.harness.datasets.sync_regression_dataset", side_effect=_api_error(401))
+    case = mocker.Mock(skip_reason=None, difficulty="easy")
+    mocker.patch("evals.regression.loader.load_cases", return_value=[case])
+    mocker.patch("evals.harness.datasets.sync_regression_cases", side_effect=_api_error(401))
 
     result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--regression"])
 
@@ -326,9 +470,8 @@ def test_online_subcommand_reports_an_invalid_opik_key(mocker):
 def test_suite_subcommand_reports_an_invalid_opik_key(mocker):
     """``suite`` wraps ``run_test_suite`` in ``opik_boundary`` too — a wrong key stays friendly.
 
-    Version-gated on the pinned opik 1.9.8 today, but the moment the pin lifts a present-but-invalid
-    ``OPIK_API_KEY`` here must not dump the raw ``ApiError`` traceback the other four subcommands
-    already suppress (task 122, Nit 2).
+    A present-but-invalid ``OPIK_API_KEY`` here must not dump the raw ``ApiError`` traceback the
+    other four subcommands already suppress (task 122, Nit 2).
     """
     mocker.patch("evals.harness.test_suite.run_test_suite", side_effect=_api_error(401))
 
@@ -341,7 +484,7 @@ def test_a_non_auth_api_error_is_still_friendly(mocker):
     """A non-401 Opik failure (e.g. 500) is still one friendly line naming the status, not a traceback."""
     mocker.patch("evals.harness.regression.run_regression", side_effect=_api_error(500))
 
-    result = CliRunner().invoke(cli, ["regression", "--probe", "05-web-fetch-discipline"])
+    result = CliRunner().invoke(cli, ["regression", "--case", "05-web-fetch-discipline"])
 
     _assert_friendly_opik_key_error(result, status="500")
 
@@ -367,6 +510,32 @@ def test_importing_the_cli_does_not_import_opik():
     assert result.returncode == 0, result.stderr
 
 
+def test_benchmark_help_imports_no_opik():
+    """``evals benchmark --help`` must render with no keys and no network (ADR-0017 §1).
+
+    A fresh subprocess so no other test's imports pollute ``sys.modules``: building AND invoking the
+    help of the one opik-heaviest command still pulls in nothing from opik.
+    """
+    code = (
+        "import sys\n"
+        "from click.testing import CliRunner\n"
+        "from evals.run import cli\n"
+        "result = CliRunner().invoke(cli, ['benchmark', '--help'])\n"
+        "assert result.exit_code == 0, result.output\n"
+        "assert '--threads' in result.output, result.output\n"
+        "leaked = sorted(m for m in sys.modules if 'opik' in m)\n"
+        "assert not leaked, leaked\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        env=_subprocess_env(),
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_python_m_evals_help_runs():
     """``python -m evals --help`` works end to end (real entrypoint, real logging bootstrap)."""
     result = subprocess.run(
@@ -378,3 +547,413 @@ def test_python_m_evals_help_runs():
     )
     assert result.returncode == 0, result.stderr
     assert "benchmark" in result.stdout
+
+
+def test_help_lists_the_two_live_project_commands():
+    """``online-rule`` and ``mine`` are part of the CLI surface (task 163)."""
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "online-rule" in result.output
+    assert "mine" in result.output
+
+
+def test_online_rule_create_skips_friendly_without_keys(mocker):
+    """No keys → ONE skip line, exit 0, and nothing reaches Opik (ADR-0017 §9)."""
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["OPIK_API_KEY"])
+    create = mocker.patch("evals.harness.online_rule.create_response_quality_rule")
+
+    result = CliRunner().invoke(cli, ["online-rule", "create"])
+
+    assert result.exit_code == 0
+    assert "evals online-rule: skipped — set OPIK_API_KEY" in result.output
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("argv", "patched"),
+    [
+        (["online-rule", "create"], "evals.harness.online_rule.create_response_quality_rule"),
+        (["mine"], "evals.harness.mine.open_source"),
+    ],
+    ids=["online-rule-create", "mine"],
+)
+def test_the_opik_only_commands_do_not_demand_an_inference_key(mocker, argv, patched):
+    """Neither command makes an inference call, so the preflight runs ``require_provider=False``.
+
+    Under the repo's committed ``.env`` (``LLM_PROVIDER=modal``) the full preflight would name
+    ``MODAL_ENDPOINT_URL`` and skip a read-only query that never touches Modal (task 163 QA).
+    """
+    guard = mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["OPIK_API_KEY"])
+    mocker.patch(patched)
+
+    result = CliRunner().invoke(cli, argv)
+
+    assert result.exit_code == 0
+    assert guard.call_args.kwargs == {"require_provider": False}
+
+
+def test_online_rule_create_forwards_every_flag(mocker):
+    """Each flag lands on ``create_response_quality_rule``; the created id is printed."""
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    outcome = mocker.Mock(
+        action="created", project="decode-prod", model="gemini-2.5-flash", rule_id="rule-1"
+    )
+    create = mocker.patch(
+        "evals.harness.online_rule.create_response_quality_rule", return_value=outcome
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "online-rule",
+            "create",
+            "--project",
+            "decode-prod",
+            "--model",
+            "gemini-2.5-flash",
+            "--sampling",
+            "0.5",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert create.call_args.kwargs == {
+        "project": "decode-prod",
+        "model": "gemini-2.5-flash",
+        "sampling": 0.5,
+        "dry_run": False,
+    }
+    assert "created response_quality (rule-1) in decode-prod" in result.output
+
+
+def test_online_rule_create_reports_an_existing_rule_without_creating_one(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    outcome = mocker.Mock(action="exists", project="decode-prod", model="m", rule_id="rule-0")
+    mocker.patch("evals.harness.online_rule.create_response_quality_rule", return_value=outcome)
+
+    result = CliRunner().invoke(cli, ["online-rule", "create"])
+
+    assert result.exit_code == 0
+    assert "already exists: rule-0" in result.output
+
+
+def test_online_rule_create_reports_an_underivable_judge_model_as_one_line(mocker):
+    """The openrouter/modal routes refuse with one line naming ``--model`` — no traceback."""
+    from evals.harness.online_rule import OnlineRuleError
+
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch(
+        "evals.harness.online_rule.create_response_quality_rule",
+        side_effect=OnlineRuleError("cannot derive an Opik judge model — pass --model <id>."),
+    )
+
+    result = CliRunner().invoke(cli, ["online-rule", "create"])
+
+    assert result.exit_code == 1
+    assert "pass --model" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_online_rule_create_reports_an_invalid_opik_key(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch(
+        "evals.harness.online_rule.create_response_quality_rule", side_effect=_api_error(401)
+    )
+
+    result = CliRunner().invoke(cli, ["online-rule", "create"])
+
+    _assert_friendly_opik_key_error(result)
+
+
+def test_mine_skips_friendly_without_keys(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["OPIK_API_KEY"])
+    open_source = mocker.patch("evals.harness.mine.open_source")
+
+    result = CliRunner().invoke(cli, ["mine"])
+
+    assert result.exit_code == 0
+    assert "evals mine: skipped — set OPIK_API_KEY" in result.output
+    open_source.assert_not_called()
+
+
+def test_mine_forwards_its_flags_and_prints_one_table_per_signature(mocker):
+    from evals.harness.mine import Signature, SignatureGroup, TraceHit
+
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    source = mocker.Mock(project="decode-prod")
+    mocker.patch("evals.harness.mine.open_source", return_value=source)
+    signature = Signature(preset="errors", error="Boom", last_tool="bash", model="gemini-2.5-flash")
+    hit = TraceHit(
+        signature=signature,
+        id="trace-1",
+        thread_id="thread-1",
+        start_time=None,
+        git_sha=None,
+        model="gemini-2.5-flash",
+        error="Boom",
+    )
+    # Patch target is the HARNESS function `evals.harness.mine.mine` (the CLI imports it lazily,
+    # inside the command body, as `mine_traces`) — not the Click command, which is also named `mine`.
+    mine_traces = mocker.patch(
+        "evals.harness.mine.mine", return_value=[SignatureGroup(signature=signature, traces=(hit,))]
+    )
+
+    result = CliRunner().invoke(
+        cli, ["mine", "--preset", "denied", "--since", "2026-09-04T00:00:00Z", "--limit", "7"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert mine_traces.call_args.kwargs == {
+        "preset": "denied",
+        "since": "2026-09-04T00:00:00Z",
+        "limit": 7,
+    }
+    assert "trace-1" in result.output
+    assert "1 trace(s) in 1 signature(s) from decode-prod" in result.output
+
+
+def test_mine_json_emits_the_group_document(mocker):
+    from evals.harness.mine import Signature, SignatureGroup, TraceHit
+
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch("evals.harness.mine.open_source", return_value=mocker.Mock(project="decode-prod"))
+    signature = Signature(preset="errors", error="Boom", last_tool=None, model=None)
+    hit = TraceHit(
+        signature=signature,
+        id="trace-1",
+        thread_id=None,
+        start_time=None,
+        git_sha=None,
+        model=None,
+        error="Boom",
+    )
+    mocker.patch(
+        "evals.harness.mine.mine", return_value=[SignatureGroup(signature=signature, traces=(hit,))]
+    )
+
+    result = CliRunner().invoke(cli, ["mine", "--json"])
+
+    assert result.exit_code == 0, result.output
+    document = json.loads(result.output)
+    assert document == [
+        {
+            "signature": "errors | Boom | - | -",
+            "count": 1,
+            "traces": [
+                {
+                    "id": "trace-1",
+                    "thread_id": None,
+                    "start_time": None,
+                    "git_sha": None,
+                    "model": None,
+                    "error": "Boom",
+                }
+            ],
+        }
+    ]
+
+
+def test_mine_says_so_when_nothing_matched(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch("evals.harness.mine.open_source", return_value=mocker.Mock(project="decode-prod"))
+    mocker.patch("evals.harness.mine.mine", return_value=[])
+
+    result = CliRunner().invoke(cli, ["mine", "--preset", "long"])
+
+    assert result.exit_code == 0
+    assert "evals mine: no long traces in decode-prod." in result.output
+
+
+def test_mine_rejects_a_naive_since_as_one_line(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch("evals.harness.mine.open_source", return_value=mocker.Mock(project="decode-prod"))
+
+    result = CliRunner().invoke(cli, ["mine", "--since", "2026-09-04T00:00:00"])
+
+    assert result.exit_code == 1
+    assert "timezone-aware" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_mine_reports_an_invalid_opik_key(mocker):
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
+    mocker.patch("evals.harness.mine.open_source", side_effect=_api_error(401))
+
+    result = CliRunner().invoke(cli, ["mine"])
+
+    _assert_friendly_opik_key_error(result)
+
+
+def test_the_new_live_commands_help_imports_no_opik():
+    """``online-rule create --help`` and ``mine --help`` render with no keys and no network."""
+    code = (
+        "import sys\n"
+        "from click.testing import CliRunner\n"
+        "from evals.run import cli\n"
+        "for argv in (['online-rule', 'create', '--help'], ['mine', '--help']):\n"
+        "    result = CliRunner().invoke(cli, argv)\n"
+        "    assert result.exit_code == 0, result.output\n"
+        "assert '--sampling' in CliRunner().invoke(cli, ['online-rule', 'create', '--help']).output\n"
+        "assert '--preset' in CliRunner().invoke(cli, ['mine', '--help']).output\n"
+        "leaked = sorted(m for m in sys.modules if 'opik' in m)\n"
+        "assert not leaked, leaked\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        env=_subprocess_env(),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+# --- `evals kitaru`: the Opik → Kitaru bridge (task 165) ---
+
+
+def test_help_lists_the_kitaru_bridge():
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "kitaru" in result.output
+
+
+def test_kitaru_import_skips_friendly_without_the_two_keys(mocker):
+    """Keyless checkout: one line, exit 0 — never a traceback inside opik or kitaru."""
+    mocker.patch(
+        "evals.harness.kitaru_cli.kitaru_keys_missing",
+        return_value=["OPIK_API_KEY", "KITARU_API_URL"],
+    )
+    open_source = mocker.patch("evals.harness.kitaru_import.open_source")
+
+    result = CliRunner().invoke(cli, ["kitaru", "import", "trace-1"])
+
+    assert result.exit_code == 0
+    assert "skipped" in result.output
+    assert "KITARU_API_URL" in result.output
+    open_source.assert_not_called()
+
+
+def test_kitaru_cohort_skips_friendly_without_the_two_keys(mocker):
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=["KITARU_API_URL"])
+    open_experiment = mocker.patch("evals.harness.kitaru_cohort.open_experiment")
+
+    result = CliRunner().invoke(cli, ["kitaru", "cohort", "from-experiment", "bench-x"])
+
+    assert result.exit_code == 0
+    assert "skipped" in result.output
+    open_experiment.assert_not_called()
+
+
+def test_kitaru_import_prints_one_line_per_thread(mocker):
+    from evals.harness.kitaru_import import ImportOutcome
+
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=[])
+    mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
+    mocker.patch(
+        "evals.harness.kitaru_cli.resolve_ref", side_effect=lambda kind, name, **kw: f"{name}@1"
+    )
+    source = mocker.patch("evals.harness.kitaru_import.open_source")
+    source.return_value.project = "decode-prod"
+    run_import = mocker.patch(
+        "evals.harness.kitaru_import.run_import",
+        return_value=[
+            ImportOutcome(thread="t-1", status="imported", session_id="kit-1", readiness="ready"),
+            ImportOutcome(thread="t-2", status="skipped", session_id="kit-2"),
+        ],
+    )
+
+    result = CliRunner().invoke(cli, ["kitaru", "import", "trace-1", "--thread", "t-2"])
+
+    assert result.exit_code == 0, result.output
+    assert "t-1 → kit-1 (ready)" in result.output
+    assert "1 of 2 thread(s) imported" in result.output
+    assert run_import.call_args.kwargs["threads"] == ["t-2"]
+    assert run_import.call_args.kwargs["trace_ids"] == ["trace-1"]
+    assert run_import.call_args.kwargs["agent_ref"] == "decode@1"
+    assert run_import.call_args.kwargs["importer_ref"] == "opik@1"
+
+
+def test_kitaru_import_turns_a_kitaru_failure_into_one_line(mocker):
+    from evals.harness.kitaru_cli import KitaruCommandError
+
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=[])
+    mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
+    mocker.patch(
+        "evals.harness.kitaru_cli.resolve_ref",
+        side_effect=KitaruCommandError("importer 'opik' has no registered version yet"),
+    )
+    mocker.patch("evals.harness.kitaru_import.open_source")
+
+    result = CliRunner().invoke(cli, ["kitaru", "import", "trace-1"])
+
+    assert result.exit_code != 0
+    assert "no registered version" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_kitaru_cohort_prints_the_frozen_version(mocker):
+    from evals.harness.kitaru_cohort import CohortOutcome, FailedTrial
+
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=[])
+    mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
+    mocker.patch("evals.harness.kitaru_cohort.open_experiment", return_value=([], {"x": 1}))
+    build_cohort = mocker.patch(
+        "evals.harness.kitaru_cohort.build_cohort",
+        return_value=CohortOutcome(
+            cohort="decode-benchmark-failures",
+            version_ref="decode-benchmark-failures@2",
+            session_count=3,
+            added=2,
+            unresolved=[FailedTrial(task_id="018", session_id=None, kitaru_session_id=None)],
+        ),
+    )
+
+    result = CliRunner().invoke(cli, ["kitaru", "cohort", "from-experiment", "bench-x"])
+
+    assert result.exit_code == 0, result.output
+    assert "decode-benchmark-failures@2" in result.output
+    assert "no Session for trial 018" in result.output
+    assert build_cohort.call_args.kwargs["cohort"] == "decode-benchmark-failures"
+
+
+def test_kitaru_cohort_refusal_is_one_line(mocker):
+    from evals.harness.kitaru_cohort import CohortError
+
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=[])
+    mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
+    mocker.patch(
+        "evals.harness.kitaru_cohort.open_experiment",
+        side_effect=CohortError("this experiment recorded no Kitaru Sessions"),
+    )
+
+    result = CliRunner().invoke(cli, ["kitaru", "cohort", "from-experiment", "bench-x"])
+
+    assert result.exit_code != 0
+    assert "recorded no Kitaru Sessions" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_the_kitaru_bridge_help_imports_neither_opik_nor_kitaru():
+    """``--help`` must need no keys, no network and no kitaru install (ADR-0017 §1)."""
+    code = (
+        "import sys\n"
+        "from click.testing import CliRunner\n"
+        "from evals.run import cli\n"
+        "for argv in (['kitaru', '--help'], ['kitaru', 'import', '--help'],\n"
+        "             ['kitaru', 'cohort', 'from-experiment', '--help']):\n"
+        "    result = CliRunner().invoke(cli, argv)\n"
+        "    assert result.exit_code == 0, result.output\n"
+        "assert '--thread' in CliRunner().invoke(cli, ['kitaru', 'import', '--help']).output\n"
+        "leaked = sorted(m for m in sys.modules if 'opik' in m or m.startswith('kitaru'))\n"
+        "assert not leaked, leaked\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=_REPO_ROOT,
+        env=_subprocess_env(),
+    )
+    assert result.returncode == 0, result.stderr

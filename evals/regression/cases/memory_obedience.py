@@ -1,4 +1,4 @@
-"""Probe 15 — a seeded ``AGENTS.md`` naming rule is obeyed (ADR-0002 §8; ADR-0017 §2,6).
+"""Case 15 — a seeded ``AGENTS.md`` naming rule is obeyed (ADR-0002 §8; ADR-0017 §2,6).
 
 Memory-obedience discipline (ADR-0002 §8): a project ``AGENTS.md`` is injected into the agent's system
 prompt every turn, so a rule it states must actually steer behavior. The fixture seeds an ``AGENTS.md``
@@ -11,7 +11,7 @@ mechanical filename check — no judge needed).
 ``harness_home`` unset, so it defaults to ``cwd`` (``AgentDeps.__post_init__``). The instructions hook
 (``decode.agent.factory``) assembles memory from ``harness_home`` via
 ``decode.memory.service.assemble_memory``, which discovers ``AGENTS.md`` walking ``cwd`` → root
-(``decode.memory.files.discover_memory_files``). Because the probe seeds ``AGENTS.md`` at the Workspace
+(``decode.memory.files.discover_memory_files``). Because the case seeds ``AGENTS.md`` at the Workspace
 root (== ``cwd`` == ``harness_home``), it is discovered and injected — verified directly in the offline
 test by calling ``assemble_memory(workspace)`` on the seeded tree. Runs under ``BYPASS`` so the write
 lands without a prompt.
@@ -22,7 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from evals.harness.metrics import MaxStepsMetric, NewFileNameMetric
-from evals.regression.probe import RegressionProbe
+from evals.regression.case import RegressionCase
 
 # The unambiguous naming rule the seeded AGENTS.md states and the metric enforces.
 REQUIRED_PREFIX = "dc_"
@@ -46,13 +46,26 @@ def _fixture(workspace: Path) -> None:
     (workspace / "AGENTS.md").write_text(_AGENTS_MD, encoding="utf-8")
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="15-memory-obedience",
     prompt=(
         "Create a new Python module with a helper function that reverses a string. Choose the filename "
         "yourself and follow this project's conventions."
     ),
     fixture=_fixture,
+    difficulty="medium",
+    description=(
+        "Tests that a naming convention stated only in the workspace's AGENTS.md is obeyed "
+        "unprompted."
+    ),
+    symptom=(
+        "harness invariant: a convention stated only in the Workspace's AGENTS.md is obeyed "
+        "unprompted."
+    ),
+    assertion=(
+        "The response names the module it created and the helper it wrote, rather than asking the "
+        "user what to call them."
+    ),
     metrics=[
         NewFileNameMetric(
             ".py",
@@ -62,6 +75,15 @@ PROBE = RegressionProbe(
         ),
         MaxStepsMetric(),
     ],
-    max_requests=5,
+    # Calibrated from observation (task 167), not guessed: three solo runs against the default
+    # model spent 7 / 7 / 9 legs (Opik experiments 01a09021-336b-7ea2-81ae-e9fec07a38c9,
+    # 01a09021-e557-7da0-81d5-adbf4f291db3, 01a09022-77ca-71dd-8bcb-a03920a599b1), so the budget
+    # is max + 1. Those legs are real work: one ``write`` plus the model's own todo bookkeeping
+    # and a verification ``bash`` — no thrash to hide behind the cap. CAVEAT: the gate run that
+    # followed (01a09043-1a9c-77f7-a22c-0e6ad9fdcc87) reported 11 = cap + 1, i.e. a CENSORED run whose
+    # true cost is unknown, so the full observed spread is 7 / 7 / 8 / 9 / >=10 and this may not be a
+    # clean calibration case after all. Not re-raised off one censored sample (that is the guesswork
+    # the three-run rule forbids) — see the late-signal note in task 168.
+    max_requests=10,
     tags=["memory-obedience", "instruction-following"],
 )

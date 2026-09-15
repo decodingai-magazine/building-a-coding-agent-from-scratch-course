@@ -2,11 +2,12 @@
 
 Task 114 proved with live Opik experiments that a criterion written as "Score 1.0 when … Score 0.0
 when …" collides with the judge's internal 0-10 scale and produces incoherent scores (a *perfect*
-answer scored 0.1). ``evals/README.md`` §online step 6 forbids the pattern in bold; probes 17/18/19
+answer scored 0.1). ``evals/README.md`` §online step 6 forbids the pattern in bold; cases 17/18/19
 carry the "Phrased qualitatively — NOT as 'Score 1.0/0.0'" comment. This test makes the ban
-STRUCTURAL: it scans every loaded regression probe's G-Eval criteria AND every benchmark
-``task.yaml`` judge spec, and fails on any numeric-verdict anchor — so probe/task 21+ can never
-silently reintroduce the anti-pattern the repo's own docs forbid.
+STRUCTURAL: it scans every loaded regression case's G-Eval criteria AND its natural-language
+``assertion`` (the Test Suite's judge reads that one, ADR-0022 §8) and fails on any
+numeric-verdict anchor — so case 22+ can never silently reintroduce the anti-pattern the repo's own
+docs forbid. (Benchmark tasks no longer carry judges at all: the Verifier is code — ADR-0022 §6.)
 
 The regex ``Score <0|1>[.decimals]`` matches the exact shapes the seven violating judges shipped
 ("Score 1.0 when", "Score 0.0 for", "Score 1 if", "Score 0 if") while leaving "high-scoring",
@@ -19,8 +20,7 @@ import re
 
 from opik.evaluation.metrics import GEval
 
-from evals.harness.task_loader import load_benchmark_tasks
-from evals.regression.loader import load_probes
+from evals.regression.loader import load_cases
 
 # A numeric verdict anchor: the word "Score" immediately followed by a 0 or 1 (optionally decimal).
 # ``\b`` bounds keep it off "scored"/"scoring" and off the "0-10" scale prose. Case-insensitive so a
@@ -33,16 +33,16 @@ def _offenders(text: str) -> list[str]:
     return _NUMERIC_ANCHOR.findall(text)
 
 
-def test_no_regression_probe_judge_uses_a_numeric_anchor():
-    """Every regression probe's G-Eval criteria state qualities, never a "Score 1.0/0.0" verdict."""
+def test_no_regression_case_judge_uses_a_numeric_anchor():
+    """Every regression case's G-Eval criteria state qualities, never a "Score 1.0/0.0" verdict."""
     violations: list[str] = []
-    for probe in load_probes():
-        for metric in probe.metrics:
+    for case in load_cases():
+        for metric in case.metrics:
             if not isinstance(metric, GEval):
                 continue
             for field in (metric.task_introduction, metric.evaluation_criteria):
                 if _NUMERIC_ANCHOR.search(field):
-                    violations.append(f"{probe.id}: {_offenders(field)}")
+                    violations.append(f"{case.id}: {_offenders(field)}")
 
     assert not violations, (
         "G-Eval judges must phrase criteria qualitatively, never as a numeric verdict "
@@ -50,18 +50,21 @@ def test_no_regression_probe_judge_uses_a_numeric_anchor():
     )
 
 
-def test_no_benchmark_task_judge_uses_a_numeric_anchor():
-    """Every benchmark ``task.yaml`` judge spec states qualities, never a "Score 1 if" verdict."""
-    violations: list[str] = []
-    for task in load_benchmark_tasks():
-        for judge in task.judges:
-            for field in (judge.task_introduction, judge.evaluation_criteria):
-                if _NUMERIC_ANCHOR.search(field):
-                    violations.append(f"{task.id}/{judge.name}: {_offenders(field)}")
+def test_no_case_assertion_uses_a_numeric_anchor():
+    """A case's ``assertion`` is judge-read prose too — the same qualitative rule binds it (§8).
+
+    The Test Suite hands each assertion to an LLM judge alongside the agent's answer, so a "Score 1.0
+    when …" bar collides with the judge's own scale exactly as a G-Eval criterion does.
+    """
+    violations = [
+        f"{case.id}: {_offenders(case.assertion)}"
+        for case in load_cases()
+        if _NUMERIC_ANCHOR.search(case.assertion)
+    ]
 
     assert not violations, (
-        "Benchmark judges must phrase criteria qualitatively, never as a numeric verdict "
-        "(task-114 lesson; see evals/README.md step 6). Offenders: " + "; ".join(violations)
+        "a Regression Case assertion states a quality bar in English, never a numeric verdict. "
+        "Offenders: " + "; ".join(violations)
     )
 
 

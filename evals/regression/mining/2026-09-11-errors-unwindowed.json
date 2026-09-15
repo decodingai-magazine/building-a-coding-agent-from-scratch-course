@@ -1,0 +1,52 @@
+[
+  {
+    "signature": "errors | pydantic_ai.exceptions.ModelHTTPError | - | -",
+    "count": 2,
+    "traces": [
+      {
+        "id": "019f60fd-7a5c-7374-8a49-202dcecf2951",
+        "thread_id": "8e67f10f-ced8-4674-8050-e04e13898307",
+        "start_time": "2026-07-14T14:17:32.508000+00:00",
+        "git_sha": null,
+        "model": null,
+        "error": "pydantic_ai.exceptions.ModelHTTPError"
+      },
+      {
+        "id": "01a08d78-c569-7bab-91e1-2e1ca5d4c02b",
+        "thread_id": "cd4672a5-4918-4383-bae1-a0278aa9081e",
+        "start_time": "2026-09-10T22:38:17.449000+00:00",
+        "git_sha": null,
+        "model": null,
+        "error": "pydantic_ai.exceptions.ModelHTTPError"
+      }
+    ]
+  },
+  {
+    "signature": "errors | pydantic_ai.exceptions.UnexpectedModelBehavior | - | -",
+    "count": 1,
+    "traces": [
+      {
+        "id": "019f5cd5-7cfd-7498-b10e-3d62f6d776af",
+        "thread_id": "c72c45fb-a22a-4ed7-b5ac-06c80daf2e81",
+        "start_time": "2026-07-13T18:55:22.850000+00:00",
+        "git_sha": null,
+        "model": null,
+        "error": "pydantic_ai.exceptions.UnexpectedModelBehavior"
+      }
+    ]
+  },
+  {
+    "signature": "errors | pydantic_ai.exceptions.UsageLimitExceeded | glob | -",
+    "count": 1,
+    "traces": [
+      {
+        "id": "01a08d79-4563-7281-9601-4036f0443810",
+        "thread_id": "1e1851f5-c7ed-480b-84a4-8b6b876167f2",
+        "start_time": "2026-09-10T22:38:50.211000+00:00",
+        "git_sha": null,
+        "model": null,
+        "error": "pydantic_ai.exceptions.UsageLimitExceeded"
+      }
+    ]
+  }
+]

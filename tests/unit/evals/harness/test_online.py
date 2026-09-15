@@ -153,7 +153,7 @@ def test_run_online_eval_passes_live_project_and_single_metric(mocker, with_keys
     assert kwargs["filter_string"] == 'status = "inactive"'
     assert len(kwargs["metrics"]) == 1
     assert isinstance(kwargs["metrics"][0], ConversationThreadMetric)
-    # both transforms are required callables in opik 1.9.8's signature
+    # both transforms are required callables in the installed opik's signature
     assert kwargs["trace_input_transform"]({"input": "q"}) == "q"
     assert kwargs["trace_output_transform"]("a") == "a"
 
@@ -206,3 +206,24 @@ def test_format_thread_scores_marks_a_threadless_score_and_a_failed_score():
 
     assert lines[0] == "sess-empty: no scores"
     assert lines[1] == "sess-fail: conversation_coherence=failed (judge error)"
+
+
+# --- online grades emitted traces: the JUDGE's key, not the agent's (task 170) ----------------------
+
+
+def test_online_needs_the_judge_key_not_the_agents(mocker):
+    """A modal-served agent's traces graded by a gemini judge: MODAL_ENDPOINT_URL is not needed.
+
+    Online eval calls only the judge's provider — the traces it scores were emitted long before.
+    """
+    mocker.patch.object(online.settings, "llm_provider", "modal")
+    mocker.patch.object(online.settings, "eval_judge_provider", "gemini")
+    mocker.patch.object(online.settings, "modal_endpoint_url", "")
+    mocker.patch.object(
+        online.settings, "opik_api_key", SimpleNamespace(get_secret_value=lambda: "opik-key")
+    )
+    mocker.patch.object(
+        online.settings, "gemini_api_key", SimpleNamespace(get_secret_value=lambda: "")
+    )
+
+    assert online.online_keys_missing() == ["GEMINI_API_KEY"]

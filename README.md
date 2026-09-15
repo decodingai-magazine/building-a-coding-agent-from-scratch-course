@@ -62,12 +62,12 @@ That's the _entire_ tool-calling agent. Everything else in this repo: the tools,
   <i>A fresh session powered by Qwen 3.6 35B hosted on Modal</i>
 </p>
 
-We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), then distilled it into 8 articles and 4 videos where you'll build **decode**, your own coding agent, from scratch. One headless core hooked to two modes: an interactive TUI and a remote runtime running N copies in parallel.
+We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), then distilled it into 8 articles and 4 videos where you'll build **decode**, your own coding agent, from scratch. One headless core hooked to two modes: an interactive TUI and Modal serverless functions running N copies in parallel, fired by CLI, webhook, or cron.
 
 <p align="center">
-  <img src="assets/architecture.png" alt="decode architecture" width="620">
+  <img src="assets/architecture.png" alt="Diagram of a coding agent harness: two interfaces (Interactive TUI with steering queue and priority gate; Remote Modal runtime running N headless harnesses via CLI, webhook, or cron) drive one Headless Harness made of a Context Window with compaction, an LLM-to-Tools Agent Loop, and six modules (LLM Providers, Memory, Skills, Sandbox, Permissions, LSP Server). An Evals and Observability layer (benchmarks, regressions, replays via Opik and Kitaru) sits underneath." width="620">
 </p>
-<p align="center"><i>Two interface modes on the left, the headless harness on the right, the evals plane underneath.</i></p>
+<p align="center"><i>The architecture of the harness of the coding agent you will build during this course.</i></p>
 
 ## 🎮 See It Work
 
@@ -132,7 +132,8 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
 - Design a coding agent harness from scratch
 - Implement a headless coding agent loop
 - Attach the headless harness to multiple modes: TUI and remote
-- Add a runtime that records every run and replays it with the model swapped — including N parallel remote attempts at one task
+- Deploy the headless harness on Modal and fire N parallel attempts at one task from the CLI, a webhook, or a cron job
+- Record every run with Kitaru and replay it with the model or prompt swapped, tool outputs served from the recording, against the original as baseline
 - Implement guardrails and safety nets for the agent's behavior by adding a permission layer and local & remote sandboxing
 - Build essential context engineering techniques: memory, compaction, skills
 - Hook up an LSP server for faster feedback loops
@@ -140,7 +141,6 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
 - Spawn parallel subagents via fan-out strategies
 - Add observability
 - Design an eval harness for benchmarking the agent and checking for regressions
-- Deploy and run swarms of agents
 
 <p align="center">
   <img src="assets/tui-plan-mode-todo.png" alt="decode in plan mode breaking the Snake demo into a task list with the todo tool" width="800">
@@ -156,7 +156,7 @@ The code is written in Python, with the following frameworks and libraries:
 - **Session Recording & Replays:** [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand)
 - **Observability & Evals:** [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course)
 - **Sandboxing:** local Docker & remote [Modal sandboxes](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng)
-- **Deploying:** Modal — headless agents (fired by hand, by cron, or by webhook) + the Kitaru Worker run there, no servers to keep up
+- **Deploying:** [Modal](https://modal.com/?source=decodingai&campaign=harnesseng) as headless agents (fired by hand, by cron, or by webhook)
 
 Otherwise, we build all the functionality from scratch, to teach you the foundations that last, not frameworks that abstract away the hard parts.
 
@@ -211,10 +211,10 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>6</b><br/>Remote Headless Mode, Recording & Replays</td>
-    <td align="center">📄 <i>Coming soon</i></td>
+    <td align="center"><b>6</b><br/>Deploy a Headless Coding Agent Harness to Modal</td>
+    <td align="center"><a href="https://www.decodingai.com/p/coding-agents-in-remote-headless" target="_blank"><img src="assets/architecture_lesson_6.png" width="300" alt="Lesson 6 — swarm of remote agents"/></a><br/><i><a href="https://www.decodingai.com/p/coding-agents-in-remote-headless" target="_blank">Article 6</a></i></td>
     <td align="center">🎬 <i>Video 3 — coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a> · <a href="running_the_code/07_evals_replays_deploy.md">07_evals_replays_deploy.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>7</b><br/>AI Evals Foundations: Benchmarks, Regression and Online</td>
@@ -263,7 +263,7 @@ Running the code costs **$0** if you stick to free tiers:
 | [Modal](https://modal.com?source=decodingai&campaign=harnesseng) (recommended provider, remote sandbox, remote agents)                                           | $30 free credits — enough to run the course                        |
 | OpenRouter (alternative provider)                                                                                                                                | $0 on `:free` models (optional $10 credit raises the daily cap)    |
 | [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)                   | free tier                                                          |
-| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (recording + replays) | free — a managed workspace, nothing to host yourself               |
+| [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (recording + replays) | free — the OSS server runs on your laptop (`make kitaru-local`)    |
 
 _**Reading-only? Everything's free!**_
 
@@ -281,9 +281,9 @@ One Python package; each module maps to one part of the architecture:
 .
 ├── docs/
 │   ├── adr/                  # Architecture Decision Records — the "why" of every choice
-│   ├── glossary.md           # one canonical name per concept
-│   └── evals.md              # the four-track eval suite, mapped
-├── evals/                    # benchmark + regression probes + demo skills
+│   └── glossary.md           # one canonical name per concept
+├── evals/                    # benchmark tasks + regression cases + the Opik harness
+├── scripts/                  # operator scripts: Kitaru bootstrap + the Modal-hosted Kitaru Worker
 ├── tests/{unit,integration}/ # mirrors src/ 1:1; milestone capstones prove each milestone
 └── src/decode/
     ├── cli.py                # Click entrypoint → launches the TUI
@@ -296,6 +296,7 @@ One Python package; each module maps to one part of the architecture:
     ├── sandbox/              # bash + file tools seam: none (host) / docker / modal
     ├── services/lsp/         # hand-rolled stdio LSP client (ty)
     ├── runtime/              # plain headless decode run + the Recording Seam
+    ├── remote/               # decode remote deploy|run|attempts|logs — the Modal Headless App (CLI, webhook, cron)
     ├── context/              # compaction + conversation log (JSONL)
     ├── memory/               # AGENTS.md / MEMORY.md loading + write-back
     ├── observability/        # Opik tracing
@@ -313,7 +314,7 @@ Everything lives under [`running_the_code/`](running_the_code/). Follow them in 
 | [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)           | Serving open models on Modal                                       |
 | [03_sandboxing.md](running_the_code/03_sandboxing.md)                     | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
 | [04_deploy.md](running_the_code/04_deploy.md)                             | The headless harness on Modal — CLI, webhook, cron                 |
-| [05_evals.md](running_the_code/05_evals.md)                               | Benchmarks, regression probes, and online evals                    |
+| [05_evals.md](running_the_code/05_evals.md)                               | Benchmarks, regression cases, and online evals                     |
 | [06_evals_replays.md](running_the_code/06_evals_replays.md)               | Kitaru on your laptop: record, replay & the full evals loop        |
 | [07_evals_replays_deploy.md](running_the_code/07_evals_replays_deploy.md) | The Kitaru Worker on Modal — replays off-laptop                    |
 

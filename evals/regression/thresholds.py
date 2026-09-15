@@ -1,6 +1,6 @@
 """Pure threshold-gate + baseline-compare logic for the regression ritual (ADR-0017 §6; task 115).
 
-The pre-merge ritual (``evals/regression/test_thresholds.py``) runs the probe suite once and then asks
+The pre-merge ritual (``evals/regression/test_thresholds.py``) runs the case suite once and then asks
 two questions this module answers with plain dicts — no Opik, no keys, no agent run — so both are
 unit-tested offline in ``make ci``:
 
@@ -8,14 +8,17 @@ unit-tested offline in ``make ci``:
   mean against the :data:`THRESHOLDS` table. Judges are LLM-scored and nondeterministic, so they sit at
   a lower floor (:data:`JUDGE_METRIC_THRESHOLD`) than the mechanical tool-discipline metrics
   (:data:`TOOL_DISCIPLINE_THRESHOLD`) — thresholds are NOT exact-match on purpose (ADR-0017 §6,7).
+* **Per-tier report (a readable signal).** :func:`scores_by_tier` folds the run's ``test_results``
+  into one mean per metric PER Difficulty Tier so the ritual can print an easy / medium / hard table
+  (ADR-0022 §8). It is a report, not a gate: the floors below stay GLOBAL.
 * **Baseline compare (a soft signal).** :func:`compare_to_baseline` diffs this run's per-metric means
   against the previous experiment's and flags regressions; the ritual WARNs on those while the absolute
   thresholds stay the only hard gate, so the suite is usable on day one with no baseline at all.
 
 Absent-metric policy: a metric missing from the run's scores is never gated. A behavior that did not run
-cannot regress — this is how the skip-guarded probe 12 (MCP, ADR-0017 §10) is handled: its
+cannot regress — this is how the skip-guarded case 12 (MCP, ADR-0017 §10) is handled: its
 ``tool_called_echo`` metric is simply absent from the aggregation, so the gate neither fails nor
-vacuously passes it. The ritual asserts the report is non-empty (some probe DID run) so an all-absent
+vacuously passes it. The ritual asserts the report is non-empty (some case DID run) so an all-absent
 suite can never pass silently.
 
 Everything here is duck-typed on the shapes opik hands back (``.mean`` on a statistics object,
@@ -28,7 +31,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 # The pre-merge contract, honest first numbers (ADR-0017 §6 — tune from the first real runs).
 # Tool-discipline metrics are deterministic code checks, so they must be met almost every run.
@@ -37,7 +40,7 @@ TOOL_DISCIPLINE_THRESHOLD = 0.8
 JUDGE_METRIC_THRESHOLD = 0.7
 
 # Every GEval judge in the suite is built with the same metric name (evals/harness/judges.py), so all
-# judge scores across the judged probes aggregate under this one key — the single metric held to the
+# judge scores across the judged cases aggregate under this one key — the single metric held to the
 # judge floor. Every OTHER aggregated metric is a mechanical code metric held to the discipline floor.
 JUDGE_METRIC_NAME = "g_eval_metric"
 
@@ -137,7 +140,7 @@ def evaluate_thresholds(
 ) -> ThresholdReport:
     """Grade each metric mean against its floor (``>=``), returning the per-metric report (ADR-0017 §6).
 
-    Only the metrics present in ``scores`` are gated — a metric that never ran (a skip-guarded probe)
+    Only the metrics present in ``scores`` are gated — a metric that never ran (a skip-guarded case)
     is absent and therefore not asserted. The gate is inclusive (``value >= threshold``) so a score
     exactly at the floor passes. An empty ``scores`` yields an empty report that vacuously passes; the
     ritual asserts non-emptiness so an all-absent suite cannot slip through.
@@ -155,6 +158,67 @@ def evaluate_thresholds(
     return ThresholdReport(gates=gates)
 
 
+def scores_by_tier(
+    test_results: Iterable[Any], tiers: Mapping[str, str]
+) -> dict[str, dict[str, float]]:
+    """Fold a run's ``test_results`` into ``{tier: {metric: mean}}`` (ADR-0022 §8) — pure, offline.
+
+    ``tiers`` maps each case id to its Difficulty Tier (the registry is the authority, so a case that
+    changed tier reports under its CURRENT one). Each result's case id is read off
+    ``test_case.dataset_item_content`` — the same place the benchmark's aggregates read their slice
+    labels — falling back to the task payload; a result with no KNOWN case id is skipped rather than
+    filed under a guessed tier. A ``scoring_failed`` score is excluded: a metric that crashed scored
+    nothing, and averaging its 0.0 in would read as a behavior regression.
+
+    Everything is duck-typed on the shapes opik hands back, so the report is testable with plain
+    stand-ins and this module still imports no Opik.
+    """
+    sums: dict[tuple[str, str], float] = {}
+    counts: dict[tuple[str, str], int] = {}
+    for result in test_results:
+        tier = tiers.get(_case_id_of(result) or "")
+        if tier is None:
+            continue
+        for score in getattr(result, "score_results", None) or []:
+            if getattr(score, "scoring_failed", False):
+                continue
+            name = getattr(score, "name", None)
+            value = getattr(score, "value", None)
+            if not isinstance(name, str) or not isinstance(value, (int, float)):
+                continue
+            key = (tier, name)
+            sums[key] = sums.get(key, 0.0) + float(value)
+            counts[key] = counts.get(key, 0) + 1
+    report: dict[str, dict[str, float]] = {}
+    for (tier, name), total in sums.items():
+        report.setdefault(tier, {})[name] = total / counts[(tier, name)]
+    return report
+
+
+def _case_id_of(result: Any) -> str | None:
+    """The case id behind one ``TestResult``: its dataset item content, else its task payload."""
+    test_case = getattr(result, "test_case", None)
+    for source in (
+        getattr(test_case, "dataset_item_content", None),
+        getattr(test_case, "task_output", None),
+    ):
+        case_id = source.get("case_id") if isinstance(source, dict) else None
+        if isinstance(case_id, str):
+            return case_id
+    return None
+
+
+def format_tier_scores(by_tier: Mapping[str, Mapping[str, float]]) -> str:
+    """One readable table per tier for the ritual's WARN — empty tiers say so (ADR-0022 §8)."""
+    if not by_tier:
+        return "no per-tier scores (no case reported a known tier)"
+    lines: list[str] = []
+    for tier in sorted(by_tier):
+        lines.append(f"  [{tier}]")
+        lines.extend(f"    {name}: {by_tier[tier][name]:.3f}" for name in sorted(by_tier[tier]))
+    return "per-tier scores (report only — the thresholds gate globally):\n" + "\n".join(lines)
+
+
 def compare_to_baseline(
     current: Mapping[str, float],
     baseline: Mapping[str, float],
@@ -163,7 +227,7 @@ def compare_to_baseline(
 ) -> list[MetricDelta]:
     """Diff this run's per-metric means against the baseline's, over the metrics they share.
 
-    A metric present this run but absent from the baseline (a brand-new probe) has nothing to compare
+    A metric present this run but absent from the baseline (a brand-new case) has nothing to compare
     against and is skipped. ``tolerance`` is slack that absorbs small judge noise before a dip counts
     as a regression. The result is a delta per shared metric — the caller WARNs on the regressed ones.
     """

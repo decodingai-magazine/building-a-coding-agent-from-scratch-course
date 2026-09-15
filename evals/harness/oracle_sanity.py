@@ -1,103 +1,96 @@
-"""Prove every benchmark oracle honest, both directions (ADR-0017 §5; task 105).
+"""Run a task's Verifier host-side — the oracle gate's engine (ADR-0022 §3,§5; task 157).
 
-A hidden ``verify.sh`` that always exits 0 would grade every agent up; one that always fails would
-grade every agent down. The only guard is to run each oracle against known inputs and assert it
-answers correctly BOTH ways:
+A Verifier that always wrote reward 1 would grade every agent up; one that always wrote 0 would grade
+every agent down. The keyless ``make ci`` gate (``tests/unit/evals/benchmark/test_oracle_sanity.py``)
+runs each task BOTH directions through :func:`run_verifier` and asserts the Oracle earns ``1.0`` and
+silence earns ``0.0``.
 
-* over the gold ``solution/`` overlay it MUST pass (exit 0),
-* over the untouched ``setup/`` seed it MUST fail (exit non-zero).
-
-:func:`run_oracle` reproduces the grade-time Workspace host-side: it seeds ``setup/`` into a temp
-dir, optionally runs ``setup/setup.sh``, optionally overlays ``solution/``, injects ``verify/``, and
-runs ``bash verify.sh`` from the Workspace root. verify.sh may only use bash + python + git +
-sqlite3 (task 105), so this host-side run matches the sandbox image. The oracle-sanity pytest
-harness (``tests/unit/evals/benchmark/test_oracle_sanity.py``) drives both directions per task; this
-module holds the reusable seeding logic so it stays honest as tasks 108-110 land.
+The run reproduces grade time exactly as ADR-0022 §3 defines it, host-side, with no sandbox seam:
+seed the repo, (optionally) apply ``solution/solve.sh``, then hand the tree to
+:func:`~evals.harness.verifier.grade_checkout` — the SAME grade-time step a real trial's pristine
+clone goes through (overlay ``tests/`` LAST, empty ``$VERIFIER_DIR``, one float in ``reward.txt``).
 """
 
 from __future__ import annotations
 
-import shutil
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
-from evals.harness.task_loader import VERIFY_SCRIPT_NAME, BenchmarkTask
+from evals.harness.seed import seed_task_repo
+from evals.harness.task_loader import BenchmarkTask
+from evals.harness.verifier import (
+    REWARD_FILE_NAME,
+    VERIFIER_DIR_NAME,
+    VerifierResult,
+    grade_checkout,
+    host_script_env,
+)
 
-# The setup entrypoint executed after seeding, if a task ships one.
-SETUP_SCRIPT_NAME = "setup.sh"
+# Wall clock for ``solution/solve.sh`` (the Verifier's own cap is the task's ``verifier.timeout_sec``).
+ORACLE_TIMEOUT_S = 300.0
+
+# Re-exported so the gate's callers keep one import site for the grade-time vocabulary.
+__all__ = [
+    "ORACLE_TIMEOUT_S",
+    "REWARD_FILE_NAME",
+    "VERIFIER_DIR_NAME",
+    "OracleError",
+    "VerifierResult",
+    "run_verifier",
+]
 
 
-@dataclass(frozen=True, slots=True)
-class OracleResult:
-    """The outcome of running one task's ``verify.sh`` over a prepared Workspace.
+class OracleError(Exception):
+    """A task's ``solution/solve.sh`` failed to run — the gold answer itself is broken."""
 
-    ``passed`` is ``exit_code == 0`` — the oracle's PASS/FAIL verdict; ``stdout`` / ``stderr`` are
-    captured so a surprising verdict is debuggable.
+
+def run_verifier(task: BenchmarkTask, workspace: Path, *, with_solution: bool) -> VerifierResult:
+    """Seed ``workspace``, optionally apply the Oracle, then grade it host-side (ADR-0022 §3).
+
+    Four steps, in this order — the order IS the isolation:
+
+    1. :func:`~evals.harness.seed.seed_task_repo` builds the Seed Repo at ``workspace`` (the same
+       seeding path a real trial uses);
+    2. with ``with_solution``, ``bash <task>/solution/solve.sh`` runs with ``workspace`` as cwd, so
+       the Oracle can ``cp "$(dirname "$0")/<file>" .`` from its own directory;
+    3. :func:`~evals.harness.verifier.grade_checkout` overlays ``tests/`` onto
+       ``<workspace>/tests/`` LAST, so a copy the agent (or the seed) planted there is overwritten
+       and can never grade itself;
+    4. …and runs ``bash tests/test.sh`` with ``VERIFIER_DIR`` = a fresh, empty
+       ``<workspace>/.verifier`` under the ``verifier.timeout_sec`` cap; the reward is the single
+       float in ``reward.txt``.
+
+    The exit code is informational (ADR-0022 §3) — only ``reward.txt`` grades. ``reward is None``
+    means the Verifier errored, which callers must not read as a zero.
     """
-
-    exit_code: int
-    stdout: str
-    stderr: str
-
-    @property
-    def passed(self) -> bool:
-        return self.exit_code == 0
-
-
-def run_oracle(task: BenchmarkTask, workspace: Path, *, with_solution: bool) -> OracleResult:
-    """Prepare a Workspace and run ``task``'s hidden oracle over it host-side (ADR-0017 §5).
-
-    Seeds ``setup/`` into ``workspace``, runs ``setup/setup.sh`` if present, overlays ``solution/``
-    when ``with_solution`` is set, injects ``verify/``, then runs ``bash verify.sh`` from the
-    Workspace root. ``workspace`` must be an existing (typically temporary) directory the caller
-    owns. Returns the oracle's :class:`OracleResult`; raises nothing for a non-zero verify (that IS
-    a valid FAIL verdict), only for a broken setup/overlay.
-    """
-    _copy_tree(task.setup_dir, workspace)
-    _run_setup_script(workspace)
+    seed_task_repo(task, workspace)
     if with_solution:
-        _copy_tree(task.solution_dir, workspace)
-    _inject_verify(task, workspace)
-    return _run_verify(workspace)
+        _run_oracle(task, workspace)
+    return grade_checkout(task, workspace)
 
 
-def _copy_tree(source: Path, dest: Path) -> None:
-    """Overlay ``source``'s contents onto ``dest`` (files clobber, dirs merge). No-op if absent."""
-    if not source.is_dir():
-        return
-    shutil.copytree(source, dest, dirs_exist_ok=True)
+def _run_oracle(task: BenchmarkTask, workspace: Path) -> None:
+    """Apply the gold answer to a fresh seed; a broken Oracle is loud, never a silent reward 0.
 
-
-def _run_setup_script(workspace: Path) -> None:
-    """Run ``setup.sh`` from the Workspace root if the seed shipped one; raise on failure."""
-    setup_script = workspace / SETUP_SCRIPT_NAME
-    if not setup_script.is_file():
-        return
-    result = subprocess.run(
-        ["bash", SETUP_SCRIPT_NAME],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"setup.sh failed in {workspace} (exit {result.returncode}): {result.stderr.strip()}"
+    Under the Verifier's own allow-listed env (:func:`~evals.harness.verifier.host_script_env`): the
+    gate claims the Oracle earns 1 from a bare shell, so it must not read one operator's ``.env``.
+    """
+    try:
+        result = subprocess.run(
+            ["bash", str(task.oracle_script)],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=ORACLE_TIMEOUT_S,
+            env=host_script_env(),
+            check=False,
         )
-
-
-def _inject_verify(task: BenchmarkTask, workspace: Path) -> None:
-    """Copy the hidden ``verify/`` assets into the Workspace root at grade time (ADR-0017 §5)."""
-    _copy_tree(task.verify_script.parent, workspace)
-
-
-def _run_verify(workspace: Path) -> OracleResult:
-    result = subprocess.run(
-        ["bash", VERIFY_SCRIPT_NAME],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return OracleResult(exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr)
+    except subprocess.TimeoutExpired as exc:
+        raise OracleError(
+            f"{task.id}: solution/solve.sh timed out after {ORACLE_TIMEOUT_S:.0f}s"
+        ) from exc
+    if result.returncode != 0:
+        raise OracleError(
+            f"{task.id}: solution/solve.sh failed (exit {result.returncode}): "
+            f"{result.stderr.strip()}"
+        )

@@ -1,4 +1,4 @@
-"""Probe 20 — an "answer ONLY as JSON" contract is honored (ADR-0017 §2,6).
+"""Case 20 — an "answer ONLY as JSON" contract is honored (ADR-0017 §2,6).
 
 Structured-output discipline: told to answer ONLY as JSON matching a named schema, the agent must emit
 raw JSON of that exact shape — no prose, no ```` ```json ```` fence, no trailing commentary. A small
@@ -21,7 +21,7 @@ from opik.evaluation.metrics import IsJson
 from pydantic import BaseModel
 
 from evals.harness.metrics import JsonSchemaMetric, MaxStepsMetric
-from evals.regression.probe import RegressionProbe
+from evals.regression.case import RegressionCase
 
 _MODULE = "inventory.py"
 _MODULE_BODY = '''\
@@ -34,7 +34,7 @@ def restock(sku, quantity):
 
 
 class _ReviewSummary(BaseModel):
-    """The required JSON shape the answer must validate against (the probe's output contract)."""
+    """The required JSON shape the answer must validate against (the case's output contract)."""
 
     file: str
     summary: str
@@ -50,13 +50,24 @@ def _fixture(workspace: Path) -> None:
     (workspace / _MODULE).write_text(_MODULE_BODY, encoding="utf-8")
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="20-json-output-contract",
     prompt=(
         f"Summarize {_MODULE}. Answer ONLY with a single JSON object matching this schema, and nothing "
         f"else — no prose, no code fence:\n{_SCHEMA_HINT}"
     ),
     fixture=_fixture,
+    difficulty="hard",
+    description=(
+        "Tests that an answer-only-as-JSON contract yields raw JSON matching the requested schema."
+    ),
+    symptom=(
+        "harness invariant: an 'answer ONLY as JSON' contract yields raw JSON matching the schema."
+    ),
+    assertion=(
+        "The response is a single raw JSON object and nothing else — no surrounding prose, "
+        "explanation, or Markdown code fence."
+    ),
     metrics=[
         IsJson(track=False),
         JsonSchemaMetric(_ReviewSummary, name="json_matches_review_summary"),

@@ -1,4 +1,4 @@
-# 01 — Install and run
+# 01. Install and run Decode
 
 Install decode, add one API key, run a first session. ~5 minutes.
 
@@ -70,6 +70,7 @@ Everything decode writes lands under `<cwd>/.decode/` (gitignored): `sessions/*.
 ```bash
 decode --resume               # most recent session in this directory
 decode --resume <session-id>  # id = the .jsonl filename stem
+decode sessions               # list all sessions from most recent to least
 ```
 
 Memory: `AGENTS.md` is read at startup; `.decode/MEMORY.md` too, and decode appends a one-line summary on exit.

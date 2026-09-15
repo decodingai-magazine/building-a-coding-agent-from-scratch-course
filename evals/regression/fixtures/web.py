@@ -1,9 +1,9 @@
 """A stdlib ``http.server`` fixture serving one known page on localhost (ADR-0017 §6).
 
-The web-fetch probes need a page the agent can retrieve deterministically — no live internet, no
+The web-fetch cases need a page the agent can retrieve deterministically — no live internet, no
 flakiness. :func:`serve_page` runs a throwaway :class:`~http.server.HTTPServer` on a background thread
-serving one fixed body for every path, and yields the base URL. It is a context manager the probe (or
-the harness, via ``RegressionProbe.context``) enters around the run so the server is alive for the
+serving one fixed body for every path, and yields the base URL. It is a context manager the case (or
+the harness, via ``RegressionCase.context``) enters around the run so the server is alive for the
 fetch and torn down — thread joined, socket closed — the moment the run ends.
 """
 
@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# The default page body served when a probe does not supply its own — a known, greppable marker.
+# The default page body served when a case does not supply its own — a known, greppable marker.
 DEFAULT_PAGE = "<html><body><h1>decode regression fixture page</h1></body></html>"
 
 
@@ -25,7 +25,7 @@ def serve_page(
     """Serve ``body`` for every path on a localhost port; yield the base URL (ADR-0017 §6).
 
     ``port=0`` (the default) lets the OS pick a free port — no fixed-port collisions across parallel
-    fixtures. A probe whose *prompt* must cite the URL verbatim passes a fixed ``port`` instead, since
+    fixtures. A case whose *prompt* must cite the URL verbatim passes a fixed ``port`` instead, since
     the static prompt cannot know an ephemeral one. Serves ``body`` as ``text/html`` for any GET and
     yields ``http://<host>:<port>``. On exit the server is shut down, the serving thread joined and the
     socket closed, so no listener or thread leaks past the ``with`` block (``filterwarnings=error``

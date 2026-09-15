@@ -1,14 +1,14 @@
-"""Probe 16 — an early fact survives auto-compaction and is recalled (ADR-0006; ADR-0017 §2,6).
+"""Case 16 — an early fact survives auto-compaction and is recalled (ADR-0006; ADR-0017 §2,6).
 
 Compaction-survival discipline (ADR-0006): when a conversation grows near the context window, decode
 compacts the older turns into a summary so the agent can keep working — and a fact stated early must
-survive that summary. The probe seeds a near-limit pre-filled history (``near_limit_history``) whose
+survive that summary. The case seeds a near-limit pre-filled history (``near_limit_history``) whose
 FIRST turn states a distinctive fact (a deploy token), then asks the agent to recall it. The run passes
 when the answer contains the fact (:class:`OutputContainsMetric`).
 
 **Making compaction actually fire (the 111 QA lesson).** The real trigger is window-relative:
 ``input_tokens >= window * (1 - reserve)`` with a default window of 1,048,576 tokens — a few-thousand-
-token history never crosses it. So the probe forces a small window AND a small keep-recent tail via
+token history never crosses it. So the case forces a small window AND a small keep-recent tail via
 ``settings_overrides`` (rolled back after the run), and sets ``enable_compaction`` so the driver wires
 the summarizer (its OWN model — real provider live, scripted offline). Under these settings a real model
 reports enough input tokens to cross the trigger and the older turns — including the early-fact turn —
@@ -26,8 +26,8 @@ from pathlib import Path
 from pydantic_ai.messages import ModelMessage
 
 from evals.harness.metrics import OutputContainsMetric
+from evals.regression.case import RegressionCase
 from evals.regression.fixtures import near_limit_history
-from evals.regression.probe import RegressionProbe
 
 # The distinctive early fact the agent must recall through compaction (a value it could not guess).
 EARLY_FACT = "The production deploy token is deploy-zx9-4471."
@@ -53,13 +53,26 @@ def _history() -> list[ModelMessage]:
     return near_limit_history(target_tokens=HISTORY_TARGET_TOKENS, early_fact=EARLY_FACT)
 
 
-PROBE = RegressionProbe(
+CASE = RegressionCase(
     id="16-compaction-survival",
     prompt=(
         "Earlier in this conversation I gave you the production deploy token. What is it? "
         "Answer with the token value."
     ),
     fixture=_fixture,
+    difficulty="hard",
+    description=(
+        "Tests that a fact given early in a conversation survives compaction and is recalled "
+        "afterwards."
+    ),
+    symptom=(
+        "harness invariant: a fact given early in a conversation survives compaction and is "
+        "recalled."
+    ),
+    assertion=(
+        "The response recalls the token value the user gave earlier in the conversation instead of "
+        "saying it no longer has that information."
+    ),
     # No MaxStepsMetric here: the pre-filled near-limit history inflates the ModelResponse count, so a
     # step budget would grade the seeded turns, not the agent's work. Recall-in-answer is the behavior.
     metrics=[

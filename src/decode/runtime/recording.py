@@ -179,7 +179,7 @@ def worker_session_failure(error: BaseException) -> RecordingUnavailableError:
     )
 
 
-def one_line(error: Exception) -> str:
+def one_line(error: BaseException) -> str:
     """``error`` as a single short line: the cause, never a multi-line HTML body or a traceback.
 
     Shared with :mod:`decode.runtime.task_inputs`, whose Worker Task failures owe the operator the

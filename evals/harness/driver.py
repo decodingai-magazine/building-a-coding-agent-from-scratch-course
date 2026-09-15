@@ -7,9 +7,9 @@ pydantic-ai message history: tool calls from ``ToolCallPart``s, usage summed fro
 ``ModelResponse.usage``. Grading never parses Opik traces (that would couple it to the
 observability pipeline and lie under export lag).
 
-Configurable per probe: the gate mode + optional rules, custom permission / question resolvers
+Configurable per case: the gate mode + optional rules, custom permission / question resolvers
 (default = headless auto-deny, mirroring ``runtime/headless.py``), a pre-filled ``message_history`` (the
-compaction probe needs it), and ``max_requests`` — a hard cap on model requests so a runaway run
+compaction case needs it), and ``max_requests`` — a hard cap on model requests so a runaway run
 stops gracefully instead of burning budget. :func:`run_agent_once_sync` wraps it in
 :func:`asyncio.run` because Opik ``evaluate()`` task fns cannot be async.
 """
@@ -86,9 +86,9 @@ class EvalRunRecord:
       message-history equivalent of ``result.usage()``).
     * ``denied_tools`` — the tools the gate denied (``ToolReturnPart.outcome == "denied"``).
     * ``compaction_events`` — how many :class:`~decode.entities.events.ContextCompacted` /
-      ``ContextMicrocompacted`` the run emitted, so the compaction-survival probe can prove the
+      ``ContextMicrocompacted`` the run emitted, so the compaction-survival case can prove the
       cascade actually FIRED (not merely that a large history was seeded). ``0`` for every run whose
-      probe leaves ``enable_compaction`` off.
+      case leaves ``enable_compaction`` off.
     * ``agent_error`` — the message of an :class:`~decode.entities.events.AgentError` the Runner
       surfaced when a turn crashed, else ``None``. The Runner swallows a turn exception into that
       event and returns an empty-but-valid history, so without this a crashed run is
@@ -110,7 +110,7 @@ class EvalRunRecord:
 async def _deny_permission_resolver(request: PermissionRequest) -> PermissionDecision:
     """The headless auto-deny default, mirroring ``runtime/headless.py`` (ADR-0017 §4).
 
-    An eval run has no interactive approver, so an ``ASK`` the probe did not override is denied —
+    An eval run has no interactive approver, so an ``ASK`` the case did not override is denied —
     the safe default. Probes that want an approval supply their own ``resolve_permission``.
     """
     logger.debug("eval driver denying permission for tool=%s", request.tool_name)
@@ -179,14 +179,14 @@ async def run_agent_once(
     event sink, ``harness_home`` defaulting to ``cwd``, the gate in ``gate_mode`` with optional
     ``permission_rules``), a real :class:`~decode.agent.loop.AgentTurnHandler` seeded with
     ``message_history``, and a real :class:`~decode.harness.runner.Runner`; submits ``prompt`` and
-    waits for idle. Resolvers default to the headless auto-deny pair; a probe overrides either.
+    waits for idle. Resolvers default to the headless auto-deny pair; a case overrides either.
     ``max_requests`` installs the :class:`_RequestCappedModel` seam so a runaway run stops
     gracefully. The record is read entirely from ``handler.message_history``.
 
     ``enable_compaction`` wires the auto-compaction cascade (ADR-0006): the summarizer source is the
     agent's OWN model, captured before the request-cap override — so it runs on whatever provider the
     agent runs on (real Gemini live, a scripted model offline), never a separate ``Settings``-built
-    model that would phone home in an offline test. Off by default, so a probe that does not grade
+    model that would phone home in an offline test. Off by default, so a case that does not grade
     compaction never pays for a summarizer call.
     """
     from decode.agent.loop import AgentTurnHandler
@@ -236,11 +236,11 @@ async def run_agent_once(
             await runner.submit(prompt, InputIntent.STEER)
             await runner.wait_idle()
     finally:
-        # Reap any Language Server the run spawned (the ``lsp`` tool), IN this loop — a probe run is
+        # Reap any Language Server the run spawned (the ``lsp`` tool), IN this loop — a case run is
         # sync (``run_agent_once_sync`` → ``asyncio.run``), so a caller's later ``asyncio.run`` teardown
         # would try to close a subprocess transport bound to this now-dead loop (an unclosed-transport
         # ResourceWarning). Each run also gets a fresh temp Workspace, so a cached client is stale
-        # anyway. No-op (empty cache) for every probe that never touches ``lsp``. Idempotent, never raises.
+        # anyway. No-op (empty cache) for every case that never touches ``lsp``. Idempotent, never raises.
         await lsp_service.shutdown_all()
 
     return _build_record(

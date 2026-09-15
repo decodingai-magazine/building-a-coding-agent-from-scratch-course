@@ -10,7 +10,18 @@ Run the [Kitaru](https://docs.zenml.io/kitaru?utm_source=decodingai&utm_medium=r
 | Claims | agent + evaluator + importer | agent + evaluator (export files live on your machine) |
 | Lifetime | the shell | Modal's 24 h ceiling |
 
-Each Worker runs only its own Agent Version: a Modal Worker claiming a v2 replay fails it, and vice versa.
+Each Worker runs only its own Agent Version: a Modal Worker claiming a docker-mode replay fails it, and vice versa.
+
+> **The server must be reachable from Modal.** A Modal Worker dials `KITARU_API_URL` out of its
+> container, so the local OSS server from [06 §0](06_evals_replays.md#0-pick-a-server)
+> (`http://localhost:8000`) is laptop-only — this page needs the managed workspace (when it resumes;
+> it is deactivated today) or any other server with a public URL. Register decode on it first:
+> `uv run python scripts/bootstrap_kitaru.py --server <url>`.
+>
+> The version NUMBERS below are the course workspace's history (`decode@2` docker, `decode@3`
+> `none`). On a freshly bootstrapped server the same two specs are `decode@1` and `decode@2` — read
+> the real ones off `uv run kitaru agent version list decode` and match on `SANDBOX_MODE`, never on
+> the number.
 
 ## 1. Mint the container credential
 
@@ -80,7 +91,7 @@ Same baseline replay as [06 §5](06_evals_replays.md#5-replay-then-compare), pin
 uv run kitaru replay create <SESSION_ID> --agent decode@3 \
   --evaluator 'decode-bad-request-400@1' \
   --tool-policy '{"default":{"type":"history","scope":"baseline","on_miss":"error_result"}}' \
-  --evaluate-baselines
+  --baseline-evaluation-mode if-missing
 uv run kitaru job watch <JOB_ID>
 uv run kitaru replay get <REPLAY_ID>
 ```
@@ -109,7 +120,7 @@ Past the 24 h ceiling, relaunch with the `modal run --detach` line from §3. Usa
 | `Decode: set GEMINI_API_KEY in your environment` in a replay | the Secret lacks the provider key: re-create, redeploy. |
 | No `decode-modal-worker` in `kitaru worker list` | not started, or past the 24 h ceiling: check logs, relaunch. |
 | `decode@3` replay stays queued | Modal Worker down, or started with a different `--agent-version-id`. |
-| `decode@2` replay fails on the Modal Worker | no Docker in a container: re-create with `--agent decode@3`. |
+| A docker-mode replay fails on the Modal Worker | no Docker in a container: re-create against the `none` version (`decode@3` here, `decode@2` on a freshly bootstrapped server). |
 | `403: Task credentials are not accepted on this route` | the Worker's `KITARU_API_KEY` was refused: re-mint (§1), re-create the Secret, redeploy. |
 | `ModuleNotFoundError` / command not found in the replay | `modal deploy` again. |
 

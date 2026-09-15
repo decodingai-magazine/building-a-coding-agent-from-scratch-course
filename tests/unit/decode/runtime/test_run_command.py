@@ -567,3 +567,31 @@ def test_run_sandbox_repo_env_in_none_mode_is_a_friendly_line_no_agent(monkeypat
 
     assert result.exit_code != 0
     assert "--repo/SANDBOX_REPO" in result.stderr
+
+
+# --- `--summary-json`: the Benchmark Job's ground truth (ADR-0022 §1) ----------------------------
+
+
+def test_run_help_documents_the_summary_json_flag():
+    result = CliRunner().invoke(cli, ["run", "--help"])
+
+    assert result.exit_code == 0
+    assert "--summary-json" in result.output
+
+
+def test_summary_json_is_threaded_into_the_runner_as_a_path(monkeypatch, _provider_ok, tmp_path):
+    captured = _recording_runner(monkeypatch, "the answer")
+    target = tmp_path / "trial" / "summary.json"
+
+    result = CliRunner().invoke(cli, ["run", "--summary-json", str(target), "do it"])
+
+    assert result.exit_code == 0
+    assert captured["summary_json"] == target
+    assert result.stdout == "the answer\n"  # stdout is unchanged: the answer alone
+
+
+def test_without_the_flag_the_runner_gets_no_summary_path(monkeypatch, _provider_ok):
+    captured = _recording_runner(monkeypatch, "the answer")
+
+    assert CliRunner().invoke(cli, ["run", "do it"]).exit_code == 0
+    assert captured["summary_json"] is None

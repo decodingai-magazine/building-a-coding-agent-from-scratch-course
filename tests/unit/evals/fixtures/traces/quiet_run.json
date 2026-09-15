@@ -1,0 +1,37 @@
+{
+  "trace": {
+    "id": "1f0a0b1e-0000-4000-8000-000000000401",
+    "name": "decode_run",
+    "thread_id": "1f0a0b1e-0000-4000-8000-0000000004aa",
+    "start_time": "2026-09-11 07:30:00.000000+00:00",
+    "end_time": "2026-09-11 07:30:04.000000+00:00",
+    "has_tool_spans": false,
+    "error_info": null,
+    "input": {"input": "anonymised task prompt (chat-only run)"},
+    "output": {"output": "anonymised assistant answer"},
+    "metadata": {
+      "integration": "pydantic-ai",
+      "logfire.msg": "decode_run",
+      "thread_id": "1f0a0b1e-0000-4000-8000-0000000004aa"
+    }
+  },
+  "spans": [
+    {
+      "id": "1f0a0b1e-0000-4000-8000-000000000411",
+      "trace_id": "1f0a0b1e-0000-4000-8000-000000000401",
+      "name": "chat gemini-2.5-flash",
+      "type": "llm",
+      "start_time": "2026-09-11 07:30:01.000000+00:00",
+      "end_time": "2026-09-11 07:30:03.000000+00:00",
+      "model": "gemini-2.5-flash",
+      "provider": "google_ai",
+      "input": {"messages": [{"role": "user", "parts": [{"type": "text", "content": "anonymised"}]}]},
+      "output": {"messages": [{"role": "assistant", "parts": [{"type": "text", "content": "anonymised"}]}]},
+      "metadata": {
+        "integration": "pydantic-ai",
+        "gen_ai.operation.name": "chat",
+        "logfire.msg": "chat gemini-2.5-flash"
+      }
+    }
+  ]
+}

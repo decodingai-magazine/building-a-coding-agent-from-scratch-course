@@ -1,9 +1,10 @@
-"""Shared fixtures for the benchmark loader / oracle-sanity / dataset tests (ADR-0017 §2,5).
+"""Shared fixtures for the benchmark loader / seeder / oracle-gate / dataset tests (ADR-0022 §2,5).
 
-Exposes the on-disk fixture benchmark task (``tests/unit/evals/fixtures/tasks/001-greeting``) two
-ways: :func:`greeting_task_dir` points at the committed original (read-only use), while
-:func:`valid_task_dir` hands back a fresh writable copy under ``tmp_path`` so a test can mutate
-``task.yaml`` or delete ``verify.sh`` to prove each contract violation is rejected.
+Exposes the on-disk fixture Benchmark Task (``tests/unit/evals/fixtures/tasks/001-greeting``, format
+v2) two ways: :func:`greeting_task_dir` points at the committed original (read-only use), while
+:func:`valid_task_dir` hands back a fresh writable copy under ``tmp_path`` for tests that mutate a
+task folder. A task authored from scratch (to break exactly one clause of the contract) comes from
+``tests/support/benchmark_tasks.py`` instead.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ def greeting_task_dir() -> Path:
 
 @pytest.fixture
 def valid_task_dir(tmp_path: Path) -> Path:
-    """A fresh writable copy of the greeting fixture task, for mutate-and-reject loader tests."""
+    """A fresh writable copy of the greeting fixture task, for tests that mutate a task folder."""
     dest = tmp_path / "001-greeting"
     shutil.copytree(GREETING_TASK_DIR, dest)
     return dest
