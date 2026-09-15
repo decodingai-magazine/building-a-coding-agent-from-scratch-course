@@ -44,6 +44,7 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Literal
@@ -112,6 +113,11 @@ class TrialResult:
     ``reward`` is ``None`` on an Infra Error only: a graded trial always has a number, and a
     ``None`` reward must never be read as a zero. ``trial_dir`` is the evidence directory and is the
     one field not in ``result.json`` (the file already knows where it lives).
+
+    ``started_at`` / ``finished_at`` are UTC wall-clock stamps around the whole trial (seed to
+    ``result.json``); the experiment row spans them into the job's wall clock, which is what a
+    pay-per-GPU-hour endpoint bills for (ADR-0022 Amendment §14). ``timings`` holds the per-phase
+    seconds, of which ``run`` is the agent's own time on the model.
     """
 
     task_id: str
@@ -125,6 +131,8 @@ class TrialResult:
     agent: dict[str, Any]
     summary: dict[str, Any] | None
     timings: dict[str, float | None]
+    started_at: datetime
+    finished_at: datetime
     trial_dir: Path = field(compare=False)
 
     @property
@@ -146,6 +154,8 @@ class TrialResult:
             "agent": dict(self.agent),
             "summary": self.summary,
             "timings": dict(self.timings),
+            "started_at": self.started_at.isoformat(),
+            "finished_at": self.finished_at.isoformat(),
         }
 
 
@@ -173,6 +183,7 @@ def run_trial(
     # (the Seed Repo, the summary file) must survive that cwd change (the same rule
     # ``load_benchmark_task`` follows for a task folder).
     trial_dir = (job_dir / f"{task.id}__{trial_id}").resolve()
+    started_at = datetime.now(UTC)
     timings: dict[str, float | None] = {"seed": None, "run": None, "verify": None}
     status: TrialStatus = "infra_error"
     reason: str | None = "the trial did not complete"
@@ -235,6 +246,8 @@ def run_trial(
             agent=agent_info(sandbox=sandbox, model=model),
             summary=summary,
             timings=timings,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
             trial_dir=trial_dir,
         )
         _write_result(trial_dir, result)

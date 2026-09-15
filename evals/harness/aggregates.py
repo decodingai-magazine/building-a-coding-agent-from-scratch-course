@@ -9,8 +9,8 @@ reports can be checked on a hand-built matrix with no client, no keys and no net
 Two layers:
 
 * the per-task functions — :func:`pass_at_1`, :func:`pass_at_k`, :func:`pass_hat_k`,
-  :func:`is_flaky`, :func:`success_per_dollar`, :func:`infra_error_rate`, :func:`mean_cost_usd` —
-  over plain sequences;
+  :func:`is_flaky`, :func:`success_per_dollar`, :func:`infra_error_rate`, :func:`mean_cost_usd`,
+  :func:`total_tokens`, :func:`total_seconds`, :func:`wall_clock_seconds` — over plain sequences;
 * :func:`summarize_tasks`, which folds ``[TaskTrials, ...]`` into a :class:`BenchmarkSummary`:
   one row per task, a rollup per Difficulty Tier and a totals row, all macro-averaged (each task
   weighs the same regardless of how many trials survived).
@@ -18,12 +18,19 @@ Two layers:
 The rule every layer obeys is ADR-0022 §4: an **Infra Error** is excluded from BOTH the numerator and
 the denominator — it is counted and shown, never scored. Nothing here raises: an empty matrix, a
 single trial, an all-infra task each yield a valid summary.
+
+Two spend axes ride beside the pass rates, because the two ways decode is billed for a model differ
+(ADR-0022 Amendment §14): **tokens** (input + output, what a pay-per-token route like OpenRouter
+charges) and **time** (the agent's ``run`` seconds per trial and the job's wall clock from the first
+trial's start to the last one's end, what a pay-per-GPU-hour endpoint like Modal charges while it is
+kept warm). Both are raw measurements — the harness never multiplies them by a price it cannot know.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from math import comb
 from typing import TYPE_CHECKING
 
@@ -45,14 +52,27 @@ DIFFICULTY_ORDER = ("easy", "medium", "hard")
 class TrialOutcome:
     """One Trial as the aggregates see it: how it ended, what it scored, what it cost.
 
-    Mirrors the three fields of ``result.json`` the math needs (:class:`evals.harness.trial.TrialResult`)
+    Mirrors the fields of ``result.json`` the math needs (:class:`evals.harness.trial.TrialResult`)
     so a Trial Dir on disk and an Opik ``TestResult`` fold into the same shape. ``cost_usd`` is
     ``None`` when the provider reported no dollar figure — never 0.0, which would read as "free".
+    ``input_tokens`` / ``output_tokens`` are the run's own usage totals (``0`` for a trial that never
+    reached a summary); ``run_seconds`` is the agent's ``run`` phase and ``started_at`` /
+    ``finished_at`` bound the whole trial — each ``None`` when the trial never ran.
     """
 
     status: str
     reward: float | None = None
     cost_usd: float | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    run_seconds: float | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+    @property
+    def tokens(self) -> int:
+        """Input plus output tokens — the figure a per-token price multiplies."""
+        return self.input_tokens + self.output_tokens
 
     @property
     def passed(self) -> bool:
@@ -89,6 +109,8 @@ class TaskAggregate:
     pass_hat_k: float
     is_flaky: bool
     mean_cost_usd: float | None
+    mean_tokens: float
+    mean_run_seconds: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +118,9 @@ class Rollup:
     """A group of tasks folded into one row — a Difficulty Tier, or the whole run (``TOTAL``).
 
     The pass rates are MACRO averages over the group's tasks (every task weighs the same, so a task
-    that lost trials to the harness cannot dominate a tier); the counts and the money are sums.
+    that lost trials to the harness cannot dominate a tier); the counts, the money, the tokens and
+    the seconds are sums over the group's trials; ``wall_clock_seconds`` is the span from the
+    group's first trial start to its last trial end (``None`` when no trial ran).
     """
 
     label: str
@@ -111,6 +135,17 @@ class Rollup:
     infra_error_rate: float
     mean_cost_usd: float | None
     success_per_dollar: float | None
+    input_tokens: int
+    output_tokens: int
+    mean_tokens: float
+    run_seconds: float | None
+    mean_run_seconds: float | None
+    wall_clock_seconds: float | None
+
+    @property
+    def tokens(self) -> int:
+        """Input plus output tokens over the group — the figure a per-token price multiplies."""
+        return self.input_tokens + self.output_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +169,12 @@ class BenchmarkSummary:
             infra_error_rate=0.0,
             mean_cost_usd=None,
             success_per_dollar=None,
+            input_tokens=0,
+            output_tokens=0,
+            mean_tokens=0.0,
+            run_seconds=None,
+            mean_run_seconds=None,
+            wall_clock_seconds=None,
         )
     )
 
@@ -213,6 +254,52 @@ def success_per_dollar(trials: Sequence[bool], costs: Sequence[float | None]) ->
     return sum(1 for passed in trials if passed) / spent
 
 
+# --- The spend axes a price multiplies: tokens (per-token billing) and time (per-hour billing) ---
+
+
+def total_tokens(tokens: Sequence[int]) -> int:
+    """Sum of per-trial token counts — a trial that never ran contributes its ``0``, honestly."""
+    return sum(tokens)
+
+
+def total_seconds(seconds: Sequence[float | None]) -> float | None:
+    """Sum of the trials' seconds that were measured, or ``None`` when none was.
+
+    A trial whose phase never ran (an Infra Error at seed time) reports no seconds and is left out
+    rather than counted as instant; a job in which nothing ran has no time to report at all.
+    """
+    measured = [value for value in seconds if value is not None]
+    if not measured:
+        return None
+    return sum(measured)
+
+
+def mean_seconds(seconds: Sequence[float | None]) -> float | None:
+    """Mean of the measured seconds per trial, or ``None`` when none was measured."""
+    measured = [value for value in seconds if value is not None]
+    if not measured:
+        return None
+    return sum(measured) / len(measured)
+
+
+def wall_clock_seconds(
+    starts: Sequence[datetime | None], ends: Sequence[datetime | None]
+) -> float | None:
+    """Seconds from the earliest trial start to the latest trial end, or ``None`` when none ran.
+
+    THE number a pay-per-GPU-hour endpoint bills for: while a job is in flight the endpoint is kept
+    warm end to end, whatever ``--threads`` did in between. It is a span, not a sum — so with
+    ``--threads 4`` it is roughly a quarter of :func:`total_seconds` over the ``run`` phases, and the
+    two together say how well the fan-out used the hardware. Mismatched or missing stamps are
+    skipped; a lone stamp of either kind yields ``None``, never a negative or a zero.
+    """
+    started = [value for value in starts if value is not None]
+    finished = [value for value in ends if value is not None]
+    if not started or not finished:
+        return None
+    return max(0.0, (max(finished) - min(started)).total_seconds())
+
+
 # --- The suite summary over a trial matrix ---
 
 
@@ -250,6 +337,8 @@ def _aggregate_task(task: TaskTrials) -> TaskAggregate:
         pass_hat_k=pass_hat_k(graded),
         is_flaky=is_flaky(graded),
         mean_cost_usd=mean_cost_usd([outcome.cost_usd for outcome in task.outcomes]),
+        mean_tokens=_mean(float(outcome.tokens) for outcome in task.outcomes),
+        mean_run_seconds=mean_seconds([outcome.run_seconds for outcome in task.outcomes]),
     )
 
 
@@ -259,6 +348,7 @@ def _rollup(label: str, tasks: Sequence[TaskTrials]) -> Rollup:
     outcomes = [outcome for task in tasks for outcome in task.outcomes]
     graded = _graded_passes(outcomes)
     costs = [outcome.cost_usd for outcome in outcomes]
+    run_seconds = [outcome.run_seconds for outcome in outcomes]
     return Rollup(
         label=label,
         tasks=len(aggregates),
@@ -272,6 +362,15 @@ def _rollup(label: str, tasks: Sequence[TaskTrials]) -> Rollup:
         infra_error_rate=infra_error_rate([outcome.status for outcome in outcomes]),
         mean_cost_usd=mean_cost_usd(costs),
         success_per_dollar=success_per_dollar(graded, costs),
+        input_tokens=total_tokens([outcome.input_tokens for outcome in outcomes]),
+        output_tokens=total_tokens([outcome.output_tokens for outcome in outcomes]),
+        mean_tokens=_mean(float(outcome.tokens) for outcome in outcomes),
+        run_seconds=total_seconds(run_seconds),
+        mean_run_seconds=mean_seconds(run_seconds),
+        wall_clock_seconds=wall_clock_seconds(
+            [outcome.started_at for outcome in outcomes],
+            [outcome.finished_at for outcome in outcomes],
+        ),
     )
 
 
@@ -296,7 +395,9 @@ def render_summary_table(summary: BenchmarkSummary) -> Table:
     ``pass@3`` / ``pass^3``, and they are dropped entirely at ``k=1`` where they would just repeat
     pass@1. ``n`` is the trials attempted and ``infra`` how many of them the harness lost — read
     together they say how much of the row is real. Costs print ``n/a`` when the provider reported no
-    dollar figure.
+    dollar figure. ``~s/trial`` and ``~tok/trial`` are the two spend axes per trial — mean agent
+    ``run`` seconds (per-hour billing) and mean input+output tokens (per-token billing); the job's
+    totals and wall clock print as one line under the table (:func:`render_spend_line`).
     """
     from rich.table import Table
 
@@ -313,6 +414,8 @@ def render_summary_table(summary: BenchmarkSummary) -> Table:
         table.add_column(f"pass^{k}", justify="right")
         table.add_column("flaky", justify="center")
     table.add_column("~$/trial", justify="right")
+    table.add_column("~s/trial", justify="right")
+    table.add_column("~tok/trial", justify="right")
     table.add_column("infra", justify="right")
 
     for aggregate in summary.per_task:
@@ -330,6 +433,8 @@ def render_summary_table(summary: BenchmarkSummary) -> Table:
                 else ()
             ),
             _cost_cell(aggregate.mean_cost_usd),
+            _seconds_cell(aggregate.mean_run_seconds),
+            f"{aggregate.mean_tokens:,.0f}",
             str(aggregate.infra_errors) if aggregate.infra_errors else "",
         )
 
@@ -358,10 +463,32 @@ def _add_rollup_row(table: Table, rollup: Rollup, label: str, multi_trial: bool)
             else ()
         ),
         _cost_cell(rollup.mean_cost_usd),
+        _seconds_cell(rollup.mean_run_seconds),
+        f"{rollup.mean_tokens:,.0f}",
         str(rollup.infra_errors),
+    )
+
+
+def render_spend_line(summary: BenchmarkSummary) -> str:
+    """One line with the job's totals — what a price multiplies, printed under the table.
+
+    ``wall clock`` is first trial start to last trial end (times your $/hour = a warm endpoint's bill),
+    ``agent run`` the sum of every trial's ``run`` phase, and the tokens the sum over every trial
+    (times the route's $/Mtok = a per-token bill). The same three numbers ride the Opik experiment row.
+    """
+    total = summary.total
+    return (
+        f"spend: wall clock {_seconds_cell(total.wall_clock_seconds)} · "
+        f"agent run {_seconds_cell(total.run_seconds)} total · "
+        f"tokens {total.tokens:,} ({total.input_tokens:,} in / {total.output_tokens:,} out)"
     )
 
 
 def _cost_cell(cost: float | None) -> str:
     """A cost cell: a dollar figure, or ``n/a`` when the provider reported none (never ``$0``)."""
     return f"${cost:.4f}" if cost is not None else "n/a"
+
+
+def _seconds_cell(seconds: float | None) -> str:
+    """A time cell: whole seconds, or ``n/a`` when nothing was measured (never ``0s``)."""
+    return f"{seconds:,.0f}s" if seconds is not None else "n/a"

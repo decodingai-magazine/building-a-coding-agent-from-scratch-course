@@ -23,6 +23,7 @@ import ast
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +141,10 @@ def test_result_json_records_the_trial(tmp_path: Path) -> None:
     assert payload["summary"]["handback"] == {"branch": FAKE_BRANCH, "pushed": True}
     assert set(payload["timings"]) == {"seed", "run", "verify"}
     assert all(payload["timings"][phase] >= 0.0 for phase in payload["timings"])
+    started = datetime.fromisoformat(payload["started_at"])
+    finished = datetime.fromisoformat(payload["finished_at"])
+    assert started.tzinfo is not None and finished.tzinfo is not None  # aware UTC, always
+    assert (finished - started).total_seconds() >= payload["timings"]["run"]
 
 
 def test_the_run_command_carries_the_trial_flags(tmp_path: Path) -> None:

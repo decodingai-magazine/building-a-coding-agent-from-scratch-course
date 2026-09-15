@@ -11,6 +11,7 @@ is rendered from — pinned against the INSTALLED opik 2.2.36 with hand-built ``
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,8 @@ from evals.harness.datasets import task_checksum
 from evals.harness.task_loader import load_benchmark_task
 from evals.harness.trial import TrialResult
 
+STARTED_AT = datetime(2026, 9, 15, 12, 0, 0, tzinfo=UTC)
+
 
 def _trial(
     task_id: str = "001-greeting",
@@ -59,6 +62,8 @@ def _trial(
         agent={"model": "gemini-3.5-flash"},
         summary=summary,
         timings={"seed": 0.1, "run": 1.0, "verify": 0.2},
+        started_at=STARTED_AT,
+        finished_at=STARTED_AT + timedelta(seconds=1.5),
         trial_dir=Path("/tmp/runs/job/001-greeting__0a1b2c3d"),
     )
 
@@ -71,13 +76,31 @@ def _test_result(
     reward: float | None = 1.0,
     cost_usd: float | None = None,
     trial_id: int = 0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    run_seconds: float | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
 ) -> OpikTestResult:
-    """One Opik ``TestResult`` shaped exactly as ``evaluate()`` builds it around our task fn."""
+    """One Opik ``TestResult`` shaped exactly as ``evaluate()`` builds it around our task fn.
+
+    The stamps are strings: the payload round-trips through Opik as JSON, so the readers see ISO
+    text, never the ``datetime`` the trial produced.
+    """
     return OpikTestResult(
         test_case=OpikTestCase(
             trace_id=f"trace-{task_id}-{trial_id}",
             dataset_item_id=f"item-{task_id}",
-            task_output={"status": status, "reward": reward, "cost_usd": cost_usd},
+            task_output={
+                "status": status,
+                "reward": reward,
+                "cost_usd": cost_usd,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "run_seconds": run_seconds,
+                "started_at": started_at,
+                "finished_at": finished_at,
+            },
             dataset_item_content={"task_id": task_id, "difficulty": difficulty},
         ),
         score_results=[],
@@ -128,6 +151,12 @@ def test_task_fn_maps_a_trial_onto_the_metric_payload(greeting_task_dir: Path, m
     assert payload["steps"] == 3
     assert payload["max_steps"] == task.max_steps
     assert payload["cost_usd"] == 0.01
+    assert payload["input_tokens"] == 10
+    assert payload["output_tokens"] == 5
+    assert payload["run_seconds"] == 1.0
+    assert payload["trial_seconds"] == 1.5
+    assert payload["started_at"] == "2026-09-15T12:00:00+00:00"
+    assert payload["finished_at"] == "2026-09-15T12:00:01.500000+00:00"
     assert payload["trial_dir"] == "/tmp/runs/job/001-greeting__0a1b2c3d"
     assert payload["infra_error"] is None
     assert run_trial.call_args.kwargs["sandbox"] == "docker"
@@ -326,14 +355,29 @@ def test_run_benchmark_experiment_config_carries_the_full_provenance(
     assert config["sandbox"] == "modal"
     assert config["decode_version"]
     assert config["trials"] == 3
+    assert config["threads"] == 4  # the modal default — the fan-out the wall clock depends on
     assert config["job_name"] == "bench-y"
+
+
+def test_experiment_config_records_an_explicit_thread_count(mocker, greeting_task_dir: Path):
+    """The wall clock is a span, so the fan-out it ran under is provenance (Amendment §14)."""
+    task = load_benchmark_task(greeting_task_dir)
+    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
+    evaluate, _ = _wire_opik(mocker, task)
+
+    run_benchmark(task_id=task.id, sandbox="docker", threads=3, job_name="bench-z")
+
+    assert evaluate.call_args.kwargs["experiment_config"]["threads"] == 3
+    assert evaluate.call_args.kwargs["task_threads"] == 3
 
 
 def test_experiment_config_kitaru_agent_id_is_none_when_unset(mocker):
     """Never a placeholder: an unset ``KITARU_AGENT_ID`` means the run recorded no Session."""
     mocker.patch.object(settings, "kitaru_agent_id", "")
 
-    config = experiment_config(sandbox="docker", trials=1, job_name="bench-x", model=None)
+    config = experiment_config(
+        sandbox="docker", trials=1, threads=1, job_name="bench-x", model=None
+    )
 
     assert config["kitaru_agent_id"] is None
 
@@ -342,7 +386,9 @@ def test_experiment_config_reports_a_set_kitaru_agent_id(mocker):
     """With recording configured the id joins Opik to the Kitaru Sessions (ADR-0022 §10)."""
     mocker.patch.object(settings, "kitaru_agent_id", "agent-42")
 
-    config = experiment_config(sandbox="docker", trials=1, job_name="bench-x", model=None)
+    config = experiment_config(
+        sandbox="docker", trials=1, threads=1, job_name="bench-x", model=None
+    )
 
     assert config["kitaru_agent_id"] == "agent-42"
 
@@ -483,6 +529,15 @@ def testselect_tasks_filters_by_id_and_difficulty(greeting_task_dir: Path):
     assert select_tasks([task], task_id=None, difficulty="hard") == []
 
 
+def test_select_tasks_takes_several_ids_as_one_subset(greeting_task_dir: Path):
+    """A repeated ``--task`` runs a hand-picked subset as ONE experiment (Amendment §14)."""
+    task = load_benchmark_task(greeting_task_dir)
+
+    assert select_tasks([task], task_id=(task.id, "nope"), difficulty=None) == [task]
+    assert select_tasks([task], task_id=("nope", "also-nope"), difficulty=None) == []
+    assert select_tasks([task], task_id=(), difficulty=None) == []
+
+
 def test_agent_model_prefers_the_run_override():
     assert agent_model("qwen-x") == "qwen-x"
     assert agent_model() == settings.active_model
@@ -514,6 +569,12 @@ def test_experiment_scoring_functions_match_the_installed_opik_signature():
         "success_per_dollar",
         "mean_cost_usd",
         "infra_error_rate",
+        "input_tokens_total",
+        "output_tokens_total",
+        "tokens_mean",
+        "wall_clock_seconds",
+        "run_seconds_total",
+        "run_seconds_mean",
     }
     assert by_name["pass_at_1"].value == 0.5
     assert by_name["pass_at_k"].value == 1.0
@@ -552,6 +613,118 @@ def test_unpriced_cost_scores_are_failed_scores_not_zeroes():
     assert by_name["mean_cost_usd"].scoring_failed is True
     assert by_name["success_per_dollar"].scoring_failed is True
     assert by_name["pass_at_1"].scoring_failed is False
+
+
+# --- the two spend axes on the experiment row (ADR-0022 Amendment §14) ---
+
+
+def _stamp(seconds: float) -> str:
+    """An ISO-8601 UTC stamp ``seconds`` after a fixed origin — what the JSON round-trip yields."""
+    return (STARTED_AT + timedelta(seconds=seconds)).isoformat()
+
+
+def test_experiment_scores_total_the_tokens_for_a_per_token_bill():
+    """Input and output are summed SEPARATELY (they are priced apart); the mean is per trial."""
+    results = [
+        _test_result(input_tokens=1_000, output_tokens=100, trial_id=0),
+        _test_result(
+            status="agent_fail", reward=0.0, input_tokens=3_000, output_tokens=300, trial_id=1
+        ),
+    ]
+
+    by_name = {
+        score.name: score
+        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
+    }
+
+    assert by_name["input_tokens_total"].value == 4_000
+    assert by_name["output_tokens_total"].value == 400
+    assert by_name["tokens_mean"].value == 2_200
+    assert by_name["input_tokens_total"].scoring_failed is False
+
+
+def test_experiment_scores_span_the_wall_clock_for_a_per_hour_bill():
+    """Wall clock = first start to last end (a span); run seconds = the sum of the agent phases.
+
+    Two trials that overlapped under ``--threads 2``: 0-60 s and 30-100 s. The endpoint was warm for
+    100 s (what a $/hour bills), while the agent phases add up to 60 + 70 = 130 s.
+    """
+    results = [
+        _test_result(run_seconds=60.0, started_at=_stamp(0), finished_at=_stamp(60), trial_id=0),
+        _test_result(run_seconds=70.0, started_at=_stamp(30), finished_at=_stamp(100), trial_id=1),
+    ]
+
+    by_name = {
+        score.name: score
+        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
+    }
+
+    assert by_name["wall_clock_seconds"].value == 100.0
+    assert by_name["run_seconds_total"].value == 130.0
+    assert by_name["run_seconds_mean"].value == 65.0
+    assert "--threads" in by_name["wall_clock_seconds"].reason
+
+
+def test_time_scores_are_failed_scores_when_nothing_ran():
+    """A job of Infra Errors at seed time has no time to report — never a 0 that reads as instant."""
+    results = [_test_result(status="infra_error", reward=None)]
+
+    by_name = {
+        score.name: score
+        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
+    }
+
+    assert by_name["wall_clock_seconds"].scoring_failed is True
+    assert by_name["run_seconds_total"].scoring_failed is True
+    assert by_name["run_seconds_mean"].scoring_failed is True
+    assert by_name["input_tokens_total"].value == 0  # tokens, by contrast, are an honest zero
+
+
+def test_a_lost_trial_still_counts_the_time_it_ran():
+    """An Infra Error at VERIFY time still held the model — its ``run`` seconds and tokens count."""
+    results = [
+        _test_result(
+            input_tokens=500, run_seconds=40.0, started_at=_stamp(0), finished_at=_stamp(45)
+        ),
+        _test_result(
+            status="infra_error",
+            reward=None,
+            input_tokens=700,
+            run_seconds=50.0,
+            started_at=_stamp(45),
+            finished_at=_stamp(120),
+            trial_id=1,
+        ),
+    ]
+
+    by_name = {
+        score.name: score
+        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
+    }
+
+    assert by_name["input_tokens_total"].value == 1_200
+    assert by_name["run_seconds_total"].value == 90.0
+    assert by_name["wall_clock_seconds"].value == 120.0
+    assert by_name["pass_at_1"].value == 1.0  # while the pass rate still excludes it (§4)
+
+
+@pytest.mark.parametrize(
+    ("started_at", "finished_at"),
+    [
+        ("not a stamp", "2026-09-15T12:01:00+00:00"),
+        ("2026-09-15T12:00:00", "2026-09-15T12:01:00"),  # naive: rejected, never guessed at
+        (None, "2026-09-15T12:01:00+00:00"),
+    ],
+)
+def test_an_unusable_stamp_yields_no_wall_clock(started_at, finished_at):
+    results = [_test_result(started_at=started_at, finished_at=finished_at)]
+
+    by_name = {
+        score.name: score
+        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
+    }
+
+    assert by_name["wall_clock_seconds"].scoring_failed is True
 
 
 # --- the summary the CLI table is rendered from ---

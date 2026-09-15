@@ -56,6 +56,7 @@ One **Trial** is the shipped product, not a test harness (ADR-0022 §1): the see
 make eval-benchmark                                       # whole suite, docker sandbox, 1 trial
 make eval-benchmark ARGS='--difficulty easy'              # easy | medium | hard
 make eval-benchmark ARGS='--task 001-find-and-replace'
+make eval-benchmark ARGS='--task 001-find-and-replace --task 002-regex-extraction'   # a hand-picked subset, one experiment
 make eval-benchmark ARGS='--trials 3'                     # 3 trials/task → pass@3, pass^3, flakiness
 make eval-benchmark ARGS='--sandbox modal --threads 4'    # remote rung, 4 trials at a time
 make eval-benchmark ARGS='--job-name nightly-3 --model gemini-2.5-pro'
@@ -63,7 +64,7 @@ make eval-benchmark ARGS='--job-name nightly-3 --model gemini-2.5-pro'
 
 `--trials` is Opik's `trial_count`, `--threads` its `task_threads` (default 1 on docker, 4 on modal — a docker trial warms its own container). `--job-name` names **both** the Opik experiment and the Trial Dir parent (default `bench-<UTC stamp>`). `--model` overrides the model every trial runs on, never the provider.
 
-> ✅ A Rich table — one row per task (`n`, `pass@1`, at `k > 1` also `pass@k` / `pass^k` / `flaky`, `~$/trial`, `infra`), a section per tier, a total row — then one line naming the experiment and the trial dirs. In Opik: one experiment row over the `decode-benchmark-v2` dataset, tagged with model, provider, git sha, sandbox and `kitaru_agent_id`.
+> ✅ A Rich table — one row per task (`n`, `pass@1`, at `k > 1` also `pass@k` / `pass^k` / `flaky`, `~$/trial`, `~s/trial`, `~tok/trial`, `infra`), a section per tier, a total row — then a `spend:` line (wall clock · agent-run seconds · tokens in/out) and one line naming the experiment and the trial dirs. In Opik: one experiment row over the `decode-benchmark-v2` dataset, tagged with model, provider, git sha, sandbox, `threads` and `kitaru_agent_id`.
 
 ### Running the agent on the Modal endpoint
 
@@ -79,6 +80,52 @@ LLM_PROVIDER=modal EVAL_JUDGE_PROVIDER=modal make eval-regression  # agent and j
 - The regression cases run host-native and one at a time, so no thread knob applies there.
 
 Which Opik project a run writes to never depends on the provider: benchmark and regression experiments always land under `decode-evals` (their datasets live there); only the online track ([§4](#4-online-eval-and-the-mining-loop)) reads the **live** project, `decode-<DECODE_ENV>`.
+
+### Comparing models and providers — performance, time, tokens
+
+Every Benchmark Job is one Opik experiment, so a comparison is two (or more) experiment rows side by side (Opik → Experiments → select → Compare). Three groups of numbers sit on each row; the harness records the raw measurements, you multiply by the price ([ADR-0022 Amendment §14](../docs/adr/0022-evals-v2-own-harbor-on-opik.md)):
+
+| What you want          | Experiment score(s)                                                | Read it as                                                                                                                                          |
+| ---------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **performance**        | `pass_at_1` (and `pass_at_k` / `pass_hat_k` / `flaky_rate` at k>1) | macro-averaged over tasks; `infra_error_rate` must be ~0 or the row measures the harness, not the model                                            |
+| **time** (pay/compute) | `wall_clock_seconds`, `run_seconds_total`, `run_seconds_mean`      | wall clock = first trial start → last trial end, the span a warm endpoint was billed for; run seconds = the sum / mean of the agent's `decode run` phases |
+| **tokens** (pay/token) | `input_tokens_total`, `output_tokens_total`, `tokens_mean`         | summed over every trial, input and output apart because they are priced apart; `tokens_mean` is one attempt's size                                  |
+| **dollars**, if priced | `mean_cost_usd`, `success_per_dollar`                              | only when the route reports a price (a catalog model, or `LLM_COST_*_USD_PER_MTOK` set); a self-hosted endpoint never does                          |
+
+The derived costs:
+
+```
+Modal (pay per GPU-hour, endpoint kept at min 1 for the run):
+    cost ≈ wall_clock_seconds / 3600 × $/hour            # 1×H200 ≈ $4.54/h, per 02_modal_endpoints.md
+
+OpenRouter (pay per token):
+    cost ≈ input_tokens_total / 1e6 × $/Mtok_in + output_tokens_total / 1e6 × $/Mtok_out
+```
+
+Two experiments the course runs this way — same tasks (repeat `--task` for a light subset), same `--trials`, same `--threads`, one variable each:
+
+```bash
+# 1. Two models on the same provider: does the bigger one earn its GPU?
+LLM_PROVIDER=modal MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8 MODAL_ENDPOINT_URL=https://…qwen….modal.run \
+    make eval-benchmark ARGS='--threads 1 --job-name modal-qwen36-35b'
+LLM_PROVIDER=modal MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b     MODAL_ENDPOINT_URL=https://…gpt-oss….modal.run \
+    make eval-benchmark ARGS='--threads 1 --job-name modal-gpt-oss-120b'
+#    compare: pass_at_1 (performance) · wall_clock_seconds × the two endpoints' $/hour (cost)
+
+# 2. One model, two billing models: GPU-hours on Modal vs tokens on OpenRouter
+LLM_PROVIDER=modal      MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8 \
+    make eval-benchmark ARGS='--threads 1 --job-name qwen36-modal'
+LLM_PROVIDER=openrouter OPENROUTER_MODEL=qwen/qwen3.6-35b-a3b \
+    make eval-benchmark ARGS='--threads 1 --job-name qwen36-openrouter'
+#    compare: wall_clock_seconds × $/hour  vs  input/output_tokens_total × $/Mtok (and pass_at_1 should match)
+```
+
+What the numbers do and do not include:
+
+- **Wall clock is a span, not a sum.** Under `--threads 4` it is roughly a quarter of `run_seconds_total`; the row's `experiment_config.threads` says which fan-out it ran under, so compare wall clocks only across rows with the same `threads`. It also includes each trial's seed and verify phases (host-side, seconds) and, on the first trial, any cold start — keep the endpoint at min 1 and the number is the GPU time you paid for.
+- **Tokens are the agent's own requests.** An Explore subagent runs its own nested agent whose usage never joins the parent's history, so a trial that fanned out is under-counted on the experiment row. The trial's Opik **trace** (project `decode-evals`, thread = the trial's `session_id`) carries every span, subagents included — use it to true-up a per-token bill when the agent delegated.
+- **Cost is opt-in, never guessed.** A row on a self-hosted endpoint shows `mean_cost_usd` as a failed score (blank), by design; an OpenRouter slug the price catalog does not know needs `LLM_COST_INPUT_USD_PER_MTOK` / `LLM_COST_OUTPUT_USD_PER_MTOK` in `.env` to price itself.
+- The same three groups print at the end of the run: the table's `~s/trial` / `~tok/trial` columns and the `spend:` line under it are the per-trial and total views of the exact numbers on the row.
 
 ### The Trial Dir — evidence on disk, always
 
