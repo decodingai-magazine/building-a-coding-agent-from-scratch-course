@@ -13,8 +13,9 @@ mapping onto it:
 * ``scoring_metrics=[RewardMetric()]`` = the grade of record, with an Infra Error landing as
   ``scoring_failed`` so it leaves both the numerator and the denominator (ADR-0022 §4);
 * ``experiment_scoring_functions=EXPERIMENT_SCORING_FUNCTIONS`` = pass@k / pass^k / flakiness / cost
-  ON THE EXPERIMENT ROW, computed by opik 2.2.36 itself over the run's ``TestResult`` list. ADR-0017
-  §8's post-hoc feedback-score attachment is deleted;
+  plus the two raw spend axes — tokens and time (ADR-0022 Amendment §14) — ON THE EXPERIMENT ROW,
+  computed by opik 2.2.36 itself over the run's ``TestResult`` list. ADR-0017 §8's post-hoc
+  feedback-score attachment is deleted;
 * ``experiment_config`` = the provenance two rows are told apart by, ``project_name`` =
   ``settings.eval_project_name`` so eval runs never pollute live REPL tracing.
 
@@ -169,10 +170,17 @@ def trial_payload(result: TrialResult, task: BenchmarkTask) -> dict[str, Any]:
     """The flat output dict the metrics read, straight off one :class:`TrialResult`.
 
     ``reward`` / ``status`` / ``reason`` are the grade of record (ADR-0022 §3,§4) and are what
-    :class:`~evals.harness.metrics.RewardMetric` and the experiment scores read; ``steps`` and
-    ``cost_usd`` come from the run's own summary; ``trial_dir`` points a human at the evidence.
-    ``infra_error`` carries the reason ONLY when the harness was at fault, so an excluded trial is
-    distinguishable from a lost one without re-deriving the taxonomy.
+    :class:`~evals.harness.metrics.RewardMetric` and the experiment scores read; ``steps``, the
+    token counts and ``cost_usd`` come from the run's own summary; ``trial_dir`` points a human at
+    the evidence. ``infra_error`` carries the reason ONLY when the harness was at fault, so an
+    excluded trial is distinguishable from a lost one without re-deriving the taxonomy.
+
+    The time axis (ADR-0022 Amendment §14): ``run_seconds`` is the agent's own ``run`` phase (the
+    time the model was being driven), ``trial_seconds`` the whole trial (seed + run + verify), and
+    ``started_at`` / ``finished_at`` the UTC stamps the experiment row spans into the job's wall
+    clock. The tokens count the run's OWN requests — an Explore subagent's spend never joins the
+    parent's history (``decode.runtime.summary``), so a trial that fanned out is undercounted here
+    and fully counted only on its Opik trace.
 
     ``session_id`` / ``kitaru_session_id`` come straight off the run's own ``--summary-json`` and are
     the ONLY join from an experiment row back to the Session the trial recorded (task 165): the
@@ -192,6 +200,10 @@ def trial_payload(result: TrialResult, task: BenchmarkTask) -> dict[str, Any]:
         "input_tokens": summary.get("input_tokens", 0),
         "output_tokens": summary.get("output_tokens", 0),
         "cost_usd": summary.get("cost_usd"),
+        "run_seconds": result.timings.get("run"),
+        "trial_seconds": round((result.finished_at - result.started_at).total_seconds(), 3),
+        "started_at": result.started_at.isoformat(),
+        "finished_at": result.finished_at.isoformat(),
         "trial_dir": str(result.trial_dir),
         "session_id": summary.get("session_id"),
         "kitaru_session_id": summary.get("kitaru_session_id"),
@@ -213,6 +225,10 @@ def _infra_payload(reason: str, *, max_steps: int = 0) -> dict[str, Any]:
         "input_tokens": 0,
         "output_tokens": 0,
         "cost_usd": None,
+        "run_seconds": None,
+        "trial_seconds": None,
+        "started_at": None,
+        "finished_at": None,
         "trial_dir": "",
         "session_id": None,
         "kitaru_session_id": None,
@@ -222,7 +238,7 @@ def _infra_payload(reason: str, *, max_steps: int = 0) -> dict[str, Any]:
 
 def run_benchmark(
     *,
-    task_id: str | None = None,
+    task_id: str | Sequence[str] | None = None,
     difficulty: Difficulty | None = None,
     sandbox: str = "docker",
     trials: int = 1,
@@ -233,7 +249,7 @@ def run_benchmark(
 ) -> BenchmarkRun:
     """Run the filtered benchmark as one Opik Experiment and return it + its job dir (ADR-0022 §6).
 
-    Loads every task, applies the ``--task`` / ``--difficulty`` filters, upserts the selection into
+    Loads every task, applies the ``--task`` (one id, or several) / ``--difficulty`` filters, upserts the selection into
     ``decode-benchmark-v2``, and calls ``evaluate`` scoped (via ``dataset_item_ids``) to the items
     whose ``checksum`` matches the task folders on disk — Opik never deletes a superseded item, so
     without that scoping an edited task would be run once per historical version. Raises
@@ -277,34 +293,41 @@ def run_benchmark(
     task_fn = make_benchmark_task_fn(
         {task.id: task for task in all_tasks}, sandbox=sandbox, job_dir=job_dir, model=model
     )
+    task_threads = threads if threads is not None else default_threads(sandbox)
     result = evaluate(
         dataset=dataset,
         task=task_fn,
         scoring_metrics=[RewardMetric()],
         experiment_scoring_functions=EXPERIMENT_SCORING_FUNCTIONS,
         experiment_config=experiment_config(
-            sandbox=sandbox, trials=trials, job_name=job_name, model=model
+            sandbox=sandbox, trials=trials, threads=task_threads, job_name=job_name, model=model
         ),
         experiment_name=job_name,
         project_name=evaluate_project_name(dataset),
         dataset_item_ids=list(item_ids.values()),
-        task_threads=threads if threads is not None else default_threads(sandbox),
+        task_threads=task_threads,
         trial_count=trials,
     )
     return BenchmarkRun(result=result, job_dir=job_dir)
 
 
 def select_tasks(
-    tasks: list[BenchmarkTask], *, task_id: str | None, difficulty: Difficulty | None
+    tasks: list[BenchmarkTask],
+    *,
+    task_id: str | Sequence[str] | None,
+    difficulty: Difficulty | None,
 ) -> list[BenchmarkTask]:
-    """Filter loaded tasks by exact ``task_id`` and/or ``difficulty`` (both optional, AND-combined).
+    """Filter loaded tasks by exact id(s) and/or ``difficulty`` (both optional, AND-combined).
 
-    Public so the CLI's ``sync --difficulty`` slices the dataset upsert by the SAME rule a run does
-    (the Regression Case side is :func:`evals.regression.loader.select_cases`).
+    ``task_id`` is one id or several (a repeated ``--task``): a hand-picked subset runs as ONE
+    Experiment, which is what a light A/B across providers wants (ADR-0022 Amendment §14). Public so
+    the CLI's ``sync --difficulty`` slices the dataset upsert by the SAME rule a run does (the
+    Regression Case side is :func:`evals.regression.loader.select_cases`).
     """
     selected = tasks
     if task_id is not None:
-        selected = [task for task in selected if task.id == task_id]
+        wanted = {task_id} if isinstance(task_id, str) else set(task_id)
+        selected = [task for task in selected if task.id in wanted]
     if difficulty is not None:
         selected = [task for task in selected if task.difficulty == difficulty]
     return selected
@@ -343,14 +366,16 @@ def evaluate_project_name(dataset: Any) -> str | None:
 
 
 def experiment_config(
-    *, sandbox: str, trials: int, job_name: str, model: str | None
+    *, sandbox: str, trials: int, threads: int, job_name: str, model: str | None
 ) -> dict[str, Any]:
     """The Opik ``experiment_config``: everything two Experiment rows differ by (ADR-0022 §6).
 
     The model + provider driving the agent, the code the run was on (``git rev-parse HEAD`` + the
     installed package version), the rung that executed it, the job's own shape, and the
     ``kitaru_agent_id`` that joins this Experiment to the Kitaru Sessions its trials recorded —
-    ``None``, never a placeholder, when recording was not configured (ADR-0022 §10).
+    ``None``, never a placeholder, when recording was not configured (ADR-0022 §10). ``threads`` is
+    provenance for the time axis: the job's wall clock is a span, so two rows with the same trials
+    and a different fan-out are not comparable on it (ADR-0022 Amendment §14).
     """
     return {
         "model": agent_model(model),
@@ -360,6 +385,7 @@ def experiment_config(
         "decode_version": decode_version(),
         "kitaru_agent_id": settings.kitaru_agent_id or None,
         "trials": trials,
+        "threads": threads,
         "job_name": job_name,
     }
 
@@ -379,10 +405,10 @@ def agent_model(model: str | None = None) -> str:
 def task_trials(test_results: Sequence[TestResult]) -> list[TaskTrials]:
     """Group an Opik run's ``TestResult``s into one :class:`TaskTrials` per Benchmark Task.
 
-    The task fn's payload (``status`` / ``reward`` / ``cost_usd``) rides on ``test_case.task_output``
-    and the slice labels on ``test_case.dataset_item_content`` — so the aggregates read the SAME
-    verdict the Trial Dir's ``result.json`` holds, never a parsed trace. Trials keep the order Opik
-    returned them in; an item with no ``task_id`` is skipped.
+    The task fn's payload (``status`` / ``reward`` / ``cost_usd`` / the tokens / the time stamps)
+    rides on ``test_case.task_output`` and the slice labels on ``test_case.dataset_item_content`` —
+    so the aggregates read the SAME verdict the Trial Dir's ``result.json`` holds, never a parsed
+    trace. Trials keep the order Opik returned them in; an item with no ``task_id`` is skipped.
     """
     grouped: dict[str, list[TrialOutcome]] = {}
     difficulties: dict[str, str] = {}
@@ -409,6 +435,11 @@ def _outcome(output: Any) -> TrialOutcome:
         status=str(output.get("status", "infra_error")),
         reward=_as_float(output.get("reward")),
         cost_usd=_as_float(output.get("cost_usd")),
+        input_tokens=_as_int(output.get("input_tokens")),
+        output_tokens=_as_int(output.get("output_tokens")),
+        run_seconds=_as_float(output.get("run_seconds")),
+        started_at=_as_datetime(output.get("started_at")),
+        finished_at=_as_datetime(output.get("finished_at")),
     )
 
 
@@ -417,6 +448,28 @@ def _as_float(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _as_int(value: Any) -> int:
+    """A token count: a non-negative int, anything else (``None``, a bool, a string) as ``0``."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(value, 0)
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    """An ISO-8601 stamp back as an AWARE ``datetime``, or ``None`` for anything else.
+
+    The payload round-trips through Opik as JSON, so the stamp comes back a string; a naive one (no
+    offset) is rejected rather than guessed at, per the project's aware-UTC rule.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def summarize(result: Any, *, trials: int) -> BenchmarkSummary:
@@ -529,8 +582,88 @@ def _cost_score(name: str, value: float | None, detail: str) -> ScoreResult:
     return ScoreResult(name=name, value=value, reason=detail)
 
 
+# --- The two spend axes a price multiplies (ADR-0022 Amendment §14) ---
+#
+# Raw measurements, never a dollar figure the harness cannot know: a pay-per-token route (OpenRouter)
+# bills the tokens, a pay-per-GPU-hour endpoint (Modal) bills the time it is kept warm. Each is the
+# same number the CLI's spend line prints, so the terminal and the experiment row never disagree.
+
+
+def input_tokens_total_score(test_results: Sequence[TestResult]) -> ScoreResult:
+    """Input tokens summed over every trial — times the route's input $/Mtok for a per-token bill."""
+    total = _total(test_results)
+    return ScoreResult(
+        name="input_tokens_total",
+        value=float(total.input_tokens),
+        reason=f"input tokens summed over {total.trials} trial(s) (the agent's own requests).",
+    )
+
+
+def output_tokens_total_score(test_results: Sequence[TestResult]) -> ScoreResult:
+    """Output tokens summed over every trial — times the route's output $/Mtok for a per-token bill."""
+    total = _total(test_results)
+    return ScoreResult(
+        name="output_tokens_total",
+        value=float(total.output_tokens),
+        reason=f"output tokens summed over {total.trials} trial(s) (the agent's own requests).",
+    )
+
+
+def tokens_mean_score(test_results: Sequence[TestResult]) -> ScoreResult:
+    """Mean input+output tokens per trial — the size of one attempt, comparable across ``--trials``."""
+    total = _total(test_results)
+    return ScoreResult(
+        name="tokens_mean",
+        value=total.mean_tokens,
+        reason=f"input+output tokens per trial, over {total.trials} trial(s).",
+    )
+
+
+def wall_clock_seconds_score(test_results: Sequence[TestResult]) -> ScoreResult:
+    """First trial start to last trial end — times $/hour for a warm pay-per-compute endpoint's bill."""
+    total = _total(test_results)
+    return _time_score(
+        "wall_clock_seconds",
+        total.wall_clock_seconds,
+        f"first trial start to last trial end over {total.trials} trial(s); "
+        "a span, so it depends on --threads (experiment_config.threads).",
+    )
+
+
+def run_seconds_total_score(test_results: Sequence[TestResult]) -> ScoreResult:
+    """The agent's ``run`` phase summed over every trial — the time the model was being driven."""
+    total = _total(test_results)
+    return _time_score(
+        "run_seconds_total",
+        total.run_seconds,
+        f"`decode run` seconds summed over {total.trials} trial(s), seed and verify excluded.",
+    )
+
+
+def run_seconds_mean_score(test_results: Sequence[TestResult]) -> ScoreResult:
+    """Mean ``decode run`` seconds per trial — how long one attempt holds the model."""
+    total = _total(test_results)
+    return _time_score(
+        "run_seconds_mean",
+        total.mean_run_seconds,
+        f"`decode run` seconds per trial, over {total.trials} trial(s).",
+    )
+
+
+def _time_score(name: str, value: float | None, detail: str) -> ScoreResult:
+    """A time score, or ``scoring_failed`` when nothing ran — a 0 would read as instant."""
+    if value is None:
+        return ScoreResult(
+            name=name,
+            value=0.0,
+            scoring_failed=True,
+            reason="no trial ran, so there is no time to report.",
+        )
+    return ScoreResult(name=name, value=value, reason=detail)
+
+
 # The list handed to ``evaluate(experiment_scoring_functions=...)`` — ADR-0022 §6's five, plus the
-# pass@1 and flakiness the glossary's pass@k row names.
+# pass@1 and flakiness the glossary's pass@k row names, plus the two spend axes of Amendment §14.
 EXPERIMENT_SCORING_FUNCTIONS: list[Callable[[Sequence[TestResult]], ScoreResult]] = [
     pass_at_1_score,
     pass_at_k_score,
@@ -539,4 +672,10 @@ EXPERIMENT_SCORING_FUNCTIONS: list[Callable[[Sequence[TestResult]], ScoreResult]
     success_per_dollar_score,
     mean_cost_usd_score,
     infra_error_rate_score,
+    input_tokens_total_score,
+    output_tokens_total_score,
+    tokens_mean_score,
+    wall_clock_seconds_score,
+    run_seconds_total_score,
+    run_seconds_mean_score,
 ]

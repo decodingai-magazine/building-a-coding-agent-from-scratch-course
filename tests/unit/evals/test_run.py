@@ -119,12 +119,16 @@ def test_benchmark_subcommand_prints_the_summary_table(mocker):
     run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
     run_benchmark.return_value.job_dir = Path(".decode/evals/runs/bench-x")
 
-    result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting", "--trials", "3"])
+    # A wide console: the runner's 80 columns wrap the ten-column table's headers mid-word.
+    result = CliRunner().invoke(
+        cli, ["benchmark", "--task", "001-greeting", "--trials", "3"], env={"COLUMNS": "160"}
+    )
 
     assert result.exit_code == 0, result.output
     # The table renders even on the mock result (graceful-empty), naming the trial count.
     assert "trial(s)" in result.output
     assert "pass@3" in result.output
+    assert "spend: wall clock" in result.output  # the spend line under the table
 
 
 @pytest.mark.parametrize("trials", ["0", "-1"])
@@ -176,6 +180,34 @@ def test_benchmark_subcommand_reports_an_empty_selection(mocker):
 
     assert result.exit_code != 0
     assert "no benchmark task matched" in result.output
+
+
+def test_benchmark_subcommand_passes_a_repeated_task_as_a_subset(mocker):
+    """Several ``--task`` flags select one hand-picked subset for ONE experiment."""
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+    run_benchmark.return_value.job_dir = Path(".decode/evals/runs/bench-x")
+    run_benchmark.return_value.experiment_name = "bench-x"
+
+    result = CliRunner().invoke(
+        cli, ["benchmark", "--task", "001-find-and-replace", "--task", "002-regex-extraction"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert run_benchmark.call_args.kwargs["task_id"] == (
+        "001-find-and-replace",
+        "002-regex-extraction",
+    )
+
+
+def test_benchmark_subcommand_passes_no_task_as_none(mocker):
+    run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
+    run_benchmark.return_value.job_dir = Path(".decode/evals/runs/bench-x")
+    run_benchmark.return_value.experiment_name = "bench-x"
+
+    result = CliRunner().invoke(cli, ["benchmark"])
+
+    assert result.exit_code == 0, result.output
+    assert run_benchmark.call_args.kwargs["task_id"] is None
 
 
 def test_regression_subcommand_invokes_run_regression(mocker):

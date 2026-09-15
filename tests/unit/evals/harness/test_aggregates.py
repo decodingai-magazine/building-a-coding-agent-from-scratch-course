@@ -10,6 +10,7 @@ numerator and the denominator (ADR-0022 §4). The Opik seam moved to ``evals/har
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime, timedelta
 
 from rich.console import Console
 
@@ -20,13 +21,24 @@ from evals.harness.aggregates import (
     infra_error_rate,
     is_flaky,
     mean_cost_usd,
+    mean_seconds,
     pass_at_1,
     pass_at_k,
     pass_hat_k,
+    render_spend_line,
     render_summary_table,
     success_per_dollar,
     summarize_tasks,
+    total_seconds,
+    total_tokens,
+    wall_clock_seconds,
 )
+
+ORIGIN = datetime(2026, 9, 15, 12, 0, 0, tzinfo=UTC)
+
+
+def _at(seconds: float) -> datetime:
+    return ORIGIN + timedelta(seconds=seconds)
 
 
 def _ok(cost: float | None = None) -> TrialOutcome:
@@ -108,6 +120,28 @@ def test_mean_cost_usd_averages_the_reported_costs_only():
     assert mean_cost_usd([]) is None
 
 
+def test_total_tokens_sums_every_trial_including_the_zero_of_one_that_never_ran():
+    assert total_tokens([1_000, 0, 250]) == 1_250
+    assert total_tokens([]) == 0
+
+
+def test_total_and_mean_seconds_skip_the_unmeasured_and_are_none_when_nothing_ran():
+    """A trial whose phase never ran is not an instant trial (the cost rule, applied to time)."""
+    assert total_seconds([60.0, None, 30.0]) == 90.0
+    assert mean_seconds([60.0, None, 30.0]) == 45.0
+    assert total_seconds([None, None]) is None
+    assert mean_seconds([]) is None
+
+
+def test_wall_clock_is_a_span_from_the_first_start_to_the_last_end():
+    """Overlapping trials (a fan-out) share the clock: 0-60 and 30-100 are 100 s, not 130."""
+    assert wall_clock_seconds([_at(0), _at(30)], [_at(60), _at(100)]) == 100.0
+    assert wall_clock_seconds([_at(0), None], [_at(60), None]) == 60.0
+    assert wall_clock_seconds([None], [None]) is None
+    assert wall_clock_seconds([_at(0)], [None]) is None  # a lone stamp is not a span
+    assert wall_clock_seconds([], []) is None
+
+
 def test_success_per_dollar_divides_wins_by_the_dollars_spent():
     assert success_per_dollar([True, False], [0.25, 0.25]) == 2.0
     assert success_per_dollar([False, False], [0.25, 0.25]) == 0.0
@@ -184,6 +218,48 @@ def test_summary_reports_cost_when_the_provider_priced_the_run():
     assert summary.total.success_per_dollar == 5.0
 
 
+def test_summary_carries_both_spend_axes():
+    """Tokens are summed, run seconds summed and averaged, the wall clock spanned (Amendment §14)."""
+    fast = TrialOutcome(
+        status="agent_ok",
+        reward=1.0,
+        input_tokens=1_000,
+        output_tokens=100,
+        run_seconds=50.0,
+        started_at=_at(0),
+        finished_at=_at(60),
+    )
+    slow = TrialOutcome(
+        status="agent_fail",
+        reward=0.0,
+        input_tokens=3_000,
+        output_tokens=300,
+        run_seconds=80.0,
+        started_at=_at(60),
+        finished_at=_at(150),
+    )
+    summary = summarize_tasks([_task("001", "easy", [fast, slow])], trials=2)
+
+    assert summary.per_task[0].mean_tokens == 2_200
+    assert summary.per_task[0].mean_run_seconds == 65.0
+    assert summary.total.input_tokens == 4_000
+    assert summary.total.output_tokens == 400
+    assert summary.total.tokens == 4_400
+    assert summary.total.run_seconds == 130.0
+    assert summary.total.mean_run_seconds == 65.0
+    assert summary.total.wall_clock_seconds == 150.0
+
+
+def test_summary_spend_axes_of_a_run_that_never_ran_are_honest():
+    """No trial reached the model: zero tokens, and NO time rather than a zero that reads as instant."""
+    summary = summarize_tasks([_task("001", "easy", [_infra()])], trials=1)
+
+    assert summary.total.tokens == 0
+    assert summary.total.run_seconds is None
+    assert summary.total.mean_run_seconds is None
+    assert summary.total.wall_clock_seconds is None
+
+
 def test_summary_of_an_empty_run_never_raises():
     summary = summarize_tasks([], trials=3)
 
@@ -191,6 +267,8 @@ def test_summary_of_an_empty_run_never_raises():
     assert summary.per_difficulty == []
     assert summary.total.tasks == 0
     assert summary.total.pass_at_1 == 0.0
+    assert summary.total.tokens == 0
+    assert summary.total.wall_clock_seconds is None
 
 
 def test_summary_k1_degenerate_matches_pass_at_1():
@@ -235,6 +313,42 @@ def test_table_says_n_a_when_no_cost_was_reported():
     summary = summarize_tasks([_task("001", "easy", [_ok()])], trials=1)
 
     assert "n/a" in _render(summary)
+
+
+def test_table_shows_the_two_spend_axes_per_trial():
+    outcome = TrialOutcome(
+        status="agent_ok", reward=1.0, input_tokens=12_000, output_tokens=345, run_seconds=61.4
+    )
+    text = _render(summarize_tasks([_task("001", "easy", [outcome])], trials=1))
+
+    assert "~s/trial" in text and "~tok/trial" in text
+    assert "61s" in text
+    assert "12,345" in text
+
+
+def test_spend_line_names_the_wall_clock_the_run_seconds_and_the_tokens():
+    outcome = TrialOutcome(
+        status="agent_ok",
+        reward=1.0,
+        input_tokens=12_000,
+        output_tokens=345,
+        run_seconds=61.4,
+        started_at=_at(0),
+        finished_at=_at(70),
+    )
+    summary = summarize_tasks([_task("001", "easy", [outcome])], trials=1)
+
+    line = render_spend_line(summary)
+
+    assert (
+        line == "spend: wall clock 70s · agent run 61s total · tokens 12,345 (12,000 in / 345 out)"
+    )
+
+
+def test_spend_line_says_n_a_when_no_trial_ran():
+    line = render_spend_line(summarize_tasks([_task("001", "easy", [_infra()])], trials=1))
+
+    assert line == "spend: wall clock n/a · agent run n/a total · tokens 0 (0 in / 0 out)"
 
 
 def test_table_shows_one_pass_column_for_a_single_trial_run():

@@ -326,3 +326,41 @@ changes a decision, and each is where a reader should look when the text and the
   scored 0 by the judge, so one over-budget run counts twice. All of it is
   [`tasks/168-regression-cases-that-outgrew-their-budget.md`](../../tasks/168-regression-cases-that-outgrew-their-budget.md).
 
+## Amendment (2026-09-15) — §14, the two spend axes on the experiment row
+
+**Context.** §6 put one money figure on the row (`mean_cost_usd`, `success_per_dollar`), fed by
+`observability/cost.py`'s honesty rule: a catalog price, else configured per-token rates, else
+nothing. That is the right rule for a per-token route and the wrong *shape* for the comparisons the
+course actually runs — two models on the same self-hosted endpoint, and one model on a
+pay-per-GPU-hour endpoint (Modal) versus a pay-per-token route (OpenRouter). A self-hosted endpoint
+bills the hours it is kept warm, so its tokens have no price and its row read "cost: blank". The
+per-trial `timings` were already in every `result.json`; nothing carried them to Opik.
+
+**Decision.** The harness records the two raw quantities a price multiplies and leaves the
+multiplication to the reader:
+
+1. **Time.** `TrialResult` gains aware-UTC `started_at` / `finished_at` (written to `result.json`);
+   the task-fn payload carries them plus `run_seconds` (the `run` phase) and `trial_seconds`. Three
+   experiment scores: `wall_clock_seconds` — first trial start to last trial end, **a span**, the
+   number a warm endpoint's $/hour multiplies — and `run_seconds_total` / `run_seconds_mean`, the sum
+   and mean of the agent's own `decode run` phases. Because the wall clock is a span, `threads` joins
+   `experiment_config`: two rows are comparable on it only under the same fan-out.
+2. **Tokens.** `input_tokens_total` and `output_tokens_total` (summed apart — they are priced
+   apart) and `tokens_mean` per trial, read off the run summary the payload already carried.
+3. **Honesty carried over.** Time scores are `scoring_failed` when no trial ran (a 0 would read as
+   instant, exactly as `$0` would read as free); a trial lost at *verify* time still counts its run
+   seconds and tokens (it held the model) while staying out of the pass rates (§4). Tokens are an
+   honest 0 for a trial that never reached a summary. The same numbers print under the CLI table as
+   one `spend:` line and as `~s/trial` / `~tok/trial` columns, so terminal and row never disagree.
+
+**Not decided here.** No `$/hour` setting and no `compute_cost_usd` score: the harness cannot know
+the endpoint's GPU or whether it was kept warm, and a wrong dollar figure is worse than a raw one
+(the §6 cost rule, unchanged). Subagent spend stays outside the summary (an Explore child's usage
+never joins the parent's history — `decode.runtime.summary`), so a fanned-out trial is under-counted
+on the row and fully counted only on its Opik trace; lifting that is a runtime change, not an evals
+one, and is left open.
+
+**Consequences.** `experiment_config(threads=)` is a new required argument; `TrialResult` has two
+new required fields; six new names on every Benchmark Job's experiment row (13 in all). Runbook:
+`running_the_code/05_evals.md` §2 "Comparing models and providers".
+

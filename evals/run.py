@@ -83,7 +83,12 @@ def cli() -> None:
 
 
 @cli.command()
-@click.option("--task", "task_id", default=None, help="Run only this benchmark task id.")
+@click.option(
+    "--task",
+    "task_ids",
+    multiple=True,
+    help="Run only this benchmark task id (repeat for a hand-picked subset in one experiment).",
+)
 @click.option(
     "--difficulty",
     type=click.Choice(["easy", "medium", "hard"]),
@@ -122,7 +127,7 @@ def cli() -> None:
     help="Override the model every Trial runs on (`decode run --model`).",
 )
 def benchmark(
-    task_id: str | None,
+    task_ids: tuple[str, ...],
     difficulty: str | None,
     sandbox: str,
     trials: int,
@@ -137,14 +142,20 @@ def benchmark(
     Verifier on a pristine clone of the handed-back branch, with every trial's evidence left in its
     Trial Dir under ``.decode/evals/runs/<job>/``. The reward is the score of record; pass@1 / pass@k
     / pass^k / flakiness / cost ride ``experiment_scoring_functions`` onto the experiment row and are
-    printed here as a Rich table with per-tier rollups. Opik + the harness are imported lazily so
-    ``--help`` never needs keys or a network (ADR-0017 §1).
+    printed here as a Rich table with per-tier rollups, followed by one spend line — the job's wall
+    clock, summed agent-run seconds and summed tokens, the raw axes a $/hour or a $/Mtok price
+    multiplies (ADR-0022 Amendment §14). Opik + the harness are imported lazily so ``--help`` never
+    needs keys or a network (ADR-0017 §1).
     """
     from rich.console import Console
 
-    from evals.harness.aggregates import render_summary_table
+    from evals.harness.aggregates import render_spend_line, render_summary_table
     from evals.harness.benchmark import BenchmarkSelectionError, run_benchmark, summarize
 
+    # One ``--task`` stays a plain id (the common spelling); several become the subset.
+    task_id: str | tuple[str, ...] | None = (
+        None if not task_ids else task_ids[0] if len(task_ids) == 1 else task_ids
+    )
     try:
         with opik_boundary():
             run = run_benchmark(
@@ -159,7 +170,9 @@ def benchmark(
     except BenchmarkSelectionError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    Console().print(render_summary_table(summarize(run.result, trials=trials)))
+    summary = summarize(run.result, trials=trials)
+    Console().print(render_summary_table(summary))
+    click.echo(render_spend_line(summary))
     click.echo(
         f"evals benchmark: experiment {run.experiment_name} logged under "
         f"{settings_project_name()}; trial dirs in {run.job_dir}."
