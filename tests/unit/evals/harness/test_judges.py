@@ -31,13 +31,13 @@ def test_explicit_override_wins(mocker) -> None:
 def test_gemini_route_is_the_default(mocker) -> None:
     mocker.patch.object(judges.settings, "eval_judge_model", "")
     mocker.patch.object(judges.settings, "llm_provider", "gemini")
-    assert judges.judge_model() == "gemini/gemini-2.5-flash"
+    assert judges.judge_model() == "gemini/gemini-3.8-flash"
 
 
 def test_whitespace_override_falls_back_to_provider(mocker) -> None:
     mocker.patch.object(judges.settings, "eval_judge_model", "   ")
     mocker.patch.object(judges.settings, "llm_provider", "gemini")
-    assert judges.judge_model() == "gemini/gemini-2.5-flash"
+    assert judges.judge_model() == "gemini/gemini-3.8-flash"
 
 
 def test_openrouter_route(mocker) -> None:
@@ -58,7 +58,7 @@ def test_resolve_judge_model_is_a_plain_string_off_the_modal_route(mocker) -> No
     mocker.patch.object(judges.settings, "eval_judge_model", "")
     mocker.patch.object(judges.settings, "llm_provider", "gemini")
 
-    assert judges.resolve_judge_model() == "gemini/gemini-2.5-flash"
+    assert judges.resolve_judge_model() == "gemini/gemini-3.8-flash"
 
 
 def test_resolve_judge_model_carries_the_base_url_on_the_modal_route(mocker) -> None:
@@ -95,7 +95,7 @@ def test_make_judge_carries_resolved_model_string(mocker) -> None:
     assert isinstance(judge, GEval)
     assert judge.task_introduction == "Judge the assistant's answer."
     assert judge.evaluation_criteria == "Is the answer factually correct and grounded?"
-    assert judge._model.model_name == "gemini/gemini-2.5-flash"
+    assert judge._model.model_name == "gemini/gemini-3.8-flash"
 
 
 def test_make_judge_wires_modal_base_url(mocker) -> None:

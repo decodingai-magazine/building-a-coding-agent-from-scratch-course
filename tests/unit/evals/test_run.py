@@ -37,7 +37,7 @@ def test_help_lists_the_eval_tracks():
     assert "benchmark" in result.output
     assert "regression" in result.output
     assert "suite" in result.output
-    assert "online" in result.output
+    assert "mine" in result.output
 
 
 def test_benchmark_subcommand_invokes_run_benchmark(mocker):
@@ -307,63 +307,19 @@ def test_suite_subcommand_reports_an_empty_selection(mocker):
     assert "no runnable regression case matched" in result.output
 
 
-def test_online_subcommand_prints_thread_scores(mocker):
-    """``evals online`` runs the thread pass and prints one line per scored thread + a total."""
-    mocker.patch("evals.harness.online.online_keys_missing", return_value=[])
-    mocker.patch("evals.harness.online.live_project_name", return_value="decode-prod")
-    mocker.patch("evals.harness.online.run_online_eval", return_value=object())
+def test_suite_subcommand_reports_a_modal_judge_route_friendly(mocker):
+    """A ``SuiteJudgeRouteError`` becomes a friendly non-zero CLI error naming the way out."""
+    from evals.harness.test_suite import SuiteJudgeRouteError
+
     mocker.patch(
-        "evals.harness.online.format_thread_scores",
-        return_value=["sess-1: conversation_coherence=0.88"],
+        "evals.harness.test_suite.run_test_suite",
+        side_effect=SuiteJudgeRouteError("run it with EVAL_JUDGE_PROVIDER=gemini"),
     )
 
-    result = CliRunner().invoke(cli, ["online"])
+    result = CliRunner().invoke(cli, ["suite"])
 
-    assert result.exit_code == 0, result.output
-    assert "sess-1: conversation_coherence=0.88" in result.output
-    assert "scored 1 thread(s) in decode-prod" in result.output
-
-
-def test_online_subcommand_forwards_the_filter(mocker):
-    """``evals online --filter <oql>`` threads the OQL clause into ``run_online_eval``."""
-    mocker.patch("evals.harness.online.online_keys_missing", return_value=[])
-    mocker.patch("evals.harness.online.live_project_name", return_value="decode-prod")
-    mocker.patch("evals.harness.online.format_thread_scores", return_value=[])
-    run_online = mocker.patch("evals.harness.online.run_online_eval", return_value=object())
-
-    result = CliRunner().invoke(cli, ["online", "--filter", 'status = "inactive"'])
-
-    assert result.exit_code == 0, result.output
-    assert run_online.call_args.kwargs["filter_string"] == 'status = "inactive"'
-
-
-def test_online_subcommand_skips_friendly_without_keys(mocker):
-    """Missing keys → a friendly skip (exit 0) that names the vars; ``run_online_eval`` never runs."""
-    mocker.patch(
-        "evals.harness.online.online_keys_missing",
-        return_value=["OPIK_API_KEY", "GEMINI_API_KEY"],
-    )
-    run_online = mocker.patch("evals.harness.online.run_online_eval")
-
-    result = CliRunner().invoke(cli, ["online"])
-
-    assert result.exit_code == 0
-    assert "skipped" in result.output
-    assert "OPIK_API_KEY" in result.output and "GEMINI_API_KEY" in result.output
-    run_online.assert_not_called()
-
-
-def test_online_subcommand_reports_no_threads(mocker):
-    """An empty result set is a clear message, not a bare success line."""
-    mocker.patch("evals.harness.online.online_keys_missing", return_value=[])
-    mocker.patch("evals.harness.online.live_project_name", return_value="decode-prod")
-    mocker.patch("evals.harness.online.run_online_eval", return_value=object())
-    mocker.patch("evals.harness.online.format_thread_scores", return_value=[])
-
-    result = CliRunner().invoke(cli, ["online"])
-
-    assert result.exit_code == 0, result.output
-    assert "no threads to score in decode-prod" in result.output
+    assert result.exit_code != 0
+    assert "EVAL_JUDGE_PROVIDER=gemini" in result.output
 
 
 def test_sync_regression_upserts_both_surfaces(mocker):
@@ -399,7 +355,7 @@ def test_sync_regression_skips_a_skip_guarded_case(mocker):
 
 
 def test_sync_forwards_the_difficulty_tier_to_both_tracks(mocker):
-    """``make eval-regression ARGS='--difficulty hard'`` syncs the same tier the gate then runs."""
+    """``make eval-regression-dataset ARGS='--difficulty hard'`` syncs the same tier the gate then runs."""
     sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
     easy = mocker.Mock(skip_reason=None, difficulty="easy")
     hard = mocker.Mock(skip_reason=None, difficulty="hard")
@@ -463,7 +419,7 @@ def test_benchmark_subcommand_reports_an_invalid_opik_key(mocker):
 
 
 def test_regression_subcommand_reports_an_invalid_opik_key(mocker):
-    """The headline ``make eval-regression`` ritual: a wrong key stays friendly (twice-flagged; task 121)."""
+    """The headline ``make eval-regression-dataset`` ritual: a wrong key stays friendly (twice-flagged; task 121)."""
     mocker.patch("evals.harness.regression.run_regression", side_effect=_api_error(401))
 
     result = CliRunner().invoke(cli, ["regression", "--case", "05-web-fetch-discipline"])
@@ -472,23 +428,12 @@ def test_regression_subcommand_reports_an_invalid_opik_key(mocker):
 
 
 def test_sync_subcommand_reports_an_invalid_opik_key(mocker):
-    """``evals sync`` (the first thing ``make eval-regression`` runs) friendly-fails on a wrong key."""
+    """``evals sync`` (the first thing ``make eval-regression-dataset`` runs) friendly-fails on a wrong key."""
     case = mocker.Mock(skip_reason=None, difficulty="easy")
     mocker.patch("evals.regression.loader.load_cases", return_value=[case])
     mocker.patch("evals.harness.datasets.sync_regression_cases", side_effect=_api_error(401))
 
     result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--regression"])
-
-    _assert_friendly_opik_key_error(result)
-
-
-def test_online_subcommand_reports_an_invalid_opik_key(mocker):
-    """The online track translates a raw ``ApiError`` the same way — no leaked traceback."""
-    mocker.patch("evals.harness.online.online_keys_missing", return_value=[])
-    mocker.patch("evals.harness.online.live_project_name", return_value="decode-prod")
-    mocker.patch("evals.harness.online.run_online_eval", side_effect=_api_error(401))
-
-    result = CliRunner().invoke(cli, ["online"])
 
     _assert_friendly_opik_key_error(result)
 
@@ -575,121 +520,19 @@ def test_python_m_evals_help_runs():
     assert "benchmark" in result.stdout
 
 
-def test_help_lists_the_two_live_project_commands():
-    """``online-rule`` and ``mine`` are part of the CLI surface (task 163)."""
-    result = CliRunner().invoke(cli, ["--help"])
-
-    assert result.exit_code == 0
-    assert "online-rule" in result.output
-    assert "mine" in result.output
-
-
-def test_online_rule_create_skips_friendly_without_keys(mocker):
-    """No keys → ONE skip line, exit 0, and nothing reaches Opik (ADR-0017 §9)."""
-    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["OPIK_API_KEY"])
-    create = mocker.patch("evals.harness.online_rule.create_response_quality_rule")
-
-    result = CliRunner().invoke(cli, ["online-rule", "create"])
-
-    assert result.exit_code == 0
-    assert "evals online-rule: skipped — set OPIK_API_KEY" in result.output
-    create.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("argv", "patched"),
-    [
-        (["online-rule", "create"], "evals.harness.online_rule.create_response_quality_rule"),
-        (["mine"], "evals.harness.mine.open_source"),
-    ],
-    ids=["online-rule-create", "mine"],
-)
-def test_the_opik_only_commands_do_not_demand_an_inference_key(mocker, argv, patched):
-    """Neither command makes an inference call, so the preflight runs ``require_provider=False``.
+def test_mine_does_not_demand_an_inference_key(mocker):
+    """``mine`` makes no inference call, so the preflight runs ``require_provider=False``.
 
     Under the repo's committed ``.env`` (``LLM_PROVIDER=modal``) the full preflight would name
     ``MODAL_ENDPOINT_URL`` and skip a read-only query that never touches Modal (task 163 QA).
     """
     guard = mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["OPIK_API_KEY"])
-    mocker.patch(patched)
+    mocker.patch("evals.harness.mine.open_source")
 
-    result = CliRunner().invoke(cli, argv)
+    result = CliRunner().invoke(cli, ["mine"])
 
     assert result.exit_code == 0
     assert guard.call_args.kwargs == {"require_provider": False}
-
-
-def test_online_rule_create_forwards_every_flag(mocker):
-    """Each flag lands on ``create_response_quality_rule``; the created id is printed."""
-    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
-    outcome = mocker.Mock(
-        action="created", project="decode-prod", model="gemini-2.5-flash", rule_id="rule-1"
-    )
-    create = mocker.patch(
-        "evals.harness.online_rule.create_response_quality_rule", return_value=outcome
-    )
-
-    result = CliRunner().invoke(
-        cli,
-        [
-            "online-rule",
-            "create",
-            "--project",
-            "decode-prod",
-            "--model",
-            "gemini-2.5-flash",
-            "--sampling",
-            "0.5",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert create.call_args.kwargs == {
-        "project": "decode-prod",
-        "model": "gemini-2.5-flash",
-        "sampling": 0.5,
-        "dry_run": False,
-    }
-    assert "created response_quality (rule-1) in decode-prod" in result.output
-
-
-def test_online_rule_create_reports_an_existing_rule_without_creating_one(mocker):
-    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
-    outcome = mocker.Mock(action="exists", project="decode-prod", model="m", rule_id="rule-0")
-    mocker.patch("evals.harness.online_rule.create_response_quality_rule", return_value=outcome)
-
-    result = CliRunner().invoke(cli, ["online-rule", "create"])
-
-    assert result.exit_code == 0
-    assert "already exists: rule-0" in result.output
-
-
-def test_online_rule_create_reports_an_underivable_judge_model_as_one_line(mocker):
-    """The openrouter/modal routes refuse with one line naming ``--model`` — no traceback."""
-    from evals.harness.online_rule import OnlineRuleError
-
-    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
-    mocker.patch(
-        "evals.harness.online_rule.create_response_quality_rule",
-        side_effect=OnlineRuleError("cannot derive an Opik judge model — pass --model <id>."),
-    )
-
-    result = CliRunner().invoke(cli, ["online-rule", "create"])
-
-    assert result.exit_code == 1
-    assert "pass --model" in result.output
-    assert "Traceback" not in result.output
-
-
-def test_online_rule_create_reports_an_invalid_opik_key(mocker):
-    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
-    mocker.patch(
-        "evals.harness.online_rule.create_response_quality_rule", side_effect=_api_error(401)
-    )
-
-    result = CliRunner().invoke(cli, ["online-rule", "create"])
-
-    _assert_friendly_opik_key_error(result)
 
 
 def test_mine_skips_friendly_without_keys(mocker):
@@ -811,17 +654,15 @@ def test_mine_reports_an_invalid_opik_key(mocker):
     _assert_friendly_opik_key_error(result)
 
 
-def test_the_new_live_commands_help_imports_no_opik():
-    """``online-rule create --help`` and ``mine --help`` render with no keys and no network."""
+def test_mine_help_imports_no_opik():
+    """``mine --help`` renders with no keys and no network."""
     code = (
         "import sys\n"
         "from click.testing import CliRunner\n"
         "from evals.run import cli\n"
-        "for argv in (['online-rule', 'create', '--help'], ['mine', '--help']):\n"
-        "    result = CliRunner().invoke(cli, argv)\n"
-        "    assert result.exit_code == 0, result.output\n"
-        "assert '--sampling' in CliRunner().invoke(cli, ['online-rule', 'create', '--help']).output\n"
-        "assert '--preset' in CliRunner().invoke(cli, ['mine', '--help']).output\n"
+        "result = CliRunner().invoke(cli, ['mine', '--help'])\n"
+        "assert result.exit_code == 0, result.output\n"
+        "assert '--preset' in result.output\n"
         "leaked = sorted(m for m in sys.modules if 'opik' in m)\n"
         "assert not leaked, leaked\n"
     )

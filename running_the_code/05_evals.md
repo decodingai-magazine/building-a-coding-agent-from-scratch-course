@@ -1,229 +1,217 @@
 # 05. Evals with Opik
 
-Tracing shows what happened; it cannot say whether a change made the agent better or worse. The eval suite in [`evals/`](../evals/) ([ADR-0017](../docs/adr/0017-decode-eval-suite.md), rebuilt by [ADR-0022](../docs/adr/0022-evals-v2-own-harbor-on-opik.md)) does, on one shared [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) harness.
+Tracing shows what happened; it cannot say whether a change made the agent better or worse. The eval suite in [`evals/`](../evals/) does, on [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course), with two tracks:
 
-Needs `OPIK_API_KEY` ([01 §2](01_install_and_usage.md#2-add-a-key)) plus your provider key; Docker for the benchmark. Runs cost money and are never in `make ci`. Missing a key: one line, exit 0. Benchmark and regression runs log under `EVAL_PROJECT_NAME` (`decode-evals`), apart from the live project; the online track deliberately grades the live one.
+| Track            | Answers                           | Graded by                                                              | Run                   |
+| ---------------- | --------------------------------- | ---------------------------------------------------------------------- | --------------------- |
+| Benchmark        | does it work?                     | Terminal-Bench-style tasks run through `decode run`, a hidden test script writes `reward.txt` | `make eval-benchmark` |
+| Regression Cases | does it work the way we designed? | deterministic code metrics + a threshold gate (`dataset`), or an LLM judge over English assertions (`suite`) | `make eval-regression-dataset` / `make eval-regression-suite` |
 
-| Track            | Answers                           | Graded by                                                                                               | Run                                                             |
-| ---------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Demo Skills      | does it impress?                  | you                                                                                                     | `/demo-N-...` in the REPL                                       |
-| Benchmark        | does it work?                     | Terminal-Bench-style tasks run through `decode run`, graded host-side by `tests/test.sh` → `reward.txt` | `make eval-benchmark`                                           |
-| Regression Cases | does it work the way we designed? | code metrics + threshold gate (and the same cases judged as English assertions in an Opik Test Suite)   | `make eval-regression` · `python -m evals suite`                |
-| Online eval      | is live traffic still good?       | an LLM judge over emitted traces — an always-on Online Rule plus a scripted thread pass                 | `python -m evals online-rule create` · `python -m evals online` |
+## 1. Setup
 
-Every command lives under one CLI:
+1. **decode installed and a provider key in `.env`** — [01 §1](01_install_and_usage.md#1-install) and [01 §2](01_install_and_usage.md#2-add-a-key) (`GEMINI_API_KEY` by default; or `OPENROUTER_API_KEY`). To run the agent on your own Modal endpoint instead, finish [02](02_modal_endpoints.md) first and set `LLM_PROVIDER=modal` + `MODAL_ENDPOINT_URL` as in [02 §4](02_modal_endpoints.md#4-point-decode-at-the-endpoint).
+2. **`OPIK_API_KEY` in `.env`** — the optional tracing step at the end of [01 §2](01_install_and_usage.md#2-add-a-key) is required here.
+3. **A sandbox for the benchmark** — Docker running, per [03 §1](03_sandboxing.md#1-work-on-any-repo-get-a-branch-back) (the default, `--sandbox docker`); or a Modal account, per [03 §6](03_sandboxing.md#6-run-remote-sandboxes-via-modal), for `--sandbox modal`.
+
+Runs cost money and never run in `make ci`. Missing a key prints one line and exits 0. Everything logs to the Opik project `EVAL_PROJECT_NAME` (`decode-evals`), apart from live tracing.
+
+## 2. The CLI
+
+Every command lives under one entrypoint; the `make` targets wrap it with a key preflight:
 
 ```
 $ uv run python -m evals --help
 Usage: python -m evals [OPTIONS] COMMAND [ARGS]...
 
-  decode eval suite — benchmark + regression harness (ADR-0017).
-
-Options:
-  --help  Show this message and exit.
-
 Commands:
-  benchmark    Run the outcome benchmark as one Opik Experiment (ADR-0022...
-  kitaru       Join decode's Opik traces to Kitaru Sessions (ADR-0022 §11).
-  mine         Mine the LIVE project for regressions worth turning into...
-  online       Score decode's LIVE REPL threads with one...
-  online-rule  Manage the Opik ONLINE RULE that scores live traces as...
-  regression   Run the behavior Regression Cases host-native as an Opik...
-  suite        Run the Opik Test Suite regression surface —...
-  sync         Upsert the eval tracks' Opik surfaces (ADR-0022 §6,8).
+  benchmark   Run the outcome benchmark as one Opik Experiment.
+  mine        Mine the LIVE project for regressions worth turning into cases.
+  regression  Run the behavior Regression Cases host-native as an Opik experiment.
+  suite       Run the Opik Test Suite regression surface — natural-language assertions.
+  sync        Upsert the eval tracks' Opik surfaces (datasets + Test Suite).
 ```
 
-## 1. Demo skills
+`benchmark`, `regression` and `suite` each upsert what they are about to grade before running, so `sync` is never a required step; it pushes task and case definitions to Opik without running anything.
 
-Six skills under `.decode/skills/demo-N-*/`, run as in [01 §4](01_install_and_usage.md#4-try-a-skill), no Opik needed:
+## 3. Benchmark
 
-| Skill                        | Shows off                                              |
-| ---------------------------- | ------------------------------------------------------ |
-| `/demo-1-terminal-arcade`    | a playable `curses` Snake game in one file             |
-| `/demo-2-bug-hunt`           | find and fix two seeded bugs until the suite is green  |
-| `/demo-3-repo-pulse`         | live GitHub API data → single-file dashboard           |
-| `/demo-4-review-swarm`       | three parallel Explore subagents → one verdict         |
-| `/demo-5-sandbox-feature-pr` | decode improves decode: sandbox + hand-back → draft PR |
-| `/demo-6-article-kg`         | web articles → interactive knowledge graph             |
+Nineteen tasks (7 easy / 6 medium / 6 hard) in the Terminal-Bench layout: `task.toml`, `instruction.md`, an `environment/` seed, a hidden `tests/test.sh`, a `solution/solve.sh` oracle. Format: [`evals/benchmark/tasks/README.md`](../evals/benchmark/tasks/README.md).
 
-## 2. Benchmark
-
-Nineteen tasks (7 easy / 6 medium / 6 hard) in the Terminal-Bench layout — `task.toml`, `instruction.md`, an `environment/` seed, a hidden `tests/test.sh`, a `solution/solve.sh` oracle. Format and audit table: [`evals/benchmark/tasks/README.md`](../evals/benchmark/tasks/README.md).
-
-One **Trial** is the shipped product, not a test harness (ADR-0022 §1): the seed becomes a fresh git repo, a `decode run "<instruction>" --repo <seed> --local --max-requests <max_steps> --summary-json …` subprocess does the work in a real sandbox from a throwaway Harness Home, Hand-back pushes its `decode/<short-id>` branch back into the seed — and only then, **host-side**, the Verifier runs on a pristine clone of that branch with `tests/` copied in last and writes one float to `reward.txt`. The agent never sees its grader; a run that changed nothing is graded on the base commit and scores 0.
+One **Trial** = one `decode run` subprocess in a real sandbox. The seed becomes a fresh git repo, the agent works on it, Hand-back pushes its branch, and only then, **host-side**, `tests/test.sh` runs on a pristine clone of that branch and writes one float to `reward.txt`. The agent never sees its grader.
 
 ```bash
-make eval-benchmark                                       # whole suite, docker sandbox, 1 trial
+make eval-benchmark                                       # whole suite, docker sandbox, 1 trial/task
 make eval-benchmark ARGS='--difficulty easy'              # easy | medium | hard
-make eval-benchmark ARGS='--task 001-find-and-replace'
-make eval-benchmark ARGS='--task 001-find-and-replace --task 002-regex-extraction'   # a hand-picked subset, one experiment
-make eval-benchmark ARGS='--trials 3'                     # 3 trials/task → pass@3, pass^3, flakiness
-make eval-benchmark ARGS='--sandbox modal --threads 4'    # remote rung, 4 trials at a time
-make eval-benchmark ARGS='--job-name nightly-3 --model gemini-2.5-pro'
+make eval-benchmark ARGS='--task 001-find-and-replace --task 002-regex-extraction'
+make eval-benchmark ARGS='--trials 3'                     # pass@3, pass^3, flakiness
+make eval-benchmark ARGS='--sandbox modal --threads 4'    # remote sandbox, 4 trials at a time
+make eval-benchmark ARGS='--job-name nightly-3 --model gemini-3.1-pro-preview'
 ```
 
-`--trials` is Opik's `trial_count`, `--threads` its `task_threads` (default 1 on docker, 4 on modal — a docker trial warms its own container). `--job-name` names **both** the Opik experiment and the Trial Dir parent (default `bench-<UTC stamp>`). `--model` overrides the model every trial runs on, never the provider.
+`--trials` = trials per task, `--threads` = trials in flight (default 1 on docker, 4 on modal). `--job-name` names both the Opik experiment and the on-disk run folder (default `bench-<UTC stamp>`). Each run first upserts the selected tasks into the `decode-benchmark` Opik dataset itself; there is no separate sync step to remember.
 
-> ✅ A Rich table — one row per task (`n`, `pass@1`, at `k > 1` also `pass@k` / `pass^k` / `flaky`, `~$/trial`, `~s/trial`, `~tok/trial`, `infra`), a section per tier, a total row — then a `spend:` line (wall clock · agent-run seconds · tokens in/out) and one line naming the experiment and the trial dirs. In Opik: one experiment row over the `decode-benchmark` dataset, tagged with model, provider, git sha, sandbox, `threads` and `kitaru_agent_id`.
+> ✅ **Working looks like:** a Rich table with one row per task (`n`, `pass@1`, at `k > 1` also `pass@k` / `pass^k` / `flaky`, `~$/trial`, `~s/trial`, `~tok/trial`, `infra`), a section per tier, a total row, then a `spend:` line (wall clock · agent seconds · tokens in/out) and one line naming the experiment and the trial dirs. The `infra` column must be ~0, or the row measures the harness, not the model. In Opik: Experiments → one row over the `decode-benchmark` dataset, tagged with model, provider, git sha, sandbox.
 
-### Running the agent on the Modal endpoint
+Keyless sanity check, in every `make ci`: the oracle gate proves each task's grader scores `solution/solve.sh` 1 and an untouched seed 0.
 
-Two different knobs both say "modal": `--sandbox modal` is where the agent's **tools** run (the remote sandbox rung, [03](03_sandboxing.md)); `LLM_PROVIDER=modal` is which **model** the agent talks to (your own endpoint, [02](02_modal_endpoints.md)). They combine freely. For the model side:
+### Providers and models
+
+Two knobs, one for the agent and one for the judge:
+
+| Who        | Provider                                                        | Model                                                                          |
+| ---------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| the agent  | `LLM_PROVIDER` (`gemini` \| `openrouter` \| `modal`)             | `--model <id>`, or `GEMINI_MODEL` / `OPENROUTER_MODEL` / `MODAL_ENDPOINT_MODEL` |
+| the judge  | `EVAL_JUDGE_PROVIDER` (same values; empty follows the agent)     | `EVAL_JUDGE_MODEL` (a LiteLLM string; empty derives it from the provider)      |
+
+The benchmark has no LLM judge (the grader is code), so only the agent knobs apply there. The regression track uses both; when the two providers differ, the preflight asks for both keys.
 
 ```bash
-LLM_PROVIDER=modal make eval-benchmark ARGS='--threads 1'          # agent on the endpoint, docker sandbox
-LLM_PROVIDER=modal EVAL_JUDGE_PROVIDER=modal make eval-regression  # agent and judge on the endpoint
+# agent on your Modal endpoint (02)
+LLM_PROVIDER=modal make eval-benchmark ARGS='--threads 1'
+
+# agent on OpenRouter, a specific model
+LLM_PROVIDER=openrouter OPENROUTER_MODEL=qwen/qwen3.6-35b-a3b make eval-benchmark
+
+# cheap gemini judge, whatever the agent runs on
+EVAL_JUDGE_PROVIDER=gemini EVAL_JUDGE_MODEL=gemini/gemini-3.8-flash make eval-regression-suite
+
+# all four knobs: Qwen agent on your Modal endpoint, Gemini 3.1 Pro as the judge
+LLM_PROVIDER=modal MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8 \
+  EVAL_JUDGE_PROVIDER=gemini EVAL_JUDGE_MODEL=gemini/gemini-3.1-pro-preview \
+  make eval-regression-suite
 ```
 
-- **Keep the endpoint at min 1 container** while a run is in flight (Modal dashboard → the endpoint → scaling). At min 0 the first trial waits out a cold start, and a container that dies mid-run answers `503` to every trial after it.
-- **`--threads 1` on a single-container endpoint.** Two concurrent trials against one container produced a request that never returned; decode's client has no per-request timeout, so that trial ran to its full agent timeout (600 s), graded on the base commit as `agent_fail`, and left its sandbox container behind (`docker ps`, `docker rm -f <id>`). Rerun alone it passed in 61 s.
-- The regression cases run host-native and one at a time, so no thread knob applies there.
+Judge defaults when `EVAL_JUDGE_MODEL` is empty: `gemini` → `gemini/gemini-3.8-flash` (pinned, so scores stay comparable); `openrouter` → the agent's `OPENROUTER_MODEL`; `modal` → the agent's `MODAL_ENDPOINT_MODEL`, the model judging itself.
 
-Which Opik project a run writes to never depends on the provider: benchmark and regression experiments always land under `decode-evals` (their datasets live there); only the online track ([§4](#4-online-eval-and-the-mining-loop)) reads the **live** project, `decode-<DECODE_ENV>`.
+`--sandbox modal` is where the agent's **tools** run ([03](03_sandboxing.md)); `LLM_PROVIDER=modal` is which **model** it talks to ([02](02_modal_endpoints.md)). They combine freely. On a single-container endpoint keep it at min 1 container and use `--threads 1`.
 
-### Comparing models and providers — performance, time, tokens
+⚠️ A `modal` judge runs without `logprobs` and with thinking off (the endpoint forces both), so its scores are not comparable with a gemini judge's. Compare a modal judge only against itself.
 
-Every Benchmark Job is one Opik experiment, so a comparison is two (or more) experiment rows side by side (Opik → Experiments → select → Compare). Three groups of numbers sit on each row; the harness records the raw measurements, you multiply by the price ([ADR-0022 Amendment §14](../docs/adr/0022-evals-v2-own-harbor-on-opik.md)):
+### Comparing runs
 
-| What you want          | Experiment score(s)                                                | Read it as                                                                                                                                          |
-| ---------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **performance**        | `pass_at_1` (and `pass_at_k` / `pass_hat_k` / `flaky_rate` at k>1) | macro-averaged over tasks; `infra_error_rate` must be ~0 or the row measures the harness, not the model                                            |
-| **time** (pay/compute) | `wall_clock_seconds`, `run_seconds_total`, `run_seconds_mean`      | wall clock = first trial start → last trial end, the span a warm endpoint was billed for; run seconds = the sum / mean of the agent's `decode run` phases |
-| **tokens** (pay/token) | `input_tokens_total`, `output_tokens_total`, `tokens_mean`         | summed over every trial, input and output apart because they are priced apart; `tokens_mean` is one attempt's size                                  |
-| **dollars**, if priced | `mean_cost_usd`, `success_per_dollar`                              | only when the route reports a price (a catalog model, or `LLM_COST_*_USD_PER_MTOK` set); a self-hosted endpoint never does                          |
+Every job is one Opik experiment; a comparison is two rows side by side (Experiments → select → Compare). Keep tasks, `--trials` and `--threads` the same and change one variable. The row carries three groups of numbers; you multiply by the price:
 
-The derived costs:
+| What you want | Experiment scores                                              | Read it as                                                                 |
+| ------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| performance   | `pass_at_1` (and `pass_at_k` / `pass_hat_k` / `flaky_rate`)     | macro-averaged over tasks; `infra_error_rate` must be ~0                   |
+| time          | `wall_clock_seconds`, `run_seconds_total`, `run_seconds_mean`  | wall clock = what a warm GPU endpoint was billed for; compare at same `--threads` |
+| tokens        | `input_tokens_total`, `output_tokens_total`, `tokens_mean`     | what a per-token provider bills; input and output priced apart             |
+| dollars       | `mean_cost_usd`, `success_per_dollar`                          | only when the route reports a price; a self-hosted endpoint shows blank    |
 
 ```
-Modal (pay per GPU-hour, endpoint kept at min 1 for the run):
-    cost ≈ wall_clock_seconds / 3600 × $/hour            # 1×H200 ≈ $4.54/h, per 02_modal_endpoints.md
-
-OpenRouter (pay per token):
-    cost ≈ input_tokens_total / 1e6 × $/Mtok_in + output_tokens_total / 1e6 × $/Mtok_out
+Modal:       cost ≈ wall_clock_seconds / 3600 × $/GPU-hour
+OpenRouter:  cost ≈ input_tokens_total / 1e6 × $/Mtok_in + output_tokens_total / 1e6 × $/Mtok_out
 ```
 
-Two experiments the course runs this way — same tasks (repeat `--task` for a light subset), same `--trials`, same `--threads`, one variable each:
+Two experiments the course runs this way — same tasks, same `--trials`, same `--threads`, one variable each.
+
+> ⚠️ **Replace every `MODAL_ENDPOINT_URL` below with your own.** The `p-b-iusztin--…` URLs are the author's endpoints and will not answer your requests. Yours are the URLs `modal deploy` printed when you served the models in [02](02_modal_endpoints.md).
+
+The two sides of an experiment are independent jobs, so run them **in parallel, one per terminal** — each needs its own `--job-name`, and they share nothing but the Opik dataset.
+
+**1. Two models, both on Modal** — does the bigger one earn its GPU? Compare `pass_at_1` (performance) and `wall_clock_seconds × each endpoint's $/GPU-hour` (cost).
+
+Terminal 1, gpt-oss-120b:
 
 ```bash
-# 1. Two models on the same provider: does the bigger one earn its GPU?
-LLM_PROVIDER=modal MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8 MODAL_ENDPOINT_URL=https://…qwen….modal.run \
-    make eval-benchmark ARGS='--threads 1 --job-name modal-qwen36-35b'
-LLM_PROVIDER=modal MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b     MODAL_ENDPOINT_URL=https://…gpt-oss….modal.run \
-    make eval-benchmark ARGS='--threads 1 --job-name modal-gpt-oss-120b'
-#    compare: pass_at_1 (performance) · wall_clock_seconds × the two endpoints' $/hour (cost)
-
-# 2. One model, two billing models: GPU-hours on Modal vs tokens on OpenRouter
-LLM_PROVIDER=modal      MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8 \
-    make eval-benchmark ARGS='--threads 1 --job-name qwen36-modal'
-LLM_PROVIDER=openrouter OPENROUTER_MODEL=qwen/qwen3.6-35b-a3b \
-    make eval-benchmark ARGS='--threads 1 --job-name qwen36-openrouter'
-#    compare: wall_clock_seconds × $/hour  vs  input/output_tokens_total × $/Mtok (and pass_at_1 should match)
+LLM_PROVIDER=modal \
+  MODAL_ENDPOINT_URL=https://p-b-iusztin--ep-gpt-oss-120b-server.us-west.modal.direct \
+  MODAL_ENDPOINT_MODEL=openai/gpt-oss-120b \
+  make eval-benchmark ARGS='--threads 1 --job-name modal-gpt-oss-120b'
 ```
 
-What the numbers do and do not include:
+Terminal 2, Qwen3.6-35B:
 
-- **Wall clock is a span, not a sum.** Under `--threads 4` it is roughly a quarter of `run_seconds_total`; the row's `experiment_config.threads` says which fan-out it ran under, so compare wall clocks only across rows with the same `threads`. It also includes each trial's seed and verify phases (host-side, seconds) and, on the first trial, any cold start — keep the endpoint at min 1 and the number is the GPU time you paid for.
-- **Tokens are the agent's own requests.** An Explore subagent runs its own nested agent whose usage never joins the parent's history, so a trial that fanned out is under-counted on the experiment row. The trial's Opik **trace** (project `decode-evals`, thread = the trial's `session_id`) carries every span, subagents included — use it to true-up a per-token bill when the agent delegated.
-- **Cost is opt-in, never guessed.** A row on a self-hosted endpoint shows `mean_cost_usd` as a failed score (blank), by design; an OpenRouter slug the price catalog does not know needs `LLM_COST_INPUT_USD_PER_MTOK` / `LLM_COST_OUTPUT_USD_PER_MTOK` in `.env` to price itself.
-- The same three groups print at the end of the run: the table's `~s/trial` / `~tok/trial` columns and the `spend:` line under it are the per-trial and total views of the exact numbers on the row.
+```bash
+LLM_PROVIDER=modal \
+  MODAL_ENDPOINT_URL=https://p-b-iusztin--ep-qwen3-6-35b-a3b-fp8-server.us-west.modal.direct \
+  MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8 \
+  make eval-benchmark ARGS='--threads 1 --job-name modal-qwen36-35b'
+```
 
-### The Trial Dir — evidence on disk, always
+**2. One model, two billing models** — GPU-hours on Modal vs tokens on OpenRouter. Compare `wall_clock_seconds × $/GPU-hour` against `input/output_tokens_total × $/Mtok`; `pass_at_1` should match.
 
-Written in a `finally`, so even a trial that blew up leaves its evidence, under the job name:
+Terminal 1, Qwen3.6-35B on your Modal endpoint:
+
+```bash
+LLM_PROVIDER=modal \
+  MODAL_ENDPOINT_URL=https://p-b-iusztin--ep-qwen3-6-35b-a3b-fp8-server.us-west.modal.direct \
+  MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8 \
+  make eval-benchmark ARGS='--threads 1 --job-name qwen36-modal'
+```
+
+Terminal 2, the same Qwen3.6-35B on OpenRouter:
+
+```bash
+LLM_PROVIDER=openrouter \
+  OPENROUTER_MODEL=qwen/qwen3.6-35b-a3b \
+  make eval-benchmark ARGS='--threads 1 --job-name qwen36-openrouter'
+```
+
+Add `--task <id>` (repeatable) or `--difficulty easy` to both sides for a cheaper subset.
+
+Tier ceilings (easy 15 steps / 600 s · medium 25 / 900 s · hard 40 / 1500 s) are calibrated to the open model the course serves on Modal; the gemini route reads higher on the same tasks, so compare runs on the same provider. One trial says nothing about spread; `--trials 3` gives pass@3 (capability), pass^3 (reliability) and the gap between them (flakiness).
+
+### The Trial Dir
+
+Every trial leaves its evidence on disk, even one that blew up:
 
 ```
 .decode/evals/runs/<job>/<task>__<short-id>/
-├── seed/                 # the Seed Repo the agent cloned (with its decode/<short-id> branch)
-├── home/                 # the throwaway Harness Home: sessions, logs, .decode/sandbox
-├── pristine/             # the clone the Verifier graded, tests/ overlaid last
-├── agent/
-│   ├── stdout.txt        # the answer decode printed
-│   ├── stderr.txt        # guards, notices, the hand-back line
-│   └── summary.json      # {session_id, exit_reason, requests, tokens, cost_usd, handback…}
-├── verifier/
-│   ├── test-stdout.txt · test-stderr.txt
-│   └── reward.txt        # the one float that graded the trial
+├── seed/                 # the repo the agent cloned, with its decode/<short-id> branch
+├── home/                 # the throwaway Harness Home: sessions, logs, sandbox
+├── pristine/             # the clone the grader ran on, tests/ copied in last
+├── agent/                # stdout.txt · stderr.txt · summary.json (session_id, exit_reason, tokens…)
+├── verifier/             # test-stdout.txt · test-stderr.txt · reward.txt
 └── result.json           # reward, status, reason, per-phase timings, git sha, model
 ```
 
-A reward is reproducible from here with a bare `python3` — no Opik, no docker. Start any post-mortem at `result.json`, then `agent/stderr.txt`.
+Start any post-mortem at `result.json`, then `agent/stderr.txt`. Three statuses:
 
-### Failure taxonomy — what counts and what is thrown out
+| `result.json` status | When                                                                   | Score                                   |
+| -------------------- | ---------------------------------------------------------------------- | --------------------------------------- |
+| `agent_ok`           | reward 1                                                               | counts                                  |
+| `agent_fail`         | wrong answer, step cap, timeout, or an error exit that wrote a summary | counts as a loss, with a named reason   |
+| `infra_error`        | seed/clone failed, sandbox never started, grader crashed, unreadable reward | excluded from the score, shown in `infra` |
 
-| `result.json` status | When                                                                                                                                         | Effect on the score                                                                             |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `agent_ok`           | reward 1                                                                                                                                     | numerator + denominator                                                                         |
-| `agent_fail`         | wrong answer, the `--max-requests` ceiling, the agent **timeout**, an `error` exit **that still wrote a summary**                            | denominator only — a real loss, with a named reason                                             |
-| `infra_error`        | seed/clone failed, the sandbox never started, `decode run` died **before** its summary, the Verifier crashed/timed out, an unreadable reward | excluded from **both** — Opik `ScoreResult(scoring_failed=True)`, counted in the `infra` column |
+## 4. Regression Cases
 
-A timeout is never an infra error: the process group gets SIGINT, decode's `finally` hands the partial branch back, and it is graded like any other (so a timed-out run with no summary is still `agent_fail`, reason `the agent timed out after 900s; it never wrote a summary`). A missing or non-numeric `reward.txt` is an error, never a 0.
+A case checks design intent: the right tool, a minimal diff, the permission gate respected, compaction survived. Cases run host-native (no docker) in a fresh temp workspace, fast enough for a pre-merge ritual. Twenty-one cases tiered 5 easy / 8 medium / 8 hard, plus mined ones that carry the live trace they came from ([`evals/regression/README.md`](../evals/regression/README.md)).
 
-### Calibration — what the numbers mean
+**Two surfaces, on purpose.** One case definition in `evals/regression/cases/` registers twice in Opik: as a `decode-regression` **dataset** item scored by deterministic metrics, and as an item in the `decode-regression-suite` **Test Suite** whose English `assertion` an LLM judge checks. Numbers catch exact regressions cheaply; assertions catch "the answer got worse in a way no single number captures".
 
-Tier ceilings (easy 15 steps / 600 s · medium 25 / 900 s · hard 40 / 1500 s) are calibrated to the open model the course serves on Modal (`Qwen/Qwen3.6-35B-A3B-FP8`, [02](02_modal_endpoints.md)): an easy task should finish reliably, a hard one sometimes. On the out-of-box `gemini` route the same tasks read higher — compare runs on the same provider, never across. **The step cap is never the sensitivity knob**; trials are. `--trials 3` gives you pass@3 (at least one of three passed — capability), pass^3 (all three passed — reliability) and the gap between them, which is flakiness. One trial tells you nothing about spread.
+Two commands, one per surface. Each first upserts the cases it is about to grade from disk into Opik, then runs them, then gates. There is no separate sync step: an edited case is what gets graded on the next run.
 
-Keyless, in every `make ci`: the oracle gate proves each task's Verifier can tell `solution/solve.sh` (reward 1) from an untouched seed (reward 0).
-
-## 3. Regression Cases
-
-A case checks design intent: the right tool, a minimal diff, the permission gate respected, compaction survived. Host-native (`SANDBOX_MODE=none`, a fresh temp workspace, no docker), fast enough for a pre-merge ritual. Twenty-one invented cases tiered 5 easy / 8 medium / 8 hard, plus the mined ones that carry the trace they came from ([`evals/regression/README.md`](../evals/regression/README.md)).
+**Dataset + experiment** — upsert the cases, run every one with deterministic metrics as one Opik experiment, apply the threshold gate:
 
 ```bash
-make eval-regression                            # sync + run + the threshold gate
-make eval-regression ARGS='--difficulty hard'   # one tier, synced and gated together
-python -m evals regression --case smoke-read-tool
-python -m evals suite --difficulty hard         # the same cases, judged on their assertions
+make eval-regression-dataset
 ```
 
-> ✅ The gate (`evals/regression/test_thresholds.py`) prints one table **per tier** and gates **globally**: tool discipline ≥ 0.8, judges ≥ 0.7. A drop against the previous experiment WARNs. The experiment is `decode-regression-gate`, or `decode-regression-gate-<tier>` for a filtered run, so a tier's baseline stays its own.
+> ✅ **Working looks like:** an `evals sync:` line counting the upserted cases, then one table **per tier**, gated **globally**: tool discipline ≥ 0.8, judges ≥ 0.7. A drop against the previous experiment prints a WARN. The experiment is `decode-regression-gate`.
 
-**Editing a case re-syncs it.** A case's prompt, metrics, tier, symptom, assertion or description change its checksum. Both `make eval-regression` and `python -m evals regression` sync their selection before grading, so the fresh item is what gets graded; the stale item stays in Opik (it never deletes) and is ignored, and the Test Suite is minted under a new name. A `RegressionSelectionError` naming a case means Opik has not reflected the insert yet — rerun.
-
-**Two surfaces, on purpose.** One case definition registers twice: as a `decode-regression` dataset item that deterministic metrics score (`python -m evals regression`), and as an item in the `decode-regression-suite` Test Suite (reconciled to exactly the synced cases, so an edit replaces its stale item rather than adding a second, twice-judged one; Opik versions the suite itself) whose English `assertion` an LLM judge checks against the answer (`python -m evals suite`, gated on `pass_rate` ≥ 0.8). Numbers catch exact regressions cheaply; assertions catch "the answer got worse in a way no single number captures". The contrast is the lesson — neither replaces the other.
-
-## 4. Online eval, and the mining loop
-
-The online track grades the traces decode **already emitted** from real sessions, in place, in the live project. Two halves:
+**Test Suite + validation** — upsert the cases, run every one, an LLM judge scores each case's English `assertion`, gated on pass rate ≥ 0.8. Opik's suite judge takes a bare model name, so it runs on `gemini` or `openrouter`, never on your Modal endpoint — with a Modal-served agent, route the judge explicitly:
 
 ```bash
-python -m evals online-rule create              # once: the always-on response_quality judge
-python -m evals online-rule create --dry-run    # rehearse: prints the payload, writes nothing
-python -m evals online                          # on demand: a conversation judge over recent threads
-python -m evals online --filter 'start_time > "2026-07-01T00:00:00Z"'
+EVAL_JUDGE_PROVIDER=gemini make eval-regression-suite
 ```
 
-`online-rule create` is idempotent (a second run prints `already exists: <id>`) and needs only `OPIK_API_KEY` — the judge runs on **Opik's** provider, so spell the model as your workspace does (`--model gemini-2.5-flash`, not `gemini/gemini-2.5-flash`). Prompt and the UI fallback: [`evals/README.md`](../evals/README.md).
+> ✅ **Working looks like:** Opik's suite report box (items passed, pass rate), then one line naming the `decode-regression-suite` version that ran, the pass rate against the 80% bar and the report file under `.decode/evals/suite-reports/`. A modal judge route stops up front with one line telling you to set `EVAL_JUDGE_PROVIDER`.
 
-That rule is what makes the loop close — **live traffic → mined trace → Regression Case → gate**:
+**Options.** Both take the same knobs: `ARGS='--difficulty easy|medium|hard'` slices to one tier (upserted and gated together, experiment `decode-regression-gate-<tier>`, so a tier's baseline stays its own), and the four provider/model variables from [Providers and models](#providers-and-models) pick the agent and the judge:
 
 ```bash
-python -m evals mine --preset errors --since 2026-09-04T00:00:00Z   # errors | low-quality | long | denied | all
-python -m evals mine --preset all --limit 100 --json                # every id, for case authoring
+make eval-regression-dataset ARGS='--difficulty hard'
 ```
-
-`mine` is read-only: it searches the live project, clusters hits by signature — preset, error, last tool, model — and prints trace ids. You pick one, read the run in Opik (its `thread_id` is the decode session id), and write the case that fails on exactly that behaviour into `evals/regression/cases/mined_<slug>.py` with its `source_trace_id`. From then on the gate in §3 owns it. Worked example, picks and deliberate skips: [`evals/regression/mining/NOTES.md`](../evals/regression/mining/NOTES.md).
-
-### Choosing the judge's provider
-
-The judge has its own provider knob: `EVAL_JUDGE_PROVIDER` (`gemini` | `openrouter` | `modal`; empty
-follows the agent's `LLM_PROVIDER`, which is what every run before this knob did), with
-`EVAL_JUDGE_MODEL` picking the model _on_ that route (a LiteLLM string). So a modal-served agent can
-be graded by a cheap gemini judge — or by your own endpoint, at no per-token cost:
 
 ```bash
-EVAL_JUDGE_PROVIDER=modal make eval-regression   # judge on the Modal endpoint
+LLM_PROVIDER=modal MODAL_ENDPOINT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8 \
+  EVAL_JUDGE_PROVIDER=gemini EVAL_JUDGE_MODEL=gemini/gemini-3.8-flash \
+  make eval-regression-suite ARGS='--difficulty medium'
 ```
 
-When agent and judge providers differ, the preflight asks for **both** keys — one guard serves
-`eval-benchmark` (agent only) and `eval-regression` (agent _and_ judge).
-
-⚠️ A `modal` judge gives two things up, both forced by the endpoint (SGLang + DFLASH speculative
-decoding): it drops `logprobs`/`top_logprobs`, which the server refuses, so G-Eval parses the score
-out of the returned JSON instead of weighting it by token probabilities; and it switches Qwen's
-thinking off (`chat_template_kwargs.enable_thinking=false`) under a 300 s timeout, because a
-thinking judge blows opik's 60 s default restating the rubric. **Scores from a logprob judge and a
-non-logprob judge are not directly comparable** — compare a modal judge only against itself.
+**Mining new cases from live traffic.** `uv run python -m evals mine --preset errors --since <ISO>` (presets `errors` | `long` | `denied` | `all`) searches the live Opik project, clusters hits by signature and prints trace ids. Pick one, read it in Opik, write the case that fails on exactly that behaviour into `evals/regression/cases/` with its `source_trace_id`. From then on the gate owns it. Details: [`evals/README.md`](../evals/README.md).
 
 ---
 
-**Next:** [06_evals_replays.md](06_evals_replays.md) — record real sessions and replay them with one change, with Kitaru.
+**Next:** [06_evals_replays.md](06_evals_replays.md) — record real sessions and replay them with one change.

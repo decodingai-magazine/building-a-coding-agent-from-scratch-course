@@ -26,9 +26,14 @@ eval-benchmark:  ## Outcome benchmark as an Opik experiment (needs OPIK_API_KEY 
 		uv run python -m evals benchmark $(ARGS); \
 	fi
 
-eval-regression:  ## Pre-merge behavior regression gate: sync cases + threshold gate (needs OPIK_API_KEY + provider key; skips friendly without). Costs money; never in CI. Slice a tier with ARGS='--difficulty hard'.
+eval-regression-dataset:  ## Regression Cases, deterministic track: sync cases to the Opik dataset + threshold gate (needs OPIK_API_KEY + provider key; skips friendly without). Costs money; never in CI. Slice a tier with ARGS='--difficulty hard'.
 	@if uv run python -m evals.harness.keys; then \
 		uv run python -m evals sync --no-benchmark --regression $(ARGS) && uv run pytest evals/regression/test_thresholds.py $(ARGS); \
+	fi
+
+eval-regression-suite:  ## Regression Cases, LLM-judged track: the Opik Test Suite over each case's English assertion (needs OPIK_API_KEY + provider key; skips friendly without). Costs money; never in CI. Same ARGS as eval-regression-dataset.
+	@if uv run python -m evals.harness.keys; then \
+		uv run python -m evals suite $(ARGS); \
 	fi
 
 KITARU_LOCAL_URL ?= http://localhost:8000
@@ -75,4 +80,4 @@ ci:  ## What CI runs: lockfile check + format-check + lint-check + full tests.
 	$(MAKE) lint-check
 	$(MAKE) test
 
-.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression kitaru-local build install-cli uninstall-cli ci help
+.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression-dataset eval-regression-suite kitaru-local build install-cli uninstall-cli ci help

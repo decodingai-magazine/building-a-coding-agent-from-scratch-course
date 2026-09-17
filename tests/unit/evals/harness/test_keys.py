@@ -2,7 +2,7 @@
 
 No infra, no keys, no network: the resolved ``settings`` singleton is patched in place, so the
 provider-aware key check and the Makefile-guard exit contract are asserted directly. This is the
-fail-fast guard ``make eval-benchmark`` / ``make eval-regression`` run FIRST — it must read
+fail-fast guard ``make eval-benchmark`` / ``make eval-regression-dataset`` run FIRST — it must read
 ``settings`` (a key in ``.env`` counts, not just the process env) and skip friendly, never traceback.
 """
 
@@ -81,7 +81,7 @@ def test_modal_provider_requires_the_endpoint_url(mocker):
 
 
 def test_an_opik_only_caller_does_not_need_the_provider_key(mocker):
-    """``evals mine`` / ``online-rule create`` run no inference — the repo's own ``.env`` case.
+    """``evals mine`` runs no inference — the repo's own ``.env`` case.
 
     ``LLM_PROVIDER=modal`` with no ``MODAL_ENDPOINT_URL`` is what the committed ``.env`` ships; a
     read-only trace query must not be blocked on an endpoint it never calls.
@@ -165,26 +165,8 @@ def test_the_same_provider_on_both_sides_is_reported_once(mocker):
     assert keys.eval_keys_missing() == ["OPIK_API_KEY", "GEMINI_API_KEY"]
 
 
-def test_a_judge_only_caller_skips_the_agents_provider_key(mocker):
-    """``require_agent=False`` = online eval: it grades traces the agent ALREADY emitted."""
-    mocker.patch.object(settings, "llm_provider", "modal")
-    mocker.patch.object(settings, "eval_judge_provider", "gemini")
-    mocker.patch.object(settings, "modal_endpoint_url", "")
-    mocker.patch.object(
-        settings, "opik_api_key", SimpleNamespace(get_secret_value=lambda: "opik-key")
-    )
-    mocker.patch.object(
-        settings, "gemini_api_key", SimpleNamespace(get_secret_value=lambda: "gem-key")
-    )
-
-    assert keys.eval_keys_missing(require_agent=False) == []
-    # The judge's own key is still demanded — that is the provider this caller DOES call.
-    mocker.patch.object(settings, "gemini_api_key", SimpleNamespace(get_secret_value=lambda: ""))
-    assert keys.eval_keys_missing(require_agent=False) == ["GEMINI_API_KEY"]
-
-
-def test_require_provider_false_wins_over_require_agent(mocker):
-    """The master switch still drops EVERY provider key — the Opik-only commands stay keyless."""
+def test_require_provider_false_drops_the_judge_key_too(mocker):
+    """The switch drops EVERY provider key, the judge's included — the Opik-only commands stay keyless."""
     mocker.patch.object(settings, "llm_provider", "modal")
     mocker.patch.object(settings, "eval_judge_provider", "gemini")
     mocker.patch.object(settings, "modal_endpoint_url", "")

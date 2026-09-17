@@ -87,7 +87,7 @@ Core verbs at repo root via [`Makefile`](Makefile) wrapping `uv` — `make help`
 
 **Manual QA order:** `format-fix → lint-fix → format-check → lint-check → pre-commit → unit-tests`.
 
-**Evals** (ADR-0017 as rebuilt by ADR-0022; never in `make ci`): `make eval-benchmark` (19 Terminal-Bench-layout tasks, one Trial = one `decode run` subprocess graded host-side by `tests/test.sh` → `reward.txt`; `--trials/--threads/--difficulty/--job-name/--model`) + `make eval-regression` (21 tiered behavior cases + mined ones, gate 0.8 tool discipline / 0.7 judges), plus `python -m evals suite | mine | online-rule create | online | kitaru …`. Need `OPIK_API_KEY` + the provider key, cost money, skip friendly without; full map in [`running_the_code/05_evals.md`](running_the_code/05_evals.md).
+**Evals** (ADR-0017 as rebuilt by ADR-0022; never in `make ci`): `make eval-benchmark` (19 Terminal-Bench-layout tasks, one Trial = one `decode run` subprocess graded host-side by `tests/test.sh` → `reward.txt`; `--trials/--threads/--difficulty/--job-name/--model`) + `make eval-regression-dataset` (21 tiered behavior cases + mined ones, deterministic metrics, gate 0.8 tool discipline / 0.7 judges) + `make eval-regression-suite` (same cases, an LLM judge over each case's English assertion, pass bar 0.8), plus `python -m evals mine | kitaru …`. Need `OPIK_API_KEY` + the provider key, cost money, skip friendly without; full map in [`running_the_code/05_evals.md`](running_the_code/05_evals.md).
 
 **Deps & env vars.** Runtime: `uv add <pkg>`; dev: `uv add --group dev <pkg>` (PEP 735 — never `[project.optional-dependencies]`). New env vars → `.env.example` + `config/settings.py`; never read `os.environ` deep in call sites.
 

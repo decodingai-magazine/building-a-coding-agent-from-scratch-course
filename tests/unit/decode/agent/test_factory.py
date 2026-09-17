@@ -717,6 +717,58 @@ def test_modal_unauthenticated_client_has_no_modal_headers_and_placeholder_api_k
     assert client.api_key == "EMPTY"
 
 
+async def test_modal_tool_definitions_never_carry_the_strict_flag_on_the_wire(tmp_path, mocker):
+    """No ``"strict": true`` on any tool a Modal endpoint receives (regression guard).
+
+    pydantic-ai marks every strict-compatible tool ``strict`` when the profile allows; SGLang's
+    gpt-oss tool-call parser then drops the model's tool call on the floor (stops on ``<|call|>``,
+    replies with empty content and no ``tool_calls``), and the run dies on output retries — every
+    gpt-oss-120b benchmark trial scored 0 that way. Asserted on the request body the real modal
+    branch POSTs (the internal ``AsyncOpenAI`` is given a ``MockTransport``), because the flag is
+    set inside ``OpenAIChatModel``'s tool mapping, not anywhere decode can see it earlier.
+    """
+    _patch_provider(mocker, "modal", modal_authenticated=True)
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-modal",
+                "object": "chat.completion",
+                "created": 1_700_000_000,
+                "model": "openai/gpt-oss-120b",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 1, "total_tokens": 12},
+            },
+        )
+
+    real_client_cls = factory.AsyncOpenAI
+
+    def offline_client(**kwargs):
+        kwargs["http_client"] = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        return real_client_cls(**kwargs)
+
+    mocker.patch.object(factory, "AsyncOpenAI", offline_client)
+
+    agent = build_agent()
+    result = await agent.run("hi", deps=_deps(tmp_path))
+
+    assert result.output == "ok"
+    assert len(requests) == 1, requests
+    tools = requests[0]["tools"]
+    assert {t["function"]["name"] for t in tools} >= {"bash", "read", "write"}
+    strict_tools = [t["function"]["name"] for t in tools if "strict" in t["function"]]
+    assert strict_tools == [], strict_tools
+
+
 def test_build_model_rejects_an_unsupported_provider(mocker):
     """Defensive: a value past the three branches (the settings ``Literal`` blocks it) raises."""
     mocker.patch("decode.agent.factory.settings.llm_provider", "anthropic", create=False)

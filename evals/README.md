@@ -1,12 +1,12 @@
 # decode eval suite
 
 Course material *about* the agent, not part of it — this `evals/` package never ships in the wheel
-(ADR-0017 §1, rebuilt by ADR-0022). It carries four tracks (Demo Skills, Benchmark, Regression Cases,
-and the online track) over the shared Opik harness. The four-track map is
+(ADR-0017 §1, rebuilt by ADR-0022). It carries two tracks — the Benchmark and the Regression Cases —
+over the shared Opik harness. The runbook is
 [`running_the_code/05_evals.md`](../running_the_code/05_evals.md); the task format is
 [`benchmark/tasks/README.md`](benchmark/tasks/README.md) and the case contract
-[`regression/README.md`](regression/README.md). This README documents the **online eval** track
-(ADR-0017 §10) and **Trace Mining** (ADR-0022 §8) — the two commands that read the LIVE project.
+[`regression/README.md`](regression/README.md). This README documents the judge's provider knob and
+**Trace Mining** (ADR-0022 §8) — the one command that reads the LIVE project.
 
 ## The CLI
 
@@ -26,134 +26,30 @@ Commands:
   benchmark    Run the outcome benchmark as one Opik Experiment (ADR-0022...
   kitaru       Join decode's Opik traces to Kitaru Sessions (ADR-0022 §11).
   mine         Mine the LIVE project for regressions worth turning into...
-  online       Score decode's LIVE REPL threads with one...
-  online-rule  Manage the Opik ONLINE RULE that scores live traces as...
   regression   Run the behavior Regression Cases host-native as an Opik...
   suite        Run the Opik Test Suite regression surface —...
   sync         Upsert the eval tracks' Opik surfaces (ADR-0022 §6,8).
 ```
 
-## Online eval — scoring live REPL traffic
-
-Every other track *drives* the agent and grades the run. The online track is the production-eval
-story: it grades the [Traces](../docs/glossary.md) decode **already emitted** from real REPL
-sessions and `decode run` invocations (ADR-0014), scored in place in the **live** Opik project
-(`settings.opik_project_name` — `decode` / `decode-<env>`), never `EVAL_PROJECT_NAME`.
-
-There are two halves, and they are complementary:
-
-1. an **[Online Rule](../docs/glossary.md)** — a judge Opik runs automatically on new traces as they arrive, created
-   once with `python -m evals online-rule create`;
-2. a **scripted thread-level pass** — `python -m evals online`, a single
-   [conversation Judge](../docs/glossary.md) over recent [Threads](../docs/glossary.md) you run on
-   demand from the CLI.
-
-### 1. The Online Rule (`python -m evals online-rule create`)
-
-An [**Online Rule**](../docs/glossary.md) is an LLM-as-judge Opik evaluates on every incoming trace, attaching a
-`response_quality` feedback score you can then filter and chart. One command creates it, idempotently:
-
-```bash
-# Create it on the LIVE project (settings.opik_project_name), sampling every trace:
-python -m evals online-rule create
-
-# Rehearse first — prints the exact create payload, writes nothing:
-python -m evals online-rule create --dry-run
-
-# Pick the project / judge model / sampling rate explicitly:
-python -m evals online-rule create --project decode-prod --model gemini-2.5-flash --sampling 0.5
-```
-
-Run it twice and the second run prints `already exists: <id>` and writes nothing — the rule is
-looked up by its exact name (`response_quality`) before anything is created.
-
-**The judge model is Opik's, not LiteLLM's.** The rule runs *server-side*, on a provider your Opik
-workspace has configured under **AI Providers**, so the id carries no route prefix: the gemini route
-(`gemini/gemini-2.5-flash`, the harness default) becomes `gemini-2.5-flash`. The `openrouter` and
-`modal` routes cannot be translated — the command refuses with one line asking for `--model <id>`,
-because a rule naming a model the workspace cannot route is created happily and then silently never
-scores.
-
-**The scoring prompt** is one constant in [`evals/harness/online_rule.py`](harness/online_rule.py)
-(`RESPONSE_QUALITY_PROMPT`), quoted here verbatim — it is phrased *qualitatively*, as qualities to
-look for rather than numeric verdicts (a "Score 1.0 if grounded, 0.0 otherwise" instruction collides
-with the judge's own 0-10 output scale and produces incoherent scores — the task-114 lesson):
-
-```text
-Judge how well the assistant's final answer addresses the user's request, grounded in the
-files, tool outputs, and prompt it was given.
-
-A high-scoring answer directly resolves what the user asked, cites only facts present in the
-workspace or the prompt, and invents no file, function, or value. A low-scoring answer drifts
-off the request, is vague, or asserts things nothing in the trace supports.
-
-The user's request:
-{{input}}
-
-The assistant's answer:
-{{output}}
-```
-
-`{{input}}` and `{{output}}` are mapped to the trace's input and output — the same two fields the
-scripted pass below transforms. The rule's output schema is one `response_quality` INTEGER
-(0-10), and its trigger scope is `production` (live traffic, not experiment traces).
-
-New turns in the project pick up their `response_quality` score within a moment of arriving; on each
-Trace you also see the judge's written reason. At the project level you can then filter
-(`feedback_scores.response_quality < 5`) and chart the score over time — which is exactly what
-`python -m evals mine --preset low-quality` does from the CLI.
-
-**Fallback (the UI).** If you would rather click it together: in the project's **Online evaluation**
-(a.k.a. **Rules / Automations**) tab, create a rule of type **LLM-as-judge**, sampling `1.0`, map
-`{{input}}`/`{{output}}` to the trace input/output, paste the prompt above, and add one
-`response_quality` INTEGER output. That is the same rule this command writes.
-
-### 2. The scripted thread-level pass (`python -m evals online`)
-
-Where the rule grades one trace at a time as it arrives, the scripted pass grades whole
-**conversations**. It runs one conversation-level judge (Opik's `ConversationalCoherenceMetric`,
-routed to decode's provider) over the recent Threads in the live project via `evaluate_threads`, and
-logs each thread's score back onto that same thread.
-
-```bash
-# Score every thread in the live project:
-python -m evals online
-
-# Scope to recent threads with an Opik OQL filter:
-python -m evals online --filter 'start_time > "2026-07-01T00:00:00Z"'
-```
-
-It prints one line per thread — `<thread_id>: conversation_coherence=<score>` — and a total. The
-`thread_id` is the decode session id — of a REPL session or of one `decode run` — Opik's conversation
-key (ADR-0014).
-
-**Keys.** The pass needs `OPIK_API_KEY` (to reach the threads) and the **judge** provider's key
-(`GEMINI_API_KEY` by default) — and only the judge's: it grades traces decode already emitted, so it
-never calls the agent's provider. Without them it **skips friendly** — it prints which vars to set
-and exits `0`, so `--help` and a keyless checkout never error:
-
-```
-evals online: skipped — set OPIK_API_KEY, GEMINI_API_KEY to score live threads.
-```
-
-**Why the live project, not `EVAL_PROJECT_NAME`.** The benchmark and regression tracks log under
-`decode-evals` so they never pollute live tracing (ADR-0017 §9). Online eval inverts that on
-purpose: grading real traffic *in place* is the whole point, so its scores attach to the live
-threads (`eval_project_name=None`).
-
 ## Choosing the judge's provider
 
 Every LLM judge in the suite — the G-Eval [Judges](../docs/glossary.md) in Regression Cases and the
-conversation judge above — runs on the provider `EVAL_JUDGE_PROVIDER` names, independently of the
+Test Suite's assertion judge — runs on the provider `EVAL_JUDGE_PROVIDER` names, independently of the
 agent's `LLM_PROVIDER`. Empty (the default) follows the agent, which is what every run before this
 knob did. `EVAL_JUDGE_MODEL` still picks the model *on* that route.
 
 ```bash
-EVAL_JUDGE_PROVIDER=gemini  python -m evals suite      # modal-served agent, gemini judge
-EVAL_JUDGE_PROVIDER=modal   python -m evals suite      # judge on your own endpoint, no per-token cost
+EVAL_JUDGE_PROVIDER=gemini  make eval-regression-suite    # modal-served agent, gemini judge
+EVAL_JUDGE_PROVIDER=modal   make eval-regression-dataset  # G-Eval judges on your own endpoint, no per-token cost
 ```
 
-When the two providers differ, `make eval-benchmark` / `make eval-regression` want **both** keys —
+The Test Suite's assertion judge is the one place a `modal` judge cannot go: `opik.run_tests` hands
+its `LLMJudge` a bare model name, with nowhere for the endpoint base url + proxy headers to ride, so
+`make eval-regression-suite` refuses a modal judge route up front and asks for `EVAL_JUDGE_PROVIDER=gemini`
+(or `openrouter`). Left unrouted, Opik would grade on its own default (`gpt-5-nano`, an `OPENAI_API_KEY`
+this project never configures) — the suite always passes our judge model explicitly.
+
+When the two providers differ, `make eval-benchmark` / `make eval-regression-dataset` want **both** keys —
 one guard serves the benchmark (agent only) and the gate (agent *and* judge), so it asks for
 everything the run might call.
 
@@ -182,15 +78,14 @@ python -m evals mine --preset errors --since 2026-09-04T00:00:00Z
 python -m evals mine --preset all --limit 100 --json
 ```
 
-### The four presets
+### The three presets
 
 | Preset | What it finds | How |
 |---|---|---|
 | `errors` | runs that raised | Opik OQL `error_info is_not_empty` |
-| `low-quality` | answers the online rule graded poorly | OQL `feedback_scores.response_quality < 5` (empty until the rule above exists) |
 | `long` | the most expensive runs | top decile of `usage.total_tokens` **within the fetched window**, computed client-side (`ceil(n/10)`, at least one; a run with no recorded usage is never ranked) |
 | `denied` | runs the permission gate blocked repeatedly | ≥ 2 gate-denied tool calls, read off the spans |
-| `all` | all four, in one pass | one trace can appear under two presets — that is reporting, not duplication |
+| `all` | all three, in one pass | one trace can appear under two presets — that is reporting, not duplication |
 
 `--since` takes a **timezone-aware** ISO timestamp (`2026-09-04T00:00:00Z`); a naive one is refused
 rather than assumed to be UTC. `--limit` (default 50) is both the fetch ceiling per preset and the
@@ -242,15 +137,10 @@ fail on the behaviour you just saw — into `evals/regression/cases/`, the forma
 [`evals/regression/`](regression/) documents. `--json`'s `signature` is a good `description` line,
 and the trace id belongs in the case's provenance so the run it came from stays findable.
 
-**Keys.** Both live-project commands need **`OPIK_API_KEY` and nothing else** — neither makes an
-inference call (`mine` only reads traces; the online rule's judge runs on Opik's own configured
-provider), so they run the shared eval preflight with `require_provider=False`. Without the key they
-**skip friendly** — one line, exit `0`:
+**Keys.** `mine` needs **`OPIK_API_KEY` and nothing else** — it makes no inference call, only
+reads traces — so it runs the shared eval preflight with `require_provider=False`. Without the key
+it **skips friendly** — one line, exit `0`:
 
 ```
 evals mine: skipped — set OPIK_API_KEY to search live traces.
 ```
-
-On a non-gemini route `online-rule create` still needs an explicit `--model` ("The judge model is
-Opik's, not LiteLLM's", step 1): with no inference key involved, the one thing it cannot guess is how
-your Opik workspace spells the judge.
