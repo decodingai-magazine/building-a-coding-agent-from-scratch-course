@@ -9,11 +9,15 @@ leaks an expected answer into ``input``), the serial run wiring, and the pass-ra
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from decode.config.settings import settings
 from evals.harness.datasets import REGRESSION_SUITE_NAME
 from evals.harness.test_suite import (
     SUITE_PASS_BAR,
+    SuiteJudgeRouteError,
     SuitePassRateError,
     SuiteSelectionError,
     assert_pass_rate,
@@ -21,6 +25,14 @@ from evals.harness.test_suite import (
     run_test_suite,
 )
 from evals.regression.case import RegressionCase
+
+
+@pytest.fixture(autouse=True)
+def _gemini_judge(mocker):
+    """Pin the judge route to gemini: a developer's ``.env`` (``LLM_PROVIDER=modal``) must not decide
+    whether ``run_test_suite`` refuses to run — the modal-route test flips it explicitly."""
+    mocker.patch("evals.harness.test_suite.judge_provider", return_value="gemini")
+    mocker.patch("evals.harness.test_suite.judge_model", return_value="gemini/gemini-3.8-flash")
 
 
 def _case(case_id: str, prompt: str = "do the thing", **overrides: object) -> RegressionCase:
@@ -101,6 +113,43 @@ def test_run_test_suite_registers_the_cases_and_runs_the_suite_serially(mocker):
     assert callable(kwargs["task"])
     # The agent runs host-native through the process-global bash seam — two items at once would clash.
     assert kwargs["worker_threads"] == 1
+    # The assertion judge is OUR judge route, never Opik's silent default (gpt-5-nano, no key here).
+    assert kwargs["model"] == "gemini/gemini-3.8-flash"
+    # The JSON report lands under the git-ignored ``.decode/``, never Opik's ``./opik_test_suite_reports/``.
+    report = Path(kwargs["report_output_path"])
+    assert report == run.report_path
+    assert report.parent == Path(settings.decode_dir) / "evals" / "suite-reports"
+    assert report.suffix == ".json"
+    assert "opik_test_suite_reports" not in report.parts
+
+
+def test_the_suite_judge_follows_the_eval_judge_model_route(mocker):
+    """``EVAL_JUDGE_PROVIDER`` / ``EVAL_JUDGE_MODEL`` reach ``run_tests`` as its ``model`` (ADR-0022 §7)."""
+    run_tests = mocker.patch("opik.run_tests", create=True)
+    mocker.patch("evals.harness.datasets.sync_regression_cases")
+    mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a")])
+    mocker.patch("evals.harness.test_suite.judge_provider", return_value="openrouter")
+    mocker.patch("evals.harness.test_suite.judge_model", return_value="openrouter/some/judge")
+
+    run_test_suite(client=mocker.Mock())
+
+    assert run_tests.call_args.kwargs["model"] == "openrouter/some/judge"
+
+
+def test_a_modal_judge_route_is_refused_before_anything_is_synced_or_billed(mocker):
+    """Opik's suite judge takes a bare model name — a modal judge (base url + proxy headers) cannot ride
+    it, so the run stops up front and names both ways out."""
+    run_tests = mocker.patch("opik.run_tests", create=True)
+    sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a")])
+    mocker.patch("evals.harness.test_suite.judge_provider", return_value="modal")
+
+    with pytest.raises(SuiteJudgeRouteError, match="EVAL_JUDGE_PROVIDER=gemini") as excinfo:
+        run_test_suite(client=mocker.Mock())
+
+    assert "eval-regression-dataset" in str(excinfo.value)
+    sync.assert_not_called()
+    run_tests.assert_not_called()
 
 
 def test_a_filtered_run_reconciles_the_suite_to_its_slice(mocker):

@@ -19,6 +19,8 @@ from pydantic_ai.agent import AgentRetries
 from pydantic_ai.models import Model
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.profiles import ModelProfile, merge_profile
+from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider
@@ -113,8 +115,23 @@ def _build_model(*, model: str | None = None) -> Model:
         return OpenAIChatModel(
             model or settings.modal_endpoint_model,
             provider=OpenAIProvider(openai_client=client),
+            profile=_modal_profile,
         )
     raise ValueError(f"unsupported llm_provider: {provider!r}")
+
+
+def _modal_profile(inferred: ModelProfile) -> ModelProfile:
+    """Never send ``"strict": true`` on a tool definition to a Modal endpoint.
+
+    ``strict`` is OpenAI-cloud constrained decoding; pydantic-ai flags every strict-compatible
+    tool with it whenever the profile allows. The open-weights servers behind a Modal endpoint do
+    not implement it, and SGLang's gpt-oss (Harmony) tool-call parser silently DROPS the call when
+    the flag is present: the model stops on ``<|call|>`` but the reply carries no ``tool_calls``
+    and empty content, so the agent sees "nothing" and the run dies on output retries (every
+    benchmark trial of gpt-oss-120b scored 0). Layered on top of whatever profile the provider
+    inferred from the model id, so Qwen / other families keep their own settings.
+    """
+    return merge_profile(inferred, OpenAIModelProfile(openai_supports_strict_tool_definition=False))
 
 
 def _provider_api_key(provider: Literal["gemini", "openrouter"]) -> str:

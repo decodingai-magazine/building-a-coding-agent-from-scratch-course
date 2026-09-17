@@ -388,3 +388,16 @@ readable (`get_version_view`).
 **Consequences.** A filtered `suite` / `sync --difficulty` run narrows the suite's latest version to
 its slice; a full `python -m evals sync` widens it back. Old experiments lost their datasets when the
 workspace was wiped and re-synced under these names on 2026-09-17.
+
+## Amendment (2026-09-17) — §16, the online track is deleted
+
+**Status:** Accepted. Supersedes §13 and ADR-0017 §10.
+
+The online track — `python -m evals online` (a conversation judge over live threads) and
+`python -m evals online-rule create` (the `response_quality` Online Rule) — is removed, clean break,
+no shim. It taught a third way to grade that the course no longer needs: the Benchmark answers
+"does it work", the Regression Cases answer "does it work the way we designed", and Trace Mining
+already feeds live failures back into the second. With the rule gone, `mine` loses its
+`low-quality` preset (the rule's score was its only input); `errors` / `long` / `denied` stay.
+`eval_keys_missing` loses `require_agent` (the online judge was its only caller); `live_project_name`
+moves to `evals/harness/mine.py`.

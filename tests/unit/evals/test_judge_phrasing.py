@@ -2,7 +2,7 @@
 
 Task 114 proved with live Opik experiments that a criterion written as "Score 1.0 when … Score 0.0
 when …" collides with the judge's internal 0-10 scale and produces incoherent scores (a *perfect*
-answer scored 0.1). ``evals/README.md`` §online step 6 forbids the pattern in bold; cases 17/18/19
+answer scored 0.1). Cases 17/18/19
 carry the "Phrased qualitatively — NOT as 'Score 1.0/0.0'" comment. This test makes the ban
 STRUCTURAL: it scans every loaded regression case's G-Eval criteria AND its natural-language
 ``assertion`` (the Test Suite's judge reads that one, ADR-0022 §8) and fails on any
@@ -80,6 +80,6 @@ def test_the_guard_regex_matches_the_known_anti_patterns_but_not_qualitative_pro
         "The answer is fully correct when it states the value",
         "A high-scoring answer resolves the request",
         "a perfect answer scored 0.1 in QA",
-        "a response_quality (0-10) feedback score",
+        "a 0-10 feedback score",
     ):
         assert not _NUMERIC_ANCHOR.search(qualitative), qualitative

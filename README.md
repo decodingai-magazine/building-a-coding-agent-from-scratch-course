@@ -170,7 +170,7 @@ For the full experience, go through the articles and videos that cover what the 
 - Why we record every run, and what a replay buys you that a re-run doesn't.
 - What guardrails are actually useful.
 - Why compaction fires at ~80% of the window instead of at the limit.
-- Why you need benchmarks, regression tests and online evals.
+- Why you need both benchmarks and regression tests.
 
 ## 📚 Course Outline
 
@@ -314,7 +314,7 @@ Everything lives under [`running_the_code/`](running_the_code/). Follow them in 
 | [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)           | Serving open models on Modal                                       |
 | [03_sandboxing.md](running_the_code/03_sandboxing.md)                     | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
 | [04_deploy.md](running_the_code/04_deploy.md)                             | The headless harness on Modal — CLI, webhook, cron                 |
-| [05_evals.md](running_the_code/05_evals.md)                               | Benchmarks, regression cases, and online evals                     |
+| [05_evals.md](running_the_code/05_evals.md)                               | Benchmarks and regression cases on Opik                            |
 | [06_evals_replays.md](running_the_code/06_evals_replays.md)               | Kitaru on your laptop: record, replay & the full evals loop        |
 
 ## 🤝 Sponsors

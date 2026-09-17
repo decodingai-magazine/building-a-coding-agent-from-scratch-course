@@ -264,7 +264,6 @@ def test_a_table_shows_at_most_five_trace_ids_and_says_how_many_it_hid() -> None
 
 def test_every_preset_composes_the_oql_the_live_backend_accepts() -> None:
     assert compose_filter("errors", None) == "error_info is_not_empty"
-    assert compose_filter("low-quality", None) == "feedback_scores.response_quality < 5"
     assert compose_filter("long", None) is None
     assert compose_filter("denied", None) is None
 
@@ -323,10 +322,10 @@ def test_preset_all_pays_for_each_traces_spans_once_and_can_report_it_twice() ->
 
     groups = mine(source, preset="all", limit=20)
 
-    # The fake returns the one trace for every query, so it reports under the three presets whose
+    # The fake returns the one trace for every query, so it reports under the two presets whose
     # client-side rule it passes — and NOT under `denied`, which it fails (no denied calls).
-    assert sorted(group.signature.preset for group in groups) == ["errors", "long", "low-quality"]
-    # One span query for the one trace, even though four presets looked at it.
+    assert sorted(group.signature.preset for group in groups) == ["errors", "long"]
+    # One span query for the one trace, even though three presets looked at it.
     assert source.client.span_queries == [trace_of("error_usage_limit")["id"]]
 
 

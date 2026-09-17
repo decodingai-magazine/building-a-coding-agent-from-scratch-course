@@ -161,8 +161,10 @@ python -m evals sync --regression                     # upsert BOTH surfaces (da
 python -m evals regression                            # run the whole suite
 python -m evals regression --case smoke-read-tool     # run one case
 python -m evals regression --difficulty easy          # run one tier
-make eval-regression                                  # sync + the pre-merge threshold gate
-make eval-regression ARGS='--difficulty hard'         # …sliced to one tier (sync AND gate)
+make eval-regression-dataset                          # sync + the pre-merge threshold gate
+make eval-regression-dataset ARGS='--difficulty hard' # …sliced to one tier (sync AND gate)
+make eval-regression-suite                            # the Test Suite: an LLM judge over each assertion
+make eval-regression-suite ARGS='--difficulty hard'   # …sliced to one tier
 ```
 
 ```
