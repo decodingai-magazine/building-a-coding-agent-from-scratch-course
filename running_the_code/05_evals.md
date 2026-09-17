@@ -64,7 +64,7 @@ make eval-benchmark ARGS='--job-name nightly-3 --model gemini-2.5-pro'
 
 `--trials` is Opik's `trial_count`, `--threads` its `task_threads` (default 1 on docker, 4 on modal — a docker trial warms its own container). `--job-name` names **both** the Opik experiment and the Trial Dir parent (default `bench-<UTC stamp>`). `--model` overrides the model every trial runs on, never the provider.
 
-> ✅ A Rich table — one row per task (`n`, `pass@1`, at `k > 1` also `pass@k` / `pass^k` / `flaky`, `~$/trial`, `~s/trial`, `~tok/trial`, `infra`), a section per tier, a total row — then a `spend:` line (wall clock · agent-run seconds · tokens in/out) and one line naming the experiment and the trial dirs. In Opik: one experiment row over the `decode-benchmark-v2` dataset, tagged with model, provider, git sha, sandbox, `threads` and `kitaru_agent_id`.
+> ✅ A Rich table — one row per task (`n`, `pass@1`, at `k > 1` also `pass@k` / `pass^k` / `flaky`, `~$/trial`, `~s/trial`, `~tok/trial`, `infra`), a section per tier, a total row — then a `spend:` line (wall clock · agent-run seconds · tokens in/out) and one line naming the experiment and the trial dirs. In Opik: one experiment row over the `decode-benchmark` dataset, tagged with model, provider, git sha, sandbox, `threads` and `kitaru_agent_id`.
 
 ### Running the agent on the Modal endpoint
 
@@ -179,7 +179,7 @@ python -m evals suite --difficulty hard         # the same cases, judged on thei
 
 **Editing a case re-syncs it.** A case's prompt, metrics, tier, symptom, assertion or description change its checksum. Both `make eval-regression` and `python -m evals regression` sync their selection before grading, so the fresh item is what gets graded; the stale item stays in Opik (it never deletes) and is ignored, and the Test Suite is minted under a new name. A `RegressionSelectionError` naming a case means Opik has not reflected the insert yet — rerun.
 
-**Two surfaces, on purpose.** One case definition registers twice: as a `decode-regression-v2` dataset item that deterministic metrics score (`python -m evals regression`), and as an item in the `decode-regression-suite-<8 hex>` Test Suite (named after the synced cases' content, so an edit mints a fresh suite rather than a second, twice-judged item) whose English `assertion` an LLM judge checks against the answer (`python -m evals suite`, gated on `pass_rate` ≥ 0.8). Numbers catch exact regressions cheaply; assertions catch "the answer got worse in a way no single number captures". The contrast is the lesson — neither replaces the other.
+**Two surfaces, on purpose.** One case definition registers twice: as a `decode-regression` dataset item that deterministic metrics score (`python -m evals regression`), and as an item in the `decode-regression-suite` Test Suite (reconciled to exactly the synced cases, so an edit replaces its stale item rather than adding a second, twice-judged one; Opik versions the suite itself) whose English `assertion` an LLM judge checks against the answer (`python -m evals suite`, gated on `pass_rate` ≥ 0.8). Numbers catch exact regressions cheaply; assertions catch "the answer got worse in a way no single number captures". The contrast is the lesson — neither replaces the other.
 
 ## 4. Online eval, and the mining loop
 

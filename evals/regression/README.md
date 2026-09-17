@@ -194,11 +194,11 @@ assertion, description and prompt): editing a case mints a new item beside the o
 deletes — and a run selects only the item matching the case on disk, so a stale item is ignored, never
 deleted, and never graded twice. A selected case with no matching item stops the run with a
 `RegressionSelectionError` telling you to re-run `python -m evals sync --regression`.
-The Test Suite is versioned the same way one level up — its NAME is `decode-regression-suite-<8 hex>`
-over the sorted `(case_id, case_checksum)` pairs of the cases being synced (`regression_suite_name()`,
-the one function `sync --regression` and `suite` both resolve it through, and both print it), so an
-edited case mints a FRESH suite holding exactly one item per case instead of a second item `run_tests`
-would judge twice; Opik never deletes, so stale suites are ignored, not removed.
+The Test Suite, `decode-regression-suite`, is **reconciled** instead: every sync deletes the items that
+are not exactly one of the synced cases and inserts the missing ones, so it holds one item per case and
+`run_tests` never judges an edited case twice. Opik versions the suite itself (`v1`, `v2`… on every
+change, each still readable), so names stay clean — no `-v2`, no hash (ADR-0022 Amendment §15). Both
+`sync --regression` and `suite` print the version they left.
 
 Each run is one Opik experiment under `EVAL_PROJECT_NAME` (`decode-evals`), named
 `decode-regression-gate` — or `decode-regression-gate-<tier>` for a filtered one, so a tier's baseline
@@ -221,7 +221,7 @@ assertion is judged against.
 |---|---|---|
 | Grader | Deterministic `BaseMetric` code (`evals/harness/metrics.py`) + G-Eval judges | An LLM judge checks the case's **natural-language assertion** |
 | "Correct" is | A number over a threshold (`aggregate_evaluation_scores() >= thresholds`) | *"the response never invents a file that does not exist"* — an English quality bar |
-| Opik surface | `decode-regression-v2` dataset → `evaluate()` → pytest threshold gate | `decode-regression-suite-<8 hex>` Test Suite → `run_tests()` → `result.pass_rate` gate |
+| Opik surface | `decode-regression` dataset → `evaluate()` → pytest threshold gate | `decode-regression-suite` Test Suite → `run_tests()` → `result.pass_rate` gate |
 | Scope | Every runnable case (`--case` / `--difficulty` slice it) | The same cases and the same filters — a full run is twenty agent runs plus judging, so `--difficulty` is the cost knob here too |
 | Gate | Per-metric thresholds, global | Suite `pass_rate` below `SUITE_PASS_BAR` (0.8) → non-zero exit |
 
@@ -233,9 +233,7 @@ terms the ANSWER shows; the mechanical half (which tool was called) is surface (
 metrics catch exact regressions cheaply; NL assertions catch "the answer got worse in a way no single
 number captures". Neither replaces the other.
 
-> `opik.run_tests` runs every item of the suite it is handed and takes no item filter, so the suite
-> is named after its CONTENT: `python -m evals suite --difficulty hard` hashes just the hard cases and
-> registers its own `decode-regression-suite-<8 hex>` rather than billing every judged item. No
-> `-<tier>` suffix to plumb through — `sync` (which has only `--difficulty`) and `suite` (which also
-> has `--case`) agree on the name because they hash the same selection, and each prints what it
-> resolved.
+> `opik.run_tests` runs every item of the suite it is handed and takes no item filter, so
+> `python -m evals suite --difficulty hard` first narrows `decode-regression-suite` to just the hard
+> cases rather than billing every judged item. The suite's latest version then holds that slice; a
+> full `python -m evals sync` widens it back, and the earlier versions stay readable in Opik.

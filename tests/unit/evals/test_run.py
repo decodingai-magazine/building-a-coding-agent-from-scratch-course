@@ -259,9 +259,7 @@ def test_regression_subcommand_reports_an_empty_selection(mocker):
 def test_suite_subcommand_runs_and_reports_pass_rate(mocker):
     """``evals suite`` runs the Test Suite, reports the pass rate + project, and exits clean above bar."""
     run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
-    run_test_suite.return_value = mocker.Mock(
-        suite_name="decode-regression-suite-abcd1234", result=mocker.Mock(pass_rate=1.0)
-    )
+    run_test_suite.return_value = mocker.Mock(suite_version="v3", result=mocker.Mock(pass_rate=1.0))
 
     result = CliRunner().invoke(cli, ["suite"])
 
@@ -269,15 +267,13 @@ def test_suite_subcommand_runs_and_reports_pass_rate(mocker):
     assert "pass rate 100%" in result.output
     assert "decode-evals" in result.output
     # The resolved suite name is the run's breadcrumb: it says exactly which items were billed.
-    assert "decode-regression-suite-abcd1234" in result.output
+    assert "decode-regression-suite v3" in result.output
 
 
 def test_suite_subcommand_gates_non_zero_below_the_bar(mocker):
     """A pass rate under the suite bar is a friendly non-zero exit — the regression gate fires (§6)."""
     run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
-    run_test_suite.return_value = mocker.Mock(
-        suite_name="decode-regression-suite-abcd1234", result=mocker.Mock(pass_rate=0.5)
-    )
+    run_test_suite.return_value = mocker.Mock(suite_version="v3", result=mocker.Mock(pass_rate=0.5))
 
     result = CliRunner().invoke(cli, ["suite"])
 
@@ -288,9 +284,7 @@ def test_suite_subcommand_gates_non_zero_below_the_bar(mocker):
 def test_suite_subcommand_forwards_the_case_and_tier_filters(mocker):
     """``suite`` takes the SAME ``--case`` / ``--difficulty`` slice ``regression`` does (§8)."""
     run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
-    run_test_suite.return_value = mocker.Mock(
-        suite_name="decode-regression-suite-abcd1234", result=mocker.Mock(pass_rate=1.0)
-    )
+    run_test_suite.return_value = mocker.Mock(suite_version="v3", result=mocker.Mock(pass_rate=1.0))
 
     result = CliRunner().invoke(cli, ["suite", "--difficulty", "hard"])
 
@@ -373,9 +367,9 @@ def test_online_subcommand_reports_no_threads(mocker):
 
 
 def test_sync_regression_upserts_both_surfaces(mocker):
-    """``evals sync --regression --no-benchmark`` writes the v2 dataset AND the Test Suite (§8)."""
+    """``evals sync --regression --no-benchmark`` writes the dataset AND the Test Suite (§8)."""
     sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
-    sync_regression.return_value.suite_name = "decode-regression-suite-abcd1234"
+    sync_regression.return_value.suite_version = "v3"
     case = mocker.Mock(skip_reason=None, difficulty="easy")
     mocker.patch("evals.regression.loader.load_cases", return_value=[case])
 
@@ -383,9 +377,9 @@ def test_sync_regression_upserts_both_surfaces(mocker):
 
     assert result.exit_code == 0, result.output
     sync_regression.assert_called_once_with([case])
-    assert "decode-regression-v2" in result.output
+    assert "decode-regression " in result.output
     # The echo names the CONTENT-VERSIONED suite the sync resolved, never a guess at it.
-    assert "decode-regression-suite-abcd1234" in result.output
+    assert "decode-regression-suite v3" in result.output
 
 
 def test_sync_regression_skips_a_skip_guarded_case(mocker):

@@ -1,6 +1,6 @@
 """The Benchmark Job: Opik ``evaluate()`` over Benchmark Trials (ADR-0022 §1,§4,§6,§7).
 
-One ``python -m evals benchmark`` invocation = one Opik Experiment over ``decode-benchmark-v2``.
+One ``python -m evals benchmark`` invocation = one Opik Experiment over ``decode-benchmark``.
 Opik's ``evaluate()`` IS Harbor's Job/Trial orchestrator in disguise, so the whole module is a thin
 mapping onto it:
 
@@ -250,7 +250,7 @@ def run_benchmark(
     """Run the filtered benchmark as one Opik Experiment and return it + its job dir (ADR-0022 §6).
 
     Loads every task, applies the ``--task`` (one id, or several) / ``--difficulty`` filters, upserts the selection into
-    ``decode-benchmark-v2``, and calls ``evaluate`` scoped (via ``dataset_item_ids``) to the items
+    ``decode-benchmark``, and calls ``evaluate`` scoped (via ``dataset_item_ids``) to the items
     whose ``checksum`` matches the task folders on disk — Opik never deletes a superseded item, so
     without that scoping an edited task would be run once per historical version. Raises
     :class:`BenchmarkSelectionError` when the filters match no task OR when a matched task has no
@@ -337,7 +337,7 @@ def _selected_item_ids(dataset: Any, checksums: dict[str, str]) -> dict[str, str
     """``{task_id: item id}`` for the items whose ``checksum`` matches the task folder on disk.
 
     Opik's ``insert`` dedupes by content hash but never deletes: an edited task leaves its stale item
-    in ``decode-benchmark-v2`` forever. Selecting on the checksum too is what keeps one ``--task``
+    in ``decode-benchmark`` forever. Selecting on the checksum too is what keeps one ``--task``
     run from evaluating every historical version of that task. One id per task (the first match);
     an item missing an ``id`` (an unexpected Opik shape) is skipped, and a task with no matching item
     is simply absent — the caller turns that into a loud stop.

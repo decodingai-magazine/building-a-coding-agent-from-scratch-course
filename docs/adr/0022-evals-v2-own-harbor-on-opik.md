@@ -207,7 +207,7 @@ flowchart LR
         DIR["result.json · agent/ · verifier/"]:::infra
     end
     subgraph opik["Opik (grader of record)"]
-        DS["dataset decode-benchmark-v2"]:::opik
+        DS["dataset decode-benchmark"]:::opik
         EV["evaluate(trial_count=k,<br/>experiment_scoring_functions)"]:::opik
         REG["Regression Cases: 21 tiered + mined<br/>dataset + Test Suite · gate per tier report"]:::opik
         MINE["evals mine ← live traces"]:::opik
@@ -364,3 +364,27 @@ one, and is left open.
 new required fields; six new names on every Benchmark Job's experiment row (13 in all). Runbook:
 `running_the_code/05_evals.md` §2 "Comparing models and providers".
 
+## Amendment (2026-09-17) — §15, clean Opik names; Opik versions the content
+
+**Context.** §6 and §8 put the version in the Opik title: `decode-benchmark-v2`,
+`decode-regression-v2`, and `decode-regression-suite-<8 hex>` over the synced cases' checksums. The
+suite hash existed because `opik.run_tests` takes no item filter: a fixed-name suite would keep an
+edited case's stale item and judge it twice, and a `--difficulty` run would bill every case. The cost
+was a workspace of near-identical titles. opik 2.2.36 versions datasets and Test Suites natively —
+every insert or delete mints `v1`, `v2`…, an identical insert mints nothing, and each version stays
+readable (`get_version_view`).
+
+**Decision.**
+
+1. **Names carry no version or hash:** `decode-benchmark`, `decode-regression`,
+   `decode-regression-suite`.
+2. **The suite is reconciled, not re-named.** `sync_regression_cases` deletes every suite item whose
+   content (`description` / `data` / `assertions`) is not one of the synced cases and inserts the
+   missing ones, so the suite holds exactly one item per selected case. `regression_suite_name` is
+   deleted; `RegressionSurfaces` / `SuiteRun` carry the Opik `suite_version` the CLI prints.
+3. **Datasets unchanged in behaviour:** insert-only, item `checksum` + `dataset_item_ids` selection
+   as in §6/§8.
+
+**Consequences.** A filtered `suite` / `sync --difficulty` run narrows the suite's latest version to
+its slice; a full `python -m evals sync` widens it back. Old experiments lost their datasets when the
+workspace was wiped and re-synced under these names on 2026-09-17.

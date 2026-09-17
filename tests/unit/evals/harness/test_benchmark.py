@@ -396,7 +396,7 @@ def test_experiment_config_reports_a_set_kitaru_agent_id(mocker):
 def test_run_benchmark_leaves_the_project_to_the_dataset(mocker, greeting_task_dir: Path):
     """opik 2.2.36 resolves the trace project from the DATASET and deprecates the parameter.
 
-    ``sync_benchmark_dataset`` creates ``decode-benchmark-v2`` inside ``decode-evals``, so passing it
+    ``sync_benchmark_dataset`` creates ``decode-benchmark`` inside ``decode-evals``, so passing it
     again would only log a deprecation warning on every run.
     """
     task = load_benchmark_task(greeting_task_dir)
