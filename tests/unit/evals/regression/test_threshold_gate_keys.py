@@ -4,7 +4,7 @@ Regression guard for the Blocker in task 122: the gate module
 (``evals/regression/test_thresholds.py``) used to gate its own execution on a hardcoded
 ``REQUIRED_KEYS = ("GEMINI_API_KEY", "OPIK_API_KEY")`` read from ``os.environ`` — a third, divergent
 copy of the provider-aware, settings-backed preflight. An openrouter/modal operator then ran
-``make eval-regression``, the harness key guard passed, ``evals sync`` ran, and the gate pytest SKIPPED
+``make eval-regression-dataset``, the harness key guard passed, ``evals sync`` ran, and the gate pytest SKIPPED
 demanding a ``GEMINI_API_KEY`` they neither had nor needed — ``make`` exiting 0 having gated nothing.
 
 These offline tests pin the shared predicate the gate now uses (``eval_keys_missing``): it names the

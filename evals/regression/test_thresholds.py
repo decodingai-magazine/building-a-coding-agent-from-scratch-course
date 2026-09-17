@@ -4,7 +4,7 @@ This module is DELIBERATELY not collected by plain ``pytest`` / ``make ci``: ``t
 ``pyproject.toml`` is ``tests/unit`` + ``tests/integration``, and this file lives under ``evals/``. It
 runs only when invoked explicitly::
 
-    make eval-regression          # -> uv run pytest evals/regression/test_thresholds.py
+    make eval-regression-dataset          # -> uv run pytest evals/regression/test_thresholds.py
     uv run pytest evals/regression/test_thresholds.py
 
 It costs real money and needs ``OPIK_API_KEY`` plus the active provider's inference key (the agent
@@ -15,7 +15,7 @@ track uses — so an openrouter/modal operator's run is gated on the RIGHT key, 
 ``GEMINI_API_KEY`` (which would let the gate vacuously skip and ``make`` exit 0 having gated nothing).
 
 ``--difficulty easy|medium|hard`` (``evals/regression/conftest.py``) slices the run to one Difficulty
-Tier, so ``make eval-regression ARGS='--difficulty hard'`` bills eight cases instead of twenty. The
+Tier, so ``make eval-regression-dataset ARGS='--difficulty hard'`` bills eight cases instead of twenty. The
 tier is forwarded to ``run_regression``, which names the experiment after the slice
 (``decode-regression-gate-hard``) so a tier's baseline is compared against that tier, never the suite.
 

@@ -248,7 +248,7 @@ def open_source(project: str | None = None) -> ThreadSource:
     import opik
 
     from decode.config.settings import settings
-    from evals.harness.online import live_project_name
+    from evals.harness.mine import live_project_name
 
     target = project or live_project_name()
     return ThreadSource(

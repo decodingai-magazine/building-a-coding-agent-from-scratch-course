@@ -12,7 +12,7 @@ Two pieces sit on top of the eval driver (:mod:`evals.harness.driver`) and the c
   task fns no per-item isolation — one raise would abort the whole experiment (task 106 lesson). The
   temp dir is always removed.
 * :func:`run_regression` loads + filters the cases (``--case`` / ``--difficulty``), upserts the
-  selection into ``decode-regression-v2``, and calls ``opik.evaluation.evaluate`` scoped to those
+  selection into ``decode-regression``, and calls ``opik.evaluation.evaluate`` scoped to those
   items with the case-scoped metrics, ``experiment_scoring_functions=[mean_per_metric]`` folding the
   run into one mean per metric ON the Experiment row, and ``experiment_config`` carrying the agent
   model + provider + git sha + the run's shape. The dataset names ``settings.eval_project_name``, so
@@ -290,7 +290,7 @@ def run_regression(
     """Run the selected cases as one Opik experiment and return its result (ADR-0022 §8).
 
     Loads every case, applies the optional ``--case`` / ``--difficulty`` filters, upserts the
-    selection into ``decode-regression-v2`` (the dataset ALONE — a billed gate run never depends on
+    selection into ``decode-regression`` (the dataset ALONE — a billed gate run never depends on
     the Test Suite API), and calls ``evaluate`` scoped (via ``dataset_item_ids``) to the items whose
     ``checksum`` matches the cases declared on disk, with the case-scoped metrics. Opik never deletes a
     superseded item, so without that scoping an EDITED case would be graded once per historical
@@ -352,9 +352,9 @@ def scoped_name(base: str, *, case_id: str | None = None, difficulty: str | None
 
     The EXPERIMENT naming rule: a gate run over one tier logs as ``decode-regression-gate-hard`` so
     its baseline compares against that tier and never against the whole set; ``--case`` wins over
-    ``--difficulty`` because it is the narrower filter. Surface (b) does NOT share it — a Test Suite
-    is named after its content (:func:`evals.harness.datasets.regression_suite_name`), which slices
-    it for free.
+    ``--difficulty`` because it is the narrower filter. Surface (b) does NOT share it — its one
+    ``decode-regression-suite`` is reconciled to the selection instead
+    (:func:`evals.harness.datasets.sync_regression_cases`).
     """
     slice_name = case_id or difficulty
     return f"{base}-{slice_name}" if slice_name else base
@@ -365,7 +365,7 @@ def _selected_item_ids(dataset: Any, checksums: dict[str, str]) -> dict[str, str
 
     The mirror of :func:`evals.harness.benchmark._selected_item_ids`, and for the same reason: Opik's
     ``insert`` dedupes by content hash but never deletes, so an EDITED case leaves its stale item in
-    ``decode-regression-v2`` forever. Matching on ``case_id`` ALONE would hand ``evaluate`` both ids
+    ``decode-regression`` forever. Matching on ``case_id`` ALONE would hand ``evaluate`` both ids
     and grade that case twice — double cost, duplicated rows. Matching on ``(case_id, checksum)``
     selects the current version and simply never selects a stale one (it stays in the dataset as
     history). ONE id per case (the first match), which also keeps the two items a provenance-only edit

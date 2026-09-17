@@ -14,12 +14,11 @@ exactly those items, adapts the regression task fn to the Test Suites ``{"input"
 contract, and gates on ``result.pass_rate``.
 
 ``opik.run_tests`` takes no per-item filter — it runs every item of the suite it is handed — so the
-suite a run uses is named after its CONTENT: ``decode-regression-suite-<8 hex>`` over the selected
-cases' ``(case_id, case_checksum)`` pairs (:func:`evals.harness.datasets.regression_suite_name`). A
-FILTERED run therefore lands in its own suite rather than billing every runnable case
-(``--difficulty`` is the cost knob on THIS surface too), an EDITED case lands in a fresh suite holding
-exactly one item per case instead of a second item in the old one, and a full run uses the very suite
-``python -m evals sync --regression`` writes — both resolve the name through that one function.
+run first RECONCILES ``decode-regression-suite`` to exactly the selected cases
+(:func:`evals.harness.datasets.sync_regression_cases`). A FILTERED run therefore bills only its
+selection (``--difficulty`` is the cost knob on THIS surface too), an EDITED case is judged once, and
+Opik's native suite versions (``v1``, ``v2``…) keep every earlier item set readable
+(ADR-0022 Amendment §15).
 """
 
 from __future__ import annotations
@@ -27,8 +26,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from decode.config.settings import settings
+from evals.harness.judges import judge_model, judge_provider
 from evals.harness.regression import make_regression_task_fn
 from evals.regression.loader import load_cases, runnable_cases, select_cases
 
@@ -47,6 +50,18 @@ logger = logging.getLogger(__name__)
 # real full runs, not from a guess.
 SUITE_PASS_BAR = 0.8
 
+# Where ``run_tests``' JSON report lands: next to the benchmark's Trial Dirs under the Harness Home's
+# ``.decode/`` (already git-ignored) — never Opik's default ``./opik_test_suite_reports/`` at the cwd,
+# which would litter the repo root with one untracked file per run.
+SUITE_REPORTS_DIR_PARTS = ("evals", "suite-reports")
+
+
+def suite_report_path(suite_version: str | None) -> Path:
+    """The report file for one run: ``<decode_dir>/evals/suite-reports/<UTC stamp>-<version>.json``."""
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    name = f"{stamp}-{suite_version or 'suite'}.json"
+    return Path(settings.decode_dir).joinpath(*SUITE_REPORTS_DIR_PARTS, name)
+
 
 class SuiteSelectionError(Exception):
     """No runnable case matched the suite filter — never a silent empty (but "passing") suite."""
@@ -56,17 +71,27 @@ class SuitePassRateError(Exception):
     """The suite ran but its pass rate fell below :data:`SUITE_PASS_BAR` — the gate failed."""
 
 
-@dataclass(frozen=True)
-class SuiteRun:
-    """One Test Suite run: the versioned suite it ran and the ``run_tests`` result it returned.
+class SuiteJudgeRouteError(Exception):
+    """The judge route cannot ride the Test Suite's assertion judge (a ``modal`` judge, ADR-0022 §7).
 
-    The name rides out with the result so the CLI PRINTS the suite the run actually billed — a
-    content-versioned name is the run's most useful breadcrumb, and recomputing it at the call site
-    would be a second chance to get it wrong.
+    ``opik.run_tests`` hands its ``LLMJudge`` a bare LiteLLM model NAME (``models_factory.get``), so
+    the endpoint ``base_url`` + Modal proxy headers a modal judge needs have nowhere to ride — unlike
+    the G-Eval judges of surface (a), which take a pre-built :class:`~evals.harness.judges.ModalJudgeModel`.
+    Raised before anything is synced or billed, with the two ways out in the message.
     """
 
-    suite_name: str
+
+@dataclass(frozen=True)
+class SuiteRun:
+    """One Test Suite run: the suite version it ran and the ``run_tests`` result it returned.
+
+    The version rides out with the result so the CLI PRINTS the item set the run actually billed —
+    the run's most useful breadcrumb, read once from the reconcile rather than guessed at the call site.
+    """
+
+    suite_version: str | None
     result: Any
+    report_path: Path
 
 
 def make_suite_task_fn(
@@ -99,19 +124,30 @@ def run_test_suite(
     """Run the selected cases' Test Suite and return it with its result (ADR-0022 §8).
 
     Selects the runnable cases the filters name, upserts them through
-    :func:`~evals.harness.datasets.sync_regression_cases` — which names the suite after the selection's
-    CONTENT, so this run and ``python -m evals sync --regression`` resolve the same name from the same
-    function — and calls ``opik.run_tests`` on it.
+    :func:`~evals.harness.datasets.sync_regression_cases` — which reconciles the suite to exactly
+    that selection — and calls ``opik.run_tests`` on it.
 
     The run is SERIAL by construction (``worker_threads=1``): each item drives the REAL agent
     host-native through the process-global ``bash`` executor seam, so two concurrent items would clash
     — the same reason surface (a) runs ``evaluate(task_threads=1)``. Returns the :class:`SuiteRun`
-    carrying the suite name and the result (whose ``pass_rate`` the gate reads).
+    carrying the suite version and the result (whose ``pass_rate`` the gate reads).
+
+    The assertion judge runs on :func:`~evals.harness.judges.judge_model` — the same
+    ``EVAL_JUDGE_PROVIDER`` / ``EVAL_JUDGE_MODEL`` routing surface (a) uses — passed to ``run_tests``
+    as its ``model``; left unset, Opik would silently grade on its own default (``gpt-5-nano``, an
+    ``OPENAI_API_KEY`` this project never configures). A ``modal`` judge route raises
+    :class:`SuiteJudgeRouteError` up front (see its docstring).
     """
     import opik
 
     from evals.harness.datasets import sync_regression_cases
 
+    if judge_provider() == "modal":
+        raise SuiteJudgeRouteError(
+            "the Test Suite's assertion judge takes a bare model name and cannot carry a Modal "
+            "endpoint's base url + proxy headers. Run it with EVAL_JUDGE_PROVIDER=gemini (or "
+            "openrouter), or use `make eval-regression-dataset`, whose G-Eval judges do run on modal."
+        )
     all_cases = load_cases()
     selected = runnable_cases(select_cases(all_cases, case_id=case_id, difficulty=difficulty))
     if not selected:
@@ -123,8 +159,15 @@ def run_test_suite(
     client = client or opik.Opik()
     surfaces = sync_regression_cases(selected, client=client)
     task = make_suite_task_fn({case.id: case for case in all_cases})
-    result = opik.run_tests(test_suite=surfaces.suite, task=task, worker_threads=1)
-    return SuiteRun(suite_name=surfaces.suite_name, result=result)
+    report_path = suite_report_path(surfaces.suite_version)
+    result = opik.run_tests(
+        test_suite=surfaces.suite,
+        task=task,
+        worker_threads=1,
+        model=judge_model(),
+        report_output_path=str(report_path),
+    )
+    return SuiteRun(suite_version=surfaces.suite_version, result=result, report_path=report_path)
 
 
 def assert_pass_rate(pass_rate: float, bar: float = SUITE_PASS_BAR) -> None:

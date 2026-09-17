@@ -1,8 +1,8 @@
 """The ``python -m evals`` CLI body — a Click group with the eval tracks as subcommands (ADR-0017).
 
 ``benchmark`` runs the outcome benchmark (ADR-0022 §1); ``regression`` runs the behavior cases
-host-native (§8); ``suite`` runs the same cases against their natural-language assertions; ``sync``
-upserts the Opik surfaces. Deliberately imports no ``opik`` at module scope — the Opik harness is
+host-native (§8); ``suite`` runs the same cases against their natural-language assertions; ``mine``
+searches the live project for regressions worth a case; ``sync`` upserts the Opik surfaces. Deliberately imports no ``opik`` at module scope — the Opik harness is
 pulled in lazily by the tracks that need it, so building the CLI never needs keys or a network.
 """
 
@@ -24,7 +24,7 @@ def _opik_error_as_click(exc: Exception) -> click.ClickException:
     """Turn a raw Opik REST ``ApiError`` into ONE friendly CLI line (ADR-0017 §9; task 121).
 
     A present-but-invalid ``OPIK_API_KEY`` otherwise dumps a ~40-line ``ApiError`` traceback (HTTP
-    headers and all) from ``make eval-regression`` — the ritual the docs tell every developer to
+    headers and all) from ``make eval-regression-dataset`` — the ritual the docs tell every developer to
     type. An auth status (401/403) names the key exactly as the missing-key guard does; any other
     Opik failure still collapses to a single line naming the status. No secret is ever echoed.
     """
@@ -227,13 +227,15 @@ def suite(case_id: str | None, difficulty: str | None) -> None:
 
     The CONTRAST to ``regression``: the same cases, graded by an LLM judge against each case's
     ``assertion`` (plus the suite's global bars) instead of deterministic metrics, gated on the run's
-    ``pass_rate``. Since ``run_tests`` has no per-item filter, the suite is named after the selected
-    cases' content (``decode-regression-suite-<8 hex>``, the same name ``sync --regression`` resolves)
-    — a filtered or edited selection runs its own suite, and the line below names it. Opik + the
+    ``pass_rate``. Since ``run_tests`` has no per-item filter, ``decode-regression-suite`` is first
+    reconciled to exactly the selected cases — Opik versions it on every change, and the line below
+    names the version the run billed. Opik + the
     harness are imported lazily so ``--help`` never needs keys or a network (ADR-0017 §1).
     """
+    from evals.harness.datasets import REGRESSION_SUITE_NAME
     from evals.harness.test_suite import (
         SUITE_PASS_BAR,
+        SuiteJudgeRouteError,
         SuitePassRateError,
         SuiteSelectionError,
         assert_pass_rate,
@@ -243,13 +245,13 @@ def suite(case_id: str | None, difficulty: str | None) -> None:
     try:
         with opik_boundary():
             run = run_test_suite(case_id=case_id, difficulty=difficulty)
-    except SuiteSelectionError as exc:
+    except (SuiteSelectionError, SuiteJudgeRouteError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     pass_rate = run.result.pass_rate
     click.echo(
-        f"evals suite: {run.suite_name} pass rate {pass_rate:.0%} (bar {SUITE_PASS_BAR:.0%}), "
-        f"logged under {settings_project_name()}."
+        f"evals suite: {REGRESSION_SUITE_NAME} {run.suite_version} pass rate {pass_rate:.0%} (bar {SUITE_PASS_BAR:.0%}), "
+        f"logged under {settings_project_name()}; report in {run.report_path}."
     )
     try:
         assert_pass_rate(pass_rate)
@@ -259,128 +261,8 @@ def suite(case_id: str | None, difficulty: str | None) -> None:
 
 @cli.command()
 @click.option(
-    "--filter",
-    "filter_string",
-    default=None,
-    help="Opik OQL clause scoping which threads to score (e.g. 'start_time > \"2026-07-01T00:00:00Z\"').",
-)
-def online(filter_string: str | None) -> None:
-    """Score decode's LIVE REPL threads with one conversation-level judge (ADR-0017 §10).
-
-    The production-eval track: instead of driving a run, it grades the traces decode ALREADY emitted
-    from real sessions (ADR-0014), inside the LIVE project (``settings.opik_project_name``, NOT
-    ``eval_project_name``), via ``evaluate_threads`` with a single conversation judge whose scores log
-    back onto those threads. Skips friendly (no error) when keys are missing; ``--filter`` scopes the
-    run to recent threads. Opik + the harness are imported lazily so ``--help`` never needs keys or a
-    network (ADR-0017 §1).
-    """
-    from evals.harness.online import (
-        format_thread_scores,
-        live_project_name,
-        online_keys_missing,
-        run_online_eval,
-    )
-
-    missing = online_keys_missing()
-    if missing:
-        click.echo("evals online: skipped — set " + ", ".join(missing) + " to score live threads.")
-        return
-
-    with opik_boundary():
-        result = run_online_eval(filter_string=filter_string)
-    lines = format_thread_scores(result)
-    if not lines:
-        click.echo(f"evals online: no threads to score in {live_project_name()}.")
-        return
-    for line in lines:
-        click.echo(line)
-    click.echo(f"evals online: scored {len(lines)} thread(s) in {live_project_name()}.")
-
-
-@cli.group("online-rule")
-def online_rule() -> None:
-    """Manage the Opik ONLINE RULE that scores live traces as they arrive (ADR-0022 §13)."""
-
-
-@online_rule.command("create")
-@click.option(
-    "--project",
-    default=None,
-    help="Opik project for the rule [default: the LIVE project, settings.opik_project_name].",
-)
-@click.option(
-    "--model",
-    default=None,
-    help="Judge model id as your Opik workspace spells it [default: from the eval routing].",
-)
-@click.option(
-    "--sampling",
-    type=click.FloatRange(min=0.0, max=1.0),
-    default=1.0,
-    show_default=True,
-    help="Fraction of incoming traces the rule scores.",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Print the exact create payload and write nothing.",
-)
-def online_rule_create(
-    project: str | None, model: str | None, sampling: float, dry_run: bool
-) -> None:
-    """Create the `response_quality` LLM-as-judge online rule, idempotently (ADR-0022 §13).
-
-    The README's seven-step UI walkthrough as one command: it resolves the LIVE project, looks for
-    a rule already named `response_quality` (prints `already exists: <id>` and stops if there is
-    one), else creates the LLM-as-judge rule carrying the qualitative prompt from
-    `evals.harness.online_rule.RESPONSE_QUALITY_PROMPT`. Skips friendly (no error) without
-    `OPIK_API_KEY` — the judge runs on Opik's own provider, so no inference key is needed here; Opik
-    + the harness are imported lazily so `--help` never needs keys or a network.
-    """
-    from evals.harness.keys import eval_keys_missing
-    from evals.harness.online_rule import (
-        RULE_NAME,
-        OnlineRuleError,
-        create_response_quality_rule,
-    )
-
-    # Opik-only: the rule's judge runs on the workspace's own provider, so no inference key here.
-    missing = eval_keys_missing(require_provider=False)
-    if missing:
-        click.echo(
-            "evals online-rule: skipped — set " + ", ".join(missing) + " to create the online rule."
-        )
-        return
-
-    try:
-        with opik_boundary():
-            outcome = create_response_quality_rule(
-                project=project, model=model, sampling=sampling, dry_run=dry_run
-            )
-    except OnlineRuleError as exc:
-        raise click.ClickException(f"evals online-rule: {exc}") from exc
-
-    if outcome.action == "dry-run":
-        click.echo(outcome.payload or "")
-        click.echo(
-            f"evals online-rule: dry run — would create {RULE_NAME} in {outcome.project} "
-            f"on judge model {outcome.model}."
-        )
-        return
-    if outcome.action == "exists":
-        click.echo(f"evals online-rule: already exists: {outcome.rule_id} (in {outcome.project}).")
-        return
-    click.echo(
-        f"evals online-rule: created {RULE_NAME} ({outcome.rule_id}) in {outcome.project} "
-        f"on judge model {outcome.model}."
-    )
-
-
-@cli.command()
-@click.option(
     "--preset",
-    type=click.Choice(["errors", "low-quality", "long", "denied", "all"]),
+    type=click.Choice(["errors", "long", "denied", "all"]),
     default="errors",
     show_default=True,
     help="Which regression shape to mine for.",
@@ -455,14 +337,14 @@ def mine(preset: str, since: str | None, limit: int, as_json: bool) -> None:
     "benchmark",
     default=True,
     show_default=True,
-    help="Sync the benchmark tasks into the decode-benchmark-v2 Opik dataset.",
+    help="Sync the benchmark tasks into the decode-benchmark Opik dataset.",
 )
 @click.option(
     "--regression/--no-regression",
     "regression",
     default=True,
     show_default=True,
-    help="Sync the Regression Cases into the decode-regression-v2 dataset AND their Test Suite.",
+    help="Sync the Regression Cases into the decode-regression dataset AND their Test Suite.",
 )
 @click.option(
     "--difficulty",
@@ -473,14 +355,14 @@ def mine(preset: str, since: str | None, limit: int, as_json: bool) -> None:
 def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
     """Upsert the eval tracks' Opik surfaces (ADR-0022 §6,8).
 
-    ``--benchmark`` loads ``evals/benchmark/tasks/`` into ``decode-benchmark-v2``; ``--regression``
-    loads the case registry into BOTH regression surfaces from one pass — the ``decode-regression-v2``
-    dataset the metric gate scores and the ``decode-regression-suite-<8 hex>`` Test Suite the
-    natural-language assertions are judged in, named after the synced cases' content so an edit mints
-    a fresh suite instead of a second item (both on by default, and the line below names the suite it
-    resolved). A skip-guarded case stays in the registry but is
+    ``--benchmark`` loads ``evals/benchmark/tasks/`` into ``decode-benchmark``; ``--regression``
+    loads the case registry into BOTH regression surfaces from one pass — the ``decode-regression``
+    dataset the metric gate scores and the ``decode-regression-suite`` Test Suite the
+    natural-language assertions are judged in, reconciled to exactly the synced cases so an edit
+    replaces its stale item instead of adding a second (both on by default, and the line below names
+    the suite version it left). A skip-guarded case stays in the registry but is
     not registered: the Opik surfaces carry what actually runs. ``--difficulty`` slices the upsert to
-    one tier, so ``make eval-regression ARGS='--difficulty hard'`` syncs and gates the same eight
+    one tier, so ``make eval-regression-dataset ARGS='--difficulty hard'`` syncs and gates the same eight
     cases. Opik is imported lazily here (not at CLI build time) so ``--help`` never needs keys or a
     network.
     """
@@ -492,6 +374,7 @@ def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
     from evals.harness.datasets import (
         BENCHMARK_DATASET_NAME,
         REGRESSION_DATASET_NAME,
+        REGRESSION_SUITE_NAME,
         sync_benchmark_dataset,
         sync_regression_cases,
     )
@@ -515,7 +398,7 @@ def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
             surfaces = sync_regression_cases(cases)
             click.echo(
                 f"evals sync: upserted {len(cases)} case(s){note} into {REGRESSION_DATASET_NAME} "
-                f"and {surfaces.suite_name}."
+                f"and {REGRESSION_SUITE_NAME} {surfaces.suite_version}."
             )
 
 

@@ -4,8 +4,8 @@ No network and no keys: the tests inject a stubbed ``opik.Opik`` (or a mock ``cl
 payloads — one item per task (``task_id`` / ``difficulty`` / ``tags``) and, for one Regression Case,
 BOTH surfaces from one definition (the dataset item the metrics gate and the Test Suite item its
 natural-language assertion grades) — plus the idempotent-by-construction call shape
-(``get_or_create_dataset`` / ``get_or_create_test_suite`` then a single ``insert``) and the
-content-versioned suite NAME that keeps an edited case from being judged twice.
+(``get_or_create_dataset`` / ``get_or_create_test_suite`` then a single ``insert``) and the suite
+reconcile that keeps an edited case from being judged twice.
 """
 
 from __future__ import annotations
@@ -17,15 +17,13 @@ from evals.harness.datasets import (
     BENCHMARK_DATASET_NAME,
     GLOBAL_ASSERTIONS,
     REGRESSION_DATASET_NAME,
-    REGRESSION_SUITE_PREFIX,
+    REGRESSION_SUITE_NAME,
     SUITE_EXECUTION_POLICY,
-    SUITE_VERSION_LENGTH,
     benchmark_dataset_item,
     case_checksum,
     regression_dataset_item,
     regression_items,
     regression_suite_item,
-    regression_suite_name,
     sync_benchmark_dataset,
     sync_regression_cases,
     sync_regression_dataset,
@@ -304,7 +302,7 @@ def test_sync_regression_cases_writes_the_dataset_and_the_test_suite(mocker) -> 
     cases = [_case("a", tags=["x"]), _case("b", tags=["y"])]
     client = mocker.Mock()
     dataset = client.get_or_create_dataset.return_value
-    suite = client.get_or_create_test_suite.return_value
+    suite = _empty_suite(client)
 
     surfaces = sync_regression_cases(cases, client=client)
 
@@ -312,7 +310,7 @@ def test_sync_regression_cases_writes_the_dataset_and_the_test_suite(mocker) -> 
         REGRESSION_DATASET_NAME, project_name=settings.eval_project_name
     )
     client.get_or_create_test_suite.assert_called_once_with(
-        name=regression_suite_name(cases),
+        name=REGRESSION_SUITE_NAME,
         project_name=settings.eval_project_name,
         global_assertions=list(GLOBAL_ASSERTIONS),
         global_execution_policy=SUITE_EXECUTION_POLICY,
@@ -322,50 +320,82 @@ def test_sync_regression_cases_writes_the_dataset_and_the_test_suite(mocker) -> 
     assert (surfaces.dataset, surfaces.suite) == (dataset, suite)
 
 
-def test_the_suite_name_is_stable_for_the_same_cases() -> None:
-    """Same content, same suite — a re-sync reopens the one suite holding exactly these items (§8)."""
-    cases = [_case("a"), _case("b")]
-
-    name = regression_suite_name(cases)
-
-    assert name == regression_suite_name([_case("b"), _case("a")])
-    assert name.startswith(f"{REGRESSION_SUITE_PREFIX}-")
-    assert len(name) == len(REGRESSION_SUITE_PREFIX) + 1 + SUITE_VERSION_LENGTH
-
-
-def test_the_suite_name_changes_when_any_case_checksum_changes() -> None:
-    """The whole point: an EDITED case mints a FRESH suite instead of a second item in the old one.
-
-    Opik never deletes, and ``opik.run_tests`` takes no item filter, so a fixed-name suite would hold
-    two items for the edited case and judge it twice. The name follows the content.
-    """
-    before = [_case("a"), _case("b")]
-    after = [_case("a"), _case("b", prompt="do it differently")]
-
-    assert case_checksum(after[1]) != case_checksum(before[1])
-    assert regression_suite_name(after) != regression_suite_name(before)
-
-
-def test_a_slice_gets_its_own_suite_name() -> None:
-    """The hash is over the SELECTED cases, so a ``--difficulty`` / ``--case`` run never bills the rest."""
-    everything = [_case("a"), _case("b", difficulty="hard")]
-    slice_of_it = [case for case in everything if case.difficulty == "hard"]
-
-    assert regression_suite_name(slice_of_it) != regression_suite_name(everything)
-    assert regression_suite_name(slice_of_it) == regression_suite_name(
-        [_case("b", difficulty="hard")]
-    )
-
-
-def test_the_synced_suite_holds_exactly_one_item_per_case(mocker) -> None:
-    """One item per runnable case in a freshly-named suite — never a stale second item beside it."""
-    cases = [_case("a"), _case("b"), _case("c")]
-    client = mocker.Mock()
+def _empty_suite(client, version: str | None = "v1"):
     suite = client.get_or_create_test_suite.return_value
+    suite.get_items.return_value = []
+    suite.get_current_version_name.return_value = version
+    return suite
+
+
+def _stored(item: dict, item_id: str) -> dict:
+    """A suite item as Opik's ``get_items`` hands it back — the inserted content plus its ``id``."""
+    return {"id": item_id, **item}
+
+
+def test_the_names_carry_no_version_or_hash() -> None:
+    """Clean titles (ADR-0022 Amendment §15): Opik versions the content, the name stays readable."""
+    assert BENCHMARK_DATASET_NAME == "decode-benchmark"
+    assert REGRESSION_DATASET_NAME == "decode-regression"
+    assert REGRESSION_SUITE_NAME == "decode-regression-suite"
+
+
+def test_a_resync_of_unchanged_cases_touches_nothing(mocker) -> None:
+    """Same content already stored → no delete, no insert, so Opik mints no new version."""
+    cases = [_case("a"), _case("b")]
+    client = mocker.Mock()
+    suite = _empty_suite(client, version="v4")
+    suite.get_items.return_value = [
+        _stored(regression_suite_item(case), f"id-{case.id}") for case in cases
+    ]
 
     surfaces = sync_regression_cases(cases, client=client)
 
-    assert surfaces.suite_name == regression_suite_name(cases)
+    suite.delete.assert_not_called()
+    suite.insert.assert_not_called()
+    assert surfaces.suite_version == "v4"
+
+
+def test_an_edited_case_replaces_its_stale_item(mocker) -> None:
+    """The whole point: ``opik.run_tests`` has no item filter, so a stale item left beside the fresh
+    one would be judged too. The reconcile deletes it and inserts only the edited case."""
+    before = [_case("a"), _case("b")]
+    after = [_case("a"), _case("b", prompt="do it differently")]
+    client = mocker.Mock()
+    suite = _empty_suite(client)
+    suite.get_items.return_value = [
+        _stored(regression_suite_item(case), f"id-{case.id}") for case in before
+    ]
+
+    sync_regression_cases(after, client=client)
+
+    suite.delete.assert_called_once_with(["id-b"])
+    suite.insert.assert_called_once_with([regression_suite_item(after[1])])
+
+
+def test_a_slice_narrows_the_suite_to_the_selection(mocker) -> None:
+    """A ``--difficulty`` / ``--case`` run removes the other cases, so it never bills them."""
+    everything = [_case("a"), _case("b", difficulty="hard")]
+    client = mocker.Mock()
+    suite = _empty_suite(client)
+    suite.get_items.return_value = [
+        _stored(regression_suite_item(case), f"id-{case.id}") for case in everything
+    ]
+
+    sync_regression_cases([everything[1]], client=client)
+
+    suite.delete.assert_called_once_with(["id-a"])
+    suite.insert.assert_not_called()
+
+
+def test_the_synced_suite_holds_exactly_one_item_per_case(mocker) -> None:
+    """One item per runnable case in a fresh suite — and the version the reconcile left rides out."""
+    cases = [_case("a"), _case("b"), _case("c")]
+    client = mocker.Mock()
+    suite = _empty_suite(client, version="v1")
+
+    surfaces = sync_regression_cases(cases, client=client)
+
+    assert surfaces.suite_version == "v1"
     inserted = suite.insert.call_args.args[0]
     assert [item["data"]["case_id"] for item in inserted] == ["a", "b", "c"]
 
@@ -400,7 +430,7 @@ def test_sync_regression_default_client_is_a_real_opik(mocker) -> None:
 def test_sync_regression_of_no_cases_creates_both_surfaces_but_inserts_nothing(mocker) -> None:
     client = mocker.Mock()
     dataset = client.get_or_create_dataset.return_value
-    suite = client.get_or_create_test_suite.return_value
+    suite = _empty_suite(client)
 
     surfaces = sync_regression_cases([], client=client)
 

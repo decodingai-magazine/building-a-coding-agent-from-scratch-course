@@ -2,18 +2,16 @@
 
 The discovery half of the mining loop (the glossary's Trace Mining). ``evals mine`` never writes
 a case (that is task 164): it
-answers "what went wrong in production lately, and which of it is the SAME thing?" — four presets
+answers "what went wrong in production lately, and which of it is the SAME thing?" — three presets
 over the live project, each hit reduced to a **Signature**, one Rich table per signature with the
 trace ids a human then picks from.
 
-Four presets, ONE table (:data:`PRESET_FILTERS`). Two are server-side OQL, two are client-side
+Three presets, ONE table (:data:`PRESET_FILTERS`). One is server-side OQL, two are client-side
 because Opik's query language cannot express them:
 
 * ``errors`` — ``error_info is_not_empty``. (Verified against the live backend: ``error_info``
   accepts only ``is_empty`` / ``is_not_empty``, and the operator takes NO value — ``error_info
   is_not_empty ""`` is a parse error.)
-* ``low-quality`` — ``feedback_scores.response_quality < 5``, the score
-  :mod:`evals.harness.online_rule` attaches. Empty until that rule exists.
 * ``long`` — the top decile of ``usage.total_tokens`` **within the fetched window**, computed here:
   a decile is relative to what was fetched, which OQL has no way to say.
 * ``denied`` — traces with at least :data:`DENIED_TOOL_CALL_BAR` gate-denied tool calls, read off
@@ -54,9 +52,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from evals.harness.online import live_project_name
-from evals.harness.online_rule import RULE_NAME
-
 # The ONE tool-span reader lives in the Kitaru importer, which a Worker uploads and runs as a single
 # file from an arbitrary cwd — so it cannot import a sibling, and this caller imports from it
 # instead (task 165). Costs `evals mine` a `kitaru.task.importer` import, which is cheap and already
@@ -74,9 +69,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# A ``response_quality`` below this is worth reading — the online rule's 0-10 scale, so 5 is "did
-# not really answer". Same number the README's UI filter suggests.
-LOW_QUALITY_BAR = 5
 # One denial is routine (the gate doing its job on a single ``ask``); two or more in one run is the
 # shape worth mining: the agent kept trying to do something it was not allowed to do.
 DENIED_TOOL_CALL_BAR = 2
@@ -97,7 +89,6 @@ SPAN_FETCH_CAP = 500
 
 PRESET_FILTERS: dict[str, str | None] = {
     "errors": "error_info is_not_empty",
-    "low-quality": f"feedback_scores.{RULE_NAME} < {LOW_QUALITY_BAR}",
     "long": None,
     "denied": None,
 }
@@ -106,6 +97,18 @@ PRESETS: tuple[str, ...] = tuple(PRESET_FILTERS)
 
 class MineError(Exception):
     """A mining run cannot be built (bad preset / bad ``--since``) — surfaced as ONE CLI line."""
+
+
+def live_project_name() -> str:
+    """The Opik project decode's REAL sessions trace into (ADR-0014) — what the live commands read.
+
+    Deliberately ``settings.opik_project_name`` (``decode``/``decode-<env>``), NOT
+    ``settings.eval_project_name``: mining looks for regressions in real traffic, so the benchmark's
+    "keep eval runs off the live project" rule is inverted here on purpose.
+    """
+    from decode.config.settings import settings
+
+    return settings.opik_project_name
 
 
 def _mapping(value: object) -> dict[str, Any]:

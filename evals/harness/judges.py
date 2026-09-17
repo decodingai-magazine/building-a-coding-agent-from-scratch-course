@@ -42,8 +42,11 @@ from opik.evaluation.models.litellm.litellm_chat_model import LiteLLMChatModel
 from decode.config.settings import settings
 
 # The fixed default judge — a gemini judge provider maps here regardless of ``settings.gemini_model``
-# (ADR-0017 §7): a small, cheap, capable judge model, pinned so eval scores stay comparable.
-DEFAULT_GEMINI_JUDGE = "gemini/gemini-2.5-flash"
+# (ADR-0017 §7): a small, cheap, capable judge model, pinned so eval scores stay comparable. Re-pinned
+# from ``gemini-2.5-flash`` when Google retired it for new keys (the API answers 404 "no longer
+# available to new users"), onto the same flash generation the agent defaults to
+# (``settings.gemini_model``); a re-pin resets the comparability window.
+DEFAULT_GEMINI_JUDGE = "gemini/gemini-3.8-flash"
 
 # The modal route's ``api_key``. The Modal Auto Endpoint authenticates on the Modal-Key/Modal-Secret
 # proxy headers and IGNORES the Bearer token, but litellm's openai route refuses to build a request
@@ -134,9 +137,8 @@ def resolve_judge_model() -> str | LiteLLMChatModel:
     needs non-empty either way. It also carries the endpoint's two workarounds
     (:data:`MODAL_JUDGE_TIMEOUT_S`, :data:`MODAL_JUDGE_EXTRA_BODY` — see the module docstring). The
     kwargs reach ``litellm.completion`` verbatim (``LiteLLMChatModel`` merges ``_completion_kwargs``
-    into every call). Shared by :func:`make_judge` (the G-Eval trace judge) and the online thread
-    metric (:mod:`evals.harness.online`) so the modal wrinkle lives in one place. Construction makes
-    no LLM call.
+    into every call). Used by :func:`make_judge` (the G-Eval trace judge) so the modal wrinkle lives in one
+    place. Construction makes no LLM call.
 
     An ``EVAL_JUDGE_MODEL`` override does NOT demote this route to a plain string: on ``modal`` it
     replaces the model INSIDE the authenticated object (it names another model the same endpoint

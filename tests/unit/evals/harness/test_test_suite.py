@@ -9,11 +9,15 @@ leaks an expected answer into ``input``), the serial run wiring, and the pass-ra
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from evals.harness.datasets import regression_suite_name
+from decode.config.settings import settings
+from evals.harness.datasets import REGRESSION_SUITE_NAME
 from evals.harness.test_suite import (
     SUITE_PASS_BAR,
+    SuiteJudgeRouteError,
     SuitePassRateError,
     SuiteSelectionError,
     assert_pass_rate,
@@ -21,6 +25,14 @@ from evals.harness.test_suite import (
     run_test_suite,
 )
 from evals.regression.case import RegressionCase
+
+
+@pytest.fixture(autouse=True)
+def _gemini_judge(mocker):
+    """Pin the judge route to gemini: a developer's ``.env`` (``LLM_PROVIDER=modal``) must not decide
+    whether ``run_test_suite`` refuses to run — the modal-route test flips it explicitly."""
+    mocker.patch("evals.harness.test_suite.judge_provider", return_value="gemini")
+    mocker.patch("evals.harness.test_suite.judge_model", return_value="gemini/gemini-3.8-flash")
 
 
 def _case(case_id: str, prompt: str = "do the thing", **overrides: object) -> RegressionCase:
@@ -94,21 +106,55 @@ def test_run_test_suite_registers_the_cases_and_runs_the_suite_serially(mocker):
     run = run_test_suite(client=client)
 
     assert run.result is run_tests.return_value
-    assert run.suite_name is sync.return_value.suite_name
+    assert run.suite_version is sync.return_value.suite_version
     assert [case.id for case in sync.call_args.args[0]] == ["a", "b"]
     kwargs = run_tests.call_args.kwargs
     assert kwargs["test_suite"] is sync.return_value.suite
     assert callable(kwargs["task"])
     # The agent runs host-native through the process-global bash seam — two items at once would clash.
     assert kwargs["worker_threads"] == 1
+    # The assertion judge is OUR judge route, never Opik's silent default (gpt-5-nano, no key here).
+    assert kwargs["model"] == "gemini/gemini-3.8-flash"
+    # The JSON report lands under the git-ignored ``.decode/``, never Opik's ``./opik_test_suite_reports/``.
+    report = Path(kwargs["report_output_path"])
+    assert report == run.report_path
+    assert report.parent == Path(settings.decode_dir) / "evals" / "suite-reports"
+    assert report.suffix == ".json"
+    assert "opik_test_suite_reports" not in report.parts
 
 
-def test_a_filtered_run_registers_its_own_sliced_suite(mocker):
-    """``run_tests`` has no item filter, so a tier run gets its own suite instead of billing them all.
+def test_the_suite_judge_follows_the_eval_judge_model_route(mocker):
+    """``EVAL_JUDGE_PROVIDER`` / ``EVAL_JUDGE_MODEL`` reach ``run_tests`` as its ``model`` (ADR-0022 §7)."""
+    run_tests = mocker.patch("opik.run_tests", create=True)
+    mocker.patch("evals.harness.datasets.sync_regression_cases")
+    mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a")])
+    mocker.patch("evals.harness.test_suite.judge_provider", return_value="openrouter")
+    mocker.patch("evals.harness.test_suite.judge_model", return_value="openrouter/some/judge")
 
-    The slice needs no suffix: the suite name hashes the SELECTED cases, so handing ``sync`` the one
-    hard case is what gives the run its own suite.
-    """
+    run_test_suite(client=mocker.Mock())
+
+    assert run_tests.call_args.kwargs["model"] == "openrouter/some/judge"
+
+
+def test_a_modal_judge_route_is_refused_before_anything_is_synced_or_billed(mocker):
+    """Opik's suite judge takes a bare model name — a modal judge (base url + proxy headers) cannot ride
+    it, so the run stops up front and names both ways out."""
+    run_tests = mocker.patch("opik.run_tests", create=True)
+    sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
+    mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a")])
+    mocker.patch("evals.harness.test_suite.judge_provider", return_value="modal")
+
+    with pytest.raises(SuiteJudgeRouteError, match="EVAL_JUDGE_PROVIDER=gemini") as excinfo:
+        run_test_suite(client=mocker.Mock())
+
+    assert "eval-regression-dataset" in str(excinfo.value)
+    sync.assert_not_called()
+    run_tests.assert_not_called()
+
+
+def test_a_filtered_run_reconciles_the_suite_to_its_slice(mocker):
+    """``run_tests`` has no item filter, so a tier run hands ``sync`` ONLY its cases — the reconcile
+    narrows the one suite to them instead of billing them all."""
     mocker.patch("opik.run_tests", create=True)
     sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
     mocker.patch(
@@ -119,29 +165,26 @@ def test_a_filtered_run_registers_its_own_sliced_suite(mocker):
     run_test_suite(difficulty="hard", client=mocker.Mock())
 
     assert [case.id for case in sync.call_args.args[0]] == ["b"]
-    assert "suite_name" not in sync.call_args.kwargs
 
 
-def test_the_run_registers_the_versioned_suite_with_one_item_per_case(mocker):
-    """End to end through the REAL sync: ONE function names the suite, and it holds one item per case.
+def test_the_run_registers_the_suite_with_one_item_per_case(mocker):
+    """End to end through the REAL sync: the one clean-named suite holds one item per runnable case.
 
     Only ``opik.run_tests`` is mocked; the fake client records what ``sync_regression_cases`` asked
-    Opik for — the same call ``python -m evals sync --regression`` makes, so both commands provably
-    agree on the name.
+    Opik for — the same call ``python -m evals sync --regression`` makes.
     """
     mocker.patch("opik.run_tests", create=True)
     cases = [_case("a"), _case("b"), _case("skipped", skip_reason="MCP has not shipped")]
     mocker.patch("evals.harness.test_suite.load_cases", return_value=cases)
     client = mocker.Mock()
     suite = client.get_or_create_test_suite.return_value
+    suite.get_items.return_value = []
+    suite.get_current_version_name.return_value = "v1"
 
     run = run_test_suite(client=client)
 
-    runnable = [case for case in cases if case.skip_reason is None]
-    assert run.suite_name == regression_suite_name(runnable)
-    assert client.get_or_create_test_suite.call_args.kwargs["name"] == regression_suite_name(
-        runnable
-    )
+    assert run.suite_version == "v1"
+    assert client.get_or_create_test_suite.call_args.kwargs["name"] == REGRESSION_SUITE_NAME
     inserted = suite.insert.call_args.args[0]
     assert [item["data"]["case_id"] for item in inserted] == ["a", "b"]
 
