@@ -401,3 +401,16 @@ already feeds live failures back into the second. With the rule gone, `mine` los
 `low-quality` preset (the rule's score was its only input); `errors` / `long` / `denied` stay.
 `eval_keys_missing` loses `require_agent` (the online judge was its only caller); `live_project_name`
 moves to `evals/harness/mine.py`.
+
+## Amendment (2026-09-22) — §17, the pin lifted again; kitaru skills installed, not vendored
+
+**Status:** Accepted. Amends §12.
+
+`kitaru[cli,mcp,worker]>=0.27.0` + `kitaru-pydantic-ai>=0.3.0`, whose cap is now `<2.47`, so
+`pydantic-ai-slim[google,openai]>=2.46,<2.47` (2.47.0 exists but sits outside the adapter's window).
+The CLI envelope contract `evals/harness/kitaru_cli.py` parses is unchanged on 0.27.0 (success on
+stdout, failure on stderr). The five `kitaru-*` skills + `skills-release`, previously committed
+under `.agents/skills/` + `.claude/skills/` with a `skills-lock.json`, are gitignored: an operator
+installs the current ones with `npx skills add zenml-io/kitaru-skills`
+([06](../../running_the_code/06_evals_replays.md) §0), so they track the kitaru release instead of a
+stale vendored copy. `manual-e2e-qa` is this repo's own skill and stays committed.

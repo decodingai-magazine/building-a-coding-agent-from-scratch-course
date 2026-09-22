@@ -4,7 +4,18 @@ Replay-based evals on your own traffic with [Kitaru](https://docs.zenml.io/kitar
 
 Vocabulary: a run is recorded as a **Session**; humans judge Sessions in an **Investigation**; judged Sessions freeze into a **Cohort**; an **Evaluator** turns a criterion into a repeatable verdict; a **Replay** re-runs a Session from the top on a **Worker** you start, optionally with one change, so the same Evaluator scores before and after. The server executes nothing ([ADR-0019](../docs/adr/0019-kitaru-replay-runtime.md)).
 
-## 0. Pick a server
+## 0. Set up
+
+`kitaru` itself comes with `make install`; the full setup (CLI, server, SDK) lives in the official
+[Kitaru installation guide](https://docs.zenml.io/kitaru/getting-started/installation?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs).
+The Kitaru skills your coding agent uses below (`kitaru-investigation`, `kitaru-replay-experiment`,
+`kitaru-importer-builder`, …) are not shipped in this repo — install the current ones once:
+
+```bash
+npx skills add zenml-io/kitaru-skills
+```
+
+### Pick a server
 
 A Kitaru Server is **one URL** ([ADR-0022](../docs/adr/0022-evals-v2-own-harbor-on-opik.md) §11) and
 everything below is identical on either of them: a **local OSS deployment** on your laptop, or the **managed workspace**.
@@ -38,7 +49,7 @@ uv run kitaru login https://f5ee9622-kitaru.cloudinfra.zenml.io   # or: make kit
 uv run kitaru status                                              # first check whenever anything looks off
 ```
 
-Optional: drive the workspace from Claude Code / Cursor. `.mcp.json` in this repo already starts `kitaru-mcp` in `standard` mode; skills: `npx skills add zenml-io/kitaru-skills`.
+Optional: drive the workspace from Claude Code / Cursor. `.mcp.json` in this repo already starts `kitaru-mcp` in `standard` mode; the skills come from §0.
 
 ## 2. Record sessions
 
