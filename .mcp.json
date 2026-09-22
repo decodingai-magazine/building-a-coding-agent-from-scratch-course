@@ -2,14 +2,7 @@
   "mcpServers": {
     "kitaru": {
       "command": "uv",
-      "args": [
-        "run",
-        "kitaru-mcp",
-        "--server",
-        "https://f5ee9622-kitaru.cloudinfra.zenml.io",
-        "--mode",
-        "standard"
-      ]
+      "args": ["run", "kitaru-mcp", "--server", "http://localhost:8000", "--mode", "standard"]
     }
   }
 }

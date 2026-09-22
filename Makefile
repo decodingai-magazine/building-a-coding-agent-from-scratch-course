@@ -37,14 +37,19 @@ eval-regression-suite:  ## Regression Cases, LLM-judged track: the Opik Test Sui
 	fi
 
 KITARU_LOCAL_URL ?= http://localhost:8000
+# The server to register on: `make kitaru-bootstrap KITARU_API_URL=<url>` > the shell env > `.env` > local.
+KITARU_API_URL ?= $(or $(shell sed -n 's/^KITARU_API_URL=//p' .env 2>/dev/null | tail -n 1),$(KITARU_LOCAL_URL))
 
 kitaru-local:  ## Start the local OSS Kitaru server (docker compose) and register decode on it. `kitaru logout` stops it.
 	uv run kitaru login --local
-	uv run python scripts/bootstrap_kitaru.py --server $(KITARU_LOCAL_URL)
+	$(MAKE) kitaru-bootstrap KITARU_API_URL=$(KITARU_LOCAL_URL)
+
+kitaru-bootstrap:  ## Register decode on KITARU_API_URL (arg > env > .env > local), then print the two .env lines. ARGS=--dry-run changes nothing.
+	uv run python scripts/bootstrap_kitaru.py --server $(KITARU_API_URL) $(ARGS)
 	@echo ""
-	@echo "# Export these two: decode reads KITARU_AGENT_ID, the kitaru adapter reads KITARU_API_URL."
-	@echo "export KITARU_API_URL=$(KITARU_LOCAL_URL)"
-	@printf 'export KITARU_AGENT_ID=%s\n' "$$(uv run kitaru agent get decode --server $(KITARU_LOCAL_URL) --output json | uv run python -c 'import json,sys; print(json.load(sys.stdin)["item"]["id"])')"
+	@echo "# Put these two in .env:"
+	@echo "KITARU_API_URL=$(KITARU_API_URL)"
+	@printf 'KITARU_AGENT_ID=%s\n' "$$(uv run kitaru agent get decode --server $(KITARU_API_URL) --output json 2>/dev/null | uv run python -c 'import json,sys; d=sys.stdin.read().strip(); print(json.loads(d)["item"]["id"] if d else "<no decode agent there yet: check uv run kitaru status>")')"
 
 ##### Dev ######
 

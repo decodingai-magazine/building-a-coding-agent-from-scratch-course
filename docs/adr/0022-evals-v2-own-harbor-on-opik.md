@@ -414,3 +414,20 @@ under `.agents/skills/` + `.claude/skills/` with a `skills-lock.json`, are gitig
 installs the current ones with `npx skills add zenml-io/kitaru-skills`
 ([06](../../running_the_code/06_evals_replays.md) §0), so they track the kitaru release instead of a
 stale vendored copy. `manual-e2e-qa` is this repo's own skill and stays committed.
+
+## Amendment (2026-09-22) — §18, `KITARU_API_URL` loads from `.env`
+
+**Status:** Accepted. Amends ADR-0019 §3 ("decode owns no url/key settings") and §11's "export it".
+
+`KITARU_API_URL` becomes a `Settings` field (`kitaru_api_url`), so `.env` carries it like every
+other knob and the operator no longer has to `set -a; . ./.env` before a run. The adapter's client
+still reads ONLY `os.environ`, so ONE resolver, `runtime.recording.kitaru_api_url()`, answers
+"which server" (an exported value first, else `.env`), and the Recording Seam exports that value
+into `os.environ` just before it wraps — the adapter, the `evals kitaru` bridge,
+`scripts/bootstrap_kitaru.py` and `make kitaru-bootstrap` therefore can never disagree. Benchmark
+trials get it for free: `child_env` already exports every set `Settings` field. Still NOT a setting:
+`KITARU_API_KEY` — the local server needs none and a managed workspace keeps its token in the
+`kitaru login` store, so no credential is added to decode's config surface. The `kitaru` CLI itself
+(`kitaru status`, `kitaru worker start`, …) is kitaru's code and still resolves `--server` >
+exported env > login store; a Worker's shell sources `.env` anyway, because the `decode run` it
+spawns starts in a Harness Home with no `.env` of its own.

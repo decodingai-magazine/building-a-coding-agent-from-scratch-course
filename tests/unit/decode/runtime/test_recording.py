@@ -62,12 +62,27 @@ def test_recording_is_not_configured_without_an_agent_id(monkeypatch):
     assert rec.recording_is_configured() is False
 
 
-def test_recording_is_not_configured_without_the_adapter_connection_env(monkeypatch):
-    """The url/key are ADAPTER-owned env; decode adds no settings of its own, so it checks the env."""
+def test_recording_is_not_configured_without_a_server_url(monkeypatch):
     monkeypatch.setattr(rec.settings, "kitaru_agent_id", AGENT_ID)
     monkeypatch.delenv("KITARU_API_URL", raising=False)
 
     assert rec.recording_is_configured() is False
+
+
+def test_a_server_url_in_dot_env_alone_configures_recording(monkeypatch):
+    """ADR-0022 §18: ``.env`` carries KITARU_API_URL like every other knob — no export needed."""
+    monkeypatch.setattr(rec.settings, "kitaru_agent_id", AGENT_ID)
+    monkeypatch.setattr(rec.settings, "kitaru_api_url", API_URL)
+    monkeypatch.delenv("KITARU_API_URL", raising=False)
+
+    assert rec.recording_is_configured() is True
+
+
+def test_an_exported_server_url_wins_over_dot_env(monkeypatch):
+    monkeypatch.setattr(rec.settings, "kitaru_api_url", "http://from-dot-env.invalid")
+    monkeypatch.setenv("KITARU_API_URL", API_URL)
+
+    assert rec.kitaru_api_url() == API_URL
 
 
 def test_recording_is_configured_with_an_agent_id_and_the_connection_env(_configured):
@@ -162,6 +177,19 @@ async def test_a_configured_run_is_wrapped_in_kitaru_agent(monkeypatch, _configu
     assert wrapped is stack.wrapped[0]
     assert wrapped.wrapped is agent
     assert notice is None  # nothing was lost, so the operator hears nothing
+
+
+async def test_a_dot_env_server_url_is_exported_for_the_adapter_before_the_wrap(monkeypatch):
+    """The adapter's client reads ONLY ``os.environ`` — the seam hands it the ``.env`` value."""
+    monkeypatch.setattr(rec.settings, "kitaru_agent_id", AGENT_ID)
+    monkeypatch.setattr(rec.settings, "kitaru_api_url", API_URL)
+    monkeypatch.delenv("KITARU_API_URL", raising=False)
+    stack = install_fake_recording_stack(monkeypatch)
+
+    wrapped, _ = await rec.wrap_for_recording(_StubAgent(), session_name="session-42")
+
+    assert wrapped is stack.wrapped[0]
+    assert os.environ["KITARU_API_URL"] == API_URL
 
 
 async def test_the_wrap_carries_the_configured_agent_id_and_the_session_name(

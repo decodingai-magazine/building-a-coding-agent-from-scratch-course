@@ -7,9 +7,9 @@ surface when recording was silently dropped. Nothing else in decode imports the 
 module is the whole recording story:
 
 * **Presence-based opt-in.** Recording is configured when ``KITARU_AGENT_ID`` is set AND the adapter
-  client's own connection env (``KITARU_API_URL``) is present. decode adds no url/key settings of
-  its own — the adapter's client resolves those itself, so there is exactly one place to configure
-  the workspace. Empty agent id → the bare agent, and **no kitaru module is ever imported**: both
+  server URL (``KITARU_API_URL``, exported or in ``.env``) is. The adapter's client reads only
+  ``os.environ``, so the seam exports a ``.env``-only URL there before wrapping (ADR-0022 §18); no
+  key setting — ``kitaru login`` keeps the token. Empty agent id → the bare agent, and **no kitaru module is ever imported**: both
   imports below sit inside the configured branch (the tightened import invariant, ADR-0019 §3).
 * **Degrade, user-launched.** The adapter fast-fails at session creation when the workspace is
   unreachable, which would take a paid run down with it. So the seam probes the workspace ONCE
@@ -91,6 +91,18 @@ def is_worker_task() -> bool:
     return bool(os.environ.get(TASK_ID_ENV))
 
 
+def kitaru_api_url() -> str:
+    """The Kitaru Server URL: an exported ``KITARU_API_URL`` first, else the one in ``.env``."""
+    return os.environ.get(API_URL_ENV, "").strip() or settings.kitaru_api_url.strip()
+
+
+def export_kitaru_api_url() -> None:
+    """Put a ``.env``-only URL into ``os.environ`` — the adapter's client reads nothing else."""
+    url = kitaru_api_url()
+    if url and not os.environ.get(API_URL_ENV):
+        os.environ[API_URL_ENV] = url
+
+
 def recording_is_configured() -> bool:
     """True when this process should record its runs as Kitaru Sessions (ADR-0019 §3).
 
@@ -100,7 +112,7 @@ def recording_is_configured() -> bool:
     """
     if is_worker_task():
         return True
-    return bool(settings.kitaru_agent_id.strip()) and bool(os.environ.get(API_URL_ENV))
+    return bool(settings.kitaru_agent_id.strip()) and bool(kitaru_api_url())
 
 
 def _configured_agent_id() -> UUID | None:
@@ -136,7 +148,7 @@ def _worker_task_id() -> UUID:
 
 def _workspace_label() -> str:
     """The workspace the adapter will talk to, for the one warning line."""
-    return os.environ.get(API_URL_ENV) or "the Kitaru workspace configured by your kitaru login"
+    return kitaru_api_url() or "the Kitaru workspace configured by your kitaru login"
 
 
 def _agent_id_trap_hint(error: BaseException) -> str:
@@ -230,6 +242,7 @@ async def wrap_for_recording[DepsT, OutputT](
     if not recording_is_configured():
         return agent, None
 
+    export_kitaru_api_url()
     worker = is_worker_task()
     try:
         agent_id = _configured_agent_id()

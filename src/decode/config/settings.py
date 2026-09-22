@@ -227,12 +227,15 @@ class Settings(BaseSettings):
     runtime_max_requests: int | None = Field(None, gt=0)
     # --- Recording Seam (ADR-0019 §3) ---
     # The Kitaru agent (a UUID) recorded runs are filed under. Presence-based opt-in and decode's
-    # ONLY recording knob: set it (together with the adapter client's own ``KITARU_API_URL`` /
-    # ``KITARU_API_KEY`` **process** env) and a run is wrapped in ``kitaru_pydantic_ai.KitaruAgent``;
-    # empty → the bare agent, and no kitaru module is ever imported. Deliberately NOT paired with
-    # url/key settings of decode's own: the adapter client resolves those itself, so there is exactly
-    # one place to configure the workspace (a second one would drift).
+    # recording switch: set it (together with a Kitaru Server URL) and a run is wrapped in
+    # ``kitaru_pydantic_ai.KitaruAgent``; empty → the bare agent, and no kitaru module is ever
+    # imported.
     kitaru_agent_id: str = ""
+    # The Kitaru Server URL, so ``.env`` can carry it like every other knob. The adapter's client
+    # reads ONLY the process env, so the Recording Seam exports this into ``os.environ`` when the
+    # shell did not (``runtime.recording.export_kitaru_api_url``) — one value, never a second source.
+    # No key setting: the local server needs none, a managed one keeps its token in ``kitaru login``.
+    kitaru_api_url: str = ""
     # Secrets are NOT a runtime knob any more: the retired ``RUNTIME_SECRET_*`` family is deleted,
     # with no shim — config comes from ``DECODE_ENV`` (above), in the TUI and headless alike, and a
     # stale entry in a developer's ``.env`` is silently ignored (ADR-0015 §4; loud in .env.example).

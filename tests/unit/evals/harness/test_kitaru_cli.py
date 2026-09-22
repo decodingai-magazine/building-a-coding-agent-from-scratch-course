@@ -50,12 +50,21 @@ def install(mocker, *envelopes: dict[str, Any], returncode: int = 0) -> FakeRun:
     return fake
 
 
-# --- the server URL: process env, never Settings ---------------------------------------------------
+# --- the server URL: exported first, else .env ----------------------------------------------------
 
 
 def test_the_server_url_comes_from_the_exported_process_env(monkeypatch):
-    """ADR-0019 §3: decode owns no kitaru connection setting — the operator exports the URL."""
     monkeypatch.setenv(KITARU_API_URL_ENV, SERVER)
+
+    assert kitaru_server() == SERVER
+
+
+def test_the_server_url_falls_back_to_dot_env(monkeypatch):
+    """ADR-0022 §18: the bridge resolves the URL exactly as the Recording Seam does."""
+    from decode.config.settings import settings
+
+    monkeypatch.delenv(KITARU_API_URL_ENV, raising=False)
+    monkeypatch.setattr(settings, "kitaru_api_url", SERVER)
 
     assert kitaru_server() == SERVER
 

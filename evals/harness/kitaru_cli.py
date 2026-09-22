@@ -6,10 +6,9 @@ does is exactly what an operator could type, so a failure is reproducible by cop
 and ``evals`` keeps the CLI-only rule the project holds every other piece of infrastructure to. It
 also keeps ``kitaru`` out of the eval import graph — only the binary is needed.
 
-**One server, one URL** (ADR-0022 §10). ``KITARU_API_URL`` is read from the PROCESS env here, not
-from ``Settings``: decode deliberately owns no kitaru connection setting — the adapter's own client
-resolves url + key (ADR-0019 §3, and the Recording Seam block in ``.env.example``). It is passed to
-every invocation as an explicit ``--server`` so the argv is self-describing and a stale
+**One server, one URL** (ADR-0022 §10). ``KITARU_API_URL`` resolves exactly as the Recording
+Seam's does — exported first, else ``.env`` (ADR-0022 §18) — so the bridge and a recorded run can
+never disagree about the server. It is passed to every invocation as an explicit ``--server`` so the argv is self-describing and a stale
 ``kitaru login`` store can never silently retarget a command at another workspace. (Verified on
 kitaru 0.27.0: resolution is ``--server`` > ``KITARU_API_URL`` > the login store.)
 
@@ -23,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shlex
 import subprocess
 from typing import Any
@@ -63,9 +61,10 @@ class KitaruCommandError(Exception):
 
 
 def kitaru_server() -> str | None:
-    """The Kitaru Server URL from the process env, or ``None`` when it is not exported."""
-    value = os.environ.get(KITARU_API_URL_ENV, "").strip()
-    return value or None
+    """The Kitaru Server URL — exported, else from ``.env`` — or ``None`` when neither sets it."""
+    from decode.runtime.recording import kitaru_api_url
+
+    return kitaru_api_url() or None
 
 
 def kitaru_keys_missing() -> list[str]:

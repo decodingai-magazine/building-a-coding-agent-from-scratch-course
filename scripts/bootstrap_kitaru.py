@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shlex
 import subprocess
 import sys
@@ -586,11 +585,18 @@ def render_table(rows: list[Row]) -> str:
     return "\n".join(lines)
 
 
+def _env_server() -> str | None:
+    """``KITARU_API_URL`` as decode resolves it — exported first, else ``.env`` (ADR-0022 §18)."""
+    from decode.runtime.recording import kitaru_api_url
+
+    return kitaru_api_url() or None
+
+
 @click.command()
 @click.option(
     "--server",
     default=None,
-    help=f"The Kitaru Server to register on [default: ${KITARU_API_URL_ENV}, else your login store].",
+    help=f"The Kitaru Server to register on [default: ${KITARU_API_URL_ENV}, else .env, else your login store].",
 )
 @click.option("--dry-run", is_flag=True, help="Print the kitaru commands instead of running them.")
 @click.option(
@@ -631,7 +637,7 @@ def main(
     repo = repo.expanduser().resolve()
     harness_home = harness_home.expanduser().resolve()
     entrypoint = (decode_bin or repo / ".venv/bin/decode").expanduser().resolve()
-    target = server or os.environ.get(KITARU_API_URL_ENV, "").strip() or None
+    target = server or _env_server()
 
     if not entrypoint.is_file():
         raise click.ClickException(

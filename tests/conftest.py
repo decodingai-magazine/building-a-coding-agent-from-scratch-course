@@ -173,6 +173,7 @@ def _no_kitaru_recording(monkeypatch):
     from decode.config.settings import settings
 
     monkeypatch.setattr(settings, "kitaru_agent_id", "", raising=False)
+    monkeypatch.setattr(settings, "kitaru_api_url", "", raising=False)
 
 
 @pytest.fixture(autouse=True)
