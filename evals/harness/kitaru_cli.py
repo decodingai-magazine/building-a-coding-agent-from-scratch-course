@@ -11,7 +11,7 @@ from ``Settings``: decode deliberately owns no kitaru connection setting — the
 resolves url + key (ADR-0019 §3, and the Recording Seam block in ``.env.example``). It is passed to
 every invocation as an explicit ``--server`` so the argv is self-describing and a stale
 ``kitaru login`` store can never silently retarget a command at another workspace. (Verified on
-kitaru 0.26.0: resolution is ``--server`` > ``KITARU_API_URL`` > the login store.)
+kitaru 0.27.0: resolution is ``--server`` > ``KITARU_API_URL`` > the login store.)
 
 Every invocation adds ``--output json`` + ``--non-interactive``: the CLI answers with one envelope
 (``{"ok": true, "item"/"items": …}``), which is the whole contract this module parses. A non-zero
@@ -169,7 +169,7 @@ def format_argv(argv: list[str]) -> str:
 def _envelope(completed: subprocess.CompletedProcess[str], argv: list[str]) -> dict[str, Any]:
     """Parse one CLI envelope, turning every failure shape into one error naming the argv.
 
-    stdout OR stderr: verified live on kitaru 0.26.0, a SUCCEEDING sub-command prints its envelope
+    stdout OR stderr: verified live on kitaru 0.27.0, a SUCCEEDING sub-command prints its envelope
     to stdout and a FAILING one prints it to stderr. Reading stdout alone turned every ``not_found``
     into "answered with no json envelope" and threw away the ``kind`` callers branch on.
     """
