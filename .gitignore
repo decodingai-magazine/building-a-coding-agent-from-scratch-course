@@ -233,3 +233,10 @@ __marimo__/
 
 # Zed
 .zed/
+
+# Kitaru skills: installed per operator via `npx skills add zenml-io/kitaru-skills`, never vendored
+.agents/skills/kitaru-*
+.claude/skills/kitaru-*
+.agents/skills/skills-release
+.claude/skills/skills-release
+skills-lock.json
