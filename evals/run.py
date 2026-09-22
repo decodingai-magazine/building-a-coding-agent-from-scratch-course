@@ -409,8 +409,8 @@ def kitaru() -> None:
     Two thin commands over ONE join key, the decode session id: ``import`` backfills Sessions for
     traces decode never recorded, ``cohort from-experiment`` freezes a benchmark job's FAILING trials
     into a replayable Cohort. Both shell out to the ``kitaru`` CLI (the project's CLI-only rule) and
-    both need an exported ``KITARU_API_URL`` — register the server's agent / importer / evaluators
-    first with ``uv run python scripts/bootstrap_kitaru.py`` (``make kitaru-local`` does both).
+    both need ``KITARU_API_URL`` (exported or in ``.env``, ADR-0022 §18) — register the server's
+    agent / importer / evaluators first with ``make kitaru-bootstrap`` (``make kitaru-local`` does both).
     """
 
 

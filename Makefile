@@ -51,6 +51,9 @@ kitaru-bootstrap:  ## Register decode on KITARU_API_URL (arg > env > .env > loca
 	@echo "KITARU_API_URL=$(KITARU_API_URL)"
 	@printf 'KITARU_AGENT_ID=%s\n' "$$(uv run kitaru agent get decode --server $(KITARU_API_URL) --output json 2>/dev/null | uv run python -c 'import json,sys; d=sys.stdin.read().strip(); print(json.loads(d)["item"]["id"] if d else "<no decode agent there yet: check uv run kitaru status>")')"
 
+kitaru-seed:  ## Record 30 decode runs (14 good, 8 cut off, 8 crashed) as Kitaru Sessions on the .env server, so an investigation has data. Costs model calls. ARGS=--dry-run prints them.
+	uv run python scripts/seed_kitaru_sessions.py $(ARGS)
+
 ##### Dev ######
 
 test:  ## Run the full test suite (unit + integration).
@@ -85,4 +88,4 @@ ci:  ## What CI runs: lockfile check + format-check + lint-check + full tests.
 	$(MAKE) lint-check
 	$(MAKE) test
 
-.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression-dataset eval-regression-suite kitaru-local build install-cli uninstall-cli ci help
+.PHONY: install test unit-tests integration-tests lint-check lint-fix format-check format-fix pre-commit eval-benchmark eval-regression-dataset eval-regression-suite kitaru-local kitaru-bootstrap kitaru-seed build install-cli uninstall-cli ci help
