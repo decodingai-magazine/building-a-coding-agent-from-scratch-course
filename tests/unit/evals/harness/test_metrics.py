@@ -607,7 +607,7 @@ def test_answered_without_error_an_answer_and_no_error_scores_one() -> None:
 
 
 def test_answered_without_error_a_crashed_run_scores_zero_and_names_the_error() -> None:
-    # The mined symptom: a terminal error AND no answer (evaluators/decode_bad_request_400.py).
+    # The mined symptom: a terminal error AND no answer.
     result = AnsweredWithoutErrorMetric().score(
         output="", agent_error="Exceeded maximum output retries (3)", infra_error=None
     )

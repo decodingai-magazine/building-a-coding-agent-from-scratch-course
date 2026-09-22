@@ -40,8 +40,8 @@ EXPECTED_EASY_IDS = {
 # floor's, never the registry's total, so mining one more case never edits a tier count.
 EXPECTED_MINED_EASY_IDS = {"21-empty-model-response", "22-guessed-file-path"}
 
-# Declared but never run: the MCP case (no tool factory yet) and mined case zero (no 400 to reproduce).
-EXPECTED_SKIPPED_IDS = {"12-mcp-tool-usage", "23-bad-request-400"}
+# Declared but never run: the MCP case (no tool factory yet).
+EXPECTED_SKIPPED_IDS = {"12-mcp-tool-usage"}
 
 
 # A case module the loader will import for the error-path test: the ``CASE`` is constructed at import

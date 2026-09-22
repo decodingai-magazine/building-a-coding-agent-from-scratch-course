@@ -12,8 +12,9 @@ Thirty scenarios over ten prompts, in the three shapes decode's own Opik history
   ``UsageLimitExceeded`` after its first tool call, task unfinished; verdict ``problematic``;
 * ``crash`` — the model request itself fails, never the agent: ``--model no-such-model``
   (``ModelHTTPError``), or the provider made unreachable / unauthenticated for that one run
-  (``httpx.ConnectError`` on modal, a ``400`` on gemini, a ``401`` on openrouter). The outage class:
-  the shipped ``decode-bad-request-400`` evaluator passes these unless the status is 400.
+  (``httpx.ConnectError`` on modal, a ``400`` on gemini, a ``401`` on openrouter); verdict
+  ``problematic``. On modal these are what ``decode-connection-error`` flags; the cut-off runs are
+  what ``decode-request-limit`` flags.
 
 Every run is one Kitaru Session (both ``KITARU_*`` lines in ``.env``); the script refuses to start
 when recording is off, because thirty unrecorded runs are thirty wasted model calls. An operator

@@ -10,8 +10,7 @@ gemini-2.5-flash`` spans fired back to back, each returning
 ``{"role": "assistant", "parts": [], "finish_reason": "stop"}`` — an assistant turn with NOTHING in
 it. pydantic-ai retries an unusable response three times and then raises
 ``UnexpectedModelBehavior: Exceeded maximum output retries (3)``, so the run ended with a terminal
-error, zero tool calls, and no answer at all. That pair — a terminal error AND no assistant-facing
-output — is the same shape the Kitaru evaluator ``decode-bad-request-400`` flags remotely.
+error, zero tool calls, and no answer at all.
 
 **The case.** The trace's prompt verbatim, over a minimal Workspace (the original ran against a
 cloned repo in a docker sandbox; the graded behavior needs only a cwd whose listing is not empty).

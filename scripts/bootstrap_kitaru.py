@@ -68,8 +68,8 @@ IMPORTER_SCRIPT = Path("importers/opik_importer.py")
 IMPORTER_ENTRYPOINT = "parse"
 IMPORTER_PROVIDER = "opik"
 
-# Every evaluator in the repo is registered under its file name (`decode_bad_request_400.py` →
-# `decode-bad-request-400`), with kitaru's own evaluator entrypoint.
+# Every evaluator in the repo is registered under its file name (`decode_request_limit.py` →
+# `decode-request-limit`), with kitaru's own evaluator entrypoint.
 EVALUATORS_DIR = Path("evaluators")
 EVALUATOR_ENTRYPOINT = "evaluate"
 
@@ -313,7 +313,7 @@ def evaluator_scripts(root: Path = EVALUATORS_DIR) -> list[Path]:
 
 
 def evaluator_name(script: Path) -> str:
-    """``evaluators/decode_bad_request_400.py`` → ``decode-bad-request-400``."""
+    """``evaluators/decode_request_limit.py`` → ``decode-request-limit``."""
     return script.stem.replace("_", "-")
 
 

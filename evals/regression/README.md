@@ -7,8 +7,8 @@ minimal number of steps, compaction survived (the ADR-0002..0013 behaviors). Cas
 ritual, no docker required (ADR-0017 §3,6).
 
 Twenty-one **invented** cases ship as the harness-invariant floor, tiered 5 easy / 8 medium / 8 hard
-(ADR-0022 §8), plus the **mined** cases the 2026-09-11 mining session landed beside them (three, one
-skipped — see "Mined cases" below). Nothing was dropped in the v2 migration or to make room for a
+(ADR-0022 §8), plus the **mined** cases the 2026-09-11 mining session landed beside them (two — see
+"Mined cases" below). Nothing was dropped in the v2 migration or to make room for a
 mined case; what changed is that every case now carries its tier, its symptom and its assertion.
 
 ## The cases
@@ -45,7 +45,6 @@ missing here, so the table cannot drift behind the registry. The `symptom` a cas
 | `20-json-output-contract` | hard | Tests that an answer-only-as-JSON contract yields raw JSON matching the requested schema. |
 | `21-empty-model-response` | easy | Tests that a bash-and-report turn ends with an answer instead of dying on the retry ceiling after empty model responses. |
 | `22-guessed-file-path` | easy | Tests that the first read opens a path that exists in the tree instead of a guessed filename. |
-| `23-bad-request-400` | hard | Tests that a resumed conversation is answered instead of ending in a provider 400 with no output at all. *(skipped)* |
 | `smoke-read-tool` | easy | Tests that asking what a file says drives the read tool rather than a bash cat shell-out. |
 
 <!-- END GENERATED TABLE -->
@@ -86,7 +85,7 @@ declaration — gate mode, resolvers, and pre-filled history included.
 |---|---|---|
 | `easy` (5 + 2 mined) | Single-tool discipline | smoke-read-tool, 01-read-vs-cat, 02-grep-vs-bash, 03-edit-precision, 11-step-efficiency, *mined:* 21-empty-model-response, 22-guessed-file-path |
 | `medium` (8) | Planning, delegation, skills, memory, web, lsp | 05-web-fetch-discipline, 06-lsp-diagnostics, 07-plan-mode-discipline, 08-todo-planning, 09-subagent-delegation, 10-skill-dispatch, 12-mcp-tool-usage *(skipped)*, 15-memory-obedience |
-| `hard` (8 + 1 mined) | Compaction, the gate, destructive caution, judged answers, the json contract | 04-diff-minimality, 13-permission-deny-respect, 14-destructive-caution, 16-compaction-survival, 17-grounded-answer, 18-no-hallucinated-files, 19-template-compliance, 20-json-output-contract, *mined:* 23-bad-request-400 *(skipped)* |
+| `hard` (8) | Compaction, the gate, destructive caution, judged answers, the json contract | 04-diff-minimality, 13-permission-deny-respect, 14-destructive-caution, 16-compaction-survival, 17-grounded-answer, 18-no-hallucinated-files, 19-template-compliance, 20-json-output-contract |
 
 ## Registering a case
 
@@ -123,23 +122,18 @@ instead of the `harness invariant:` phrasing an invented case uses, and it grade
 deterministic metric — the one that names that symptom. Nothing is ever deleted to make room for one.
 
 The first mining session (2026-09-11, over `decode-prod`; raw output and picks in
-[`mining/`](mining/)) produced three:
+[`mining/`](mining/)) produced two:
 
 | id | Tier | Symptom (one line) | Metric | Source trace | `fixed_in` |
 |---|---|---|---|---|---|
 | `21-empty-model-response` | easy | Three model turns came back with no parts at all, so the run died on the retry ceiling with no answer. | `answered_without_error` | `019f5cd5-…` | `unfixed` |
 | `22-guessed-file-path` | easy | The first tool call opened a guessed path (`README`) the tree does not hold, burning a leg on the retry — in both recorded runs. | `read_path_exists` | `01a08614-…` | `unfixed` |
-| `23-bad-request-400` *(skipped)* | hard | A run ended in `ModelHTTPError 400` with no output at all — case zero, the failure `evaluators/decode_bad_request_400.py` guards on Kitaru. | `answered_without_error` | — | `unfixed` |
 
-Case zero ships **declared but skipped**: the live window holds no 400 (both `ModelHTTPError` traces
-are 503 outages), the Kitaru workspace holding cohort `decode-bad-request-400@1` answers `HTTP 404`,
-and three malformed-history fixtures all answered normally — the module carries the fixture that was
-tried and a `skip_reason` that says so, so unskipping it re-runs the experiment instead of
-re-inventing it. Each source trace is tagged `regression-case` in Opik, so the online view links back
+Each source trace is tagged `regression-case` in Opik, so the online view links back
 to the case.
 
 Two metrics were added for these (`evals/harness/metrics.py`): `AnsweredWithoutErrorMetric` (the run
-ended with an answer and no agent error — the offline twin of the Kitaru evaluator's rule) and
+ended with an answer and no agent error) and
 `ToolArgsNeverMetric` (no call to a tool used the forbidden args — the negative half of
 `ToolArgsMetric`).
 

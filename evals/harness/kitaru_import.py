@@ -62,6 +62,8 @@ DEFAULT_TAG = "regression-case"
 # A decode turn is 15-30 spans and a thread is a handful of turns; these are slack, not limits.
 SPAN_FETCH_CAP = 1000
 THREAD_TRACE_CAP = 200
+# "Every thread in the project" when no --limit is given: slack, not a limit.
+PROJECT_THREAD_CAP = 10_000
 
 
 class TraceImportError(Exception):
@@ -225,6 +227,13 @@ class ThreadSource:
             max_results=THREAD_TRACE_CAP,
         )
         return [_as_dict(record) for record in found]
+
+    def recent_threads(self, limit: int | None = None) -> list[str]:
+        """The project's thread ids, newest first (Opik's own order), at most ``limit`` of them."""
+        found = self.client.search_threads(
+            project_name=self.project, max_results=limit or PROJECT_THREAD_CAP
+        )
+        return [str(_as_dict(record)["id"]) for record in found]
 
     def spans(self, trace_id: str) -> list[dict[str, Any]]:
         """Every span of one trace — no ``has_tool_spans`` shortcut: an envelope wants them all."""
