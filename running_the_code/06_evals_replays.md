@@ -1,19 +1,19 @@
 # 06. Record and replay your evals with Kitaru
 
-Record decode runs as [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) Sessions, judge them, and replay them with one change, all from your laptop. This page contains only the commands, the concepts are in the [Kitaru docs](https://docs.zenml.io/kitaru/core-concepts/concepts?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs).
+Record decode runs as [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) Sessions, judge them, and replay them with one change, all from your laptop. This page contains only the commands; the concepts are in the [Kitaru docs](https://docs.zenml.io/kitaru/core-concepts/concepts?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs).
 
 ## 1. Set up
 
 Prerequisites:
 
-- running `make install` already includes the `kitaru` CLI within the `uv` virtual environment.
+- Running `make install` already installs the `kitaru` CLI in the `uv` virtual environment.
 - **Docker** — runs the local server and the Worker.
 - **Node.js** — for `npx skills add`.
 - **`jq`** (`brew install jq`) — the commands below capture every id into a shell variable, so run each section in one terminal.
 - **One provider** in `.env`: a key (e.g. `GEMINI_API_KEY`, more in [01_install_and_usage](01_install_and_usage.md)) or your Modal endpoint (`LLM_PROVIDER=modal` + `MODAL_ENDPOINT_URL`, more in [02_modal_endpoints](02_modal_endpoints.md)).
-- **`OPIK_API_KEY`** optional step for importing traces from Opik. Full setup in [05_evals](05_evals.md)
+- **`OPIK_API_KEY`** — optional, for importing traces from Opik. Full setup in [05_evals](05_evals.md).
 
-See [01_install_and_usage](01_install_and_usage.md) and [02_modal_endpoints](02_modal_endpoints.md) for the full setup of the coding agent, here we will focus only on the setup of the Kitaru eval harness.
+See [01_install_and_usage](01_install_and_usage.md) and [02_modal_endpoints](02_modal_endpoints.md) for the full setup of the coding agent; here we focus only on the setup of the Kitaru eval harness.
 
 Full install reference: [Kitaru installation guide](https://docs.zenml.io/kitaru/getting-started/installation?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs).
 
@@ -60,14 +60,14 @@ KITARU_API_URL=http://localhost:8000
 KITARU_AGENT_ID=<uuid from the output>
 ```
 
-`KITARU_AGENT_ID` is per server. Re-run `make kitaru-bootstrap` when you switch servers, after `make install`, after editing `evaluators/` or after doing any change to your code in general.
+`KITARU_AGENT_ID` is per server. Re-run `make kitaru-bootstrap` when you switch servers, after `make install`, after editing `evaluators/`, or after any other change to your code.
 
 > [!NOTE]
-> As Kitaru is also [open-source](https://github.com/zenml-io/kitaru), there is also a 3rd option, of hosting the server yourself.
+> As Kitaru is also [open-source](https://github.com/zenml-io/kitaru), there is also a third option: hosting the server yourself.
 
 ### MCP server
 
-We already have setup at the repo root a `.mcp.json` file that points at the local Kitaru MCP server at `http://localhost:8000`.
+The repo root already has a `.mcp.json` file that points at the local Kitaru MCP server at `http://localhost:8000`.
 
 - Claude Code picks it up automatically (approve it once).
 - Managed workspace: change the `--server` value from `.mcp.json`.
@@ -75,7 +75,7 @@ We already have setup at the repo root a `.mcp.json` file that points at the loc
 
 ### Check
 
-Details about the Kitaru setup.
+Show details about the Kitaru setup:
 
 ```bash
 uv run kitaru status
@@ -110,7 +110,7 @@ export SESSION_ID=$(uv run kitaru session list --agent decode --origin recorded 
 uv run kitaru session get "$SESSION_ID"
 ```
 
-Nothing in the list = one of the two `.env` lines is missing from the setup steps.
+If the list is empty, one of the two `.env` lines from §1 is missing.
 
 You can also visualize the sessions in the Kitaru dashboard, locally at [http://localhost:8000](http://localhost:8000) or in the managed version at [https://app.kitaru.ai](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand).
 
@@ -147,7 +147,7 @@ The Worker spawns `decode run` under `SANDBOX_MODE=docker` over a fresh clone of
 ```bash
 cd <repo root>          # the building-a-coding-agent-from-scratch-course root directory
 set -a && . ./.env && set +a
-unset KITARU_AGENT_ID   # a Worker doesn't need to be aware about the Kitaru agent it points to
+unset KITARU_AGENT_ID   # a Worker doesn't need to know which Kitaru agent it serves
 ```
 
 Start it and leave this terminal running:
@@ -164,9 +164,9 @@ Check from another terminal: `uv run kitaru worker list` shows it with `Status: 
 
 ## 5. Import traces from Opik
 
-Optional step to backfill Sessions from decode runs you already traced in Opik. Needs `OPIK_API_KEY` in `.env` and the Worker from step §3.
+Optional step to backfill Sessions from decode runs you already traced in Opik. Needs `OPIK_API_KEY` in `.env` and the Worker from §4.
 
-As you already seeded your Kitaru instance with decode runs at step 3, you can pass this step, but importing more traces from Opik would add more variety to your dataset.
+As you already seeded your Kitaru instance with decode runs in §3, you can skip this step, but importing more traces from Opik would add more variety to your dataset.
 
 Pull the newest threads (one thread = one decode session = one Kitaru Session) from the Opik project `decode-<DECODE_ENV>` (e.g. `decode-local`):
 
@@ -214,17 +214,17 @@ INVESTIGATION=$(uv run kitaru investigation create my-discovery-1 --agent decode
 export INVESTIGATION_ID=$(jq -r '.item.id' <<<"$INVESTIGATION")
 ```
 
-Judge each session `acceptable` / `problematic` / `uncertain` in the review UI. Paste the command below to see the link towards the investigation review UI, open it, go over the sessions and assign a label and an optional critique. After return to the terminal, and continue this tutorial.
+Judge each session `acceptable` / `problematic` / `uncertain` in the review UI. Run the command below to print the link to the investigation review UI. Open it, go over the sessions, and give each one a label and an optional critique. Then return to the terminal and continue this tutorial.
 
 ```bash
 jq -r '.links.review' <<<"$INVESTIGATION"
 ```
 
-This is how the investigation review UI looks like:
+This is what the investigation review UI looks like:
 
 ![](../assets/kitaru_investigation.png)
 
-After finishing the review in the UI list all the labels/verdicts per sessions of the investigation:
+After finishing the review in the UI, list the verdict of each session in the investigation:
 
 ```bash
 uv run kitaru investigation session list "$INVESTIGATION_ID" --size 100 -o json | jq -r '.items[] | "\(.session_id)  \(.verdict)"'
@@ -232,7 +232,7 @@ uv run kitaru investigation session list "$INVESTIGATION_ID" --size 100 -o json 
 
 ![](../assets/kitaru_list_investigations.png)
 
-Also, you will get to copy-paste a prompt like this:
+The UI also gives you a prompt to copy, like this:
 
 ```text
 Investigation complete: my-discovery-1. 20 of 20 sessions reviewed, agent: decode.
@@ -245,69 +245,69 @@ Choose what to do next:
 2. Investigate the 14 problematic sessions in more detail.
 ```
 
-Which you need to paste into your agent open within this project that has access to the skills that explain in detail to the agent how to operate Kitaru and MCP server that allows the agent to communicate with the Kitaru platform. I used Opus 5.5 for my tests.
+Paste it into a coding agent opened in this project. The agent needs the Kitaru skills, which explain in detail how to operate Kitaru, and the Kitaru MCP server, which lets it talk to the Kitaru platform. I used Opus 5.5 for my tests.
 
 ![](../assets/kitaru_investigating.png)
 
-If running based on our seed, it will find two cohort candidates by clustering the sessions per error type.
+If you used our seed, it will find two cohort candidates by clustering the sessions by error type.
 
-1. **Candidate 1:** a run that hits the request limit gives the user nothing. A decode run stopped by the request limit ends with a raw UsageLimitExceeded, no output, and no partial answer or explanation.
-2. **Candidate 2:** connection error (I suggest rejecting it as agent behavior)
+1. **Candidate 1:** a run that hits the request limit gives the user nothing. A decode run stopped by the request limit ends with a raw `UsageLimitExceeded`, no output, and no partial answer or explanation.
+2. **Candidate 2:** connection error (I suggest rejecting it as agent behavior).
 
-Next, you need to pass the following prompt to create a cohort per each candidate, that will help us understand the behavior in more depth and create an evaluator that can detect similar issues in the future:
+Next, pass the following prompt to create a cohort for each candidate. The cohorts help us understand the behavior in more depth and create an evaluator that can detect similar issues in the future:
 
 ```text
 Create a cohort for each candidate!
 ```
 
-Which will create two cohorts within Kitaru, one for each candidate:
+This creates two cohorts in Kitaru, one for each candidate:
 
 ![](../assets/kitaru_cohorts.png)
 
 > [!WARNING]
-> These are the results based on the synthetic seed. What you are importing from Opik or different tests might alter the results.
+> These are the results based on the synthetic seed. Traces imported from Opik or from other tests might change the results.
 
 Now, we need to either apply an existing evaluator or create a new one per cohort. As we already have the evaluators for these two, we prompt:
 
 ```text
-Now, apply the two evaluators existing evaluators per cohort:
+Now, apply the two existing evaluators, one per cohort:
   - cohort decode-connection-error -> evaluator: decode_connection_error.py
   - cohort decode-request-limit -> evaluator: decode_request_limit.py
 ```
 
-If you would have a cohort with a new failure class, you would need to create a new evaluator, which is easy to do as you have all the logs and erros within the cohort.
+If you had a cohort with a new failure class, you would need to create a new evaluator, which is easy since you have all the logs and errors within the cohort.
 
-![](../assets/kitaru_session_error.png.png)
+![](../assets/kitaru_session_error.png)
 
-After running the prompt above, the evaluator will be ran on each session in the cohort and the results will be displayed as follows:
+After you run the prompt above, the evaluator runs on each session in the cohort, and the results are displayed as follows:
 
 ![](../assets/kitaru_cohort_evaluator_result.png)
 
 It's normal for all of them to fail, because each session still contains the error that caused the failure.
 
-So what we have to do now, is to fix the code that caused the failure and re-run the cohort as an experiment. So, let's assume that we fixed our connection error. As it was artificially injected we know reruning will work, but in a real-world scenario you would need to fix the code first. So we prompt the agent within the same session:
+What we have to do now is fix the code that caused the failure and re-run the cohort as an experiment. Let's assume that we fixed our connection error. As it was artificially injected, we know that rerunning will work, but in a real-world scenario you would need to fix the code first. So we prompt the agent within the same session:
 
 ```text
-For cohort `decode-connection-error` we fixed the connection error. Start an experiment based on the seesions from the cohort, rerun the evaluator and see if the failure class has been resolved.
+For cohort `decode-connection-error` we fixed the connection error. Start an experiment based on the sessions from the cohort, rerun the evaluator and see if the failure class has been resolved.
 ```
 
-Behind the scenes, Kitaru will take all the sessions from the cohort and leverage it's replays features to rerun each session on decode on the worker we started at step 4. It will run an isolated instance of decode based on each session, while having all the tool outputs cached to replay the same scenario.
+Behind the scenes, Kitaru will take all the sessions from the cohort and use its replay feature to rerun each session with decode on the Worker we started in §4. It runs an isolated instance of decode for each session, starting from the session's original prompt. The experiment's tool policy (§7) decides whether each tool call returns its recorded result or runs again for real inside the Worker's docker Workspace. These baselines crashed before their first tool call, so there is nothing recorded to return: the agent sets the policy to run the tools for real, with `web_fetch` blocked.
 
 Here are the experiments attached to the `decode-connection-error` cohort:
 
 ![](../assets/cohort_experiments_list.png)
 
-And within the second experiment, after fixing the error, we can see that the failure class has been resolved on all the sessions:
+And within the second run of the experiment, after fixing the error, we can see that the failure class has been resolved on all the sessions:
 
 ![](../assets/kitaru_experiment_result.png)
 
-And that's it. Now we have an evaluator that can always detect these type of errors.
+And that's it. Now we have an evaluator that can always detect this type of error.
 
 The next steps are to repeat the same process on the other cohorts and expand your evaluator to cover all the failure classes.
 
 ## 7. More about replays
 
-A replay re-runs `decode run` from the top. The tool policy decides if a tool call (bash, file writes) is using it's cache, fails if it doesn't exist or reruns. Reference: [tool policies](https://docs.zenml.io/kitaru/guides/tool-policies?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs).
+A replay re-runs `decode run` from the top. The tool policy decides whether a tool call (bash, file writes) uses its cache, fails when nothing is cached, or runs again for real. Reference: [tool policies](https://docs.zenml.io/kitaru/guides/tool-policies?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs).
 
 These policies are extremely important when running an experiment that contains replays.
 
@@ -322,19 +322,19 @@ Here are all the options:
 Pick `on_miss` by how complete the recordings are:
 
 - **Baselines that ran to completion**: `on_miss: fail`. A call the recording cannot answer stops the replay instead of inventing the rest.
-- **Baselines that were cut off or crashed** (the §5 cohorts): `on_miss: passthrough`. Their recording ends after a call or two, so `fail` stops every replay with `ToolPolicyMissError: No history result for tool '<name>'` before the evaluator ever runs. `passthrough` runs the tool for real, inside the Worker's docker Workspace but live.
+- **Baselines that were cut off or crashed** (the §6 cohorts): `on_miss: passthrough`. Their recording ends after a call or two, so `fail` stops every replay with `ToolPolicyMissError: No history result for tool '<name>'` before the evaluator ever runs. `passthrough` runs the tool for real, inside the Worker's docker Workspace but live.
 
 Per tool: `"tools": {"web_fetch": {"type": "passthrough"}}` next to `"default"`.
 
-You can start a replay only at the session level:
+A replay always starts from a single session.
 
-Get the session Id of the most recent recorded session:
+Get the session ID of the most recent recorded session:
 
 ```bash
 export SESSION_ID=$(uv run kitaru session list --agent decode --origin recorded --size 1 -o json | jq -r '.items[0].id')
 ```
 
-The start the replay:
+Then start the replay:
 
 ```bash
 REPLAY=$(uv run kitaru replay create "$SESSION_ID" --agent decode@1 \
@@ -354,15 +354,15 @@ You can see the replay within the sessions tab:
 
 ![](../assets/kitaru_replay_sessions.png)
 
-Or you can also compare from the dashboard the replay with the baseline session (by selecting the two sessions and clicking **Compare**):
+You can also compare the replay with the baseline session in the dashboard (select the two sessions and click **Compare**):
 
 ![](../assets/kitaru_compare_baseline_replay.png)
 
 ## 8. Model migration
 
-Now what if we want to do a change to our code and we want to see how it affects the harnsess's performance? Let's take changing the model from `Qwen/Qwen3.6-35B-A3B-FP8` to `gemini-3.8-flash` as an example.
+Now, what if we want to change our code and see how it affects the harness's performance? Let's take changing the model from `Qwen/Qwen3.6-35B-A3B-FP8` to `gemini-3.8-flash` as an example.
 
-First we will create an experiment with the new model (this doesn't run the experiment yet!):
+First, we create an experiment with the new model (this doesn't run the experiment yet!):
 
 ```bash
 uv run kitaru experiment create change-to-new-model --agent decode \
@@ -375,14 +375,14 @@ The `--override` parameter maps each recorded model to its replacement (other ke
 
 ![](../assets/kitaru_change_model_experiment.png)
 
-First, let's take the `COHORT_VERSION_ID` from our baseline run:
+Next, get the `COHORT_VERSION_ID` of the cohort we replayed before:
 
 ```bash
 export COHORT_VERSION_ID=$(uv run kitaru cohort version get decode-connection-error@1 -o json | jq -r '.item.id')
 echo "$COHORT_VERSION_ID"
 ```
 
-Then replay the same cohort on the new model (running on the worker):
+Then replay the same cohort on the new model (it runs on the Worker):
 
 ```bash
 uv run kitaru experiment run start change-to-new-model \
@@ -393,7 +393,7 @@ It starts to run:
 
 ![](../assets/kitaru_change_model_experiment_running.png)
 
-And then we can see the results, more exactly that the evaluator still passes all the sessions on the new model:
+Then we can see the results; specifically, the evaluator still passes all the sessions on the new model:
 
 ![](../assets/kitaru_change_model_experiment_done.png)
 
@@ -437,7 +437,7 @@ For more details, check out [Kitaru's docs](https://docs.zenml.io/kitaru/guides/
 ### Debug a replay
 
 ```bash
-uv run kitaru job watch "$JOB_ID"                          # ids from §6
+uv run kitaru job watch "$JOB_ID"                          # ids from §7
 uv run kitaru replay get "$REPLAY_ID"                      # status, error, result_session_id
 uv run kitaru session get "$RESULT_SESSION_ID"             # the failed node
 tail -f ~/.decode-kitaru-worker/.decode/logs/decode.log    # the spawned decode run
@@ -449,7 +449,7 @@ docker ps                                                  # its Workspace conta
 | `[kitaru] not recording this run: … is unavailable`                                                              | `uv run kitaru status`; re-auth with `uv run kitaru login <url>`; check `KITARU_AGENT_ID` is the `decode` agent on **that** server.                                                                                        |
 | Records nothing, says nothing                                                                                    | `KITARU_AGENT_ID` or `KITARU_API_URL` missing from `.env`. An exported `KITARU_API_URL` wins over `.env`: `unset` it if it names another server.                                                                           |
 | Replay / import stays queued, or `evals kitaru import` times out                                                 | no live Worker: start one (§4) and re-run. For replays, also check the Agent Version (`uv run kitaru agent version list decode`, pick `SANDBOX_MODE=docker`).                                                              |
-| `ToolPolicyMissError: No history result for tool '…'`                                                            | `on_miss: fail` did its job: the replay went past what the recording holds. Expected on cut-off or crashed baselines — use `on_miss: passthrough` (§6).                                                                    |
+| `ToolPolicyMissError: No history result for tool '…'`                                                            | `on_miss: fail` did its job: the replay went past what the recording holds. Expected on cut-off or crashed baselines — use `on_miss: passthrough` (§7).                                                                    |
 | `Experiment run … settled as failed`                                                                             | a replay job crashed, which is not an evaluator verdict: `uv run kitaru experiment run jobs "$RUN_ID"` shows the real error.                                                                                               |
 | `could not clone … into the Workspace` … `File exists` / `No such file or directory`                             | parallel replays raced on the shared Workspace. Restart the Worker with `--concurrency 1` (§4) and start a new run.                                                                                                        |
 | `Decode: set <PROVIDER>_API_KEY in your environment` (or a connection error) in a replay                         | the Worker shell has no provider key / endpoint, or `.env` was sourced from the wrong directory. `pwd`, source, restart the Worker.                                                                                        |
@@ -464,7 +464,7 @@ httpx INFO HTTP Request: POST http://localhost:8000/api/v1/tasks/claim "HTTP/1.1
 kitaru.worker.worker WARNING Failed to claim tasks: 403: A worker credential is required on this route.
 ```
 
-The Worker claimed fine, then every claim fails, retried at a growing interval (2 s … 60 s) forever. Jobs you queue stay `pending`.
+The Worker claims fine at first, then every claim fails and is retried at a growing interval (2 s … 60 s) forever. Jobs you queue stay `pending`.
 
 **Cause** (kitaru 0.27.0): a Worker started without `--timeout` gets a token valid for 1 hour (`WORKER_TOKEN_LIFETIME_SECONDS = 3600`). The local server runs with no auth, so it answers an expired Worker token by treating the request as the default account, not with `401`. The claim route accepts Workers only, so it returns `403`. The Worker renews its token only on `401`, so it never recovers.
 
