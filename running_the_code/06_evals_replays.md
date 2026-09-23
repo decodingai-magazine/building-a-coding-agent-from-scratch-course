@@ -142,12 +142,19 @@ Imports, replays and evaluator runs are jobs that wait for a Worker to execute t
 > [!NOTE]
 > When deploying Kitaru, you need to deploy the Worker separately on your infrastructure, such as Modal.
 
-The Worker spawns `decode run` under `SANDBOX_MODE=docker` over a fresh clone of this repo, from `~/.decode-kitaru-worker`, where there is no `.env`. So its shell must carry your provider keys:
+The Worker spawns `decode run` under `SANDBOX_MODE=docker` over a fresh clone of this repo, from `~/.decode-kitaru-worker`, where there is no `.env`. So its shell must carry your provider keys.
+
+First move to the repo root (the building-a-coding-agent-from-scratch-course root directory):
 
 ```bash
 cd <repo root>          # the building-a-coding-agent-from-scratch-course root directory
+```
+
+Then load the `.env` variables and unset `KITARU_AGENT_ID` (it's only needed for the Kitaru server):
+
+```bash
 set -a && . ./.env && set +a
-unset KITARU_AGENT_ID   # a Worker doesn't need to know which Kitaru agent it serves
+unset KITARU_AGENT_ID
 ```
 
 Start it and leave this terminal running:
@@ -360,7 +367,7 @@ You can also compare the replay with the baseline session in the dashboard (sele
 
 ## 8. Model migration
 
-Now, what if we want to change our code and see how it affects the harness's performance? Let's take changing the model from `Qwen/Qwen3.6-35B-A3B-FP8` to `gemini-3.8-flash` as an example.
+Now, what if we want to change our code and see how it affects the harness's performance? Let's take changing the model from `Qwen/Qwen3.6-35B-A3B-FP8` (on Modal) to `gemini-3.8-flash` as an example.
 
 First, we create an experiment with the new model (this doesn't run the experiment yet!):
 
@@ -368,10 +375,13 @@ First, we create an experiment with the new model (this doesn't run the experime
 uv run kitaru experiment create change-to-new-model --agent decode \
   --evaluator 'decode-connection-error@1' \
   --tool-policy '{"default":{"type":"history","scope":"baseline","on_miss":"passthrough"}}' \
-  --override '{"model": {"Qwen/Qwen3.6-35B-A3B-FP8": "gemini-3.8-flash"}}'
+  --override '{"model": "google:gemini-3.8-flash"}'
 ```
 
-The `--override` parameter maps each recorded model to its replacement (other keys: `system_prompt`, `prompt`, `model_params`). Reference: [replay and overrides](https://docs.zenml.io/kitaru/guides/replay-and-overrides?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs).
+The `--override` parameter replaces the model of every model call in the replay (other keys: `system_prompt`, `prompt`, `model_params`). Reference: [replay and overrides](https://docs.zenml.io/kitaru/guides/replay-and-overrides?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs). Two details decide whether it takes effect:
+
+- **The new model needs its provider prefix** (`google:gemini-3.8-flash`), because a bare `gemini-3.8-flash` fails with `UserError: Unknown model`. The Worker's shell must also carry `GEMINI_API_KEY` (it does if you sourced `.env` in §4).
+- **To swap only one model, use a map keyed by the name decode requests**, which includes the provider prefix: `{"model": {"openai:Qwen/Qwen3.6-35B-A3B-FP8": "google:gemini-3.8-flash"}}`. A key without the prefix (`Qwen/Qwen3.6-35B-A3B-FP8`) matches nothing, and the replay silently keeps the old model.
 
 ![](../assets/kitaru_change_model_experiment.png)
 
@@ -393,16 +403,32 @@ It starts to run:
 
 ![](../assets/kitaru_change_model_experiment_running.png)
 
-Then we can see the results; specifically, the evaluator still passes all the sessions on the new model:
-
-![](../assets/kitaru_change_model_experiment_done.png)
-
-Also check the pass / fail counts for that experiment run:
+When it finishes, check the pass / fail counts for that experiment run:
 
 ```bash
 export RUN_ID=$(uv run kitaru experiment run list --size 1 --sort created:desc -o json | jq -r '.items[0].id')
 uv run kitaru experiment run get "$RUN_ID"
 ```
+
+![](../assets/kitaru_change_model_experiment_done.png)
+
+And the full experiment config:
+
+![](../assets/kitaru_model_change_exp_config.png.png)
+
+Before trusting the result, confirm the replays really ran on the new model. Every line should print `gemini-3.8-flash`:
+
+```bash
+for s in $(uv run kitaru replay list --size 100 \
+  --filter "{\"field\":\"experiment_run_id\",\"op\":\"eq\",\"value\":\"$RUN_ID\"}" \
+  -o json | jq -r '.items[].result_session_id'); do
+  uv run kitaru session nodes "$s" -o json --size 50 \
+    | jq -r '[.items[] | select(.node_type=="llm_call") | .model] | unique | join(",")'
+done
+```
+
+> [!WARNING]
+> `decode-connection-error` only flags connection errors. A replay that crashes for any other reason (a wrong model name, a bad answer) still passes it. So a green run here shows the new model didn't reintroduce connection failures, not that the migration works. For that, pair it with an evaluator that checks the task itself (§9).
 
 ## 9. Write your own evaluator
 
