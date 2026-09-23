@@ -742,6 +742,34 @@ def test_kitaru_import_prints_one_line_per_thread(mocker):
     assert run_import.call_args.kwargs["importer_ref"] == "opik@1"
 
 
+def test_kitaru_import_with_no_ids_pulls_the_projects_newest_threads(mocker):
+    mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=[])
+    mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
+    mocker.patch(
+        "evals.harness.kitaru_cli.resolve_ref", side_effect=lambda kind, name, **kw: f"{name}@1"
+    )
+    source = mocker.patch("evals.harness.kitaru_import.open_source")
+    source.return_value.recent_threads.return_value = ["s-2", "s-1"]
+    run_import = mocker.patch("evals.harness.kitaru_import.run_import", return_value=[])
+
+    result = CliRunner().invoke(cli, ["kitaru", "import", "--limit", "2"])
+
+    assert result.exit_code == 0, result.output
+    source.return_value.recent_threads.assert_called_once_with(2)
+    assert run_import.call_args.kwargs["threads"] == ["s-2", "s-1"]
+    assert run_import.call_args.kwargs["trace_ids"] == []
+
+
+def test_kitaru_import_refuses_a_limit_next_to_named_ids(mocker):
+    open_source = mocker.patch("evals.harness.kitaru_import.open_source")
+
+    result = CliRunner().invoke(cli, ["kitaru", "import", "trace-1", "--limit", "5"])
+
+    assert result.exit_code == 2
+    assert "--limit" in result.output
+    open_source.assert_not_called()
+
+
 def test_kitaru_import_turns_a_kitaru_failure_into_one_line(mocker):
     from evals.harness.kitaru_cli import KitaruCommandError
 

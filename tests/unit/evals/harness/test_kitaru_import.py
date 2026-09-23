@@ -92,6 +92,13 @@ class FakeOpik:
         ]
         return [Record(t) for t in matched[:max_results]]
 
+    def search_threads(self, project_name: str, max_results: int = 1000) -> list[Record]:
+        self.thread_max_results = max_results
+        keys = list(
+            dict.fromkeys(t["thread_id"] for t in self.by_id.values() if t.get("thread_id"))
+        )
+        return [Record({"id": key}) for key in keys[:max_results]]
+
     def search_spans(
         self, project_name: str, trace_id: str, max_results: int = 100
     ) -> list[Record]:
@@ -296,6 +303,22 @@ def test_a_thread_asked_for_by_name_needs_no_trace_id():
 
     assert set(threads) == {"s-1"}
     assert fake.filters and "s-1" in (fake.filters[0] or "")
+
+
+def test_the_projects_threads_are_listed_in_opiks_order_up_to_the_limit():
+    fake = FakeOpik(
+        [trace("t1", thread="s-new"), trace("t2", thread="s-new"), trace("t3", thread="s-old")]
+    )
+
+    assert source(fake).recent_threads(1) == ["s-new"]
+    assert fake.thread_max_results == 1
+
+
+def test_no_limit_lists_every_thread_in_the_project():
+    fake = FakeOpik([trace("t1", thread="s-1"), trace("t2", thread="s-2")])
+
+    assert source(fake).recent_threads() == ["s-1", "s-2"]
+    assert fake.thread_max_results == kitaru_import.PROJECT_THREAD_CAP
 
 
 def test_a_threadless_trace_becomes_its_own_single_turn_thread():

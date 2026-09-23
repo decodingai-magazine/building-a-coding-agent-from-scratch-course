@@ -604,11 +604,9 @@ class AnsweredWithoutErrorMetric(BaseMetric):
 
     The ``agent_error``-absent metric the mined cases grade on, strengthened with the second half of
     the symptom the traces actually show: every mined failure in ``evals/regression/mining/`` — the
-    empty-model-response crash (``UnexpectedModelBehavior``), the provider ``400`` the Kitaru
-    evaluator ``decode-bad-request-400`` guards — ends with a terminal error AND nothing the user can
-    read. That pair is what ``evaluators/decode_bad_request_400.py`` keys on remotely; this is the
-    same rule offline, over the regression payload: ``agent_error`` empty AND ``output`` a non-blank
-    string.
+    empty-model-response crash (``UnexpectedModelBehavior``) — ends with a terminal error AND nothing
+    the user can read. This is that rule over the regression payload: ``agent_error`` empty AND
+    ``output`` a non-blank string.
 
     ``infra_error`` (a fixture / setup failure, so the case never ran) comes back
     ``scoring_failed=True`` — Opik drops such a score from aggregation entirely, exactly as

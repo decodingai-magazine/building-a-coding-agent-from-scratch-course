@@ -297,8 +297,8 @@ def test_a_new_importer_version_carries_the_script_but_not_the_provider(tmp_path
 def test_every_evaluator_in_the_repo_is_registered_under_its_file_name():
     scripts = evaluator_scripts(Path("evaluators"))
 
-    assert Path("evaluators/decode_bad_request_400.py") in scripts
-    assert evaluator_name(Path("evaluators/decode_bad_request_400.py")) == "decode-bad-request-400"
+    assert Path("evaluators/decode_request_limit.py") in scripts
+    assert evaluator_name(Path("evaluators/decode_request_limit.py")) == "decode-request-limit"
 
 
 def test_dunder_files_are_not_evaluators(tmp_path):
@@ -437,7 +437,7 @@ def repo_tree(tmp_path: Path) -> Path:
     (tmp_path / "importers").mkdir()
     (tmp_path / "importers" / "opik_importer.py").write_text("parser = None\n")
     (tmp_path / "evaluators").mkdir()
-    (tmp_path / "evaluators" / "decode_bad_request_400.py").write_text("def evaluate(s): ...\n")
+    (tmp_path / "evaluators" / "decode_request_limit.py").write_text("def evaluate(s): ...\n")
     return tmp_path
 
 
@@ -518,14 +518,12 @@ def test_an_edited_evaluator_registers_one_new_version(repo_tree):
     fake = FakeKitaru()
     _bootstrap(fake, repo_tree)
     before = len(fake.writes())
-    (repo_tree / "evaluators" / "decode_bad_request_400.py").write_text(
-        "def evaluate(s): return 1\n"
-    )
+    (repo_tree / "evaluators" / "decode_request_limit.py").write_text("def evaluate(s): return 1\n")
 
     rows = _bootstrap(fake, repo_tree)
 
     assert len(fake.writes()) == before + 1
-    assert [row.ref for row in rows if row.kind == "evaluator"] == ["decode-bad-request-400@2"]
+    assert [row.ref for row in rows if row.kind == "evaluator"] == ["decode-request-limit@2"]
 
 
 def test_dry_run_prints_the_argv_and_registers_nothing(repo_tree, capsys):
@@ -568,7 +566,7 @@ def test_the_table_carries_kind_reference_and_id(repo_tree):
 
     assert "KIND" in table and "NAME@VERSION" in table and "ID" in table
     assert "decode@1" in table
-    assert "decode-bad-request-400@1" in table
+    assert "decode-request-limit@1" in table
 
 
 # --- the CLI surface -------------------------------------------------------------------------------

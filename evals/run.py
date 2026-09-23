@@ -438,6 +438,12 @@ def _kitaru_skip(command: str, purpose: str) -> bool:
     default=None,
     help="Opik project to read the traces from [default: the LIVE project].",
 )
+@click.option(
+    "--limit",
+    type=click.IntRange(min=1),
+    default=None,
+    help="With no trace id / --thread: import the project's newest N threads [default: all].",
+)
 @click.option("--agent", default="decode", show_default=True, help="Kitaru agent (NAME or NAME@N).")
 @click.option(
     "--importer", "importer", default="opik", show_default=True, help="Importer (NAME or NAME@N)."
@@ -455,6 +461,7 @@ def kitaru_import(
     trace_ids: tuple[str, ...],
     threads: tuple[str, ...],
     project: str | None,
+    limit: int | None,
     agent: str,
     importer: str,
     tag: str,
@@ -462,6 +469,7 @@ def kitaru_import(
 ) -> None:
     """Backfill Kitaru Sessions from Opik traces (ADR-0022 §11).
 
+    No trace id and no ``--thread`` = the whole project, newest thread first, capped by ``--limit``.
     Each trace id is expanded to its whole THREAD — one decode session — fetched with the Opik SDK,
     written as the ``opik`` importer's own envelope under ``.decode/kitaru-imports/<thread>.json``
     and handed to ``kitaru session import``. A thread Kitaru already has is skipped (matched on the
@@ -469,6 +477,8 @@ def kitaru_import(
     (``uv run kitaru worker start``) or ``--wait`` times out: the server executes nothing (ADR-0019).
     Opik + kitaru are imported lazily so ``--help`` needs no keys and no network (ADR-0017 §1).
     """
+    if limit is not None and (trace_ids or threads):
+        raise click.UsageError("--limit applies only when no trace id / --thread is given.")
     if _kitaru_skip("import", "backfill sessions"):
         return
 
@@ -484,6 +494,8 @@ def kitaru_import(
     try:
         with opik_boundary():
             source = open_source(project)
+            if not trace_ids and not threads:
+                threads = tuple(source.recent_threads(limit))
             outcomes = run_import(
                 source,
                 trace_ids=list(trace_ids),
@@ -498,7 +510,7 @@ def kitaru_import(
         raise click.ClickException(f"evals kitaru import: {exc}") from exc
 
     if not outcomes:
-        click.echo("evals kitaru import: nothing to import (pass trace ids or --thread).")
+        click.echo("evals kitaru import: nothing to import (the Opik project has no threads).")
         return
     for outcome in outcomes:
         click.echo(format_outcome(outcome))

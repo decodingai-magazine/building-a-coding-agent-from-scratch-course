@@ -137,8 +137,8 @@ def test_a_recorded_prompt_string_is_the_task(monkeypatch, _worker):
 
 
 def test_an_imported_sessions_input_key_is_the_task(monkeypatch, _worker):
-    """An Opik-imported session records ``{"input": "<prompt>", ...}`` — the shape cohort
-    ``decode-bad-request-400@1`` replays with."""
+    """An Opik-imported session records ``{"input": "<prompt>", ...}`` — the shape a cohort of
+    imported sessions replays with."""
     _worker_inputs(
         monkeypatch,
         {"input": "turn three live articles into a knowledge graph", "logfire.fingerprint": "abc"},

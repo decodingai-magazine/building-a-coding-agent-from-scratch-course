@@ -26,12 +26,10 @@ from support.eval_models import bash_then_finish, read_then_finish
 from evals.harness.driver import run_agent_once_sync
 from evals.harness.regression import run_case
 from evals.regression.case import RegressionCase
-from evals.regression.cases.mined_bad_request_400 import empty_assistant_turn_history
 from evals.regression.cases.mined_empty_model_response import COMMAND
-from evals.regression.loader import case_by_id, load_cases, runnable_cases
+from evals.regression.loader import case_by_id, load_cases
 
-CASE_ZERO_ID = "23-bad-request-400"
-MINED_IDS = {"21-empty-model-response", "22-guessed-file-path", CASE_ZERO_ID}
+MINED_IDS = {"21-empty-model-response", "22-guessed-file-path"}
 
 
 def _mined_cases() -> list[RegressionCase]:
@@ -88,7 +86,7 @@ def read_guessed_then_finish(guess: str, real: str, final_text: str) -> Function
 # --- the mined contract ------------------------------------------------------------------------
 
 
-def test_the_three_mined_cases_are_registered_beside_the_invented_ones() -> None:
+def test_the_mined_cases_are_registered_beside_the_invented_ones() -> None:
     """Mined cases land BESIDE the 21 — nothing was deleted to make room (ADR-0022 §8)."""
     ids = {case.id for case in load_cases()}
 
@@ -104,28 +102,7 @@ def test_every_mined_case_carries_its_provenance_and_exactly_one_metric() -> Non
         assert not case.symptom.startswith("harness invariant:"), (
             f"{case.id}: a mined symptom names the behavior its trace showed"
         )
-        if case.id == CASE_ZERO_ID:
-            # The only exemption, by id: case zero's failure lives in a Kitaru cohort, not in an Opik
-            # trace (its docstring says so). A future SKIPPED mined case still owes its provenance.
-            assert case.skip_reason and not case.source_trace_id, case.id
-            continue
         assert case.source_trace_id and case.thread_id, case.id
-
-
-def test_case_zero_ships_declared_but_skipped_with_the_reason_in_the_registry() -> None:
-    """The 400 could not be reproduced; the attempt (fixture + reason) is the deliverable."""
-    case = case_by_id(CASE_ZERO_ID)
-
-    assert case.skip_reason and "404" in case.skip_reason
-    assert case not in runnable_cases(load_cases())
-    assert case.message_history is not None
-
-
-def test_case_zeros_declared_history_is_the_empty_assistant_turn_that_was_tried() -> None:
-    history = empty_assistant_turn_history()
-
-    assert isinstance(history[-1], ModelResponse)
-    assert history[-1].parts == []
 
 
 # --- 21 empty-model-response -------------------------------------------------------------------

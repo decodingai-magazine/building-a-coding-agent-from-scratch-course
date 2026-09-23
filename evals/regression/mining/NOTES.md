@@ -36,7 +36,7 @@ design, so the run used `2026-08-12T00:00:00Z`.
 | `errors \| UsageLimitExceeded \| glob \| -` | `01a08d79` | skipped — designed request ceiling |
 | `denied \| - \| read \| gemini-3.5-flash` | `01a08f1a` | skipped — task 163's own deliberate gate probe |
 | `low-quality` | none | the `response_quality` rule is one day old; empty window |
-| *(the known `ModelHTTPError 400`)* | not in Opik | **case zero** → `23-bad-request-400`, declared + skipped |
+| *(the known `ModelHTTPError 400`)* | not in Opik | not reproducible offline — no case (see "Case zero" below) |
 
 ## What was picked, and why
 
@@ -67,8 +67,7 @@ itself). The token bill is the repository's size, not a regression; the wasted l
 
 * **`ModelHTTPError` ×2 (`019f60fd`, `01a08d78`)** — both are **503**s
   (`status_code: 503, model_name: gemini-2.5-flash` and `…, model_name: Qwen/Qwen3.6-35B-A3B-FP8`),
-  i.e. the provider was unavailable. `evaluators/decode_bad_request_400.py` itself classes a 503 as a
-  reviewed-acceptable transport failure. There is no decode behavior an offline case could hold to
+  i.e. the provider was unavailable, a transport failure rather than a decode behavior. There is no decode behavior an offline case could hold to
   here: the regression harness drives the REAL provider through `run_agent_once`, so it has no seam
   to inject a 5xx, and the friendly-line-and-exit-1 handling of one is CLI-level behavior already
   pinned by unit tests. Inventing a case that re-asks the same prompt and asserts "an answer came
@@ -86,10 +85,9 @@ itself). The token bill is the repository's size, not a regression; the wasted l
 
 ## Case zero — the `ModelHTTPError 400`
 
-The known failure (`evaluators/decode_bad_request_400.py`, cohort `decode-bad-request-400@1`) is NOT
-in the live Opik project: both `ModelHTTPError` traces there are 503s. Its evidence lives in Kitaru,
-and the managed workspace answers `HTTP 404` today (`kitaru status`), so the offending request body
-cannot be read back — task 165 re-imports the cohort onto a local server.
+The known failure is NOT in the live Opik project: both `ModelHTTPError` traces there are 503s. Its
+evidence lived in the managed Kitaru workspace, which answers `HTTP 404` today (`kitaru status`), so
+the offending request body cannot be read back.
 
 So the reproduction was attempted from first principles instead: the 400 means "decode sent the
 provider a request it refused", and the likeliest way a *coding agent* does that is by re-sending a
@@ -103,9 +101,7 @@ history holding something malformed. Three fixtures were run for real against th
 | ends in an **orphan tool call** with no result | answered normally — and decode logs `healing 1 unprocessed tool call(s) left by a crashed or aborted turn` first (`AgentTurnHandler._heal_dangling_tool_calls`) |
 
 None reproduce a 400, and the third shows decode already defending the most plausible
-malformed-history path. `23-bad-request-400` therefore ships **declared but skipped**, carrying the
-empty-parts fixture and a `skip_reason` naming all of the above: the attempt is the deliverable, and
-unskipping it re-runs the experiment rather than re-inventing it.
+malformed-history path. No case ships for it: a case that cannot fail proves nothing.
 
 ## Provenance in Opik
 
