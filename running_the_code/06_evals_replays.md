@@ -112,7 +112,7 @@ uv run kitaru session get "$SESSION_ID"
 
 If the list is empty, one of the two `.env` lines from §1 is missing.
 
-You can also visualize the sessions in the Kitaru dashboard, locally at [http://localhost:8000](http://localhost:8000) or in the managed version at [https://app.kitaru.ai](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand).
+You can also visualize the sessions in the Kitaru dashboard, locally at [http://localhost:8000](http://localhost:8000) or in the managed version at [https://www.zenml.io/product/kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand).
 
 ## 3. Seed multiple sessions
 
