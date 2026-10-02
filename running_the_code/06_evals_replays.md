@@ -11,7 +11,7 @@ Prerequisites:
 - **Node.js** — for `npx skills add`.
 - **`jq`** (`brew install jq`) — the commands below capture every id into a shell variable, so run each section in one terminal.
 - **One provider** in `.env`: a key (e.g. `GEMINI_API_KEY`, more in [01_install_and_usage](01_install_and_usage.md)) or your Modal endpoint (`LLM_PROVIDER=modal` + `MODAL_ENDPOINT_URL`, more in [02_modal_endpoints](02_modal_endpoints.md)).
-- **`OPIK_API_KEY`** — optional, for importing traces from Opik. Full setup in [05_evals](05_evals.md).
+- **`OPIK_API_KEY`** — optional, for importing traces from Opik. Full setup in [01_install_and_usage](01_install_and_usage.md).
 
 See [01_install_and_usage](01_install_and_usage.md) and [02_modal_endpoints](02_modal_endpoints.md) for the full setup of the coding agent; here we focus only on the setup of the Kitaru eval harness.
 

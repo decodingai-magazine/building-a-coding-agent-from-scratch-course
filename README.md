@@ -208,7 +208,7 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><b>5</b><br/>Subagents Are Context Engineering</td>
     <td align="center"><a href="https://www.decodingai.com/p/subagents-are-context-engineering" target="_blank"><img src="assets/architecture_lesson_5.png" width="300" alt="Lesson 5 — subagents are context engineering"/></a><br/><i><a href="https://www.decodingai.com/p/subagents-are-context-engineering" target="_blank">Article 5</a></i></td>
     <td align="center">🎬 <i>Coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>6</b><br/>Deploy a Headless Coding Agent Harness to Modal</td>
@@ -226,7 +226,7 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><b>8</b><br/>AI Evals on Steroids via Replays</td>
     <td align="center">📄 <i>Coming soon</i></td>
     <td align="center">🎬 <i>Video 4 — coming soon</i></td>
-    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a></td>
+    <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a></td>
   </tr>
 </table>
 
@@ -307,15 +307,15 @@ One Python package; each module maps to one part of the architecture:
 
 Everything lives under [`running_the_code/`](running_the_code/). Follow them in order; each ends with a link to the next:
 
-| Guide                                                                     | What's inside                                                      |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| [00_troubleshooting.md](running_the_code/00_troubleshooting.md)           | Every known failure, and its fix                                   |
-| [01_install_and_usage.md](running_the_code/01_install_and_usage.md)       | Start here: install, one key, first session                        |
-| [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)           | Serving open models on Modal                                       |
-| [03_sandboxing.md](running_the_code/03_sandboxing.md)                     | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
-| [04_deploy.md](running_the_code/04_deploy.md)                             | The headless harness on Modal — CLI, webhook, cron                 |
-| [05_evals.md](running_the_code/05_evals.md)                               | Benchmarks and regression cases on Opik                            |
-| [06_evals_replays.md](running_the_code/06_evals_replays.md)               | Kitaru on your laptop: record, replay & the full evals loop        |
+| Guide                                                               | What's inside                                                      |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [00_troubleshooting.md](running_the_code/00_troubleshooting.md)     | Every known failure, and its fix                                   |
+| [01_install_and_usage.md](running_the_code/01_install_and_usage.md) | Start here: install, one key, first session                        |
+| [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)     | Serving open models on Modal                                       |
+| [03_sandboxing.md](running_the_code/03_sandboxing.md)               | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
+| [04_deploy.md](running_the_code/04_deploy.md)                       | The headless harness on Modal — CLI, webhook, cron                 |
+| [05_evals.md](running_the_code/05_evals.md)                         | Benchmarks and regression cases on Opik                            |
+| [06_evals_replays.md](running_the_code/06_evals_replays.md)         | Kitaru on your laptop: record, replay & the full evals loop        |
 
 ## 🤝 Sponsors
 
