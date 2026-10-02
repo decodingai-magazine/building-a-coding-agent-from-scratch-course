@@ -1,8 +1,8 @@
 <div align="center">
   <img src="assets/coding-agent-logo.png" alt="decode logo" width="140">
   <h1>Building a Coding Agent From Scratch</h1>
-  <h3>The harness, not the model, makes a coding agent good. Build a Claude Code clone from scratch, from a bare-bones agent loop to a swarm of cloud agents, to master harness engineering.</h3>
-  <p class="tagline">Open-source harness engineering course by <a href="https://www.decodingai.com">Decoding AI</a> in collaboration with <a href="https://modal.com?source=decodingai&campaign=harnesseng">Modal</a>, <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik (by Comet)</a> and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru (by ZenML)</a>.</p>
+  <h3>The harness, not the model, makes an agent good. Build a Claude Code clone from scratch, from a bare-bones agent loop to a swarm of cloud agents, to master harness engineering.</h3>
+  <p class="tagline">Open-source harness engineering course<br/>by <a href="https://www.decodingai.com">Decoding AI</a> in collaboration with <a href="https://modal.com?source=decodingai&campaign=harnesseng">Modal</a>, <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik (by Comet)</a> and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru (by ZenML)</a>.</p>
 </div>
 
 <p align="center">
