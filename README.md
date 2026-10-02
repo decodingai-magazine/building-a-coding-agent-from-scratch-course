@@ -201,7 +201,7 @@ For the full experience, go through the articles and videos that cover what the 
   <tr>
     <td align="center"><b>4</b><br/>Context Engineering for Coding Agents</td>
     <td align="center"><a href="https://www.decodingai.com/p/context-engineering-for-coding-agents" target="_blank"><img src="assets/architecture_lesson_4.png" width="300" alt="Lesson 4 — context engineering for coding agents"/></a><br/><i><a href="https://www.decodingai.com/p/context-engineering-for-coding-agents" target="_blank">Article 4</a></i></td>
-    <td align="center">🎬 <i>Coming soon</i></td>
+    <td align="center"><a href="https://www.youtube.com/watch?v=dx77BRFZ0_M" target="_blank"><img src="assets/thumbnail_video_3.jpg" width="300" alt="Video 3 — the video version of lesson 4"/></a><br/><i><a href="https://www.youtube.com/watch?v=dx77BRFZ0_M" target="_blank">Video 3</a></i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
@@ -213,19 +213,19 @@ For the full experience, go through the articles and videos that cover what the 
   <tr>
     <td align="center"><b>6</b><br/>Deploy a Headless Coding Agent Harness to Modal</td>
     <td align="center"><a href="https://www.decodingai.com/p/coding-agents-in-remote-headless" target="_blank"><img src="assets/architecture_lesson_6.png" width="300" alt="Lesson 6 — swarm of remote agents"/></a><br/><i><a href="https://www.decodingai.com/p/coding-agents-in-remote-headless" target="_blank">Article 6</a></i></td>
-    <td align="center">🎬 <i>Video 3 — coming soon</i></td>
+    <td align="center">🎬 <i>Video 4 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>7</b><br/>AI Evals Foundations: Benchmarks, Regression and Online</td>
     <td align="center"><a href="https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests" target="_blank"><img src="assets/architecture_lesson_7.png" width="300" alt="Lesson 7 — AI evals foundations: benchmarks, regression and online"/></a><br/><i><a href="https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests" target="_blank">Article 7</a></i></td>
-    <td align="center">🎬 <i>Video 3 — coming soon</i></td>
+    <td align="center">🎬 <i>Video 4 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a></td>
   </tr>
   <tr>
     <td align="center"><b>8</b><br/>AI Evals on Steroids via Replays</td>
-    <td align="center">📄 <i>Coming soon</i></td>
-    <td align="center">🎬 <i>Video 4 — coming soon</i></td>
+    <td align="center"><a href="https://www.decodingai.com/p/transform-agent-traces-into-regression-cases" target="_blank"><img src="assets/architecture_lesson_8.png" width="300" alt="Lesson 8 — AI evals on steroids via replays"/></a><br/><i><a href="https://www.decodingai.com/p/transform-agent-traces-into-regression-cases" target="_blank">Article 8</a></i></td>
+    <td align="center">🎬 <i>Video 5 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a></td>
   </tr>
 </table>
