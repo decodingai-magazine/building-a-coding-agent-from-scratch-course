@@ -10,7 +10,7 @@
 <link rel="canonical" href="https://building-a-coding-agent-from-scratch-course.decodingai.com/">
 <meta property="og:site_name" content="Decoding AI">
 <meta property="og:title" content="Building a Coding Agent From Scratch — Free Open-Source Course in Python">
-<meta property="og:description" content="The harness, not the model, makes a coding agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents. 8 free lessons, $0 to run.">
+<meta property="og:description" content="The harness, not the model, makes an agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents. 8 free lessons, $0 to run.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://building-a-coding-agent-from-scratch-course.decodingai.com/">
 <meta property="og:locale" content="en_US">
@@ -18,12 +18,12 @@
 <meta property="og:image:alt" content="decode — a coding agent built from scratch, sponsored by Modal, Opik and Kitaru">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Building a Coding Agent From Scratch — Free Open-Source Course in Python">
-<meta name="twitter:description" content="The harness, not the model, makes a coding agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents. 8 free lessons, $0 to run.">
+<meta name="twitter:description" content="The harness, not the model, makes an agent good. Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents. 8 free lessons, $0 to run.">
 <meta name="twitter:image" content="https://raw.githubusercontent.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/main/assets/github-repo-banner-dark.png">
 <link rel="icon" href="assets/coding-agent-logo.png">
 <script src="https://unpkg.com/lucide@1.28.0/dist/umd/lucide.min.js" integrity="sha384-VrnzGPiSyQxm3mI2VhlssyR85zugSHtxMkgO42qV3wUAbNk1oRdZkCWjXKOhuVu6" crossorigin="anonymous"></script>
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"Course","name":"Building a Coding Agent From Scratch","description":"Build a coding agent from scratch in Python: the ReAct agent loop, tools, permissions, Docker and Modal sandboxes, remote headless agents on Modal, session recording and replays, context engineering, subagents and evals. 8 written lessons and 4 videos, free and open-source.","url":"https://building-a-coding-agent-from-scratch-course.decodingai.com/","inLanguage":"en","isAccessibleForFree":true,"license":"https://www.apache.org/licenses/LICENSE-2.0","teaches":["Coding agent harness architecture","The ReAct agent loop with Pydantic AI","Agent tools: file I/O, bash, web, LSP","Permissions and sandboxing with Docker and Modal","Remote headless agents on Modal, session recording and replays with Kitaru","Context engineering: memory, compaction, skills","Subagents and parallel fan-out","Benchmarks, regression and online AI evals"],"provider":{"@type":"Organization","name":"Decoding AI","url":"https://www.decodingai.com"},"author":{"@type":"Person","name":"Paul Iusztin","url":"https://www.pauliusztin.ai/"},"hasCourseInstance":{"@type":"CourseInstance","courseMode":"online","courseWorkload":"PT8H"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD","availability":"https://schema.org/InStock","category":"Free"}}
+{"@context":"https://schema.org","@type":"Course","name":"Building a Coding Agent From Scratch","description":"Build a coding agent from scratch in Python: the ReAct agent loop, tools, permissions, Docker and Modal sandboxes, remote headless agents on Modal, session recording and replays, context engineering, subagents and evals. 8 written lessons and 6 videos, free and open-source.","url":"https://building-a-coding-agent-from-scratch-course.decodingai.com/","inLanguage":"en","isAccessibleForFree":true,"license":"https://www.apache.org/licenses/LICENSE-2.0","teaches":["Coding agent harness architecture","The ReAct agent loop with Pydantic AI","Agent tools: file I/O, bash, web, LSP","Permissions and sandboxing with Docker and Modal","Remote headless agents on Modal, session recording and replays with Kitaru","Context engineering: memory, compaction, skills","Subagents and parallel fan-out","Benchmarks, regression and online AI evals"],"provider":{"@type":"Organization","name":"Decoding AI","url":"https://www.decodingai.com"},"author":{"@type":"Person","name":"Paul Iusztin","url":"https://www.pauliusztin.ai/"},"hasCourseInstance":{"@type":"CourseInstance","courseMode":"online","courseWorkload":"PT8H"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD","availability":"https://schema.org/InStock","category":"Free"}}
 </script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Do I need a paid API key?","acceptedAnswer":{"@type":"Answer","text":"No. The default Gemini provider has a free tier, OpenRouter routes across :free models, and Modal gives $30 in credits."}},{"@type":"Question","name":"Why Python and not TypeScript or Go?","acceptedAnswer":{"@type":"Answer","text":"Accessibility: our audience knows Python. The course focuses on the design decisions, which transfer to any language."}},{"@type":"Question","name":"Why build from scratch instead of extending Pi, DeepAgents, or an existing harness?","acceptedAnswer":{"@type":"Answer","text":"Because adding custom logic to an existing harness is the easy part — knowing what to add requires understanding the internals. That's the fundamentals, and it's what still makes AI engineers valuable. Build a coding agent once and you're equipped to build a custom agent for any use case."}}]}
@@ -373,6 +373,11 @@ a:hover{color:var(--primary-hover)}
 .x9:hover{border-color:var(--border-strong)!important;transform:translateY(-2px)!important}
 .x10:hover{background:var(--surface)!important}
 .x11:hover{border-color:var(--border-strong)!important}
+/* course outline: Articles / Videos tabs */
+.om-tab{display:inline-flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:12.5px;font-weight:700;color:var(--fg-2);background:transparent;border:none;border-radius:var(--radius-pill);padding:8px 16px;cursor:pointer;transition:background .15s,color .15s}
+.om-tab:hover{color:var(--fg)}
+.om-tab[aria-selected="true"]{color:#fff;background:var(--primary)}
+.om-tab:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
 </style>
 </head>
 <body>
@@ -414,13 +419,13 @@ a:hover{color:var(--primary-hover)}
 <span style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--orange)">Free open-source course</span>
 </div>
 <h1 class="m1a" style="font-size:min(2.5vw,32px);font-weight:700;line-height:1.1;letter-spacing:-.03em;margin:0;color:#fff;white-space:nowrap">Building a Coding Agent <span style="color:#fff">From Scratch</span></h1>
-<p style="font-size:min(1.4vw,19px);line-height:1.5;color:#fff;font-weight:700;margin:clamp(14px,2.2vh,20px) 0 0;white-space:nowrap">The harness, not the model, makes a coding agent good.</p>
-<p style="font-size:min(1.06vw,14.5px);line-height:1.62;color:#9a9ca1;margin:8px 0 0;white-space:nowrap">Build one from scratch, from a bare-bones agent loop to a swarm of cloud agents.</p>
+<p style="font-size:min(1.4vw,19px);line-height:1.5;color:#fff;font-weight:700;margin:clamp(14px,2.2vh,20px) 0 0;white-space:nowrap">The harness, not the model, makes an agent good.</p>
+<p style="font-size:min(1.06vw,14.5px);line-height:1.62;color:#9a9ca1;margin:8px 0 0;text-wrap:pretty">Build a Claude Code clone from scratch, from a bare-bones agent loop to a swarm of cloud agents, to master harness engineering.</p>
 <div class="m-herobtns" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:clamp(24px,3.6vh,34px) 0 0">
 <a class="x3" href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:9px;font-size:15px;font-weight:700;color:#fff;background:var(--gradient-warm);border:none;border-radius:var(--radius-pill);padding:14px 26px;text-decoration:none;transition:transform .15s cubic-bezier(.2,.8,.2,1)">Start Lesson 1 <i data-lucide="arrow-right" style="width:16px;height:16px"></i></a>
 <a class="x4" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;font-size:15px;font-weight:700;color:#fff;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.22);border-radius:var(--radius-pill);padding:13px 24px;text-decoration:none;transition:background .15s"><i data-lucide="star" style="width:16px;height:16px"></i>Star the repo</a>
 </div>
-<p style="font-size:min(1vw,13px);line-height:1.6;color:#8a8c90;margin:clamp(16px,2.4vh,22px) 0 0;white-space:nowrap">By <a href="https://www.decodingai.com" style="color:var(--orange);text-decoration:none">Decoding AI</a>, in collaboration with <a href="https://modal.com/?source=decodingai&amp;campaign=harnesseng" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none">Modal</a>, <a href="https://www.comet.com/site/?utm_source=workshop&amp;utm_medium=partner&amp;utm_campaign=paul&amp;utm_content=coding_agent_course" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none">Opik</a> (by Comet), and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&amp;utm_medium=referral&amp;utm_campaign=coding-agent-course&amp;utm_content=brand" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none">Kitaru</a> (by ZenML).</p>
+<p style="font-size:min(1vw,13px);line-height:1.6;color:#8a8c90;margin:clamp(16px,2.4vh,22px) 0 0">Open-source harness engineering course<br>by <a href="https://www.decodingai.com" style="color:var(--orange);text-decoration:none">Decoding AI</a> in collaboration with <a href="https://modal.com/?source=decodingai&amp;campaign=harnesseng" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none">Modal</a>, <a href="https://www.comet.com/site/?utm_source=workshop&amp;utm_medium=partner&amp;utm_campaign=paul&amp;utm_content=coding_agent_course" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none">Opik (by Comet)</a> and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&amp;utm_medium=referral&amp;utm_campaign=coding-agent-course&amp;utm_content=brand" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none">Kitaru (by ZenML)</a>.</p>
 </div>
 <div style="position:relative;min-width:0">
 <div style="position:absolute;inset:8% -4% -6% 6%;background:radial-gradient(ellipse at center, rgba(213,52,42,.34), transparent 70%);filter:blur(18px);pointer-events:none"></div>
@@ -440,7 +445,7 @@ a:hover{color:var(--primary-hover)}
 <img src="https://img.shields.io/badge/type-open--source_course-8a2be2" alt="Open-source course" style="height:20px;width:auto">
 <img src="https://img.shields.io/badge/cost_to_run-%240-2ea44f" alt="$0 to run" style="height:20px;width:auto">
 <img src="https://img.shields.io/badge/articles-8-4c8eda" alt="8 articles" style="height:20px;width:auto">
-<img src="https://img.shields.io/badge/videos-4-ff0000" alt="4 videos" style="height:20px;width:auto">
+<img src="https://img.shields.io/badge/videos-6-ff0000" alt="6 videos" style="height:20px;width:auto">
 <img src="https://img.shields.io/badge/code-from_scratch-orange" alt="Code from scratch" style="height:20px;width:auto">
 <img src="https://img.shields.io/badge/license-Apache--2.0-lightgrey" alt="Apache-2.0 license" style="height:20px;width:auto">
 </div>
@@ -494,11 +499,11 @@ a:hover{color:var(--primary-hover)}
 <div style="max-width:1320px;margin:0 auto">
 <div style="display:flex;align-items:center;gap:14px"><span style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--primary)">About this course</span><span style="flex:1;height:1px;background:linear-gradient(90deg,var(--border-strong),transparent)"></span><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--fg-3);flex:none">02</span></div>
 <h2 style="font-size:min(3.2vw,41px);font-weight:800;line-height:1.1;letter-spacing:-.028em;color:var(--fg);margin:clamp(18px,2.6vh,26px) 0 0;white-space:nowrap">The Agent Is <span style="font-weight: normal;">~</span>20 Lines. The Course Is Everything Else.</h2>
-<p style="font-size:clamp(15px,1.3vw,18px);line-height:1.6;color:var(--fg-2);margin:clamp(14px,2.2vh,20px) 0 0;white-space:nowrap">In <a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">LangChain's Terminal-Bench test</a>, changing only the harness moved an agent from ~30th to top 5. The harness, not the model, wins.</p>
+<p style="font-size:clamp(15px,1.3vw,18px);line-height:1.6;color:var(--fg-2);margin:clamp(14px,2.2vh,20px) 0 0;text-wrap:pretty">In <a href="https://www.langchain.com/blog/the-anatomy-of-an-agent-harness" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">LangChain's Terminal-Bench experiment</a>, changing only the harness (with the same model) moved a coding agent from ~30th place into the top 5: the harness, not the model, is what makes a coding agent good.</p>
 
 <div style="display:grid;grid-template-columns:1.15fr .85fr;gap:clamp(20px,2.8vw,36px);align-items:center;margin:clamp(30px,5vh,52px) 0 0">
 <div style="order:2;min-width:0">
-<p style="font-size:15.5px;line-height:1.7;color:var(--fg-2);margin:0">That's the <i>entire</i> tool-calling agent. Everything else in this repo is the harness: tools, skills, permissions, sandbox, steering, memory, compaction, session recording &amp; replay, remote execution, subagents, evals.</p>
+<p style="font-size:15.5px;line-height:1.7;color:var(--fg-2);margin:0">That's the <i>entire</i> tool-calling agent. Everything else in this repo: the tools, skills, the permission layer, sandbox, steering queue, memory, compaction, session recording &amp; replay, remote execution, the subagent fan-out, the evals, is the harness.</p>
 <p style="font-size:15.5px;line-height:1.7;color:var(--fg);font-weight:700;margin:14px 0 0">That's what you're here to build.</p>
 </div>
 <div style="order:1;min-width:0;background:var(--black-3);border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;box-shadow:var(--shadow-md)">
@@ -512,7 +517,7 @@ a:hover{color:var(--primary-hover)}
 </div>
 </div>
 
-<p style="font-size:clamp(16px,1.45vw,19px);line-height:1.62;color:var(--fg-2);margin:clamp(28px,4.4vh,44px) 0 0;text-wrap:pretty">We spent months inside Claude Code (via its leaked source), <a href="https://github.com/anomalyco/opencode" target="_blank" rel="noopener" style="color: var(--primary); text-decoration: none;">OpenCode</a>, <a href="https://github.com/earendil-works/pi" target="_blank" rel="noopener" style="color: var(--primary); text-decoration: none;">Pi</a>, and <a href="https://github.com/aider-ai/aider" target="_blank" rel="noopener" style="color: var(--primary); text-decoration: none;">Aider</a>, then distilled it into 8 articles and 4 videos where you'll build <b style="color: var(--fg);">decode</b>, your own coding agent, from scratch: one headless core, two modes: an interactive TUI and Modal serverless functions running N copies in parallel, fired by CLI, webhook, or cron.</p>
+<p style="font-size:clamp(16px,1.45vw,19px);line-height:1.62;color:var(--fg-2);margin:clamp(28px,4.4vh,44px) 0 0;text-wrap:pretty">We spent months under the hood of Claude Code (via its leaked source), <a href="https://github.com/anomalyco/opencode" target="_blank" rel="noopener" style="color: var(--primary); text-decoration: none;">OpenCode</a>, <a href="https://github.com/earendil-works/pi" target="_blank" rel="noopener" style="color: var(--primary); text-decoration: none;">Pi</a>, and <a href="https://github.com/aider-ai/aider" target="_blank" rel="noopener" style="color: var(--primary); text-decoration: none;">Aider</a>, then distilled it into 8 articles and 6 videos where you'll build <b style="color: var(--fg);">decode</b>, your own coding agent, from scratch. One headless core hooked to two modes: an interactive TUI and Modal serverless functions running N copies in parallel, fired by CLI, webhook, or cron.</p>
 
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:clamp(16px,2vw,24px);margin:clamp(22px,3.4vh,34px) 0 0">
 <figure class="x5" style="margin:0;min-width:0;background:var(--black-3);border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;box-shadow:var(--shadow-md);display:flex;flex-direction:column;transition:border-color .2s,transform .18s cubic-bezier(.2,.8,.2,1),box-shadow .2s">
@@ -544,15 +549,16 @@ a:hover{color:var(--primary-hover)}
 <div style="display:flex;align-items:center;gap:14px"><span style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--primary)">Course outline</span><span style="flex:1;height:1px;background:linear-gradient(90deg,var(--border-strong),transparent)"></span><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--fg-3);flex:none">03</span></div>
 <div style="display:flex;flex-wrap:wrap;align-items:end;justify-content:space-between;gap:20px;margin:12px 0 clamp(24px,3.6vh,38px)">
 <div style="min-width:0">
-<h2 style="font-size:clamp(26px,3.4vw,42px);font-weight:800;line-height:1.1;letter-spacing:-.028em;color:var(--fg);margin:0;text-wrap:pretty">Eight Lessons. Four Videos.</h2>
-<p style="font-size:15px;line-height:1.65;color:var(--fg-2);margin:14px 0 0;white-space:nowrap">From designing the harness to deploying a swarm of remote agents.</p>
+<h2 style="font-size:clamp(26px,3.4vw,42px);font-weight:800;line-height:1.1;letter-spacing:-.028em;color:var(--fg);margin:0;text-wrap:pretty">Eight Lessons. Six Videos.</h2>
+<p style="font-size:15px;line-height:1.65;color:var(--fg-2);margin:14px 0 0">From designing the harness to deploying a swarm of remote agents.</p>
 </div>
-<div style="display:flex;gap:8px">
-<span style="display:inline-flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:11.5px;font-weight:700;color:#fff;background:var(--primary);border-radius:var(--radius-pill);padding:6px 13px">6 live</span>
-<span style="display:inline-flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:11.5px;color:var(--fg-3);border:1px dashed var(--border-strong);border-radius:var(--radius-pill);padding:6px 13px">2 coming</span>
+<div role="tablist" aria-label="Lesson format" style="display:inline-flex;gap:4px;padding:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-pill)">
+<button class="om-tab" type="button" role="tab" id="tab-articles" aria-selected="true" aria-controls="panel-articles"><i data-lucide="file-text" style="width:14px;height:14px"></i>Articles</button>
+<button class="om-tab" type="button" role="tab" id="tab-videos" aria-selected="false" aria-controls="panel-videos" tabindex="-1"><i data-lucide="play" style="width:14px;height:14px"></i>Videos</button>
 </div>
 </div>
 
+<div id="panel-articles" role="tabpanel" aria-labelledby="tab-articles">
 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:clamp(14px,1.8vw,20px)">
 
 <article class="x5" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow-md);display:flex;flex-direction:column;transition:border-color .2s,transform .18s cubic-bezier(.2,.8,.2,1),box-shadow .2s">
@@ -560,7 +566,6 @@ a:hover{color:var(--primary-hover)}
 <div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
 <span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Lesson 1</span>
-<span style="font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:var(--primary);border-radius:var(--radius-pill);padding:3px 9px">live</span>
 <a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank" rel="noopener" style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:var(--primary);text-decoration:none">video 1</a>
 </div>
 <h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">Building a Coding Agent From Scratch</h3>
@@ -568,8 +573,8 @@ a:hover{color:var(--primary-hover)}
 <div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
 <a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">read lesson <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
 <div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">install_and_usage.md</a>
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">modal_models.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">01_install_and_usage.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">02_modal_endpoints.md</a>
 </div>
 </div>
 </div>
@@ -580,7 +585,6 @@ a:hover{color:var(--primary-hover)}
 <div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
 <span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Lesson 2</span>
-<span style="font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:var(--primary);border-radius:var(--radius-pill);padding:3px 9px">live</span>
 <a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank" rel="noopener" style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:var(--primary);text-decoration:none">video 1</a>
 </div>
 <h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">The Bare-Bones Coding Agent Loop</h3>
@@ -588,8 +592,8 @@ a:hover{color:var(--primary-hover)}
 <div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
 <a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">read lesson <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
 <div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">install_and_usage.md</a>
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">modal_models.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">01_install_and_usage.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">02_modal_endpoints.md</a>
 </div>
 </div>
 </div>
@@ -600,17 +604,16 @@ a:hover{color:var(--primary-hover)}
 <div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
 <span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Lesson 3</span>
-<span style="font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:var(--primary);border-radius:var(--radius-pill);padding:3px 9px">live</span>
-<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">video 2 coming soon</span>
+<a href="https://www.youtube.com/watch?v=7CHMb8jWs6A" target="_blank" rel="noopener" style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:var(--primary);text-decoration:none">video 2</a>
 </div>
 <h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">From a Raw Shell to a Sandboxed Coding Agent</h3>
 <p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">Safely execute your agent's commands locally via Docker or remotely via Modal.</p>
 <div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
 <a href="https://www.decodingai.com/p/run-coding-agents-safely" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">read lesson <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
 <div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">install_and_usage.md</a>
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">modal_models.md</a>
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/03_sandboxing.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">sandboxing.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">01_install_and_usage.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">02_modal_endpoints.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/03_sandboxing.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">03_sandboxing.md</a>
 </div>
 </div>
 </div>
@@ -621,16 +624,15 @@ a:hover{color:var(--primary-hover)}
 <div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
 <span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Lesson 4</span>
-<span style="font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:var(--primary);border-radius:var(--radius-pill);padding:3px 9px">live</span>
-<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">video 2 coming soon</span>
+<a href="https://www.youtube.com/watch?v=dx77BRFZ0_M" target="_blank" rel="noopener" style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:var(--primary);text-decoration:none">video 3</a>
 </div>
 <h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">Context Engineering for Coding Agents</h3>
 <p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">Memory, compaction, skills, and LSP: the context window treated as a budget.</p>
 <div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
 <a href="https://www.decodingai.com/p/context-engineering-for-coding-agents" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">read lesson <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
 <div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">install_and_usage.md</a>
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">modal_models.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">01_install_and_usage.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">02_modal_endpoints.md</a>
 </div>
 </div>
 </div>
@@ -641,17 +643,14 @@ a:hover{color:var(--primary-hover)}
 <div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
 <span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Lesson 5</span>
-<span style="font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:var(--primary);border-radius:var(--radius-pill);padding:3px 9px">live</span>
-<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">video 2 coming soon</span>
 </div>
 <h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">Subagents Are Context Engineering</h3>
 <p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">One call fans out N parallel subagents, each with a budget and a report contract.</p>
 <div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
 <a href="https://www.decodingai.com/p/subagents-are-context-engineering" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">read lesson <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
 <div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">install_and_usage.md</a>
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">modal_models.md</a>
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/03_sandboxing.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">sandboxing.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">01_install_and_usage.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">02_modal_endpoints.md</a>
 </div>
 </div>
 </div>
@@ -662,57 +661,135 @@ a:hover{color:var(--primary-hover)}
 <div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
 <span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Lesson 6</span>
-<span style="font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#fff;background:var(--primary);border-radius:var(--radius-pill);padding:3px 9px">live</span>
-<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">video 3 coming soon</span>
 </div>
 <h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">Deploy a Headless Coding Agent Harness to Modal</h3>
 <p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">Deploy the headless harness on Modal and fire N parallel attempts at one task from the CLI, a webhook, or a cron job.</p>
 <div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
 <a href="https://www.decodingai.com/p/coding-agents-in-remote-headless" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">read lesson <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
 <div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">install_and_usage.md</a>
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">modal_models.md</a>
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/03_sandboxing.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">sandboxing.md</a>
-<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/04_deploy.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">deploy.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">01_install_and_usage.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">02_modal_endpoints.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/03_sandboxing.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">03_sandboxing.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/04_deploy.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">04_deploy.md</a>
+</div>
+</div>
+</div>
+</article>
+
+<article class="x5" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow-md);display:flex;flex-direction:column;transition:border-color .2s,transform .18s cubic-bezier(.2,.8,.2,1),box-shadow .2s">
+<a href="https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests" target="_blank" rel="noopener" style="display:block"><img src="assets/architecture_lesson_7.png" alt="Lesson 7 — AI evals foundations: benchmarks, regression and online" style="width:100%;background:var(--surface-2)"></a>
+<div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
+<div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
+<span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Lesson 7</span>
+</div>
+<h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">AI Evals Foundations: Benchmarks, Regression and Online</h3>
+<p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">Benchmarks, regression cases, and online evals: does it work, still work, keep working?</p>
+<div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
+<a href="https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">read lesson <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
+<div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">01_install_and_usage.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">02_modal_endpoints.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/05_evals.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">05_evals.md</a>
+</div>
+</div>
+</div>
+</article>
+
+<article class="x5" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow-md);display:flex;flex-direction:column;transition:border-color .2s,transform .18s cubic-bezier(.2,.8,.2,1),box-shadow .2s">
+<a href="https://www.decodingai.com/p/transform-agent-traces-into-regression-cases" target="_blank" rel="noopener" style="display:block"><img src="assets/architecture_lesson_8.png" alt="Lesson 8 — AI evals on steroids via replays" style="width:100%;background:var(--surface-2)"></a>
+<div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
+<div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
+<span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Lesson 8</span>
+</div>
+<h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">AI Evals on Steroids via Replays</h3>
+<p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">Replay a recorded run from the top with the model or prompt swapped, tool outputs served from the recording, then diff it against the baseline.</p>
+<div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
+<a href="https://www.decodingai.com/p/transform-agent-traces-into-regression-cases" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">read lesson <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
+<div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">01_install_and_usage.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">02_modal_endpoints.md</a>
+<a class="x6" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/06_evals_replays.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">06_evals_replays.md</a>
 </div>
 </div>
 </div>
 </article>
 </div>
+</div>
 
+<div id="panel-videos" role="tabpanel" aria-labelledby="tab-videos" hidden>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:clamp(14px,1.8vw,20px)">
+
+<article class="x5" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow-md);display:flex;flex-direction:column;transition:border-color .2s,transform .18s cubic-bezier(.2,.8,.2,1),box-shadow .2s">
+<a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank" rel="noopener" style="position:relative;display:block"><img src="assets/thumbnail_video_1.jpg" alt="Video 1 — the video version of lessons 1 and 2" style="width:100%;aspect-ratio:16/9;object-fit:cover;background:var(--surface-2)"><span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:inline-flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:50%;background:var(--gradient-warm);box-shadow:var(--shadow-warm);color:#fff"><i data-lucide="play" style="width:22px;height:22px;margin-left:3px"></i></span></a>
+<div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
+<div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
+<span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Video 1</span>
+<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">lessons 1–2</span>
+</div>
+<h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">Design Your Own Coding Agent Harness</h3>
+<p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">The video version of lessons 1 and 2.</p>
+<div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
+<a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">watch video <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
+</div>
+</div>
+</article>
+
+<article class="x5" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow-md);display:flex;flex-direction:column;transition:border-color .2s,transform .18s cubic-bezier(.2,.8,.2,1),box-shadow .2s">
+<a href="https://www.youtube.com/watch?v=7CHMb8jWs6A" target="_blank" rel="noopener" style="position:relative;display:block"><img src="assets/thumbnail_video_2.jpg" alt="Video 2 — the video version of lesson 3" style="width:100%;aspect-ratio:16/9;object-fit:cover;background:var(--surface-2)"><span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:inline-flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:50%;background:var(--gradient-warm);box-shadow:var(--shadow-warm);color:#fff"><i data-lucide="play" style="width:22px;height:22px;margin-left:3px"></i></span></a>
+<div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
+<div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
+<span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Video 2</span>
+<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">lesson 3</span>
+</div>
+<h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">Why Claude Code Never Wrecks Your Machine</h3>
+<p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">The video version of lesson 3.</p>
+<div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
+<a href="https://www.youtube.com/watch?v=7CHMb8jWs6A" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">watch video <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
+</div>
+</div>
+</article>
+
+<article class="x5" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow-md);display:flex;flex-direction:column;transition:border-color .2s,transform .18s cubic-bezier(.2,.8,.2,1),box-shadow .2s">
+<a href="https://www.youtube.com/watch?v=dx77BRFZ0_M" target="_blank" rel="noopener" style="position:relative;display:block"><img src="assets/thumbnail_video_3.jpg" alt="Video 3 — the video version of lesson 4" style="width:100%;aspect-ratio:16/9;object-fit:cover;background:var(--surface-2)"><span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:inline-flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:50%;background:var(--gradient-warm);box-shadow:var(--shadow-warm);color:#fff"><i data-lucide="play" style="width:22px;height:22px;margin-left:3px"></i></span></a>
+<div style="padding:22px 24px;display:flex;flex-direction:column;flex:1">
+<div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
+<span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--primary)">Video 3</span>
+<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">lesson 4</span>
+</div>
+<h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">Context Rot Is a Harness Problem</h3>
+<p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">The video version of lesson 4.</p>
+<div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
+<a href="https://www.youtube.com/watch?v=dx77BRFZ0_M" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">watch video <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
+</div>
+</div>
+</article>
+</div>
 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:clamp(14px,1.8vw,20px);margin:clamp(14px,1.8vw,20px) 0 0">
 
 <article class="x7" style="background:transparent;border:1px dashed var(--border-strong);border-radius:var(--radius-lg);padding:22px 24px;transition:background .2s,border-color .2s">
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
-<span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--fg-3)">Lesson 7</span>
-<span style="font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-3);border:1px solid var(--border-strong);border-radius:var(--radius-pill);padding:3px 9px">soon</span>
-<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">video 3</span>
+<span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--fg-3)">Video</span>
+<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">lesson 5 · coming soon</span>
 </div>
-<h3 style="font-size:17px;font-weight:700;line-height:1.3;letter-spacing:-.012em;color:var(--fg-2);margin:12px 0 8px;text-wrap:pretty">AI Evals Foundations: Benchmarks, Regression and Online</h3>
-<p style="font-size:13.5px;line-height:1.6;color:var(--fg-3);margin:0 0 16px">Benchmarks, regression cases, and online evals: does it work, still work, keep working?</p>
-<div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
-<a class="x8" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">install_and_usage.md</a>
-<a class="x8" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">modal_models.md</a>
-<a class="x8" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/05_evals.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">evals.md</a>
-</div>
+<h3 style="font-size:17px;font-weight:700;line-height:1.3;letter-spacing:-.012em;color:var(--fg-2);margin:12px 0 0;text-wrap:pretty">Subagents Are Context Engineering</h3>
 </article>
 
 <article class="x7" style="background:transparent;border:1px dashed var(--border-strong);border-radius:var(--radius-lg);padding:22px 24px;transition:background .2s,border-color .2s">
 <div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
-<span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--fg-3)">Lesson 8</span>
-<span style="font-family:var(--font-mono);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-3);border:1px solid var(--border-strong);border-radius:var(--radius-pill);padding:3px 9px">soon</span>
-<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">video 4</span>
+<span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--fg-3)">Video 4</span>
+<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">lessons 6–7 · coming soon</span>
 </div>
-<h3 style="font-size:17px;font-weight:700;line-height:1.3;letter-spacing:-.012em;color:var(--fg-2);margin:12px 0 8px;text-wrap:pretty">AI Evals on Steroids via Replays</h3>
-<p style="font-size:13.5px;line-height:1.6;color:var(--fg-3);margin:0 0 16px">Replay a recorded run from the top with the model or prompt swapped, tool outputs served from the recording, then diff it against the baseline.</p>
-<div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
-<a class="x8" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">install_and_usage.md</a>
-<a class="x8" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">modal_models.md</a>
-<a class="x8" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/04_deploy.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">deploy.md</a>
-<a class="x8" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/05_evals.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">evals.md</a>
-<a class="x8" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/06_evals_replays.md" target="_blank" rel="noopener" style="color:var(--fg-3);text-decoration:none">evals_replays.md</a>
-</div>
+<h3 style="font-size:17px;font-weight:700;line-height:1.3;letter-spacing:-.012em;color:var(--fg-2);margin:12px 0 0;text-wrap:pretty">Deploy a Headless Coding Agent Harness to Modal · AI Evals Foundations: Benchmarks, Regression and Online</h3>
 </article>
+
+<article class="x7" style="background:transparent;border:1px dashed var(--border-strong);border-radius:var(--radius-lg);padding:22px 24px;transition:background .2s,border-color .2s">
+<div style="display:flex;flex-wrap:wrap;align-items:center;gap:9px">
+<span style="font-family:var(--font-mono);font-size:12px;font-weight:700;color:var(--fg-3)">Video 5</span>
+<span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">lesson 8 · coming soon</span>
+</div>
+<h3 style="font-size:17px;font-weight:700;line-height:1.3;letter-spacing:-.012em;color:var(--fg-2);margin:12px 0 0;text-wrap:pretty">AI Evals on Steroids via Replays</h3>
+</article>
+</div>
 </div>
 </div>
 </section>
@@ -726,13 +803,13 @@ a:hover{color:var(--primary-hover)}
 </div>
 
 <div style="max-width:62ch;margin:clamp(22px,3vh,32px) 0 0;border-top:1px solid var(--border-strong)">
-<div style="display:flex;align-items:baseline;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)"><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--primary);flex:none">01</span><p style="font-size:14.5px;line-height:1.5;color:var(--fg-2);margin:0"><b style="color:var(--fg)"><span style="font-weight: normal;">Why</span></b> a headless harness with two interface modes, TUI and Remote.</p></div>
+<div style="display:flex;align-items:baseline;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)"><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--primary);flex:none">01</span><p style="font-size:14.5px;line-height:1.5;color:var(--fg-2);margin:0"><b style="color:var(--fg)"><span style="font-weight: normal;">Why</span></b> we have a headless harness and two interface modes: TUI + Remote.</p></div>
 <div style="display:flex;align-items:baseline;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)"><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--primary);flex:none">02</span><p style="font-size:14.5px;line-height:1.5;color:var(--fg-2);margin:0"><b style="color:var(--fg)"><span style="font-weight: normal;">What</span></b> the essential components of a coding agent are, and what is optional.</p></div>
 <div style="display:flex;align-items:baseline;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)"><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--primary);flex:none">03</span><p style="font-size:14.5px;line-height:1.5;color:var(--fg-2);margin:0"><b style="color:var(--fg)"><span style="font-weight: normal;">Why</span></b> we plugged in 9 tools, no more, no less.</p></div>
 <div style="display:flex;align-items:baseline;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)"><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--primary);flex:none">04</span><p style="font-size:14.5px;line-height:1.5;color:var(--fg-2);margin:0"><b style="color:var(--fg)"><span style="font-weight: normal;">Why</span></b> we record every run, and what a replay buys you that a re-run doesn't.</p></div>
 <div style="display:flex;align-items:baseline;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)"><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--primary);flex:none">05</span><p style="font-size:14.5px;line-height:1.5;color:var(--fg-2);margin:0"><b style="color:var(--fg)"><span style="font-weight: normal;">What</span></b> guardrails are actually useful.</p></div>
 <div style="display:flex;align-items:baseline;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)"><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--primary);flex:none">06</span><p style="font-size:14.5px;line-height:1.5;color:var(--fg-2);margin:0"><b style="color:var(--fg)"><span style="font-weight: normal;">Why</span></b> compaction fires at ~80% of the window instead of at the limit.</p></div>
-<div style="display:flex;align-items:baseline;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)"><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--primary);flex:none">07</span><p style="font-size:14.5px;line-height:1.5;color:var(--fg-2);margin:0"><b style="color:var(--fg)"><span style="font-weight: normal;">Why</span></b> you need benchmarks, regression tests and online evals.</p></div>
+<div style="display:flex;align-items:baseline;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)"><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--primary);flex:none">07</span><p style="font-size:14.5px;line-height:1.5;color:var(--fg-2);margin:0"><b style="color:var(--fg)"><span style="font-weight: normal;">Why</span></b> you need both benchmarks and regression tests.</p></div>
 </div>
 </div>
 </section>
@@ -741,7 +818,7 @@ a:hover{color:var(--primary-hover)}
 <div style="max-width:1320px;margin:0 auto">
 <div style="display:flex;align-items:center;gap:14px"><span style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--primary)">See it work</span><span style="flex:1;height:1px;background:linear-gradient(90deg,var(--border-strong),transparent)"></span><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--fg-3);flex:none">05</span></div>
 <h2 style="font-size:clamp(26px,3.4vw,42px);font-weight:800;line-height:1.1;letter-spacing:-.028em;color:var(--fg);margin:12px 0 0;text-wrap:pretty">Six Demos. One Keystroke Away.</h2>
-<p style="font-size:15px;line-height:1.65;color:var(--fg-2);margin:14px 0 0;white-space:nowrap">Demo skills live under <span style="font-family:var(--font-mono);font-size:14px;color:var(--fg);background:var(--surface-2);border:1px solid var(--border);border-radius:4px;padding:2px 6px">.decode/skills/</span>. Type <span style="font-family:var(--font-mono);font-size:14px;color:var(--fg);background:var(--surface-2);border:1px solid var(--border);border-radius:4px;padding:2px 6px">/demo-</span> in the TUI, pick one, and watch the harness do real work.</p>
+<p style="font-size:15px;line-height:1.65;color:var(--fg-2);margin:14px 0 0;text-wrap:pretty">The finished agent ships with demo skills under <span style="font-family:var(--font-mono);font-size:14px;color:var(--fg);background:var(--surface-2);border:1px solid var(--border);border-radius:4px;padding:2px 6px">.decode/skills/</span>. Open the TUI, type <span style="font-family:var(--font-mono);font-size:14px;color:var(--fg);background:var(--surface-2);border:1px solid var(--border);border-radius:4px;padding:2px 6px">/demo-</span>, pick one, and watch the harness you're about to build do real work.</p>
 
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:clamp(14px,1.8vw,20px);margin:clamp(24px,3.6vh,38px) 0 0">
 <figure style="margin:0;grid-column:1 / -1;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
@@ -796,13 +873,13 @@ a:hover{color:var(--primary-hover)}
 <div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Attach the headless harness to multiple modes: TUI and remote</span></div>
 <div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Deploy the headless harness on Modal and fire N parallel attempts at one task from the CLI, a webhook, or a cron job</span></div>
 <div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Record every run with Kitaru and replay it with the model or prompt swapped, tool outputs served from the recording, against the original as baseline</span></div>
-<div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Implement guardrails: a permission layer plus local &amp; remote sandboxing</span></div>
+<div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Implement guardrails and safety nets for the agent's behavior by adding a permission layer and local &amp; remote sandboxing</span></div>
 <div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Build essential context engineering techniques: memory, compaction, skills</span></div>
 <div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Hook up an LSP server for faster feedback loops</span></div>
 <div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Implement an agents catalog: build, plan, code reviewer and exploration agents</span></div>
 <div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Spawn parallel subagents via fan-out strategies</span></div>
 <div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Add observability</span></div>
-<div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Design an eval harness for benchmarking and catching regressions</span></div>
+<div style="display:flex;gap:13px;padding:13px 0;border-bottom:1px solid var(--border)"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:9px;flex:none"></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Design an eval harness for benchmarking the agent and checking for regressions</span></div>
 </div>
 
 <figure style="margin:clamp(26px,4vh,42px) 0 0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
@@ -840,7 +917,7 @@ a:hover{color:var(--primary-hover)}
 <div style="font-size:14.5px;line-height:1.6;color:var(--fg-2);margin:10px 0 0"><a href="https://modal.com/?source=decodingai&amp;campaign=harnesseng" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700;text-decoration:none">Modal</a> as headless agents (fired by hand, by cron, or by webhook)</div>
 </div>
 </div>
-<p style="font-size:14.5px;line-height:1.65;color:var(--fg-2);margin:clamp(16px,2.4vh,22px) 0 0;white-space:nowrap;text-align:center">Otherwise, we build everything from scratch, to teach foundations that last, not frameworks that hide the hard parts.</p>
+<p style="font-size:14.5px;line-height:1.65;color:var(--fg-2);margin:clamp(16px,2.4vh,22px) 0 0;text-align:center;text-wrap:pretty">Otherwise, we build all the functionality from scratch, to teach you the foundations that last, not frameworks that abstract away the hard parts.</p>
 </div>
 </section>
 
@@ -852,8 +929,8 @@ a:hover{color:var(--primary-hover)}
 <p style="font-size:clamp(17px,1.55vw,20px);line-height:1.6;color:var(--fg-2);margin:20px 0 0;text-wrap:pretty">You finish with a working coding agent that teaches you harness engineering patterns to steal for your own agentic applications.</p>
 <div style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--accent);margin:clamp(22px,3vh,30px) 0 0">Best for</div>
 <div style="display:grid;gap:12px;margin:12px 0 0">
-<div style="display:flex;gap:13px"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:8px;flex:none"></span><span style="font-size:15.5px;line-height:1.55;color:var(--fg-2)"><b style="color:var(--fg)">ML/AI Engineers</b> levelling up their craft</span></div>
-<div style="display:flex;gap:13px"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:8px;flex:none"></span><span style="font-size:15.5px;line-height:1.55;color:var(--fg-2)"><b style="color:var(--fg)">Software Engineers and Data Scientists</b> moving into agentic systems</span></div>
+<div style="display:flex;gap:13px"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:8px;flex:none"></span><span style="font-size:15.5px;line-height:1.55;color:var(--fg-2)"><b style="color:var(--fg)">ML/AI engineers</b> who want to level up their craft</span></div>
+<div style="display:flex;gap:13px"><span style="width:6px;height:6px;border-radius:50%;background:var(--gradient-warm);margin-top:8px;flex:none"></span><span style="font-size:15.5px;line-height:1.55;color:var(--fg-2)"><b style="color:var(--fg)">Software engineers and data scientists</b> who want to transition into building agentic systems from scratch</span></div>
 </div>
 </div>
 <div id="prerequisites" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:8px clamp(20px,2.4vw,28px)">
@@ -875,15 +952,14 @@ a:hover{color:var(--primary-hover)}
 <div style="max-width:1320px;margin:0 auto">
 <div style="display:flex;align-items:center;gap:14px"><span style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--primary)">Cost structure</span><span style="flex:1;height:1px;background:linear-gradient(90deg,var(--border-strong),transparent)"></span><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--fg-3);flex:none">08</span></div>
 <h2 style="font-size:clamp(26px,3.4vw,42px);font-weight:800;line-height:1.1;letter-spacing:-.028em;color:var(--fg);margin:12px 0 0;text-wrap:pretty">Running It Costs <span class="text-gradient">$0</span>.</h2>
-<p style="font-size:15px;line-height:1.65;color:var(--fg-2);margin:14px 0 0;max-width:60ch">If you stick to free tiers. Reading only? Everything's free, full stop.</p>
+<p style="font-size:15px;line-height:1.65;color:var(--fg-2);margin:14px 0 0;max-width:60ch">Running the code costs $0 if you stick to free tiers. <b style="color:var(--fg)"><i>Reading-only? Everything's free!</i></b></p>
 <div style="display:grid;margin:clamp(22px,3.4vh,34px) 0 0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
 <div class="m-costhead" style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:14px clamp(20px,2.4vw,28px);background:var(--surface-3);border-bottom:1px solid var(--border-strong);font-family:var(--font-mono);font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--fg-2)"><span>Service</span><span>Cost</span></div>
 <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:16px clamp(20px,2.4vw,28px);border-bottom:1px solid var(--border);align-items:baseline"><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Gemini API <span style="color:var(--fg-3)">(default provider — easy setup, but limited API requests)</span></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg)">free tier (<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">Google AI Studio</a>)</span></div>
 <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:16px clamp(20px,2.4vw,28px);border-bottom:1px solid var(--border);align-items:baseline"><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)"><a href="https://modal.com/?source=decodingai&amp;campaign=harnesseng" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700;text-decoration:none">Modal</a> <span style="color:var(--fg-3)">(recommended provider, remote sandbox, remote agents)</span></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg)">$30 free credits — enough to run the course</span></div>
 <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:16px clamp(20px,2.4vw,28px);border-bottom:1px solid var(--border);align-items:baseline"><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">OpenRouter <span style="color:var(--fg-3)">(alternative provider)</span></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg)">$0 on <span style="font-family:var(--font-mono);font-size:13.5px">:free</span> models (optional $10 credit raises the daily cap)</span></div>
 <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:16px clamp(20px,2.4vw,28px);border-bottom:1px solid var(--border);align-items:baseline"><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)"><a href="https://www.comet.com/site/?utm_source=workshop&amp;utm_medium=partner&amp;utm_campaign=paul&amp;utm_content=coding_agent_course" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700;text-decoration:none">Opik</a> <span style="color:var(--fg-3)">(tracing + evals)</span></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg)">free tier</span></div>
-<div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:16px clamp(20px,2.4vw,28px);border-bottom:1px solid var(--border);align-items:baseline"><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)"><a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&amp;utm_medium=referral&amp;utm_campaign=coding-agent-course&amp;utm_content=brand" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700;text-decoration:none">Kitaru</a> <span style="color:var(--fg-3)">(recording + replays)</span></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg)">free — the OSS server runs on your laptop (<span style="font-family:var(--font-mono);font-size:13.5px">make kitaru-local</span>)</span></div>
-<div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:16px clamp(20px,2.4vw,28px);align-items:baseline"><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)">Modal — run headless agents remotely <i style="color:var(--fg-3)">(optional)</i></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg);white-space:nowrap">usage-based, ~zero idle. <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/04_deploy.md" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">deploy.md</a></span></div>
+<div style="display:grid;grid-template-columns:1.35fr 1fr;gap:clamp(16px,2vw,28px);padding:16px clamp(20px,2.4vw,28px);align-items:baseline"><span style="font-size:14.5px;line-height:1.55;color:var(--fg-2)"><a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&amp;utm_medium=referral&amp;utm_campaign=coding-agent-course&amp;utm_content=brand" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700;text-decoration:none">Kitaru</a> <span style="color:var(--fg-3)">(recording + replays)</span></span><span style="font-size:14.5px;line-height:1.55;color:var(--fg)">free — the OSS server runs on your laptop (<span style="font-family:var(--font-mono);font-size:13.5px">make kitaru-local</span>)</span></div>
 </div>
 </div>
 </section>
@@ -897,8 +973,8 @@ a:hover{color:var(--primary-hover)}
 <p style="font-size:16.5px;line-height:1.72;color:var(--fg-2);margin:18px 0 0;text-wrap:pretty">One Python package; each module maps to one part of the architecture.<br></p>
 <div style="margin:clamp(26px,3.6vh,36px) 0 0">
 <div style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--accent)">How it works</div>
-<p style="font-size:15.5px;line-height:1.72;color:var(--fg-2);margin:12px 0 0;text-wrap:pretty">Self-paced, based on this repository plus the lessons that walk you through the code. No paywall. No platform.</p>
-<p style="font-size:15.5px;line-height:1.72;color:var(--fg-2);margin:14px 0 0;text-wrap:pretty">Read the lessons on the <a href="https://www.decodingai.com" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">Decoding AI Magazine</a>, watch the videos on the <a href="https://www.youtube.com/@itsdecodingai" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">Decoding AI Channel</a>, run the code on your own machine, break it, fix it, and learn from the process.</p>
+<p style="font-size:15.5px;line-height:1.72;color:var(--fg-2);margin:12px 0 0;text-wrap:pretty">As an open-source course, everything is self-paced, based on this repository, plus the attached lessons that walk you through the code. No paywall. No platform.</p>
+<p style="font-size:15.5px;line-height:1.72;color:var(--fg-2);margin:14px 0 0;text-wrap:pretty">Read the lessons on the <a href="https://www.decodingai.com" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">Decoding AI Magazine</a>, watch the videos from the <a href="https://www.youtube.com/@itsdecodingai" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">Decoding AI Channel</a>, run the code on your own machine, break it, fix it, and learn from the process.</p>
 </div>
 </div>
 <div style="background:var(--black-3);border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;box-shadow:var(--shadow-md)">
@@ -940,17 +1016,17 @@ a:hover{color:var(--primary-hover)}
 <div style="max-width:1320px;margin:0 auto">
 <div style="display:flex;align-items:center;gap:14px"><span style="font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--primary)">Running the code</span><span style="flex:1;height:1px;background:linear-gradient(90deg,var(--border-strong),transparent)"></span><span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;color:var(--fg-3);flex:none">10</span></div>
 <h2 style="font-size:clamp(26px,3.4vw,42px);font-weight:800;line-height:1.1;letter-spacing:-.028em;color:var(--fg);margin:12px 0 0;text-wrap:pretty">One Guide Per Side Quest.</h2>
-<p style="font-size:15px;line-height:1.65;color:var(--fg-2);margin:14px 0 0;white-space:nowrap">Everything lives under <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/tree/main/running_the_code" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none;font-family:var(--font-mono);font-size:14px">running_the_code/</a>. One core guide, plus one focused guide per side quest.</p>
+<p style="font-size:15px;line-height:1.65;color:var(--fg-2);margin:14px 0 0;text-wrap:pretty">Everything lives under <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/tree/main/running_the_code" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none;font-family:var(--font-mono);font-size:14px">running_the_code/</a>. Follow them in order; each ends with a link to the next.</p>
 <div style="display:grid;margin:clamp(22px,3.4vh,34px) 0 0">
-<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:260px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">install_and_usage.md</span><span style="font-size:14.5px;color:var(--fg-2)">Start here: install, one key, first session</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
-<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/00_troubleshooting.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:260px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">troubleshooting.md</span><span style="font-size:14.5px;color:var(--fg-2)">Every known failure, and its fix</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
-<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:260px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">modal_models.md</span><span style="font-size:14.5px;color:var(--fg-2)">Serving open models on Modal</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
-<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/03_sandboxing.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:260px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">sandboxing.md</span><span style="font-size:14.5px;color:var(--fg-2)">Docker (local) / Modal (remote) sandboxing + the sandbox git token</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
-<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/04_deploy.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:260px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">deploy.md</span><span style="font-size:14.5px;color:var(--fg-2)">The headless harness on Modal — CLI, webhook, cron</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
-<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/05_evals.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:260px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">evals.md</span><span style="font-size:14.5px;color:var(--fg-2)">Benchmarks, regression cases, and online evals</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
-<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/06_evals_replays.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:260px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">evals_replays.md</span><span style="font-size:14.5px;color:var(--fg-2)">Kitaru on your laptop: record, replay &amp; the full evals loop</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
+<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/00_troubleshooting.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:280px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">00_troubleshooting.md</span><span style="font-size:14.5px;color:var(--fg-2)">Every known failure, and its fix</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
+<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/01_install_and_usage.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:280px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">01_install_and_usage.md</span><span style="font-size:14.5px;color:var(--fg-2)">Start here: install, one key, first session</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
+<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/02_modal_endpoints.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:280px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">02_modal_endpoints.md</span><span style="font-size:14.5px;color:var(--fg-2)">Serving open models on Modal</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
+<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/03_sandboxing.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:280px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">03_sandboxing.md</span><span style="font-size:14.5px;color:var(--fg-2)">Docker (local) / Modal (remote) sandboxing + the sandbox git token</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
+<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/04_deploy.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:280px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">04_deploy.md</span><span style="font-size:14.5px;color:var(--fg-2)">The headless harness on Modal — CLI, webhook, cron</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
+<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/05_evals.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:280px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">05_evals.md</span><span style="font-size:14.5px;color:var(--fg-2)">Benchmarks and regression cases on Opik</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
+<a class="x10" href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/running_the_code/06_evals_replays.md" target="_blank" rel="noopener" style="display:grid;grid-template-columns:280px 1fr auto;gap:clamp(16px,2vw,28px);align-items:center;padding:17px clamp(12px,1.6vw,18px);border-top:1px solid var(--border);text-decoration:none"><span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg);font-weight:500">06_evals_replays.md</span><span style="font-size:14.5px;color:var(--fg-2)">Kitaru on your laptop: record, replay &amp; the full evals loop</span><i data-lucide="arrow-up-right" style="width:15px;height:15px;color:var(--primary)"></i></a>
 </div>
-<p style="font-size:14.5px;line-height:1.65;color:var(--fg-2);margin:clamp(20px,3vh,28px) 0 0;white-space:nowrap">Questions or setup trouble: open a <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">GitHub issue</a>. Found a bug and know the fix? Fork, fix, run <span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg)">make ci</span> (no API key needed), and open a pull request.</p>
+<p style="font-size:14.5px;line-height:1.65;color:var(--fg-2);margin:clamp(20px,3vh,28px) 0 0;text-wrap:pretty">Open a <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">GitHub issue</a> for course questions, setup trouble, or concept clarifications. Found a bug and know the fix? Fork, fix, run <span style="font-family:var(--font-mono);font-size:13.5px;color:var(--fg)">make ci</span> (no API key needed), and open a pull request. Future readers will thank you 🤗</p>
 </div>
 </section>
 
@@ -960,7 +1036,7 @@ a:hover{color:var(--primary-hover)}
 <div style="margin:clamp(24px,3.6vh,38px) auto 0;max-width:820px;border:1px solid rgba(0,0,0,.28);border-radius:var(--radius-lg);overflow:hidden;box-shadow:0 22px 50px rgba(0,0,0,.3)">
 <img src="assets/github-repo-banner-dark.png" alt="Sponsored by Modal, Opik and Kitaru" style="width:100%">
 </div>
-<p style="font-size:15px;line-height:1.65;color:rgba(255,255,255,.9);margin:clamp(20px,3vh,28px) auto 0;max-width:68ch">Special thanks to <a href="https://modal.com/?source=decodingai&amp;campaign=harnesseng" target="_blank" rel="noopener" style="color:#fff;font-weight:700;text-decoration:underline">Modal</a>, <a href="https://www.comet.com/site/?utm_source=workshop&amp;utm_medium=partner&amp;utm_campaign=paul&amp;utm_content=coding_agent_course" target="_blank" rel="noopener" style="color:#fff;font-weight:700;text-decoration:underline">Opik</a> (by Comet), and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&amp;utm_medium=referral&amp;utm_campaign=coding-agent-course&amp;utm_content=brand" target="_blank" rel="noopener" style="color:#fff;font-weight:700;text-decoration:underline">Kitaru</a> (by ZenML) for sponsoring this open-source course and keeping it free.</p>
+<p style="font-size:15px;line-height:1.65;color:rgba(255,255,255,.9);margin:clamp(20px,3vh,28px) auto 0;max-width:68ch">Special thanks to <a href="https://modal.com/?source=decodingai&amp;campaign=harnesseng" target="_blank" rel="noopener" style="color:#fff;font-weight:700;text-decoration:underline">Modal</a>, <a href="https://www.comet.com/site/?utm_source=workshop&amp;utm_medium=partner&amp;utm_campaign=paul&amp;utm_content=coding_agent_course" target="_blank" rel="noopener" style="color:#fff;font-weight:700;text-decoration:underline">Opik</a> (by Comet), and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&amp;utm_medium=referral&amp;utm_campaign=coding-agent-course&amp;utm_content=brand" target="_blank" rel="noopener" style="color:#fff;font-weight:700;text-decoration:underline">Kitaru</a> (by ZenML) for sponsoring this open-source course and keeping it free!</p>
 <p style="font-size:14px;line-height:1.65;color:rgba(255,255,255,.78);margin:10px auto 0;max-width:68ch">Opik and Kitaru are open source. Consider starring their repositories: <a href="https://github.com/comet-ml/opik" target="_blank" rel="noopener" style="color:#fff;text-decoration:underline;white-space:nowrap">Opik on GitHub</a> · <a href="https://github.com/zenml-io/kitaru" target="_blank" rel="noopener" style="color:#fff;text-decoration:underline;white-space:nowrap">Kitaru on GitHub</a>.</p>
 </div>
 </section>
@@ -980,7 +1056,7 @@ a:hover{color:var(--primary-hover)}
 </details>
 <details class="x11" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:18px 22px;transition:border-color .2s">
 <summary style="cursor:pointer;font-size:16px;font-weight:700;color:var(--fg)">Why build from scratch instead of extending Pi, DeepAgents, or an existing harness?</summary>
-<p style="font-size:14.5px;line-height:1.65;color:var(--fg-2);margin:12px 0 0">Because adding custom logic to an existing harness is the easy part. <i>Knowing what to add</i> requires understanding the internals. That's the fundamentals, and it's what still makes AI engineers valuable. Build a coding agent once, and you're equipped to build a custom agent for any use case.</p>
+<p style="font-size:14.5px;line-height:1.65;color:var(--fg-2);margin:12px 0 0">Because adding custom logic to an existing harness is the easy part. <i>Knowing what to add</i> requires understanding the internals. That's the fundamentals, and it's what still makes AI engineers valuable. Build a coding agent once and you're equipped to build a custom agent for any use case.</p>
 </details>
 </div>
 </div>
@@ -1002,7 +1078,7 @@ a:hover{color:var(--primary-hover)}
 <a href="https://www.decodingai.com/" target="_blank" rel="noopener" style="flex:none"><img src="assets/decoding-ai-logo.png" alt="Decoding AI" style="width:72px;height:72px;object-fit:contain"></a>
 <div style="min-width:0">
 <div style="font-size:21px;font-weight:800;letter-spacing:-.018em;color:var(--fg)">Decoding AI Magazine</div>
-<div style="font-size:14px;line-height:1.55;color:var(--fg-2);margin:6px 0 0;max-width:58ch;text-wrap:balance">Join 40k+ engineers learning to build coding agents from scratch with the <a href="https://www.decodingai.com/" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">Decoding AI Magazine</a>.</div>
+<div style="font-size:14px;line-height:1.55;color:var(--fg-2);margin:6px 0 0;max-width:58ch;text-wrap:balance">Join 44k+ engineers subscribed to <a href="https://www.decodingai.com/" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">the Decoding AI Magazine</a> to learn to build coding agents from scratch.</div>
 </div>
 </div>
 </div>
@@ -1026,7 +1102,7 @@ a:hover{color:var(--primary-hover)}
 <img src="assets/coding-agent-logo.png" alt="" style="width:26px;height:26px;opacity:.85">
 <span style="font-family:var(--font-mono);font-size:12.5px;color:#8a8c90">decode · apache-2.0 · decoding ai</span>
 </div>
-<p style="font-size:12.5px;line-height:1.6;color:#8a8c90;margin:0;white-space:nowrap">Released under <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/LICENSE" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none">Apache-2.0</a>. Clone, fork, and build on it; keep the LICENSE and credit this repo.</p>
+<p style="font-size:12.5px;line-height:1.6;color:#8a8c90;margin:0;white-space:nowrap">Released under <a href="https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/blob/main/LICENSE" target="_blank" rel="noopener" style="color:var(--orange);text-decoration:none">Apache-2.0</a> — clone, fork, and build on it; keep the LICENSE and credit this repo.</p>
 </div>
 </footer>
 
@@ -1069,6 +1145,25 @@ a:hover{color:var(--primary-hover)}
       if (window.innerWidth > 700) setOpen(false);
     });
   }
+
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('#curriculum [role="tab"]'));
+  function selectTab(tab){
+    tabs.forEach(function(t){
+      var on = t === tab;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    });
+  }
+  tabs.forEach(function(t, i){
+    t.addEventListener('click', function(){ selectTab(t); });
+    t.addEventListener('keydown', function(e){
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      var next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      selectTab(next);
+      next.focus();
+    });
+  });
 
   var btn = document.getElementById('om-copy-btn');
   if (btn) btn.addEventListener('click', function(){
