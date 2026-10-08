@@ -140,21 +140,21 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
 
 ## 🤖 You'll Walk Away Knowing How To
 
-- Design a coding agent harness from scratch ([L1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design))
-- Implement the coding agent loop as a headless harness ([L2](https://www.decodingai.com/p/the-coding-agent-loop), [L6](https://www.decodingai.com/p/coding-agents-in-remote-headless))
-- Attach the headless harness to multiple interfaces: a terminal UI, a CLI, or even a remote runtime ([L2](https://www.decodingai.com/p/the-coding-agent-loop), [L6](https://www.decodingai.com/p/coding-agents-in-remote-headless))
-- Execute the agent's tools within local Docker or remote Modal sandboxes ([L3](https://www.decodingai.com/p/run-coding-agents-safely))
-- Host open-source models as SGLang servers on Modal ([L2](https://www.decodingai.com/p/the-coding-agent-loop))
-- Implement guardrails by adding a permission layer ([L1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design), [L5](https://www.decodingai.com/p/subagents-are-context-engineering))
-- Build essential context engineering techniques: memory, compaction, skills ([L4](https://www.decodingai.com/p/context-engineering-for-coding-agents))
-- Hook up an LSP server for faster feedback loops ([L4](https://www.decodingai.com/p/context-engineering-for-coding-agents))
-- Implement a configurable agents catalog: build, plan, code reviewer and exploration agents ([L5](https://www.decodingai.com/p/subagents-are-context-engineering))
-- Deploy the headless harness on Modal, triggering remote agents via the CLI, a webhook, or a cron job ([L6](https://www.decodingai.com/p/coding-agents-in-remote-headless))
-- Spawn parallel subagents via fan-out strategies ([L5](https://www.decodingai.com/p/subagents-are-context-engineering))
-- Add observability ([L2](https://www.decodingai.com/p/the-coding-agent-loop))
-- Design an eval harness for benchmarking the agent and checking for regressions ([L7](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests))
-- Organically grow your regression suite from failed agent traces ([L7](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests), [L8](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases))
-- Reproduce agent failures and check for regressions when changing your prompts or models by replaying traces with Kitaru ([L8](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases))
+- Design a coding agent harness from scratch — **L1** [article](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ)
+- Implement the coding agent loop as a headless harness — **L2** [article](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ); **L6** [article](https://www.decodingai.com/p/coding-agents-in-remote-headless) · _video 5 soon_
+- Attach the headless harness to multiple interfaces: a terminal UI, a CLI, or even a remote runtime — **L2** [article](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ); **L6** [article](https://www.decodingai.com/p/coding-agents-in-remote-headless) · _video 5 soon_
+- Execute the agent's tools within local Docker or remote Modal sandboxes — **L3** [article](https://www.decodingai.com/p/run-coding-agents-safely) · [video 2](https://www.youtube.com/watch?v=7CHMb8jWs6A)
+- Host open-source models as SGLang servers on Modal — **L2** [article](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ)
+- Implement guardrails by adding a permission layer — **L1** [article](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ); **L5** [article](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_
+- Build essential context engineering techniques: memory, compaction, skills — **L4** [article](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video 3](https://www.youtube.com/watch?v=dx77BRFZ0_M)
+- Hook up an LSP server for faster feedback loops — **L4** [article](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video 3](https://www.youtube.com/watch?v=dx77BRFZ0_M)
+- Implement a configurable agents catalog: build, plan, code reviewer and exploration agents — **L5** [article](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_
+- Deploy the headless harness on Modal, triggering remote agents via the CLI, a webhook, or a cron job — **L6** [article](https://www.decodingai.com/p/coding-agents-in-remote-headless) · _video 5 soon_
+- Spawn parallel subagents via fan-out strategies — **L5** [article](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_
+- Add observability — **L2** [article](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ)
+- Design an eval harness for benchmarking the agent and checking for regressions — **L7** [article](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests) · _video 5 soon_
+- Organically grow your regression suite from failed agent traces — **L7** [article](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests) · _video 5 soon_; **L8** [article](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases) · _video 6 soon_
+- Reproduce agent failures and check for regressions when changing your prompts or models by replaying traces with Kitaru — **L8** [article](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases) · _video 6 soon_
 
 <p align="center">
   <img src="assets/tui-plan-mode-todo.png" alt="decode in plan mode breaking the Snake demo into a task list with the todo tool" width="800">
@@ -178,15 +178,15 @@ Otherwise, we build all the functionality from scratch, to teach you the foundat
 
 For the full experience, go through the articles and videos that cover what the code can't. **The why behind every decision.**
 
-- **Lesson 1:** What the essential components of a coding agent are, and what is optional. ([article](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video](https://www.youtube.com/watch?v=sJpop1juVBQ))
-- **Lesson 1:** Why we have a headless harness and two interface modes: TUI + Remote. ([article](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video](https://www.youtube.com/watch?v=sJpop1juVBQ))
-- **Lesson 2:** Why we plugged in 9 tools, no more, no less. ([article](https://www.decodingai.com/p/the-coding-agent-loop) · [video](https://www.youtube.com/watch?v=sJpop1juVBQ))
-- **Lesson 3:** What guardrails are actually useful. ([article](https://www.decodingai.com/p/run-coding-agents-safely) · [video](https://www.youtube.com/watch?v=7CHMb8jWs6A))
-- **Lesson 4:** Why compaction fires at ~80% of the window instead of at the limit. ([article](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video](https://www.youtube.com/watch?v=dx77BRFZ0_M))
-- **Lesson 5:** Why subagents are context engineering: scoped windows instead of one bloated context. ([article](https://www.decodingai.com/p/subagents-are-context-engineering))
-- **Lesson 6:** Why your agents should keep working after you close your laptop lid. ([article](https://www.decodingai.com/p/coding-agents-in-remote-headless))
-- **Lesson 7:** Why you need both benchmarks and regression tests. ([article](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests))
-- **Lesson 8:** Why we record every run, and what a replay buys you that a re-run doesn't. ([article](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases))
+- **Lesson 1:** What the essential components of a coding agent are, and what is optional. ([article](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- **Lesson 1:** Why we have a headless harness and two interface modes: TUI + Remote. ([article](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- **Lesson 2:** Why we plugged in 9 tools, no more, no less. ([article](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- **Lesson 3:** What guardrails are actually useful. ([article](https://www.decodingai.com/p/run-coding-agents-safely) · [video 2](https://www.youtube.com/watch?v=7CHMb8jWs6A))
+- **Lesson 4:** Why compaction fires at ~80% of the window instead of at the limit. ([article](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video 3](https://www.youtube.com/watch?v=dx77BRFZ0_M))
+- **Lesson 5:** Why subagents are context engineering: scoped windows instead of one bloated context. ([article](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_)
+- **Lesson 6:** Why your agents should keep working after you close your laptop lid. ([article](https://www.decodingai.com/p/coding-agents-in-remote-headless) · _video 5 soon_)
+- **Lesson 7:** Why you need both benchmarks and regression tests. ([article](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests) · _video 5 soon_)
+- **Lesson 8:** Why we record every run, and what a replay buys you that a re-run doesn't. ([article](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases) · _video 6 soon_)
 
 ## 📚 Course Outline
 
