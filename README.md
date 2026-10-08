@@ -2,7 +2,7 @@
   <img src="assets/coding-agent-logo.png" alt="decode logo" width="140">
   <h1>Building a Coding Agent From Scratch</h1>
   <h3>Learn harness engineering by building Claude Code from scratch, from a bare-bones agent loop to a swarm of cloud agents.</h3>
-  <p class="tagline">Open-source harness engineering course<br/>by <a href="https://www.decodingai.com">Decoding AI</a> in collaboration with <a href="https://modal.com?source=decodingai&campaign=harnesseng">Modal</a>, <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik (by Comet)</a> and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru (by ZenML)</a>.</p>
+  <p class="tagline">Open-source harness engineering course<br/>by <a href="https://www.decodingai.com">Decoding AI</a> in collaboration with <a href="https://modal.com?source=decodingai&campaign=harnesseng">Modal</a>, <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik (by Comet)</a>, and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru (by ZenML)</a>.</p>
 </div>
 
 <p align="center">
@@ -67,7 +67,7 @@ That's the _entire_ tool-calling agent. Everything else in this repo (the tools,
 <p align="center">
   <img src="assets/tui-session-start.png" alt="A fresh decode session: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer" width="90%"/>
   <br/>
-  <i>A fresh session powered by Qwen 3.6 35B hosted on Modal</i>
+  <i>A fresh session powered by Qwen3.6-35B hosted on Modal</i>
 </p>
 
 We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), then distilled what we learned into 8 articles and 6 videos where you'll build **decode**, your own coding agent, from scratch. One headless core hooked to two modes: an interactive TUI and Modal serverless functions running N copies in parallel, fired by CLI, webhook, or cron.
@@ -152,7 +152,7 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
 - Implement guardrails by adding a permission layer ([article 1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ))
 - Build essential context engineering techniques: memory, compaction, skills ([article 4](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video 3](https://www.youtube.com/watch?v=dx77BRFZ0_M))
 - Hook up an LSP server for faster feedback loops ([article 4](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video 3](https://www.youtube.com/watch?v=dx77BRFZ0_M))
-- Implement a configurable agents catalog: build, plan, code reviewer and exploration agents ([article 5](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_)
+- Implement a configurable agents catalog: build, plan, code reviewer, and exploration agents ([article 5](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_)
 - Deploy the headless harness on Modal, triggering remote agents via the CLI, a webhook, or a cron job ([article 6](https://www.decodingai.com/p/coding-agents-in-remote-headless) · _video 5 soon_)
 - Spawn parallel subagents via fan-out strategies ([article 5](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_)
 - Add observability ([article 2](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ))
@@ -176,7 +176,7 @@ The code is written in Python, with the following frameworks and libraries:
 - **Sandboxing:** local Docker & remote [Modal sandboxes](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng)
 - **Deploying:** [Modal](https://modal.com/?source=decodingai&campaign=harnesseng) as headless agents (fired by hand, by cron, or by webhook)
 
-Otherwise, we build all the functionality from scratch, to teach you the foundations that last, not frameworks that abstract away the hard parts.
+Otherwise, we build all the functionality from scratch to teach you the foundations that last, not frameworks that abstract away the hard parts.
 
 ## 💡 The code tells you _what_. The lessons tell you _why_.
 
@@ -199,7 +199,7 @@ For the full experience, go through the articles and videos that cover what the 
     <th align="center">Lesson</th>
     <th align="center">Written Lesson</th>
     <th align="center">Video Lesson</th>
-    <th align="center">Running the code</th>
+    <th align="center">Running the Code</th>
   </tr>
   <tr>
     <td align="center"><b>1</b><br/>Building a Coding Agent From Scratch<br/><br/><i>Sketch the full harness: a headless core, six modules, TUI and remote modes, and an evals layer.</i><br/><sub>⏱ 17-min read</sub></td>
@@ -290,13 +290,13 @@ Running the code costs **$0** if you stick to free tiers:
 | [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) (tracing + evals)                   | free tier                                                          |
 | [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand) (recording + replays) | free — the OSS server runs on your laptop (`make kitaru-local`)    |
 
-_**Reading-only? Everything's free!**_
+_**Only reading? Everything's free!**_
 
 ## ⚙️ How It Works
 
 As an open-source course, it is entirely self-paced and based on this repository, plus the attached lessons that walk you through the code. No paywall. No platform.
 
-Read the lessons on the [Decoding AI Magazine](https://www.decodingai.com), watch the videos from the [Decoding AI Channel](https://www.youtube.com/@itsdecodingai), run the code on your own machine, break it, fix it, and learn from the process.
+Read the lessons on the [Decoding AI Magazine](https://www.decodingai.com), watch the videos on the [Decoding AI Channel](https://www.youtube.com/@itsdecodingai), run the code on your own machine, break it, fix it, and learn from the process.
 
 ## 🏗️ Project Structure
 
@@ -369,7 +369,7 @@ No. The default Gemini provider has a free tier, OpenRouter routes across `:free
 Accessibility: our audience knows Python. The course focuses on the design decisions, which transfer to any language.
 
 **Why build from scratch instead of extending Pi, DeepAgents, or an existing harness?**
-Because adding custom logic to an existing harness is the easy part. _Knowing what to add_ requires understanding the internals. That's the fundamentals, and it's what still makes AI engineers valuable. Build a coding agent once and you're equipped to build a custom agent for any use case.
+Because adding custom logic to an existing harness is the easy part. _Knowing what to add_ requires understanding the internals. Those fundamentals are what still make AI engineers valuable. Build a coding agent once and you're equipped to build a custom agent for any use case.
 
 ## 🥂 Contributing
 
