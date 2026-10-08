@@ -255,9 +255,9 @@ For the full experience, go through the articles and videos that cover what the 
   <a href="https://www.youtube.com/playlist?list=PLanusVPiXCT0" target="_blank"><b>🎬 Watch all the videos on YouTube</b></a>
 </p>
 
-## 📬 Learn How to Build Coding Agents From Scratch
+## 📬 Learn Harness Engineering
 
-> Join 44k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) to learn to build coding agents from scratch.
+> Join 45k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) to learn to build coding agents from scratch.
 
 <a href="https://www.decodingai.com/" target="_blank">
   <img src="assets/decodingai.jpg" alt="Decoding AI Magazine" width="100%"/>
@@ -392,9 +392,9 @@ Found a bug and know the fix? Fork, fix, run `make ci` (no API key needed), and 
   </tr>
 </table>
 
-## 📬 Learn How to Build Coding Agents From Scratch
+## 📬 Learn Harness Engineering
 
-> Join 44k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) to learn to build coding agents from scratch.
+> Join 45k+ engineers subscribed to [the Decoding AI Magazine](https://www.decodingai.com/) to learn to build coding agents from scratch.
 
 <a href="https://www.decodingai.com/" target="_blank">
   <img src="assets/decodingai.jpg" alt="Decoding AI Magazine" width="100%"/>
