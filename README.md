@@ -19,7 +19,9 @@
 </p>
 
 <p align="center">
-  <a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><b>📖 Start with Lesson 1 (17-min read)</b></a>
+  <a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><b>📖 Read Lesson 1 (17 min)</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank"><b>🎬 Watch Video 1</b></a>
   &nbsp;·&nbsp;
   <a href="#-course-outline"><b>📚 See all 8 lessons</b></a>
 </p>
@@ -176,13 +178,15 @@ Otherwise, we build all the functionality from scratch, to teach you the foundat
 
 For the full experience, go through the articles and videos that cover what the code can't. **The why behind every decision.**
 
-- Why we have a headless harness and two interface modes: TUI + Remote. → [Lesson 1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design), [Lesson 6](https://www.decodingai.com/p/coding-agents-in-remote-headless)
-- What the essential components of a coding agent are, and what is optional. → [Lesson 1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design)
-- Why we plugged in 9 tools, no more, no less. → [Lesson 2](https://www.decodingai.com/p/the-coding-agent-loop)
-- Why we record every run, and what a replay buys you that a re-run doesn't. → [Lesson 8](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases)
-- What guardrails are actually useful. → [Lesson 3](https://www.decodingai.com/p/run-coding-agents-safely)
-- Why compaction fires at ~80% of the window instead of at the limit. → [Lesson 4](https://www.decodingai.com/p/context-engineering-for-coding-agents)
-- Why you need both benchmarks and regression tests. → [Lesson 7](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests)
+- **Lesson 1:** What the essential components of a coding agent are, and what is optional. ([article](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- **Lesson 1:** Why we have a headless harness and two interface modes: TUI + Remote. ([article](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- **Lesson 2:** Why we plugged in 9 tools, no more, no less. ([article](https://www.decodingai.com/p/the-coding-agent-loop) · [video](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- **Lesson 3:** What guardrails are actually useful. ([article](https://www.decodingai.com/p/run-coding-agents-safely) · [video](https://www.youtube.com/watch?v=7CHMb8jWs6A))
+- **Lesson 4:** Why compaction fires at ~80% of the window instead of at the limit. ([article](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video](https://www.youtube.com/watch?v=dx77BRFZ0_M))
+- **Lesson 5:** Why subagents are context engineering: scoped windows instead of one bloated context. ([article](https://www.decodingai.com/p/subagents-are-context-engineering))
+- **Lesson 6:** Why your agents should keep working after you close your laptop lid. ([article](https://www.decodingai.com/p/coding-agents-in-remote-headless))
+- **Lesson 7:** Why you need both benchmarks and regression tests. ([article](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests))
+- **Lesson 8:** Why we record every run, and what a replay buys you that a re-run doesn't. ([article](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases))
 
 ## 📚 Course Outline
 
@@ -400,4 +404,4 @@ If you found this course useful, consider starring the repository so others can 
 
 ## License
 
-Released under [Apache-2.0](LICENSE) — clone, fork, and build on it; keep the LICENSE and credit this repo.
+Released under [Apache-2.0](LICENSE). Clone, fork, and build on it; keep the LICENSE and credit this repo.
