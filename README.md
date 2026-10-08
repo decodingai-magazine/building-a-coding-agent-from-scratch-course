@@ -80,6 +80,10 @@ We spent months under the hood of Claude Code (via its leaked source), [OpenCode
 </p>
 <p align="center"><i>The harness architecture of the coding agent you will build during this course.</i></p>
 
+<p align="center">
+  <a href="#-course-outline"><b>📚 Explore the 8 lessons: articles + videos</b></a>
+</p>
+
 ## 🎮 See It Work
 
 The finished agent ships with demo skills under [`.decode/skills/`](.decode/skills/). Open the TUI, type `/demo-`, pick one, and watch the harness you're about to build do real work:
@@ -244,6 +248,12 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a></td>
   </tr>
 </table>
+
+<p align="center">
+  <a href="https://www.decodingai.com/t/building-a-coding-agent-from-scratch" target="_blank"><b>📖 Read all the articles on Substack</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://www.youtube.com/playlist?list=PLanusVPiXCT0" target="_blank"><b>🎬 Watch all the videos on YouTube</b></a>
+</p>
 
 ## 📬 Learn How to Build Coding Agents From Scratch
 
