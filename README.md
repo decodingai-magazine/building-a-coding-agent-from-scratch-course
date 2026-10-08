@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/coding-agent-logo.png" alt="decode logo" width="140">
   <h1>Building a Coding Agent From Scratch</h1>
-  <h3>The harness, not the model, makes an agent good. Build a Claude Code clone from scratch, from a bare-bones agent loop to a swarm of cloud agents, to master harness engineering.</h3>
+  <h3>Learn harness engineering by building Claude Code from scratch, from a bare-bones agent loop to a swarm of cloud agents.</h3>
   <p class="tagline">Open-source harness engineering course<br/>by <a href="https://www.decodingai.com">Decoding AI</a> in collaboration with <a href="https://modal.com?source=decodingai&campaign=harnesseng">Modal</a>, <a href="https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course">Opik (by Comet)</a> and <a href="https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand">Kitaru (by ZenML)</a>.</p>
 </div>
 
@@ -16,6 +16,12 @@
 
 <p align="center">
   <img src="assets/demo-frames.gif" alt="decode in the terminal" width="800">
+</p>
+
+<p align="center">
+  <a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><b>📖 Start with Lesson 1 (17-min read)</b></a>
+  &nbsp;·&nbsp;
+  <a href="#-course-outline"><b>📚 See all 8 lessons</b></a>
 </p>
 
 > **Try the finished agent first — 5 minutes, $0:**
@@ -39,7 +45,7 @@
 
 In [LangChain's Terminal-Bench experiment](https://www.langchain.com/blog/the-anatomy-of-an-agent-harness), changing only the harness (with the same model) moved a coding agent from ~30th place into the top 5: the harness, not the model, is what makes a coding agent good.
 
-### The agent is ~20 lines. The course is everything else.
+### The agent is ~20 lines. The course is everything else, known as the harness.
 
 ```python
 agent = Agent(
@@ -54,7 +60,7 @@ async with agent.iter(prompt, message_history=history) as run:
         stream_events(node)
 ```
 
-That's the _entire_ tool-calling agent. Everything else in this repo: the tools, skills, the permission layer, sandbox, steering queue, memory, compaction, session recording & replay, remote execution, the subagent fan-out, the evals, is the harness. That's what you're here to build.
+That's the _entire_ tool-calling agent. Everything else in this repo (the tools, skills, permission layer, sandbox, steering queue, memory, compaction, session recording & replay, remote execution, subagent fan-out, and evals) **is the harness**. That's what you're here to build.
 
 <p align="center">
   <img src="assets/tui-session-start.png" alt="A fresh decode session: Opik tracing on, a Modal-served Qwen model, skill autocomplete, steering keys in the footer" width="90%"/>
@@ -62,12 +68,15 @@ That's the _entire_ tool-calling agent. Everything else in this repo: the tools,
   <i>A fresh session powered by Qwen 3.6 35B hosted on Modal</i>
 </p>
 
-We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), then distilled it into 8 articles and 6 videos where you'll build **decode**, your own coding agent, from scratch. One headless core hooked to two modes: an interactive TUI and Modal serverless functions running N copies in parallel, fired by CLI, webhook, or cron.
+We spent months under the hood of Claude Code (via its leaked source), [OpenCode](https://github.com/anomalyco/opencode), [Pi](https://github.com/earendil-works/pi), and [Aider](https://github.com/aider-ai/aider), then distilled what we learned into 8 articles and 6 videos where you'll build **decode**, your own coding agent, from scratch. One headless core hooked to two modes: an interactive TUI and Modal serverless functions running N copies in parallel, fired by CLI, webhook, or cron.
+
+> [!WARNING]
+> Building a coding harness from scratch can make you dangerously good at building any other AI product, whether in finance, medicine, or e-commerce.
 
 <p align="center">
   <img src="assets/architecture.png" alt="Diagram of a coding agent harness: two interfaces (Interactive TUI with steering queue and priority gate; Remote Modal runtime running N headless harnesses via CLI, webhook, or cron) drive one Headless Harness made of a Context Window with compaction, an LLM-to-Tools Agent Loop, and six modules (LLM Providers, Memory, Skills, Sandbox, Permissions, LSP Server). An Evals and Observability layer (benchmarks, regressions, replays via Opik and Kitaru) sits underneath." width="620">
 </p>
-<p align="center"><i>The architecture of the harness of the coding agent you will build during this course.</i></p>
+<p align="center"><i>The harness architecture of the coding agent you will build during this course.</i></p>
 
 ## 🎮 See It Work
 
@@ -118,7 +127,7 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
   <tr>
     <td width="50%">
       <img src="assets/modal-open-model.png" alt="A self-served open model endpoint on Modal"/>
-      <p align="center"><b>Powered by Open Source Models</b><br/><i>Your own Qwen3.6-35B served on an H200 via a <a href="https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng">Modal endpoint</a></i></p>
+      <p align="center"><b>Powered by Open-Source Models</b><br/><i>Your own Qwen3.6-35B served on an H200 via a <a href="https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng">Modal endpoint</a></i></p>
     </td>
     <td width="50%">
       <img src="assets/opik-threads.png" alt="Sessions traced in Opik with secrets scrubbed"/>
@@ -129,18 +138,21 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
 
 ## 🤖 You'll Walk Away Knowing How To
 
-- Design a coding agent harness from scratch
-- Implement a headless coding agent loop
-- Attach the headless harness to multiple modes: TUI and remote
-- Deploy the headless harness on Modal and fire N parallel attempts at one task from the CLI, a webhook, or a cron job
-- Record every run with Kitaru and replay it with the model or prompt swapped, tool outputs served from the recording, against the original as baseline
-- Implement guardrails and safety nets for the agent's behavior by adding a permission layer and local & remote sandboxing
-- Build essential context engineering techniques: memory, compaction, skills
-- Hook up an LSP server for faster feedback loops
-- Implement an agents catalog: build, plan, code reviewer and exploration agents
-- Spawn parallel subagents via fan-out strategies
-- Add observability
-- Design an eval harness for benchmarking the agent and checking for regressions
+- Design a coding agent harness from scratch ([L1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design))
+- Implement the coding agent loop as a headless harness ([L2](https://www.decodingai.com/p/the-coding-agent-loop), [L6](https://www.decodingai.com/p/coding-agents-in-remote-headless))
+- Attach the headless harness to multiple interfaces: a terminal UI, a CLI, or even a remote runtime ([L2](https://www.decodingai.com/p/the-coding-agent-loop), [L6](https://www.decodingai.com/p/coding-agents-in-remote-headless))
+- Execute the agent's tools within local Docker or remote Modal sandboxes ([L3](https://www.decodingai.com/p/run-coding-agents-safely))
+- Host open-source models as SGLang servers on Modal ([L2](https://www.decodingai.com/p/the-coding-agent-loop))
+- Implement guardrails by adding a permission layer ([L1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design), [L5](https://www.decodingai.com/p/subagents-are-context-engineering))
+- Build essential context engineering techniques: memory, compaction, skills ([L4](https://www.decodingai.com/p/context-engineering-for-coding-agents))
+- Hook up an LSP server for faster feedback loops ([L4](https://www.decodingai.com/p/context-engineering-for-coding-agents))
+- Implement a configurable agents catalog: build, plan, code reviewer and exploration agents ([L5](https://www.decodingai.com/p/subagents-are-context-engineering))
+- Deploy the headless harness on Modal, triggering remote agents via the CLI, a webhook, or a cron job ([L6](https://www.decodingai.com/p/coding-agents-in-remote-headless))
+- Spawn parallel subagents via fan-out strategies ([L5](https://www.decodingai.com/p/subagents-are-context-engineering))
+- Add observability ([L2](https://www.decodingai.com/p/the-coding-agent-loop))
+- Design an eval harness for benchmarking the agent and checking for regressions ([L7](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests))
+- Organically grow your regression suite from failed agent traces ([L7](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests), [L8](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases))
+- Reproduce agent failures and check for regressions when changing your prompts or models by replaying traces with Kitaru ([L8](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases))
 
 <p align="center">
   <img src="assets/tui-plan-mode-todo.png" alt="decode in plan mode breaking the Snake demo into a task list with the todo tool" width="800">
@@ -164,13 +176,13 @@ Otherwise, we build all the functionality from scratch, to teach you the foundat
 
 For the full experience, go through the articles and videos that cover what the code can't. **The why behind every decision.**
 
-- Why we have a headless harness and two interface modes: TUI + Remote.
-- What the essential components of a coding agent are, and what is optional.
-- Why we plugged in 9 tools, no more, no less.
-- Why we record every run, and what a replay buys you that a re-run doesn't.
-- What guardrails are actually useful.
-- Why compaction fires at ~80% of the window instead of at the limit.
-- Why you need both benchmarks and regression tests.
+- Why we have a headless harness and two interface modes: TUI + Remote. → [Lesson 1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design), [Lesson 6](https://www.decodingai.com/p/coding-agents-in-remote-headless)
+- What the essential components of a coding agent are, and what is optional. → [Lesson 1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design)
+- Why we plugged in 9 tools, no more, no less. → [Lesson 2](https://www.decodingai.com/p/the-coding-agent-loop)
+- Why we record every run, and what a replay buys you that a re-run doesn't. → [Lesson 8](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases)
+- What guardrails are actually useful. → [Lesson 3](https://www.decodingai.com/p/run-coding-agents-safely)
+- Why compaction fires at ~80% of the window instead of at the limit. → [Lesson 4](https://www.decodingai.com/p/context-engineering-for-coding-agents)
+- Why you need both benchmarks and regression tests. → [Lesson 7](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests)
 
 ## 📚 Course Outline
 
@@ -182,50 +194,49 @@ For the full experience, go through the articles and videos that cover what the 
     <th align="center">Running the code</th>
   </tr>
   <tr>
-    <td align="center"><b>1</b><br/>Building a Coding Agent From Scratch</td>
+    <td align="center"><b>1</b><br/>Building a Coding Agent From Scratch<br/><br/><i>Sketch the full harness: a headless core, six modules, TUI and remote modes, and an evals layer.</i><br/><sub>⏱ 17-min read</sub></td>
     <td align="center"><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><img src="assets/architecture.png" width="300" alt="Lesson 1 — the harness architecture"/></a><br/><i><a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank">Article 1</a></i></td>
     <td align="center" rowspan="2"><a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank"><img src="assets/thumbnail_video_1.jpg" width="600" alt="Video 1 — the video version of lessons 1 and 2"/></a><br/><i><a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank">Video 1</a></i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>2</b><br/>The Bare-Bones Coding Agent Loop</td>
+    <td align="center"><b>2</b><br/>The Bare-Bones Coding Agent Loop<br/><br/><i>Your agent loops over 9 tools and 3 swappable LLM providers in a steerable TUI.</i><br/><sub>⏱ 25-min read</sub></td>
     <td align="center"><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank"><img src="assets/architecture_lesson_2.png" width="300" alt="Lesson 2 — the bare-bones coding agent loop"/></a><br/><i><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank">Article 2</a></i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>3</b><br/>From a Raw Shell to a Sandboxed Coding Agent</td>
+    <td align="center"><b>3</b><br/>From a Raw Shell to a Sandboxed Coding Agent<br/><br/><i>Your agent's tools run in a Docker or Modal sandbox, never on your host.</i><br/><sub>⏱ 13-min read</sub></td>
     <td align="center"><a href="https://www.decodingai.com/p/run-coding-agents-safely" target="_blank"><img src="assets/architecture_lesson_3.png" width="300" alt="Lesson 3 — from a raw shell to a sandboxed coding agent"/></a><br/><i><a href="https://www.decodingai.com/p/run-coding-agents-safely" target="_blank">Article 3</a></i></td>
     <td align="center"><a href="https://www.youtube.com/watch?v=7CHMb8jWs6A" target="_blank"><img src="assets/thumbnail_video_2.jpg" width="300" alt="Video 2 — the video version of lesson 3"/></a><br/><i><a href="https://www.youtube.com/watch?v=7CHMb8jWs6A" target="_blank">Video 2</a></i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>4</b><br/>Context Engineering for Coding Agents</td>
+    <td align="center"><b>4</b><br/>Context Engineering for Coding Agents<br/><br/><i>Your agent loads memory, invokes skills, reads LSP diagnostics, and auto-compacts at 80%.</i><br/><sub>⏱ 15-min read</sub></td>
     <td align="center"><a href="https://www.decodingai.com/p/context-engineering-for-coding-agents" target="_blank"><img src="assets/architecture_lesson_4.png" width="300" alt="Lesson 4 — context engineering for coding agents"/></a><br/><i><a href="https://www.decodingai.com/p/context-engineering-for-coding-agents" target="_blank">Article 4</a></i></td>
     <td align="center"><a href="https://www.youtube.com/watch?v=dx77BRFZ0_M" target="_blank"><img src="assets/thumbnail_video_3.jpg" width="300" alt="Video 3 — the video version of lesson 4"/></a><br/><i><a href="https://www.youtube.com/watch?v=dx77BRFZ0_M" target="_blank">Video 3</a></i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>5</b><br/>Subagents Are Context Engineering</td>
+    <td align="center"><b>5</b><br/>Subagents Are Context Engineering<br/><br/><i>Your agent fans out parallel Explore subagents and switches between build, plan, and code-reviewer personas.</i><br/><sub>⏱ 14-min read</sub></td>
     <td align="center"><a href="https://www.decodingai.com/p/subagents-are-context-engineering" target="_blank"><img src="assets/architecture_lesson_5.png" width="300" alt="Lesson 5 — subagents are context engineering"/></a><br/><i><a href="https://www.decodingai.com/p/subagents-are-context-engineering" target="_blank">Article 5</a></i></td>
-    <td align="center">🎬 <i>Coming soon</i></td>
+    <td align="center">🎬 <i>Video 4 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>6</b><br/>Deploy a Headless Coding Agent Harness to Modal</td>
+    <td align="center"><b>6</b><br/>Deploy a Headless Coding Agent Harness to Modal<br/><br/><i>Your agent runs headless on Modal, fired by the CLI, a webhook, or a cron job, and ships branches.</i><br/><sub>⏱ 15-min read</sub></td>
     <td align="center"><a href="https://www.decodingai.com/p/coding-agents-in-remote-headless" target="_blank"><img src="assets/architecture_lesson_6.png" width="300" alt="Lesson 6 — swarm of remote agents"/></a><br/><i><a href="https://www.decodingai.com/p/coding-agents-in-remote-headless" target="_blank">Article 6</a></i></td>
-    <td align="center">🎬 <i>Video 4 — coming soon</i></td>
+    <td align="center" rowspan="2">🎬 <i>Video 5 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/03_sandboxing.md">03_sandboxing.md</a> · <a href="running_the_code/04_deploy.md">04_deploy.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>7</b><br/>AI Evals Foundations: Benchmarks, Regression and Online</td>
+    <td align="center"><b>7</b><br/>AI Evals Foundations: Benchmarks, Regression and Online<br/><br/><i>Score your agent on a 19-task benchmark and a regression suite in Opik.</i><br/><sub>⏱ 19-min read</sub></td>
     <td align="center"><a href="https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests" target="_blank"><img src="assets/architecture_lesson_7.png" width="300" alt="Lesson 7 — AI evals foundations: benchmarks, regression and online"/></a><br/><i><a href="https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests" target="_blank">Article 7</a></i></td>
-    <td align="center">🎬 <i>Video 4 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/05_evals.md">05_evals.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>8</b><br/>AI Evals on Steroids via Replays</td>
+    <td align="center"><b>8</b><br/>AI Evals on Steroids via Replays<br/><br/><i>Record runs in Kitaru, cluster failures into cohorts, and replay them to verify fixes.</i><br/><sub>⏱ 16-min read</sub></td>
     <td align="center"><a href="https://www.decodingai.com/p/transform-agent-traces-into-regression-cases" target="_blank"><img src="assets/architecture_lesson_8.png" width="300" alt="Lesson 8 — AI evals on steroids via replays"/></a><br/><i><a href="https://www.decodingai.com/p/transform-agent-traces-into-regression-cases" target="_blank">Article 8</a></i></td>
-    <td align="center">🎬 <i>Video 5 — coming soon</i></td>
+    <td align="center">🎬 <i>Video 6 — coming soon</i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a> · <a href="running_the_code/06_evals_replays.md">06_evals_replays.md</a></td>
   </tr>
 </table>
@@ -269,7 +280,7 @@ _**Reading-only? Everything's free!**_
 
 ## ⚙️ How It Works
 
-As an open-source course, everything is self-paced, based on this repository, plus the attached lessons that walk you through the code. No paywall. No platform.
+As an open-source course, it is entirely self-paced and based on this repository, plus the attached lessons that walk you through the code. No paywall. No platform.
 
 Read the lessons on the [Decoding AI Magazine](https://www.decodingai.com), watch the videos from the [Decoding AI Channel](https://www.youtube.com/@itsdecodingai), run the code on your own machine, break it, fix it, and learn from the process.
 
@@ -305,7 +316,7 @@ One Python package; each module maps to one part of the architecture:
 
 ## 🚀 Running the Code
 
-Everything lives under [`running_the_code/`](running_the_code/). Follow them in order; each ends with a link to the next:
+The guides live under [`running_the_code/`](running_the_code/). Follow them in order; each ends with a link to the next:
 
 | Guide                                                               | What's inside                                                      |
 | ------------------------------------------------------------------- | ------------------------------------------------------------------ |
@@ -378,6 +389,14 @@ Found a bug and know the fix? Fork, fix, run `make ci` (no API key needed), and 
 ## ⭐ One More Thing
 
 If you found this course useful, consider starring the repository so others can find it too.
+
+<a href="https://www.star-history.com/?type=date&repos=decodingai-magazine%2Fbuilding-a-coding-agent-from-scratch-course">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=decodingai-magazine/building-a-coding-agent-from-scratch-course&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=decodingai-magazine/building-a-coding-agent-from-scratch-course&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=decodingai-magazine/building-a-coding-agent-from-scratch-course&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## License
 
