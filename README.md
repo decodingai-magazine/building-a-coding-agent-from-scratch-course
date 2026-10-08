@@ -21,7 +21,7 @@
 <p align="center">
   <a href="https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design" target="_blank"><b>📖 Read Lesson 1 (17 min)</b></a>
   &nbsp;·&nbsp;
-  <a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank"><b>🎬 Watch Video 1</b></a>
+  <a href="https://www.youtube.com/watch?v=sJpop1juVBQ" target="_blank"><b>🎬 Watch Lesson 1</b></a>
   &nbsp;·&nbsp;
   <a href="#-course-outline"><b>📚 See all 8 lessons</b></a>
 </p>
