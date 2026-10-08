@@ -140,21 +140,21 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
 
 ## 🤖 You'll Walk Away Knowing How To
 
-- Design a coding agent harness from scratch — [article 1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ)
-- Implement the coding agent loop as a headless harness — [article 2](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ) · [article 6](https://www.decodingai.com/p/coding-agents-in-remote-headless) · _video 5 soon_
-- Attach the headless harness to multiple interfaces: a terminal UI, a CLI, or even a remote runtime — [article 2](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ) · [article 6](https://www.decodingai.com/p/coding-agents-in-remote-headless) · _video 5 soon_
-- Execute the agent's tools within local Docker or remote Modal sandboxes — [article 3](https://www.decodingai.com/p/run-coding-agents-safely) · [video 2](https://www.youtube.com/watch?v=7CHMb8jWs6A)
-- Host open-source models as SGLang servers on Modal — [article 2](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ)
-- Implement guardrails by adding a permission layer — [article 1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ) · [article 5](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_
-- Build essential context engineering techniques: memory, compaction, skills — [article 4](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video 3](https://www.youtube.com/watch?v=dx77BRFZ0_M)
-- Hook up an LSP server for faster feedback loops — [article 4](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video 3](https://www.youtube.com/watch?v=dx77BRFZ0_M)
-- Implement a configurable agents catalog: build, plan, code reviewer and exploration agents — [article 5](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_
-- Deploy the headless harness on Modal, triggering remote agents via the CLI, a webhook, or a cron job — [article 6](https://www.decodingai.com/p/coding-agents-in-remote-headless) · _video 5 soon_
-- Spawn parallel subagents via fan-out strategies — [article 5](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_
-- Add observability — [article 2](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ)
-- Design an eval harness for benchmarking the agent and checking for regressions — [article 7](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests) · _video 5 soon_
-- Organically grow your regression suite from failed agent traces — [article 7](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests) · _video 5 soon_ · [article 8](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases) · _video 6 soon_
-- Reproduce agent failures and check for regressions when changing your prompts or models by replaying traces with Kitaru — [article 8](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases) · _video 6 soon_
+- Design a coding agent harness from scratch ([article 1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- Implement the coding agent loop as a headless harness ([article 2](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- Attach the headless harness to multiple interfaces: a terminal UI, a CLI, or even a remote runtime ([article 6](https://www.decodingai.com/p/coding-agents-in-remote-headless) · _video 5 soon_)
+- Execute the agent's tools within local Docker or remote Modal sandboxes ([article 3](https://www.decodingai.com/p/run-coding-agents-safely) · [video 2](https://www.youtube.com/watch?v=7CHMb8jWs6A))
+- Host open-source models as SGLang servers on Modal ([article 2](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- Implement guardrails by adding a permission layer ([article 1](https://www.decodingai.com/p/building-a-coding-agent-from-scratch-system-design) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- Build essential context engineering techniques: memory, compaction, skills ([article 4](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video 3](https://www.youtube.com/watch?v=dx77BRFZ0_M))
+- Hook up an LSP server for faster feedback loops ([article 4](https://www.decodingai.com/p/context-engineering-for-coding-agents) · [video 3](https://www.youtube.com/watch?v=dx77BRFZ0_M))
+- Implement a configurable agents catalog: build, plan, code reviewer and exploration agents ([article 5](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_)
+- Deploy the headless harness on Modal, triggering remote agents via the CLI, a webhook, or a cron job ([article 6](https://www.decodingai.com/p/coding-agents-in-remote-headless) · _video 5 soon_)
+- Spawn parallel subagents via fan-out strategies ([article 5](https://www.decodingai.com/p/subagents-are-context-engineering) · _video 4 soon_)
+- Add observability ([article 2](https://www.decodingai.com/p/the-coding-agent-loop) · [video 1](https://www.youtube.com/watch?v=sJpop1juVBQ))
+- Design an eval harness for benchmarking the agent and checking for regressions ([article 7](https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests) · _video 5 soon_)
+- Organically grow your regression suite from failed agent traces ([article 8](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases) · _video 6 soon_)
+- Reproduce agent failures and check for regressions when changing your prompts or models by replaying traces with Kitaru ([article 8](https://www.decodingai.com/p/transform-agent-traces-into-regression-cases) · _video 6 soon_)
 
 <p align="center">
   <img src="assets/tui-plan-mode-todo.png" alt="decode in plan mode breaking the Snake demo into a task list with the todo tool" width="800">
