@@ -80,9 +80,9 @@ We spent months under the hood of Claude Code (via its leaked source), [OpenCode
 </p>
 <p align="center"><i>The harness architecture of the coding agent you will build during this course.</i></p>
 
-<p align="center">
-  <a href="#-course-outline"><b>📚 Explore the 8 lessons: articles + videos</b></a>
-</p>
+<h3 align="center">
+  <a href="#-course-outline">📚 Explore the 8 lessons: articles + videos</a>
+</h3>
 
 ## 🎮 See It Work
 
