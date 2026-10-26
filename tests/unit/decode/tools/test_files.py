@@ -8,6 +8,8 @@ resolution + containment under ``ctx.deps.cwd`` (dotdot/absolute/symlink escapes
 """
 
 import contextlib
+import threading
+import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -697,6 +699,72 @@ async def test_edit_runs_through_the_agent_when_approved(tmp_path: Path, mocker)
     perms = [e for e in emitted if isinstance(e, events.PermissionRequested)]
     assert perms and perms[0].name == "edit"
     assert target.read_text(encoding="utf-8") == "the slow brown fox\n"
+
+
+async def test_two_edits_to_one_file_in_one_response_both_land(tmp_path: Path, mocker):
+    # Regression: pydantic-ai runs one response's tool calls in parallel worker threads, so two
+    # approved edits both read the original file and the second write silently dropped the first
+    # (each still reported "Edited ..."). write/edit are sequential barriers; a slowed write makes
+    # the lost update deterministic if that ever regresses.
+    target = tmp_path / "f.txt"
+    target.write_text("the quick brown fox\n", encoding="utf-8")
+
+    in_flight = 0
+    peak = 0
+    counter_lock = threading.Lock()
+    real_write = files._atomic_write_bytes
+
+    def slow_write(path: Path, data: bytes) -> None:
+        nonlocal in_flight, peak
+        with counter_lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        time.sleep(0.05)
+        real_write(path, data)
+        with counter_lock:
+            in_flight -= 1
+
+    mocker.patch.object(files, "_atomic_write_bytes", slow_write)
+
+    async def approving_resolver(request: PermissionRequest) -> PermissionDecision:
+        return PermissionDecision.allow()
+
+    emitted: list[events.Event] = []
+    deps = AgentDeps(
+        cwd=tmp_path,
+        emit=emitted.append,
+        gate=PermissionGate(),
+        resolve_permission=approving_resolver,
+        resolve_user_question=deny_user_question_resolver,
+    )
+    agent = _agent(mocker)
+    handler = AgentTurnHandler(agent, deps=deps)
+
+    state = {"calls": 0}
+
+    async def stream_function(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[object]:
+        state["calls"] += 1
+        if state["calls"] == 1:
+            yield {
+                0: DeltaToolCall(
+                    name=files.EDIT_TOOL_NAME,
+                    json_args='{"path": "f.txt", "old_string": "quick", "new_string": "slow"}',
+                ),
+                1: DeltaToolCall(
+                    name=files.EDIT_TOOL_NAME,
+                    json_args='{"path": "f.txt", "old_string": "fox", "new_string": "dog"}',
+                ),
+            }
+        else:
+            yield "edited twice"
+
+    with agent.override(model=FunctionModel(stream_function=stream_function)):
+        await _drive_to_completion(handler, "edit f.txt twice", emitted)()
+
+    assert target.read_text(encoding="utf-8") == "the slow brown dog\n"
+    assert peak == 1
 
 
 # passive Diagnostics Enricher on write/edit (ADR-0007): an errors-only ty block is appended to a

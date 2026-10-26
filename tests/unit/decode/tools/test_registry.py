@@ -87,6 +87,18 @@ def test_tool_kinds_match_each_spec():
     assert by_name["skill"].kind is ToolKind.OTHER
 
 
+def test_only_the_mutating_file_tools_are_sequential_barriers():
+    # write/edit read-modify-write a file, so two in one response must not overlap (they raced and
+    # silently dropped an edit). Everything else stays parallel — the Explore fan-out relies on it.
+    sequential = {spec.name for spec in TOOL_SPECS if spec.sequential}
+    assert sequential == {"write", "edit"}
+
+    agent = Agent(TestModel(), deps_type=AgentDeps, output_type=[str, DeferredToolRequests])
+    register_tools(agent)
+    tools = registered_tools(agent)
+    assert {name for name, tool in tools.items() if tool.sequential} == {"write", "edit"}
+
+
 def test_tool_kind_reflects_the_registered_kinds():
     # The loop consults this exact function when building a PermissionRequest.
     assert tool_kind("read") is ToolKind.READ_ONLY

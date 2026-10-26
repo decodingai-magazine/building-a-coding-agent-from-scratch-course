@@ -12,7 +12,9 @@ Load-bearing invariants:
   rendering) stays host-side, so a sandbox result reads identically to a host one; containment is
   layered (a real-fs backend also resolves symlinks physically). ``none`` mode is direct pathlib,
   byte-identical (ADR-0012 §4).
-* Sync on purpose: local filesystem, sequential tool layer, worker-thread execution (ADR-0002 §7).
+* Sync on purpose: local filesystem, worker-thread execution (ADR-0002 §7). Pydantic AI runs one
+  response's tool calls in parallel, so ``write`` / ``edit`` are registered ``sequential=True``
+  (``tools/registry.py``): their read-modify-write would otherwise race on the same file.
 """
 
 from __future__ import annotations

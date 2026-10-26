@@ -35,19 +35,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
-    """One registered tool: ``name``, ``func``, its :class:`~decode.permissions.types.ToolKind`, ``retries``.
+    """One registered tool: ``name``, ``func``, its :class:`~decode.permissions.types.ToolKind`, ``retries``, ``sequential``.
 
     ``kind`` is the tool's permission classification (ADR-0003 §2): the gate evaluates it against
     the active mode to decide allow/ask/deny. ``func`` is the bare tool function (it takes ``ctx``
     as its first parameter) — Pydantic AI builds the model-facing schema from its signature and
     docstring. ``retries`` is the per-tool ``ModelRetry`` budget: ``None`` = the Agent default
     (the factory sets 5); overridden only where a tool wants its own cap (``agent``, ADR-0017 §3).
+    ``sequential`` makes the tool a Pydantic AI barrier: it runs alone, never overlapping another
+    call from the same model response (which otherwise run in parallel worker threads).
     """
 
     name: str
     func: Callable[..., object]
     kind: ToolKind
     retries: int | None = None
+    sequential: bool = False
 
 
 # The flat catalogue. Source of truth for registration and the tool-kind map.
@@ -56,9 +59,12 @@ TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(name=files.READ_TOOL_NAME, func=files.read, kind=ToolKind.READ_ONLY),
     ToolSpec(name=files.GLOB_TOOL_NAME, func=files.glob, kind=ToolKind.READ_ONLY),
     ToolSpec(name=files.GREP_TOOL_NAME, func=files.grep, kind=ToolKind.READ_ONLY),
-    # Mutating file tools: FILE_EDIT — edit mode auto-allows them, default asks.
-    ToolSpec(name=files.WRITE_TOOL_NAME, func=files.write, kind=ToolKind.FILE_EDIT),
-    ToolSpec(name=files.EDIT_TOOL_NAME, func=files.edit, kind=ToolKind.FILE_EDIT),
+    # Mutating file tools: FILE_EDIT — edit mode auto-allows them, default asks. Sequential: each
+    # is a read-modify-write, so two in one response would race and silently drop one change.
+    ToolSpec(
+        name=files.WRITE_TOOL_NAME, func=files.write, kind=ToolKind.FILE_EDIT, sequential=True
+    ),
+    ToolSpec(name=files.EDIT_TOOL_NAME, func=files.edit, kind=ToolKind.FILE_EDIT, sequential=True),
     # Bash: shell execution behind the executor seam → OTHER (edit mode still asks).
     ToolSpec(name=bash_module.BASH_TOOL_NAME, func=bash_module.bash, kind=ToolKind.OTHER),
     # In-memory TodoWrite checklist: no disk/exec side effect → READ_ONLY (works in plan mode).
@@ -137,7 +143,12 @@ def register_tools(agent: Agent[AgentDeps, str | DeferredToolRequests]) -> None:
     (every tool but ``agent``) leaves the Agent's default budget in place.
     """
     for spec in TOOL_SPECS:
-        agent.tool(spec.func, prepare=_prepare_for(spec.name), retries=spec.retries)
+        agent.tool(
+            spec.func,
+            prepare=_prepare_for(spec.name),
+            retries=spec.retries,
+            sequential=spec.sequential,
+        )
     logger.debug("registered %d tools: %s", len(TOOL_SPECS), [s.name for s in TOOL_SPECS])
 
 
