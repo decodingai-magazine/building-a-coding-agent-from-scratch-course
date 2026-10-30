@@ -187,9 +187,13 @@ def resolve_max_requests(flag: int | None) -> int | None:
     return flag if flag is not None else settings.runtime_max_requests
 
 
-def _usage_limits(max_requests: int | None) -> UsageLimits | None:
-    """The pydantic-ai limits for ``agent.run`` — ``None`` (no limits object at all) when unbounded."""
-    return UsageLimits(request_limit=max_requests) if max_requests is not None else None
+def _usage_limits(max_requests: int | None) -> UsageLimits:
+    """The pydantic-ai limits for ``agent.run`` — an explicit unbounded object when no cap is set.
+
+    ``None`` would let pydantic-ai substitute its own ``UsageLimits()``, whose ``request_limit``
+    defaults to 50: an "unbounded" run then stopped at its 51st model request (issue #76).
+    """
+    return UsageLimits(request_limit=max_requests)
 
 
 @dataclass(slots=True)
