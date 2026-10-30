@@ -122,8 +122,8 @@ def test_the_ceiling_still_reaps_and_hands_back(monkeypatch, mocker):
     ship.assert_called_once()
 
 
-def test_an_unbounded_run_passes_no_usage_limits_at_all(monkeypatch):
-    """Unset at both levels → ``usage_limits=None``, byte-identical to the REPL's ``agent.run``."""
+def test_an_unbounded_run_passes_an_explicit_unbounded_limit(monkeypatch):
+    """Unset at both levels → ``request_limit=None``; ``None`` here would mean pydantic-ai's default 50."""
     monkeypatch.setattr(hl.settings, "runtime_max_requests", None)
     agent, _ = make_scripted_agent([_text("done")])
     seen: dict[str, object] = {}
@@ -137,7 +137,19 @@ def test_an_unbounded_run_passes_no_usage_limits_at_all(monkeypatch):
     monkeypatch.setattr(hl, "_build_headless_agent", lambda model=None: agent)
 
     assert hl.run_headless_task("finish") == "done"
-    assert seen["usage_limits"] is None
+    assert seen["usage_limits"] is not None
+    assert seen["usage_limits"].request_limit is None
+
+
+def test_an_unbounded_run_is_not_capped_at_pydantic_ais_default(monkeypatch):
+    """No cap set → more than pydantic-ai's default 50 model requests still finish (issue #76)."""
+    monkeypatch.setattr(hl.settings, "runtime_max_requests", None)
+    counter = _patch_agent(
+        monkeypatch, [_call("write", path="loop.txt", content="x")] * 55 + [_text("done")]
+    )
+
+    assert hl.run_headless_task("long task") == "done"
+    assert counter["legs"] == 56
 
 
 def test_the_setting_is_the_default_ceiling_and_the_flag_wins(monkeypatch):
@@ -146,7 +158,7 @@ def test_the_setting_is_the_default_ceiling_and_the_flag_wins(monkeypatch):
     assert hl.resolve_max_requests(None) == 7
     assert hl.resolve_max_requests(2) == 2
     assert hl._usage_limits(7).request_limit == 7
-    assert hl._usage_limits(None) is None
+    assert hl._usage_limits(None).request_limit is None
 
 
 def test_the_setting_alone_caps_a_run(monkeypatch):
