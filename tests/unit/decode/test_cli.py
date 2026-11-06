@@ -50,6 +50,7 @@ def _dummy_provider_config(mocker):
     mocker.patch.object(cli_mod.settings, "modal_endpoint_model", "openai/gpt-oss-120b")
     mocker.patch.object(cli_mod.settings, "modal_proxy_token_id", SecretStr(""))
     mocker.patch.object(cli_mod.settings, "modal_proxy_token_secret", SecretStr(""))
+    mocker.patch.object(cli_mod.settings, "minimax_api_key", SecretStr("test-key"))
 
 
 def _select_provider(mocker, provider, **overrides):
@@ -487,6 +488,22 @@ def test_provider_config_error_openrouter_present_returns_none(mocker):
     assert cli_mod._provider_config_error() is None
 
 
+def test_provider_config_error_minimax_missing_key_names_var_and_provider(mocker):
+    _select_provider(mocker, "minimax", minimax_api_key=SecretStr(""))
+
+    msg = cli_mod._provider_config_error()
+
+    assert msg is not None
+    assert "MINIMAX_API_KEY" in msg
+    assert "minimax" in msg
+
+
+def test_provider_config_error_minimax_present_returns_none(mocker):
+    _select_provider(mocker, "minimax", minimax_api_key=SecretStr("k"))
+
+    assert cli_mod._provider_config_error() is None
+
+
 def test_provider_config_error_modal_missing_url_names_only_url(mocker):
     # model present, url absent → name only the absent var.
     _select_provider(mocker, "modal", modal_endpoint_url="", modal_endpoint_model="m")
@@ -602,6 +619,20 @@ def test_cli_openrouter_with_no_key_exits_nonzero_with_a_friendly_line(mocker):
     run_app.assert_not_awaited()
 
 
+def test_cli_minimax_with_no_key_exits_nonzero_with_a_friendly_line(mocker):
+    _select_provider(mocker, "minimax", minimax_api_key=SecretStr(""))
+    run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, [])
+
+    assert result.exit_code != 0
+    assert "MINIMAX_API_KEY" in result.output
+    assert "minimax" in result.output
+    assert ".env.example" in result.output
+    assert "Traceback" not in result.output
+    run_app.assert_not_awaited()
+
+
 def test_cli_modal_missing_url_exits_nonzero_naming_the_missing_var(mocker):
     _select_provider(mocker, "modal", modal_endpoint_url="", modal_endpoint_model="m")
     run_app = mocker.patch("decode.cli.run_app", new=mocker.AsyncMock())
@@ -692,6 +723,7 @@ def test_cli_modal_only_token_secret_exits_nonzero_both_or_neither(mocker):
     [
         ("gemini", {"gemini_api_key": SecretStr("k")}),
         ("openrouter", {"openrouter_api_key": SecretStr("k")}),
+        ("minimax", {"minimax_api_key": SecretStr("k")}),
         (
             "modal",
             {
@@ -732,6 +764,7 @@ def test_cli_with_each_provider_configured_starts_the_real_repl(mocker, provider
     [
         ("gemini", {"gemini_api_key": SecretStr("")}),
         ("openrouter", {"openrouter_api_key": SecretStr("")}),
+        ("minimax", {"minimax_api_key": SecretStr("")}),
         ("modal", {"modal_endpoint_url": "", "modal_endpoint_model": ""}),
     ],
 )

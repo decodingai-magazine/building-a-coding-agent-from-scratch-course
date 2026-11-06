@@ -77,6 +77,16 @@ def test_modal_provider_requires_the_endpoint_url(mocker):
     assert keys.eval_keys_missing() == ["MODAL_ENDPOINT_URL"]
 
 
+def test_minimax_provider_requires_the_minimax_key(mocker):
+    mocker.patch.object(settings, "llm_provider", "minimax")
+    mocker.patch.object(
+        settings, "opik_api_key", SimpleNamespace(get_secret_value=lambda: "opik-key")
+    )
+    mocker.patch.object(settings, "minimax_api_key", SimpleNamespace(get_secret_value=lambda: ""))
+
+    assert keys.eval_keys_missing() == ["MINIMAX_API_KEY"]
+
+
 # --- require_provider=False: the Opik-only live-project commands (task 163) -------------------------
 
 

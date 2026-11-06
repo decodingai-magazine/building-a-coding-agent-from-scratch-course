@@ -868,7 +868,7 @@ async def run_app(
     # The handler owns the cross-turn ``message_history`` the on-exit write-back summarizes; one
     # per session (§1). ``compaction_model=agent.model`` arms the two-tier compaction cascade
     # (ADR-0006 §3-7) on the ACTIVE provider's own built model, so the summarizer rides the Provider
-    # Seam and works on gemini/openrouter/modal alike — zero extra construction, guaranteed same
+    # Seam and works on every configured provider — zero extra construction, guaranteed same
     # provider (ADR-0018 §5).
     handler = AgentTurnHandler(
         agent,
@@ -928,6 +928,7 @@ async def run_app(
         "gemini": settings.gemini_model,
         "openrouter": settings.openrouter_model,
         "modal": settings.modal_endpoint_model,
+        "minimax": settings.minimax_model,
     }[settings.llm_provider]
     console.print(
         render.render_event(

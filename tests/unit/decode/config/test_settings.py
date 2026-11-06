@@ -12,6 +12,9 @@ from decode.config.settings import Settings
 # Provider vars (ADR-0005).
 _PROVIDER_ENV_VARS = (
     "LLM_PROVIDER",
+    "MINIMAX_API_KEY",
+    "MINIMAX_MODEL",
+    "MINIMAX_REGION",
     "OPENROUTER_API_KEY",
     "OPENROUTER_MODEL",
     "MODAL_ENDPOINT_URL",
@@ -173,6 +176,10 @@ def test_provider_defaults(monkeypatch):
     s = Settings(_env_file=None)
     assert s.llm_provider == "gemini"
     assert s.openrouter_model == "openrouter/free"
+    assert s.minimax_model == "MiniMax-M3.1-Flash"
+    assert s.minimax_region == "global"
+    assert s.minimax_base_url == "https://api.minimax.io/v1"
+    assert s.minimax_api_key.get_secret_value() == ""
     assert s.modal_endpoint_model == "Qwen/Qwen3.6-35B-A3B-FP8"
     assert s.modal_endpoint_url == ""
     assert s.openrouter_api_key.get_secret_value() == ""
@@ -180,7 +187,7 @@ def test_provider_defaults(monkeypatch):
     assert s.modal_proxy_token_secret.get_secret_value() == ""
 
 
-@pytest.mark.parametrize("provider", ["gemini", "openrouter", "modal"])
+@pytest.mark.parametrize("provider", ["gemini", "openrouter", "modal", "minimax"])
 def test_llm_provider_accepts_each_valid_literal(monkeypatch, provider):
     monkeypatch.setenv("LLM_PROVIDER", provider)
     s = Settings(_env_file=None)
@@ -193,6 +200,13 @@ def test_llm_provider_rejects_unknown_value(monkeypatch):
         Settings(_env_file=None)
 
 
+def test_minimax_region_rejects_unknown_value(monkeypatch):
+    monkeypatch.setenv("MINIMAX_REGION", "unknown")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_reads_provider_vars_from_process_env(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-123")
@@ -201,6 +215,9 @@ def test_reads_provider_vars_from_process_env(monkeypatch):
     monkeypatch.setenv("MODAL_ENDPOINT_MODEL", "zai-org/GLM-5.2-FP8")
     monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-abc")
     monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-xyz")
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-key")
+    monkeypatch.setenv("MINIMAX_MODEL", "MiniMax-M3")
+    monkeypatch.setenv("MINIMAX_REGION", "china")
     s = Settings(_env_file=None)
     assert s.llm_provider == "openrouter"
     assert s.openrouter_api_key.get_secret_value() == "sk-or-123"
@@ -209,6 +226,10 @@ def test_reads_provider_vars_from_process_env(monkeypatch):
     assert s.modal_endpoint_model == "zai-org/GLM-5.2-FP8"
     assert s.modal_proxy_token_id.get_secret_value() == "wk-abc"
     assert s.modal_proxy_token_secret.get_secret_value() == "ws-xyz"
+    assert s.minimax_api_key.get_secret_value() == "minimax-key"
+    assert s.minimax_model == "MiniMax-M3"
+    assert s.minimax_region == "china"
+    assert s.minimax_base_url == "https://api.minimaxi.com/v1"
 
 
 def test_loads_provider_vars_from_a_dotenv_file(tmp_path, monkeypatch):
@@ -759,6 +780,19 @@ def test_context_window_is_derived_from_the_modal_qwen_model(monkeypatch):
     assert s.context_window_is_assumed is False
 
 
+@pytest.mark.parametrize("model", ["MiniMax-M3.1-Flash", "MiniMax-M3"])
+def test_context_window_is_derived_from_each_minimax_model(monkeypatch, model):
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "minimax")
+    monkeypatch.setenv("MINIMAX_MODEL", model)
+
+    s = Settings(_env_file=None)
+
+    assert s.active_model == model
+    assert s.compaction_context_window_tokens == 1_000_000
+    assert s.context_window_is_assumed is False
+
+
 def test_model_id_matching_is_case_insensitive_and_ignores_vendor_and_quant_suffixes(monkeypatch):
     """The window does not depend on the vendor prefix or the quantization suffix."""
     _clear_model_env(monkeypatch)
@@ -811,11 +845,13 @@ def test_active_model_follows_the_provider(monkeypatch):
     monkeypatch.setenv("OPENROUTER_MODEL", "some/router-model")
     monkeypatch.setenv("MODAL_ENDPOINT_MODEL", "some/modal-model")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
+    monkeypatch.setenv("MINIMAX_MODEL", "MiniMax-M3")
 
     for provider, expected in (
         ("gemini", "gemini-3.8-flash"),
         ("openrouter", "some/router-model"),
         ("modal", "some/modal-model"),
+        ("minimax", "MiniMax-M3"),
     ):
         monkeypatch.setenv("LLM_PROVIDER", provider)
         assert Settings(_env_file=None).active_model == expected

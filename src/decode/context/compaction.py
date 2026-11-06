@@ -14,7 +14,7 @@ usage, and post-compaction the estimate can only understate, briefly, until the 
 
 The summarizer rides the existing Provider Seam (ADR-0018 §5): :func:`summarize_for_compaction`
 takes a built :class:`~pydantic_ai.models.Model` — the ACTIVE provider's model, wired in at
-``tui/app.py`` — so compaction works on gemini, openrouter, AND modal. This module builds no
+``tui/app.py`` — so compaction works on every configured provider. This module builds no
 provider model itself (the old ``Settings → GoogleModel`` branch is deleted); it stays network-free
 and provider-agnostic, and the Model-instance argument doubles as the tests' no-network seam.
 """

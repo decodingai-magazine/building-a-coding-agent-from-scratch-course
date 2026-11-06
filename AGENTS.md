@@ -1,6 +1,6 @@
 # decode
 
-**decode** — terminal **coding agent** ("agentic harness") built step by step as an educational open-source course (Apache-2.0). Single Python package `decode` (Python 3.12+, `cli-tool-python` shape): Click entrypoint launches a TUI (`prompt_toolkit` input + `Rich` output — a module *inside* the package, not a separate service); Pydantic-AI ReAct loop drives file/bash/web/MCP tools; pluggable inference (Gemini / OpenRouter / Modal); local + remote sandboxing; Opik observability; Kitaru session recording + replay. Depth references name **squid scaffold specs** (in `iusztinpaul/squid` plugin, not this repo) — read via plugin cache; package depth: `python-backend` + `cli-tool-python`.
+**decode** — terminal **coding agent** ("agentic harness") built step by step as an educational open-source course (Apache-2.0). Single Python package `decode` (Python 3.12+, `cli-tool-python` shape): Click entrypoint launches a TUI (`prompt_toolkit` input + `Rich` output — a module *inside* the package, not a separate service); Pydantic-AI ReAct loop drives file/bash/web/MCP tools; pluggable inference (Gemini / OpenRouter / Modal / MiniMax); local + remote sandboxing; Opik observability; Kitaru session recording + replay. Depth references name **squid scaffold specs** (in `iusztinpaul/squid` plugin, not this repo) — read via plugin cache; package depth: `python-backend` + `cli-tool-python`.
 
 # Project Structure
 

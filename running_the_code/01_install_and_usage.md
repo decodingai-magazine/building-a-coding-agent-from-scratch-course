@@ -32,6 +32,12 @@ GEMINI_API_KEY=your-key
 # or OpenRouter — free router across tool-capable models, key at https://openrouter.ai
 # LLM_PROVIDER=openrouter
 # OPENROUTER_API_KEY=sk-or-...
+
+# or MiniMax — OpenAI-compatible API, global endpoint by default
+# LLM_PROVIDER=minimax
+# MINIMAX_API_KEY=your-key
+# MINIMAX_MODEL=MiniMax-M3.1-Flash
+# MINIMAX_REGION=global  # use china for https://api.minimaxi.com/v1
 ```
 
 Both free tiers rate-limit (Gemini per minute, OpenRouter ~50 requests/day until you add $10). The course default is your own model on Modal: next tutorial.

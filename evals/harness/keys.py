@@ -12,8 +12,9 @@ Makefile runs FIRST — invoked as ``python -m evals.harness.keys``:
 :func:`eval_keys_missing` is the ONE shared preflight for every eval track — this Makefile guard and
 the pre-merge threshold ritual (``evals/regression/test_thresholds.py`` calls it). The required set is provider-
 aware and settings-backed: ``OPIK_API_KEY`` plus the key of every provider the command will CALL
-(``gemini`` → ``GEMINI_API_KEY``, ``openrouter`` → ``OPENROUTER_API_KEY``, ``modal`` →
-``MODAL_ENDPOINT_URL``). Since the judge has its own provider (``EVAL_JUDGE_PROVIDER``, ADR-0022 §7)
+(``gemini`` → ``GEMINI_API_KEY``, ``openrouter`` → ``OPENROUTER_API_KEY``, ``minimax`` →
+``MINIMAX_API_KEY``, ``modal`` → ``MODAL_ENDPOINT_URL``). Since the judge has its own provider
+(``EVAL_JUDGE_PROVIDER``, ADR-0022 §7)
 that is up to TWO keys: this one guard serves ``make eval-benchmark`` (drives the AGENT) and ``make
 eval-regression-dataset`` (drives the agent AND judges its answers) from a single invocation that cannot
 tell them apart, so when the two providers differ it demands both. One opt-out, named at the call
@@ -39,6 +40,9 @@ def _provider_key_missing(provider: str) -> str | None:
     if provider == "openrouter":
         if not settings.openrouter_api_key.get_secret_value().strip():
             return "OPENROUTER_API_KEY"
+    elif provider == "minimax":
+        if not settings.minimax_api_key.get_secret_value().strip():
+            return "MINIMAX_API_KEY"
     elif provider == "modal":
         if not settings.modal_endpoint_url.strip():
             return "MODAL_ENDPOINT_URL"

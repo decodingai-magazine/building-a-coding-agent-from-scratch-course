@@ -34,6 +34,7 @@ _PLACEHOLDER_SECRETS = frozenset({"changeme", "change-me", "your-key-here", "tod
 _SCRUBBED_SECRET_FIELDS = (
     "gemini_api_key",
     "openrouter_api_key",
+    "minimax_api_key",
     "modal_proxy_token_id",
     "modal_proxy_token_secret",
     "opik_api_key",
@@ -53,6 +54,8 @@ _SCRUBBED_SECRET_FIELDS = (
 # Anything absent falls back to :data:`UNKNOWN_MODEL_CONTEXT_WINDOW` with a startup warning; add a
 # row here (with its source) rather than widening a pattern on a hunch.
 MODEL_CONTEXT_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("minimax-m3.1-flash", 1_000_000),
+    ("minimax-m3", 1_000_000),
     ("qwen3.6-35b-a3b", 262_144),
     ("gemini-3.8", 1_048_576),
     ("gemini-3.5", 1_048_576),
@@ -91,9 +94,9 @@ class Settings(BaseSettings):
     # session dirs, log paths or ``MEMORY.md``. A new environment is a code change, deliberately.
     decode_env: DecodeEnv = "local"
 
-    # --- Inference: one of three providers behind LLM_PROVIDER (ADR-0005). ---
+    # --- Inference: one of four providers behind LLM_PROVIDER (ADR-0005). ---
     # Explicit selector (no auto-detect); the ``gemini`` default keeps existing .env files working.
-    llm_provider: Literal["gemini", "openrouter", "modal"] = "gemini"
+    llm_provider: Literal["gemini", "openrouter", "modal", "minimax"] = "gemini"
 
     # gemini (default): google-genai API-key path.
     gemini_api_key: SecretStr = SecretStr("")
@@ -104,6 +107,11 @@ class Settings(BaseSettings):
     # stricter guarantee.
     openrouter_api_key: SecretStr = SecretStr("")
     openrouter_model: str = "openrouter/free"
+
+    # MiniMax: OpenAI-compatible API with separate global and China endpoints.
+    minimax_api_key: SecretStr = SecretStr("")
+    minimax_model: str = "MiniMax-M3.1-Flash"
+    minimax_region: Literal["global", "china"] = "global"
 
     # modal Auto Endpoint: OpenAI-compatible ``/v1``. Endpoint vars are DISTINCT from the
     # MODAL_TOKEN_* account tokens; the url is per-user deploy output (used as ``{url}/v1``); proxy
@@ -276,7 +284,7 @@ class Settings(BaseSettings):
     # The provider the eval JUDGE runs on, independent of the agent's ``llm_provider``; empty (the
     # default) follows it, so today's behaviour is unchanged. Judging a modal-served agent with a
     # gemini judge — or the reverse — is one env var, not a code change (ADR-0022 §7).
-    eval_judge_provider: Literal["", "gemini", "openrouter", "modal"] = ""
+    eval_judge_provider: Literal["", "gemini", "openrouter", "modal", "minimax"] = ""
     # The LiteLLM model string G-Eval judges run on; empty derives it from the judge provider above
     # (``eval_judge_provider`` or ``llm_provider``) — task 104.
     eval_judge_model: str = ""
@@ -338,7 +346,16 @@ class Settings(BaseSettings):
             return self.openrouter_model
         if self.llm_provider == "modal":
             return self.modal_endpoint_model
+        if self.llm_provider == "minimax":
+            return self.minimax_model
         return self.gemini_model
+
+    @property
+    def minimax_base_url(self) -> str:
+        """The OpenAI-compatible MiniMax endpoint for the configured region."""
+        if self.minimax_region == "china":
+            return "https://api.minimaxi.com/v1"
+        return "https://api.minimax.io/v1"
 
     @property
     def context_window_is_assumed(self) -> bool:

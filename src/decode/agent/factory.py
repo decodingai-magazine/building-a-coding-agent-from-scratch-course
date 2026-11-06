@@ -1,7 +1,7 @@
 """Build the ``decode`` Pydantic AI agent on the configured **LLM Provider**.
 
 The factory owns the Provider Seam: :func:`_build_model` branches on ``settings.llm_provider``
-(``gemini`` / ``openrouter`` / ``modal``); everything else in :func:`build_agent` is
+(``gemini`` / ``openrouter`` / ``modal`` / ``minimax``); everything else in :func:`build_agent` is
 provider-agnostic, and the loop owns all runtime behaviour. Tools come from the flat
 :mod:`decode.tools.registry` (the single source of truth); ``output_type=[str,
 DeferredToolRequests]`` wires the permission gate's deferred-tool seam.
@@ -18,7 +18,7 @@ from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.agent import AgentRetries
 from pydantic_ai.models import Model
 from pydantic_ai.models.google import GoogleModel
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.profiles import ModelProfile, merge_profile
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.google import GoogleProvider
@@ -80,12 +80,11 @@ def _build_model(*, model: str | None = None) -> Model:
     never the provider branch or the auth/key path; no cross-provider swap. Branch facts verified
     against the installed SDKs: ``gemini`` uses the Generative-Language API-key path and never passes
     ``vertexai=`` (its deprecation warning would fail under ``filterwarnings=["error"]``);
-    ``openrouter`` / ``modal`` both ride ``OpenAIChatModel``, modal over a bespoke ``AsyncOpenAI``
-    client for its per-user ``base_url`` + dual-header proxy-token auth (both-or-neither enforced
-    upstream by the cli guard). ``gemini`` / ``openrouter`` source their key from ``Settings`` through
-    :func:`_provider_api_key` (ADR-0015 §4); modal is deliberately not on it (a header surface, not a
-    single api_key). The trailing :class:`ValueError` is defensive — the settings ``Literal`` blocks
-    it upstream.
+    ``openrouter`` / ``modal`` / ``minimax`` ride ``OpenAIChatModel``; the latter two use bespoke
+    ``AsyncOpenAI`` clients for their endpoint URLs and auth. ``gemini`` / ``openrouter`` / ``minimax``
+    source their key from ``Settings`` through :func:`_provider_api_key` (ADR-0015 §4); modal is
+    deliberately not on it (a header surface, not a single api_key). The trailing
+    :class:`ValueError` is defensive — the settings ``Literal`` blocks it upstream.
     """
     provider = settings.llm_provider
     if provider == "gemini":
@@ -97,6 +96,21 @@ def _build_model(*, model: str | None = None) -> Model:
         return OpenAIChatModel(
             model or settings.openrouter_model,
             provider=OpenRouterProvider(api_key=_provider_api_key("openrouter")),
+        )
+    if provider == "minimax":
+        model_name = model or settings.minimax_model
+        client = AsyncOpenAI(
+            base_url=settings.minimax_base_url,
+            api_key=_provider_api_key("minimax"),
+        )
+        return OpenAIChatModel(
+            model_name,
+            provider=OpenAIProvider(openai_client=client),
+            settings=(
+                OpenAIChatModelSettings(openai_reasoning_effort="max")
+                if model_name.casefold() == "minimax-m3.1-flash"
+                else None
+            ),
         )
     if provider == "modal":
         base_url = f"{settings.modal_endpoint_url}/v1"
@@ -134,13 +148,17 @@ def _modal_profile(inferred: ModelProfile) -> ModelProfile:
     return merge_profile(inferred, OpenAIModelProfile(openai_supports_strict_tool_definition=False))
 
 
-def _provider_api_key(provider: Literal["gemini", "openrouter"]) -> str:
+def _provider_api_key(provider: Literal["gemini", "openrouter", "minimax"]) -> str:
     """Read the provider API key from ``Settings`` — the single source of truth (ADR-0021).
 
     Whichever store feeds the chain (``.env`` on a laptop, a Modal Secret in a container) hydrates
     the ``SecretStr``; the key never comes from anywhere else, headless or interactively.
     """
-    secret = settings.gemini_api_key if provider == "gemini" else settings.openrouter_api_key
+    secret = {
+        "gemini": settings.gemini_api_key,
+        "openrouter": settings.openrouter_api_key,
+        "minimax": settings.minimax_api_key,
+    }[provider]
     return secret.get_secret_value()
 
 

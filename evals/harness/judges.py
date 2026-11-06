@@ -109,9 +109,9 @@ def judge_model() -> str:
     is treated as unset) — it names the MODEL on whatever route :func:`judge_provider` selected, so
     the two knobs compose instead of fighting. Otherwise the string derives from
     :func:`judge_provider`: ``gemini`` → :data:`DEFAULT_GEMINI_JUDGE`; ``openrouter`` →
-    ``openrouter/<settings.openrouter_model>``; ``modal`` → ``openai/<settings.modal_endpoint_model>``
-    (the endpoint ``base_url`` and auth are applied separately, in :func:`resolve_judge_model`). Pure
-    and network-free — safe to unit-test without keys.
+    ``openrouter/<settings.openrouter_model>``; the OpenAI-compatible routes use
+    ``openai/<configured model>`` (their endpoint ``base_url`` and auth are applied separately, in
+    :func:`resolve_judge_model`). Pure and network-free — safe to unit-test without keys.
     """
     override = settings.eval_judge_model.strip()
     if override:
@@ -121,14 +121,16 @@ def judge_model() -> str:
         return f"openrouter/{settings.openrouter_model}"
     if provider == "modal":
         return f"openai/{settings.modal_endpoint_model}"
+    if provider == "minimax":
+        return f"openai/{settings.minimax_model}"
     return DEFAULT_GEMINI_JUDGE
 
 
 def resolve_judge_model() -> str | LiteLLMChatModel:
     """The judge model object every Opik metric factory feeds to its ``model=`` slot (ADR-0017 §7).
 
-    For every route but ``modal`` this is just the :func:`judge_model` string. A ``modal`` judge
-    instead gets a :class:`ModalJudgeModel` pre-built with ``api_base`` pointed at
+    The MiniMax route gets a :class:`LiteLLMChatModel` carrying its regional base URL and API key.
+    A ``modal`` judge gets a :class:`ModalJudgeModel` pre-built with ``api_base`` pointed at
     ``{settings.modal_endpoint_url}/v1`` (the OpenAI-compatible route — the setting is a BARE base by
     contract, so every consumer appends the suffix) plus the endpoint's auth, because a bare LiteLLM
     string can carry neither. Auth mirrors :func:`decode.agent.factory._build_model`: the dual
@@ -140,12 +142,18 @@ def resolve_judge_model() -> str | LiteLLMChatModel:
     into every call). Used by :func:`make_judge` (the G-Eval trace judge) so the modal wrinkle lives in one
     place. Construction makes no LLM call.
 
-    An ``EVAL_JUDGE_MODEL`` override does NOT demote this route to a plain string: on ``modal`` it
-    replaces the model INSIDE the authenticated object (it names another model the same endpoint
-    serves). Changing route is ``EVAL_JUDGE_PROVIDER``'s job — an override that silently dropped the
-    base url and the proxy headers would 401 instead.
+    An ``EVAL_JUDGE_MODEL`` override does not demote either endpoint-backed route to a plain string:
+    it replaces the model inside the authenticated object. Changing route is
+    ``EVAL_JUDGE_PROVIDER``'s job — an override that silently dropped the base URL and auth would
+    fail at inference instead.
     """
     model_string = judge_model()
+    if judge_provider() == "minimax":
+        return LiteLLMChatModel(
+            model_name=model_string,
+            api_base=settings.minimax_base_url,
+            api_key=settings.minimax_api_key.get_secret_value(),
+        )
     if judge_provider() != "modal":
         return model_string
 

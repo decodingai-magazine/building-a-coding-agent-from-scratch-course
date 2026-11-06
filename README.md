@@ -49,7 +49,7 @@ In [LangChain's Terminal-Bench experiment](https://www.langchain.com/blog/the-an
 
 ```python
 agent = Agent(
-    build_model(settings.llm_provider),        # gemini | openrouter | modal
+    build_model(settings.llm_provider),        # gemini | openrouter | modal | minimax
     deps_type=AgentDeps,                       # cwd, event sink, permission gate
     output_type=[str, DeferredToolRequests],   # final answer, or tools paused for approval
 )
@@ -168,7 +168,7 @@ The finished agent ships with demo skills under [`.decode/skills/`](.decode/skil
 The code is written in Python, with the following frameworks and libraries:
 
 - **Agent Framework:** [Pydantic AI](https://ai.pydantic.dev)
-- **LLM Providers:** [Modal](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng) (open weights you serve yourself via SGLang), OpenRouter (open weights as a service), or Gemini (proprietary).
+- **LLM Providers:** [Modal](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng) (open weights you serve yourself via SGLang), OpenRouter (open weights as a service), Gemini (proprietary), or MiniMax.
 - **Session Recording & Replays:** [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand)
 - **Observability & Evals:** [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course)
 - **Sandboxing:** local Docker & remote [Modal sandboxes](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng)
@@ -214,7 +214,7 @@ For the full experience, go through the articles and videos that cover what the 
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>
   <tr>
-    <td align="center"><b>2</b><br/>The Bare-Bones Coding Agent Loop<br/><br/><i>Your agent loops over 9 tools and 3 swappable LLM providers in a steerable TUI.</i><br/><sub>⏱ 25-min read</sub></td>
+    <td align="center"><b>2</b><br/>The Bare-Bones Coding Agent Loop<br/><br/><i>Your agent loops over 9 tools and 4 swappable LLM providers in a steerable TUI.</i><br/><sub>⏱ 25-min read</sub></td>
     <td align="center"><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank"><img src="assets/architecture_lesson_2.png" width="300" alt="Lesson 2 — The Bare-Bones Coding Agent Loop"/></a><br/><i><a href="https://www.decodingai.com/p/the-coding-agent-loop" target="_blank">Article 2</a></i></td>
     <td align="center"><a href="running_the_code/01_install_and_usage.md">01_install_and_usage.md</a> · <a href="running_the_code/02_modal_endpoints.md">02_modal_endpoints.md</a></td>
   </tr>

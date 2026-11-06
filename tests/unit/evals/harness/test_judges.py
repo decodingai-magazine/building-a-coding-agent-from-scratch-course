@@ -54,6 +54,29 @@ def test_modal_route(mocker) -> None:
     assert judges.judge_model() == "openai/Qwen/Qwen3"
 
 
+def test_minimax_route(mocker) -> None:
+    mocker.patch.object(judges.settings, "eval_judge_model", "")
+    mocker.patch.object(judges.settings, "llm_provider", "minimax")
+    mocker.patch.object(judges.settings, "minimax_model", "MiniMax-M3.1-Flash")
+
+    assert judges.judge_model() == "openai/MiniMax-M3.1-Flash"
+
+
+def test_resolve_judge_model_carries_the_minimax_endpoint_and_key(mocker) -> None:
+    mocker.patch.object(judges.settings, "eval_judge_model", "")
+    mocker.patch.object(judges.settings, "llm_provider", "minimax")
+    mocker.patch.object(judges.settings, "minimax_model", "MiniMax-M3")
+    mocker.patch.object(judges.settings, "minimax_region", "china")
+    mocker.patch.object(judges.settings, "minimax_api_key", SecretStr("minimax-key"))
+
+    model = judges.resolve_judge_model()
+
+    assert isinstance(model, LiteLLMChatModel)
+    assert model.model_name == "openai/MiniMax-M3"
+    assert model._completion_kwargs["api_base"] == "https://api.minimaxi.com/v1"
+    assert model._completion_kwargs["api_key"] == "minimax-key"
+
+
 def test_resolve_judge_model_is_a_plain_string_off_the_modal_route(mocker) -> None:
     mocker.patch.object(judges.settings, "eval_judge_model", "")
     mocker.patch.object(judges.settings, "llm_provider", "gemini")
@@ -242,6 +265,7 @@ def test_judge_provider_overrides_the_agent_provider(mocker) -> None:
         ("gemini", DEFAULT_GEMINI_JUDGE),
         ("openrouter", "openrouter/meta/llama-3"),
         ("modal", "openai/Qwen/Qwen3"),
+        ("minimax", "openai/MiniMax-M3.1-Flash"),
     ],
 )
 def test_judge_model_routes_on_the_judge_provider(
@@ -253,11 +277,12 @@ def test_judge_model_routes_on_the_judge_provider(
     mocker.patch.object(judges.settings, "eval_judge_provider", judge_provider_value)
     mocker.patch.object(judges.settings, "openrouter_model", "meta/llama-3")
     mocker.patch.object(judges.settings, "modal_endpoint_model", "Qwen/Qwen3")
+    mocker.patch.object(judges.settings, "minimax_model", "MiniMax-M3.1-Flash")
 
     assert judges.judge_model() == expected
 
 
-@pytest.mark.parametrize("judge_provider_value", ["", "gemini", "openrouter", "modal"])
+@pytest.mark.parametrize("judge_provider_value", ["", "gemini", "openrouter", "modal", "minimax"])
 def test_the_model_override_wins_on_every_judge_provider(mocker, judge_provider_value: str) -> None:
     """``EVAL_JUDGE_MODEL`` still owns the model STRING on every route (the two knobs compose)."""
     mocker.patch.object(judges.settings, "eval_judge_model", "openai/Qwen/Qwen-Other")

@@ -41,6 +41,11 @@ _OPENROUTER_NO_KEY_MESSAGE = (
     "(see .env.example)."
 )
 
+_MINIMAX_NO_KEY_MESSAGE = (
+    "Decode: LLM_PROVIDER=minimax needs MINIMAX_API_KEY set in your environment or .env "
+    "(see .env.example)."
+)
+
 # Modal proxy tokens are both-or-neither (neither = an --unauthenticated endpoint) — ADR-0005 §5.
 _MODAL_PROXY_TOKENS_MESSAGE = (
     "Decode: LLM_PROVIDER=modal proxy tokens are both-or-neither — set both MODAL_PROXY_TOKEN_ID "
@@ -103,6 +108,10 @@ def _provider_config_error() -> str | None:
     if provider == "openrouter":
         if not settings.openrouter_api_key.get_secret_value():
             return _OPENROUTER_NO_KEY_MESSAGE
+        return None
+    if provider == "minimax":
+        if not settings.minimax_api_key.get_secret_value():
+            return _MINIMAX_NO_KEY_MESSAGE
         return None
     if provider == "modal":
         missing = [

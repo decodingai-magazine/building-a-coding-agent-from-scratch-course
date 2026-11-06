@@ -717,6 +717,47 @@ def test_modal_unauthenticated_client_has_no_modal_headers_and_placeholder_api_k
     assert client.api_key == "EMPTY"
 
 
+@pytest.mark.parametrize(
+    ("region", "expected_base_url"),
+    [
+        ("global", "https://api.minimax.io/v1/"),
+        ("china", "https://api.minimaxi.com/v1/"),
+    ],
+)
+def test_minimax_model_uses_the_selected_regional_endpoint(mocker, region, expected_base_url):
+    mocker.patch("decode.agent.factory.settings.llm_provider", "minimax", create=False)
+    mocker.patch(
+        "decode.agent.factory.settings.minimax_api_key", SecretStr("minimax-key"), create=False
+    )
+    mocker.patch("decode.agent.factory.settings.minimax_model", "MiniMax-M3.1-Flash", create=False)
+    mocker.patch("decode.agent.factory.settings.minimax_region", region, create=False)
+
+    model = _build_model()
+
+    assert isinstance(model, OpenAIChatModel)
+    assert isinstance(model.provider, OpenAIProvider)
+    assert model.model_name == "MiniMax-M3.1-Flash"
+    assert str(model.provider.client.base_url) == expected_base_url
+    assert model.provider.client.api_key == "minimax-key"
+    assert model.settings == {"openai_reasoning_effort": "max"}
+
+
+def test_minimax_model_override_keeps_the_minimax_endpoint_and_key(mocker):
+    mocker.patch("decode.agent.factory.settings.llm_provider", "minimax", create=False)
+    mocker.patch(
+        "decode.agent.factory.settings.minimax_api_key", SecretStr("minimax-key"), create=False
+    )
+    mocker.patch("decode.agent.factory.settings.minimax_model", "MiniMax-M3.1-Flash", create=False)
+    mocker.patch("decode.agent.factory.settings.minimax_region", "global", create=False)
+
+    model = _build_model(model="MiniMax-M3")
+
+    assert model.model_name == "MiniMax-M3"
+    assert str(model.provider.client.base_url) == "https://api.minimax.io/v1/"
+    assert model.provider.client.api_key == "minimax-key"
+    assert model.settings is None
+
+
 async def test_modal_tool_definitions_never_carry_the_strict_flag_on_the_wire(tmp_path, mocker):
     """No ``"strict": true`` on any tool a Modal endpoint receives (regression guard).
 
