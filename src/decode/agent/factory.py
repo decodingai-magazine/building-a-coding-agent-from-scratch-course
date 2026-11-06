@@ -18,7 +18,7 @@ from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.agent import AgentRetries
 from pydantic_ai.models import Model
 from pydantic_ai.models.google import GoogleModel
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.profiles import ModelProfile, merge_profile
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.google import GoogleProvider
@@ -98,13 +98,19 @@ def _build_model(*, model: str | None = None) -> Model:
             provider=OpenRouterProvider(api_key=_provider_api_key("openrouter")),
         )
     if provider == "minimax":
+        model_name = model or settings.minimax_model
         client = AsyncOpenAI(
             base_url=settings.minimax_base_url,
             api_key=_provider_api_key("minimax"),
         )
         return OpenAIChatModel(
-            model or settings.minimax_model,
+            model_name,
             provider=OpenAIProvider(openai_client=client),
+            settings=(
+                OpenAIChatModelSettings(openai_reasoning_effort="max")
+                if model_name.casefold() == "minimax-m3.1-flash"
+                else None
+            ),
         )
     if provider == "modal":
         base_url = f"{settings.modal_endpoint_url}/v1"

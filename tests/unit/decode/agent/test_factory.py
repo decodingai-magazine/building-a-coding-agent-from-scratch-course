@@ -739,6 +739,7 @@ def test_minimax_model_uses_the_selected_regional_endpoint(mocker, region, expec
     assert model.model_name == "MiniMax-M3.1-Flash"
     assert str(model.provider.client.base_url) == expected_base_url
     assert model.provider.client.api_key == "minimax-key"
+    assert model.settings == {"openai_reasoning_effort": "max"}
 
 
 def test_minimax_model_override_keeps_the_minimax_endpoint_and_key(mocker):
@@ -754,6 +755,7 @@ def test_minimax_model_override_keeps_the_minimax_endpoint_and_key(mocker):
     assert model.model_name == "MiniMax-M3"
     assert str(model.provider.client.base_url) == "https://api.minimax.io/v1/"
     assert model.provider.client.api_key == "minimax-key"
+    assert model.settings is None
 
 
 async def test_modal_tool_definitions_never_carry_the_strict_flag_on_the_wire(tmp_path, mocker):
