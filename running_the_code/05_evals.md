@@ -37,8 +37,6 @@ Commands:
 
 Nineteen tasks (7 easy / 6 medium / 6 hard) in the Terminal-Bench layout: `task.toml`, `instruction.md`, an `environment/` seed, a hidden `tests/test.sh`, a `solution/solve.sh` oracle. Format: [`evals/benchmark/tasks/README.md`](../evals/benchmark/tasks/README.md).
 
-![](../assets/evals_harness_diagram.png)
-
 One **Trial** = one `decode run` subprocess in a real sandbox. The seed becomes a fresh git repo, the agent works on it, Hand-back pushes its branch, and only then, **host-side**, `tests/test.sh` runs on a pristine clone of that branch and writes one float to `reward.txt`. The agent never sees its grader.
 
 ```bash
@@ -51,8 +49,6 @@ make eval-benchmark ARGS='--job-name nightly-3 --model gemini-3.1-pro-preview'
 ```
 
 `--trials` = trials per task, `--threads` = trials in flight (default 1 on docker, 4 on modal). `--job-name` names both the Opik experiment and the on-disk run folder (default `bench-<UTC stamp>`). Each run first upserts the selected tasks into the `decode-benchmark` Opik dataset itself; there is no separate sync step to remember.
-
-![](../assets/opik_benchmark_dataset.png)
 
 > ✅ **Working looks like:** a Rich table with one row per task (`n`, `pass@1`, at `k > 1` also `pass@k` / `pass^k` / `flaky`, `~$/trial`, `~s/trial`, `~tok/trial`, `infra`), a section per tier, a total row, then a `spend:` line (wall clock · agent seconds · tokens in/out) and one line naming the experiment and the trial dirs. The `infra` column must be ~0, or the row measures the harness, not the model. In Opik: Experiments → one row over the `decode-benchmark` dataset, tagged with model, provider, git sha, sandbox.
 

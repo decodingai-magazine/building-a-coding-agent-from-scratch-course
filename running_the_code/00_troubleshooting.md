@@ -40,4 +40,4 @@ Feature-specific tables live next to the feature: **Modal endpoints** [02_modal_
 
 ## Still stuck?
 
-Logs: `.decode/logs/decode.log` under the launch directory. `LOG_LEVEL=DEBUG` in `.env`, reproduce, read the tail. Then [open an issue](https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues) with that tail, provider, and model.
+Logs: `.decode/logs/decode.log` under the launch directory. `LOG_LEVEL=DEBUG` in `.env`, reproduce, read the tail. Then [open an issue](https://github.com/HanishDhanwalkar/decode-ollama.git/issues) with that tail, provider, and model.

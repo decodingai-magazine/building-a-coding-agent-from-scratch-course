@@ -32,10 +32,6 @@ Or as a Claude Code plugin (`/plugin marketplace update kitaru` refreshes an old
 /plugin install kitaru@kitaru
 ```
 
-The 3 skills we use:
-
-![](../assets/kitaru_skills.png)
-
 ### Pick a server
 
 Pick one. For the course, the local server is enough.
@@ -144,10 +140,10 @@ Imports, replays and evaluator runs are jobs that wait for a Worker to execute t
 
 The Worker spawns `decode run` under `SANDBOX_MODE=docker` over a fresh clone of this repo, from `~/.decode-kitaru-worker`, where there is no `.env`. So its shell must carry your provider keys.
 
-First move to the repo root (the building-a-coding-agent-from-scratch-course root directory):
+First move to the repo root (the decode-ollama root directory):
 
 ```bash
-cd <repo root>          # the building-a-coding-agent-from-scratch-course root directory
+cd <repo root>          # the decode-ollama root directory
 ```
 
 Then load the `.env` variables and unset `KITARU_AGENT_ID` (it's only needed for the Kitaru server):

@@ -76,20 +76,18 @@ uv run decode remote deploy       # → decode-headless-$DECODE_ENV
 ```
 
 > ✅ Ends with:
->
-> ```
-> Decode: deploying decode-headless-prod (DECODE_ENV=prod).
-> ├── 🔨 Created function run_task.
-> ├── 🔨 Created function nightly.
-> └── 🔨 Created web function webhook => https://<workspace>--decode-headless-prod-webhook.modal.run 🔑
-> ✓ App deployed in 46.102s! 🎉
-> ```
+
+```bash
+ Decode: deploying decode-headless-prod (DECODE_ENV=prod).
+ ├── 🔨 Created function run_task.
+ ├── 🔨 Created function nightly.
+ └── 🔨 Created web function webhook => https://<workspace>--decode-headless-prod-webhook.modal.run 🔑
+ ✓ App deployed in 46.102s!
+ ```
 
 `run_task` = the run, `nightly` = the cron (§6), `webhook` = the POST endpoint (§5). All three take the same knobs: `task`, `repo`, `sandbox-mode` (`none` | `modal`), `model`, `max-requests`, `timeout-seconds`.
 
 The same three in the dashboard, under **Apps → `decode-headless-<env>`** — idle, costing nothing. `nightly` carries its schedule badge only once §6 has set a cron:
-
-![The three entrypoints of a deployed decode-headless app](../assets/modal_3_entrypoints.png)
 
 ## 4. Run from the CLI
 
@@ -97,13 +95,13 @@ The same three in the dashboard, under **Apps → `decode-headless-<env>`** — 
 uv run decode remote run "run bash to print uname -a and pwd and report both" --sandbox-mode none
 ```
 
-> ✅ A gVisor kernel and an in-container path:
->
-> ```
-> - **`uname -a`**: `Linux modal 4.19.0-gvisor #1 SMP … x86_64 GNU/Linux`
-> - **`pwd`**: `/harness`
-> Decode: run finished — exit=0 sandbox=none session=346fbde2-… branch=None
-> ```
+✅ A gVisor kernel and an in-container path:
+
+```bash
+- **`uname -a`**: `Linux modal 4.19.0-gvisor #1 SMP … x86_64 GNU/Linux`
+- **`pwd`**: `/harness`
+Decode: run finished — exit=0 sandbox=none session=346fbde2-… branch=None
+```
 
 A change to a real repo, shipped back as a branch (use a repo of yours, or a fork of ours):
 
@@ -115,8 +113,6 @@ git ls-remote https://github.com/<you>/<repo> 'refs/heads/decode/*'
 ```
 
 A `--sandbox-mode modal` run is two live apps: `run_task` busy on `decode-headless-<env>`, and the nested Sandbox it opened under `decode-sandbox-<env>`:
-
-![One remote run in flight, with its nested Sandbox](../assets/modal_1_running.png)
 
 | `--sandbox-mode` | Where `bash` runs                                                            | Hand-back                                                              |
 | ---------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
@@ -137,17 +133,13 @@ uv run decode remote attempts "add a hello line to README and commit" \
 
 The fan-out is visible as one Function with three of everything — `run_task` at 3 containers / 3 inputs, and three live Sandboxes:
 
-![Three attempts running in parallel](../assets/modal_3_entrypoints_running.png)
-
 ## 5. Run from a webhook
 
 The deploy prints the URL once (§3). To read it again later, open **Apps → `decode-headless-<env>` → Functions → `webhook`** in the Modal dashboard: it sits under the function name, beside a globe and a key icon. The key is the point — it means proxy auth is enforced, so the bare URL is not a public "spend my tokens" button. The icon next to the `webhook` title copies it.
 
-![Where the webhook URL lives on the Modal dashboard](../assets/modal_webhook_url.png)
-
 The shape is deterministic, so you can also just write it out:
 
-```
+```curl
 https://<workspace>--decode-headless-<env>-webhook.modal.run
 ```
 
@@ -174,8 +166,6 @@ curl -s -X POST "$WEBHOOK_URL" \
 > ✅ `{"call_id": "fc-…", "status": "spawned", "watch": [...]}`. A bad body (`sandbox_mode: "docker"`, empty `task`) is a `400`, nothing spawned. Answer: `uv run decode remote logs`; branch: `git ls-remote`.
 
 The POST returns in milliseconds; the work shows up on `run_task`, not on `webhook` — the endpoint spawns and is done:
-
-![The run spawned by a webhook POST](../assets/modal_webhook.png)
 
 Callers: a GitHub Actions step, a ticket bot, a Slack slash command.
 

@@ -167,7 +167,7 @@ def test_demo_5_targets_the_real_course_repo():
     body = _skill_text(DEMO_5)
 
     # The invocation clones the actual course repo (matches ``git remote get-url origin``).
-    assert "decodingai-magazine/building-a-coding-agent-from-scratch-course" in body
+    assert "HanishDhanwalkar/decode-ollama.git" in body
 
 
 def test_demo_5_covers_pushing_the_branch_and_the_prepush_timeout():
