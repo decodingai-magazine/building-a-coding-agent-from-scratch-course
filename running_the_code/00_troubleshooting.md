@@ -26,7 +26,6 @@ Feature-specific tables live next to the feature: **Modal endpoints** [02_modal_
 | `ModelHTTPError: status_code: 503, model_name: Qwen/…` from your Modal endpoint | cold start: the endpoint scaled to zero (Min 0) and no container was ready yet | wait a few minutes, then resend. To avoid it, keep a container warm: open the endpoint in the dashboard, go to **AUTOSCALING → Edit → Override**, and set **Min 1** (see [02 §5. Cold starts and cost](02_modal_endpoints.md#5-cold-starts-and-cost)). |
 | `429` / quota errors mid-turn | Gemini free-tier cap | wait, switch to `LLM_PROVIDER=openrouter`, or move to Modal. |
 
-
 ## Running the agent
 
 | What you see | What it means | Fix |

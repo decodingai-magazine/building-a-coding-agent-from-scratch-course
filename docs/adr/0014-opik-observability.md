@@ -34,7 +34,7 @@ Constraints that shaped the design:
 Facts verified against the installed packages + official docs before deciding:
 
 * **Official recipe** (comet.com/docs/opik/integrations/pydantic-ai): `logfire.configure(send_to_logfire=False)`
-  + `logfire.instrument_pydantic_ai()`; thread grouping via `with logfire.span("chat_turn", thread_id=…)`;
+  * `logfire.instrument_pydantic_ai()`; thread grouping via `with logfire.span("chat_turn", thread_id=…)`;
   the programmatic `additional_span_processors=[…]` path is the docs' own pattern (the OpikSpanProcessor
   example).
 * **OTLP ingest** (comet.com/docs/opik/integrations/opentelemetry): Opik's endpoint reads standard
@@ -66,26 +66,26 @@ The four names in this ADR are **four layers of one pipeline**, not four alterna
 because "why OTLP and not the Opik SDK?" is the natural first misread (they are not opposed):
 
 | Layer | What it is | In decode |
-|---|---|---|
+| --- | --- | --- |
 | **pydantic-ai** | the LLM framework whose Agents make the calls — the thing being observed | main loop, memory write-back, compaction, subagents |
 | **logfire** | **Pydantic's** instrumentation SDK — a thin wrapper *around* OpenTelemetry | `instrument_pydantic_ai()`, `configure()`, `span()` in `tracing.py` |
 | **OpenTelemetry (OTel)** | the vendor-neutral standard + SDK for traces/metrics/logs; the wire format is **OTLP** | `OTLPSpanExporter`, `BatchSpanProcessor`, the `gen_ai.*` span attributes |
 | **Opik** | the backend that ingests the spans and prices them | the OTLP endpoint the exporter POSTs to |
 
-- **OpenTelemetry** is the common language. A **span** is one unit of work (an LLM or tool call) with a
+* **OpenTelemetry** is the common language. A **span** is one unit of work (an LLM or tool call) with a
   name, timing, and key-value **attributes**; spans nest into a **trace** (one REPL turn) via
   async-context propagation; **OTLP** is the protocol that ships them. The standardized attribute names
   (`gen_ai.usage.*`, `gen_ai.request.model`, `gen_ai.system` — OTel's **GenAI semantic conventions**)
   are exactly what Opik reads to surface tokens + cost with no glue code. Because OTel's `TracerProvider`
   is **process-global**, two libraries both configuring it collide — this is the root cause of the
   kitaru→zenml conflict that forces settings-driven (not global-`OTEL_*`-env) export (sub-decision 2).
-- **logfire** *is* OTel underneath (`logfire.span` → an OTel span; `configure()` → an OTel provider). We
+* **logfire** *is* OTel underneath (`logfire.span` → an OTel span; `configure()` → an OTel provider). We
   use the **library, not Pydantic's hosted platform** — `send_to_logfire=False` borrows only its
   instrumentation and redirects spans to Opik. It earns its place two ways: (a)
   `instrument_pydantic_ai()` is a **one-call global** integration (Pydantic makes both libraries), vs.
   hand-writing spans at every call site with raw OTel; (b) installing `logfire` transitively brings the
   OTLP exporter + OTel SDK, so the whole pipeline arrives with **one** top-level dep.
-- **"OTLP" is Opik's own documented transport** for the logfire/pydantic-ai recipe
+* **"OTLP" is Opik's own documented transport** for the logfire/pydantic-ai recipe
   (comet.com/docs/opik/integrations/pydantic-ai) — **not** a bypass of the Opik SDK. The narrow choice
   we actually made is `OTLPSpanExporter` **over** the opik SDK's `OpikSpanProcessor`: both are Opik
   paths, but the exporter ships free with logfire while `OpikSpanProcessor` needs the whole `opik`
@@ -97,7 +97,7 @@ because "why OTLP and not the Opik SDK?" is the natural first misread (they are 
 Opik over OTLP.** Compared against the alternatives:
 
 | Mechanism | What it is | Coverage | New deps | Cost / tokens | Verdict |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | **Plain OTel SDK (manual spans)** | hand-instrument every LLM/tool call with raw `opentelemetry-sdk` spans + `gen_ai.*` attributes | everything, but you write it at every call site | otlp exporter | you set `gen_ai.usage.*` yourself from `run.usage()` | rejected — reinvents what `instrument_pydantic_ai()` gives free; touches every surface; brittle |
 | **logfire-official (CHOSEN)** | `logfire.configure(send_to_logfire=False)` + global `instrument_pydantic_ai()` + settings-driven OTLP exporter → Opik | ALL pydantic-ai agents (main, memory, compaction, subagents) in one call; zero per-call-site code | **`logfire` only** (brings the OTLP exporter) | `gen_ai.usage.*` on LLM spans → Opik prices; `aggregated_usage` avoids double-count | **chosen** — the sanctioned path; one global call; matches the locked scope |
 | **opik SDK decorators (`@opik.track` / `OpikSpanProcessor`)** | wrap entrypoints in `@opik.track` and/or register `OpikSpanProcessor` to merge logfire spans into `@track` traces | only decorated entrypoints; merge needs the processor | `+opik` (and still logfire) | opik SDK path prices reliably | **deferred** — a 2nd dep + per-entrypoint decoration; earned only if OTLP cost proves absent (escape hatch below) |
@@ -237,26 +237,26 @@ flowchart TD
 
 ## Consequences
 
-- **One global call covers every surface.** Adding a future pydantic-ai LLM call site is traced for
+* **One global call covers every surface.** Adding a future pydantic-ai LLM call site is traced for
   free — no per-site work.
-- **decode is byte-identical without `OPIK_API_KEY`.** The whole feature is inert until a key is set;
+* **decode is byte-identical without `OPIK_API_KEY`.** The whole feature is inert until a key is set;
   the REPL prints no line, the headless run's stdout is unchanged, zero spans are emitted.
-- **Config stays in `settings.py`.** No global `OTEL_*` env var is mutated, so kitaru/zenml's own OTel
+* **Config stays in `settings.py`.** No global `OTEL_*` env var is mutated, so kitaru/zenml's own OTel
   SDK is unaffected.
-- **Cost is best-effort by model.** Tokens always; cost for priced models (Gemini yes; open models via
+* **Cost is best-effort by model.** Tokens always; cost for priced models (Gemini yes; open models via
   OpenRouter/Modal may be tokens-only). The `opik`-SDK escape hatch is a one-line swap if needed.
-- **Headless run-level nesting is best-effort under `checkpoint_strategy="calls"`.** Per-call worker
+* **Headless run-level nesting is best-effort under `checkpoint_strategy="calls"`.** Per-call worker
   loops can break OTel context propagation, so some model spans may export as sibling traces rather
   than nested under the run root; every span still carries tokens. A documented ceiling, like the
   runtime ADRs.
-- **ADR-0013 §9 is closed.** Subagent child spans nest in the parent turn's trace with visible child
+* **ADR-0013 §9 is closed.** Subagent child spans nest in the parent turn's trace with visible child
   token usage.
-- **Risks to confirm during implementation:** (a) `uv add logfire` co-resolving its OTel/protobuf pins
+* **Risks to confirm during implementation:** (a) `uv add logfire` co-resolving its OTel/protobuf pins
   with kitaru→zenml + modal (the one hard blocker if it fails); (b) the async-generator span crossing
   `yield`s closing exactly once on abort (guarded by the runner's `aclose()` + a test); (c) whether
   Gemini cost materializes via pure OTLP (checked by the live smoke; escape hatch ready); (d)
   `logfire.configure`'s process-global tracer-provider coexisting with any provider kitaru/zenml sets
   in the headless path.
-- **Discipline (unchanged):** `filterwarnings=["error"]`, UTC-aware datetimes, full annotations, library
+* **Discipline (unchanged):** `filterwarnings=["error"]`, UTC-aware datetimes, full annotations, library
   code logs (never `print()`), `tests/` mirror `src/` 1:1, TDD-first, no network in CI (`FunctionModel`
-  + `logfire.testing`; one live smoke `skipif`-guarded).
+  * `logfire.testing`; one live smoke `skipif`-guarded).

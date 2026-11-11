@@ -147,6 +147,7 @@ graph LR
 ## Consequences
 
 **Good.**
+
 - One mechanism, two backends. `SANDBOX_GIT_TOKEN` now means the same thing everywhere, and the
   glossary's Worker entry loses its "opt-in exception" caveat because the exception *is* the rule.
 - A large amount of fragile machinery is gone: the per-run network, the CA-trust race and its
@@ -157,6 +158,7 @@ graph LR
 - The docker integration suite loses its slowest, flakiest file (a real mitmproxy container per test).
 
 **Bad / accepted.**
+
 - **A sandboxed process can now read `$GITHUB_TOKEN`.** This is the whole cost, stated plainly. Mitigation
   is policy, not code: the token is opt-in, scoped, and revocable, and the docs say so at every mention.
   Anyone who wants the stronger property runs without `SANDBOX_GIT_TOKEN` and takes host-side hand-back.

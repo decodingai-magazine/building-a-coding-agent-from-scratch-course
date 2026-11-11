@@ -35,7 +35,7 @@ further splits into **③a relocate the agent**, **③b relocate the server**, *
 ## At a glance — methods × harnesses
 
 | Method | claude-code | opencode | pi | Codex | **decode (ours)** |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | **1. Policy vs. enforcement** | policy (`canUseTool`) **+** OS jail | policy only (no enforce layer) | `tool_call` hook **+** external jail | prompt rules **+** bidirectional App-Server approval | permission gate (policy) **+** container (enforce) |
 | **2. none/local/remote ladder** | ② default · ① opt-out · ③a | **① only** · ② none · ③b | ① default · ② opt-in · ③c | ② + ③ (per-task cloud container) | `SANDBOX_MODE` = none(①) / docker(②) / modal(③c) |
 | **3. Enforcement bet** | **PREVENT** (jail blocks) | **RECOVER** (git-shadow snapshots / undo) | **EXTERNALIZE** (`nono`/container) | prevent-by-container + recover-by-PR | **EXTERNALIZE + RECOVER** (container is the jail; git hand-back ships) |
@@ -53,6 +53,7 @@ three leave open** — Codex and decode are its two fillers.
 ## Per-method detail
 
 ### 1. Separate policy from enforcement
+
 The wiki's #1 builder takeaway: allow/deny/ask is *advisory*; the jail is the boundary. claude-code says
 it in code — `excludedCommands` "is a convenience, NOT a security boundary."
 
@@ -63,6 +64,7 @@ it in code — `excludedCommands` "is a convenience, NOT a security boundary."
 - **decode:** permission gate (allow/ask/deny modes, ADR-0002) = policy; the container = enforcement.
 
 ### 2. The none / local / remote ladder
+
 - **claude-code:** ① opt-out only · **② default** (Seatbelt/bwrap) · ③a remote.
 - **opencode:** **① default & only** · ② none by design · ③b remote.
 - **pi:** **① default** · ② opt-in (`nono` / sandbox ext) · ③c remote.
@@ -70,6 +72,7 @@ it in code — `excludedCommands` "is a convenience, NOT a security boundary."
 - **decode:** the ladder as config — `SANDBOX_MODE=none`(①) / `docker`(② local container) / `modal`(③c remote container).
 
 ### 3. The enforcement bet: prevent vs. recover vs. externalize
+
 Spine of `wiki/comparisons/isolation-claude-code-vs-opencode.md`.
 
 - **claude-code = PREVENT:** OS jail blocks the irreversible (exfiltration, out-of-repo writes) at the kernel.
@@ -79,6 +82,7 @@ Spine of `wiki/comparisons/isolation-claude-code-vs-opencode.md`.
 - **decode = EXTERNALIZE + RECOVER:** like pi, the container *is* the jail (we ship no seccomp); like opencode's git idea, we add a git-recovery substrate — but repurposed from "undo" to "**ship**" (the `decode/<id>` hand-back; the merge is the real gate).
 
 ### 4. I/O placement: mask one fs vs. swap the whole backend "as a set"
+
 The most directly-lifted method — pi's headline insight (`wiki/repos/pi/SANDBOX.md §3`).
 
 - **claude-code = MASK:** the jail wraps the *bash* process; `read`/`write`/`edit` stay on the host — one fs, masked. Remote just relocates the agent so the mask co-locates.
@@ -88,6 +92,7 @@ The most directly-lifted method — pi's headline insight (`wiki/repos/pi/SANDBO
 - **decode = SWAP THE SET:** pi's pattern, implemented. Our `SandboxBackend` seam carries exec **+** file ops; task 081 routes `read/write/edit/glob/grep` through it into the Workspace. We explicitly **rejected** the "mirror the sandbox fs to the host" alternative — the deletion-blindness hole.
 
 ### 5. Remote family: relocate the executor vs. swap the backend
+
 `execution-isolation-models.md §③` splits remote into two families.
 
 - **claude-code = ③a relocate the AGENT** (headless loop on the remote box; jail travels).
@@ -97,6 +102,7 @@ The most directly-lifted method — pi's headline insight (`wiki/repos/pi/SANDBO
 - **decode = ③c swap** (pi's family) for modal — harness stays on your machine, exec + file ops delegate to the remote sandbox. **The contrast: Codex relocates the brain into the cloud; decode keeps the brain local and swaps the hands.**
 
 ### 6. The untrusted-remote quadrant: container + repo clone + git hand-back
+
 The wiki is explicit that **all three reference repos leave this open** — "neither per-command
 Seatbelt/bwrap nor undo-only snapshots fully isolate a host you don't trust — that's where containers
 (Docker), microVMs (Firecracker), gVisor enter."
@@ -120,5 +126,6 @@ exactly two axes the wiki names:
    secrets never enter the sandbox.
 
 Everything else decode built is a recombination of the reference harnesses: pi's "swap the set" (Method 4)
-+ claude-code's "policy ≠ enforcement" (Method 1) + opencode's "git as a safety substrate" (Method 3),
+
+- claude-code's "policy ≠ enforcement" (Method 1) + opencode's "git as a safety substrate" (Method 3),
 with containers/modal filling the untrusted-remote quadrant.

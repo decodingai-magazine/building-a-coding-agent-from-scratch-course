@@ -19,7 +19,7 @@ the grain, more control).
 `bash` and the file/search tools run through **one** `CommandExecutor`, selected once per process
 and memoized in a module global:
 
-```
+```bash
 src/decode/tools/bash.py
   43   _EXECUTOR: CommandExecutor = LocalExecutor()   # module-global singleton
   44   _executor_selected = False
@@ -37,7 +37,7 @@ The `agent` tool (`tools/agent.py:375`) already runs N children concurrently thr
 `asyncio.gather` over N spawns, bounded by a per-loop semaphore (`subagent_max_parallel`). But every
 child gets the parent's scope:
 
-```
+```bash
 src/decode/tools/agent.py
  475   cwd=ctx.deps.cwd,               # SAME as parent
  476   harness_home=ctx.deps.harness_home,
@@ -71,38 +71,38 @@ So today's fan-out = N concurrent *readers*, ONE Workspace. Not N isolated jobs.
 
 ## Current model vs. the target
 
-```
+```console
  TODAY — one sandbox per harness process
- ┌──────────────────────────── harness process ────────────────────────────┐
- │                                                                          │
+ ┌──────────────────────────── harness process ──────────────────────────────┐
+ │                                                                           │
  │   agent loop ──▶ bash / files / lsp ──▶ _get_executor()  (module global) │
- │                                              │                           │
- │                                              ▼                           │
+ │                                              │                            │
+ │                                              ▼                            │
  │                                    ONE SandboxExecutor                    │
- │                                              │                           │
- │                                              ▼                           │
+ │                                              │                            │
+ │                                              ▼                            │
  │                                   ONE Workspace  (.decode/sandbox)        │
- │                                              │                           │
- │                                              ▼                           │
+ │                                              │                            │
+ │                                              ▼                            │
  │                                   ONE container / remote sandbox          │
- └──────────────────────────────────────────────────────────────────────────┘
+ └───────────────────────────────────────────────────────────────────────────┘
 
 
  TARGET — one harness, N isolated jobs
- ┌──────────────────────────── harness process ────────────────────────────┐
- │                          orchestrator / gather                            │
- │            ┌───────────────────┼───────────────────┐                     │
- │            ▼                   ▼                   ▼                      │
- │        job A deps          job B deps          job C deps                 │
- │      (own executor)      (own executor)      (own executor)               │
- │            │                   │                   │                      │
- │            ▼                   ▼                   ▼                      │
- │      Workspace A           Workspace B          Workspace C               │
- │   .decode/sandbox/A     .decode/sandbox/B     .decode/sandbox/C           │
- │            │                   │                   │                      │
- │            ▼                   ▼                   ▼                      │
- │      container A           container B          container C               │
- └──────────────────────────────────────────────────────────────────────────┘
+ ┌──────────────────────────────── harness process ──────────────────────────┐
+ │                              orchestrator / gather                        │
+ │                ┌───────────────────┼───────────────────┐                  │
+ │                ▼                   ▼                   ▼                  │
+ │            job A deps          job B deps          job C deps             │
+ │          (own executor)      (own executor)      (own executor)           │
+ │                │                   │                   │                  │
+ │                ▼                   ▼                   ▼                  │
+ │          Workspace A           Workspace B          Workspace C           │
+ │       .decode/sandbox/A     .decode/sandbox/B     .decode/sandbox/C       │
+ │                │                   │                   │                  │
+ │                ▼                   ▼                   ▼                  │
+ │          container A           container B          container C           │
+ └───────────────────────────────────────────────────────────────────────────┘
 ```
 
 The gap between the two pictures is precisely blockers 1–2: move the executor off the module global
@@ -116,7 +116,7 @@ Each `decode run` is already a self-contained durable flow execution (`runtime/f
 `run_agent_task`) that spins up **its own** sandbox and Workspace clone. Parallelizing = one
 controller submitting N executions and gathering results. No sandbox refactor at all.
 
-```
+```console
                         ┌─────────────────────────┐
                         │   controller / harness  │
                         │   (submit + gather)     │
@@ -141,7 +141,9 @@ On a remote stack this is two nested Modal-App layers already (`runtime/modal_ap
 `decode-<env>` for the flow containers, `decode-sandbox-<env>` for the bash sandboxes each flow
 spawns inside itself.
 
-**Pros**
+<!-- markdownlint-disable MD024 -->
+### Pros
+<!-- markdownlint-enable MD024 -->
 
 - **Zero sandbox refactor** — the isolation, per-job Workspace, and clone are already there.
 - **Durability for free** — each job checkpoints, so a crash replays finished turns (`flow.py:325`);
@@ -151,7 +153,9 @@ spawns inside itself.
 - **Scales past one machine** — remote stack fans out to Modal; not bounded by one host's cores/RAM.
 - **HITL, hand-back, secrets already wired** per execution (`flow.py:190`, ADR-0016).
 
-**Cons**
+<!-- markdownlint-disable MD024 -->
+### Cons
+<!-- markdownlint-enable MD024 -->
 
 - **No shared in-process state** — jobs cannot share a warm model client, an in-memory cache, or a
   Python object graph. Coordination is out-of-band (artifacts, the Kitaru store).
@@ -174,7 +178,7 @@ live), give each job a distinct Workspace dir, then `gather` N agent runs in one
 
 ### Sketch of the change
 
-```
+```python
 # tools/exec.py / agent/deps.py — carry the executor as per-job state
 @dataclass
 class AgentDeps:
@@ -196,27 +200,29 @@ def workspace_dir(harness_home: Path, job_id: str) -> Path:
 
 ### How a run looks
 
-```
+```console
   one asyncio event loop
   ────────────────────────────────────────────────────────────
    gather([ run(job A), run(job B), run(job C) ])
-        │            │            │
-        ▼            ▼            ▼
-   deps.executor  deps.executor  deps.executor     ← three distinct instances
-        │            │            │
-        ▼            ▼            ▼
-   Workspace/A    Workspace/B    Workspace/C        ← distinct paths, no collision
-        │            │            │
-        ▼            ▼            ▼
-   container A    container B    container C         ← "not safe concurrent on ONE
-                                                        instance" holds: each job has
-                                                        its own instance, serial inside
+              │            │            │
+              ▼            ▼            ▼
+         deps.executor  deps.executor  deps.executor     ← three distinct instances
+              │            │            │
+              ▼            ▼            ▼
+         Workspace/A    Workspace/B    Workspace/C        ← distinct paths, no collision
+              │            │            │
+              ▼            ▼            ▼
+         container A    container B    container C         ← "not safe concurrent on ONE
+                                                              instance" holds: each job has
+                                                              its own instance, serial inside
 ```
 
 The concurrency machinery is already proven in `agent.py` — per-loop semaphore, `gather`, fresh deps
 per child. The change is *which executor* those children reach: their own, not the shared global.
 
-**Pros**
+<!-- markdownlint-disable MD024 -->
+### Pros
+<!-- markdownlint-enable MD024 -->
 
 - **Fine-grained** — parallelism inside one run. One agent can fork N workers over N sandboxes and
   merge them in-process (the true "single harness, multiple jobs" ask).
@@ -226,7 +232,9 @@ per child. The change is *which executor* those children reach: their own, not t
 - **Cleaner architecture regardless** — hanging the executor on `AgentDeps` removes a module global
   that already complicates tests (`reset_executor`, `close_executor`) and the eval harness.
 
-**Cons**
+<!-- markdownlint-disable MD024 -->
+### Cons
+<!-- markdownlint-enable MD024 -->
 
 - **You own isolation and crash-recovery** — no checkpoints/replay; if the process dies, all N jobs
   die with it. Everything Kitaru gives for free you rebuild or forgo.

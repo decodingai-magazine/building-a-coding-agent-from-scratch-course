@@ -29,6 +29,7 @@ If you are looking at packages like `@anthropic-ai/sandbox-runtime` or building 
 1. **Configuration:** The Node app defines a strict policy (e.g., "Allow read/write only in `./workspace`, block network access").
 2. **Detection:** The app detects the host OS. If it is macOS, it generates a Seatbelt profile. If it is Linux, it builds an array of `bwrap` arguments.
 3. **Execution:** Node's `child_process.spawn()` is used to execute the command, but instead of running `bash script.sh` directly, it wraps it:
+
 * *macOS:* `spawn('sandbox-exec', ['-f', 'profile.sb', 'bash', 'script.sh'])`
 * *Linux:* `spawn('bwrap', ['--ro-bind', '/', '/', '--bind', './workspace', './workspace', 'bash', 'script.sh'])`
 

@@ -222,7 +222,7 @@ credentials-proxy surface is recorded as least-exampled (verify-first).
    > the concept:
    >
    > | Was | Is |
-   > |---|---|
+   > | --- | --- |
    > | `RUNTIME_CREDENTIALS_PROXY_ENABLED` / `runtime_credentials_proxy_enabled` | `RUNTIME_SECRET_STORE_MODEL_KEY` / `runtime_secret_store_model_key` |
    > | `resolve_provider_key_via_proxy()` | `resolve_provider_key_from_secret_store()` |
    > | `PROXY_SECRET_KEY` | `SECRET_STORE_KEY` |
@@ -288,7 +288,7 @@ flowchart TB
     end
 
     subgraph headless["HEADLESS path (NEW: src/decode/runtime/)"]
-        run["decode run \"task\"  /  deployed endpoint  /  MCP run"]
+        run["decode run 'task'  /  deployed endpoint  /  MCP run"]
         flow["@flow run_agent_task(task)"]
         kagent["KitaruAgent(build_agent's Agent)<br/>checkpoints per model/tool call (per-turn if streaming)"]
         waitb["resolve_user_question → kitaru.wait()<br/>(ask_user + permission approvals + sleep-timeout)"]
@@ -356,7 +356,7 @@ flowchart TB
   "Credentials Proxy" term), and the runtime settings (`runtime_enabled`,
   `runtime_checkpoint_strategy`, `runtime_wait_timeout_s`, `runtime_secret_store_model_key`,
   `runtime_secret_name`, and `runtime_secret_store_config` added in task 064) in `config/settings.py`
-  + `.env.example`
+  - `.env.example`
   — the glossary applied at the plan gate, the settings landed in task 057 ahead of their readers (the
   LSP/compaction settings-first pattern). The Kitaru stack is selected by `kitaru init` / Kitaru's own
   config, not a decode setting.

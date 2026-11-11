@@ -36,7 +36,7 @@ because the token is not in its environment, its filesystem, or its memory.*
 ## Scope — where it applied
 
 | Axis | Value |
-|---|---|
+| --- | --- |
 | Surface | **Headless only** (`decode run` / `decode replay`). The REPL never built it — that is what kept bare `decode` from importing kitaru. |
 | Sandbox mode | **`docker` only.** `modal` never had it (no docker network to hang a proxy container off) — it direct-injected the token instead ([ADR-0012 §10](../adr/0012-isolated-workspace.md)). `none` is the host, so nothing to protect. |
 | Default | **Off.** `DEFAULT_PROXY_RULES` shipped **empty**; an empty credential map is a passthrough proxy that injects nothing. |
@@ -88,7 +88,7 @@ holds nothing.
 **Inputs** (all host-side):
 
 | Input | Where from | Role |
-|---|---|---|
+| --- | --- | --- |
 | `SANDBOX_MODE=docker` | `Settings` | Gate. Anything else = no proxy. |
 | `SANDBOX_CREDENTIAL_PROXY_ENABLED` | `Settings` (bool, default `false`) | Explicit opt-in for the rules path. |
 | `SANDBOX_GIT_TOKEN` | `Settings` (`SecretStr`) | The one-knob GitHub shortcut — a non-empty value **auto-engaged** the proxy. |
@@ -113,7 +113,7 @@ parent-matches `api.github.com`.
 **Outputs** (what `_sandbox_proxy()` produced for the rest of the flow):
 
 | Output | Consumer |
-|---|---|
+| --- | --- |
 | `proxy.network` — `decode-sandbox-net-<uuid12>` | `DockerBackend(network=…)` — the Worker joins it. |
 | `proxy.worker_proxy_env` — `http_proxy`/`https_proxy`/`HTTP_PROXY`/`HTTPS_PROXY` = `http://decode-proxy-<uuid12>:8080`, `no_proxy=localhost,127.0.0.1`, **`GH_TOKEN=<decoy>`** | `DockerBackend(proxy_env=…)` — `-e` flags on the Worker's `docker run`. Carries **no secret**. |
 | `proxy.ca_cert_host_path` — the mitmproxy CA in a host temp dir | `DockerBackend(ca_cert_host_path=…)` — bind-mounted read-only into the Worker, then trusted. |
@@ -195,7 +195,7 @@ the listen port answered** (20s budget, probed with a `python3` socket connect i
 
 ## Lifecycle and teardown order
 
-```
+```console
 _sandbox_proxy(repo, local):                       # runtime/flow.py, wraps the whole flow body
     gate: sandbox_mode == "docker" and (flag or SANDBOX_GIT_TOKEN)   # else pure no-op, imports nothing
     rules  = github_token_rules(token) + DEFAULT_PROXY_RULES

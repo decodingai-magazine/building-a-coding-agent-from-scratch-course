@@ -79,7 +79,7 @@ REPL and its JSONL log are untouched (headless-only); `runtime/` stays the isola
    10s minimum deadline. (openrouter/modal share the latent issue under `"calls"` and would need the same
    client wired through their `AsyncOpenAI` — `factory.py`.) Task 068's `.wait()` repair still lands: bypass `.wait()` return-extraction breaks
    under `"calls"`, so the flow adopts the shipped HITL fix (terminal `@checkpoint _capture_runtime_output`
-   + `_load_runtime_output` reader; the CLI reads the artifact, not `.wait().output`) — which HITL (always
+   - `_load_runtime_output` reader; the CLI reads the artifact, not `.wait().output`) — which HITL (always
    `"calls"`) and the bypass `"calls"` path both need. *(History: 068 flipped `"turn" → "calls"`; a real
    multi-turn `decode run` then surfaced the cross-loop event-loop crash; rather than retreat to `"turn"`,
    decode made `"calls"` loop-safe via the keep-alive-free flow client, keeping the granular default.)*

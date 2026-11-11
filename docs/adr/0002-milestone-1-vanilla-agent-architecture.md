@@ -78,7 +78,7 @@ sequenceDiagram
     A->>M: model request (stream)
     M-->>A: text deltas + tool_use
     A-->>H: DeferredToolRequests (gate BEFORE exec)
-    Note over H: drain steering here<br/>(append user msg before resume)
+    Note over H: drain steering here<br>append user msg before resume
     H->>G: check(tool, args)
     G->>T: approve? / AskUser question
     U->>T: allow / deny / answer
@@ -90,7 +90,7 @@ sequenceDiagram
     M-->>A: final text (no tool_use)
     A-->>H: turn done
     H->>T: stream answer
-    Note over H: drain follow-up? else idle;<br/>persist new_messages to session log
+    Note over H: drain follow-up? else idle<br>persist new_messages to session log
 ```
 
 ## Decision
