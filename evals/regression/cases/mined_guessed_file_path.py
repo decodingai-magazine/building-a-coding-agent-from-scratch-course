@@ -1,9 +1,11 @@
 """Case 22 (MINED) — a file is opened at a path the tree really holds, not a guessed one (ADR-0022 §8).
 
-Mined from the LIVE ``decode-prod`` project on 2026-09-11 (``evals/regression/mining/``): signature
+Originally mined from the ``decode-prod`` project on 2026-09-11, before the Langfuse migration
+(``evals/regression/mining/``): signature
 ``long | - | bash | -``, trace ``01a08614-aaf4-752a-857a-209f2ca411c9`` (thread
-``69b1d5ef-b0b7-4788-9488-3d1870241ae3``, tagged ``regression-case`` in Opik) — and the SAME behavior
+``69b1d5ef-b0b7-4788-9488-3d1870241ae3``) — and the SAME behavior
 in its sibling ``01a0861b-799c-7833-b78f-e8595294bc36``, two runs out of two.
+These IDs are retained as provenance; historical Opik traces are not imported.
 
 **What the traces show.** Asked to *"add a hello line to README"*, both runs opened with
 ``read(path="README")`` — a path neither tree holds (the file is ``README.md``). The tool span carries

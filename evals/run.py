@@ -1,9 +1,8 @@
 """The ``python -m evals`` CLI body — a Click group with the eval tracks as subcommands (ADR-0017).
 
-``benchmark`` runs the outcome benchmark (ADR-0022 §1); ``regression`` runs the behavior cases
-host-native (§8); ``suite`` runs the same cases against their natural-language assertions; ``mine``
-searches the live project for regressions worth a case; ``sync`` upserts the Opik surfaces. Deliberately imports no ``opik`` at module scope — the Opik harness is
-pulled in lazily by the tracks that need it, so building the CLI never needs keys or a network.
+``benchmark`` runs the outcome benchmark; ``regression`` runs the behavior cases host-native;
+``suite`` runs natural-language assertions; ``mine`` searches live traces; ``sync`` updates datasets.
+Langfuse and its evaluation harness are imported lazily so CLI help never needs keys or a network.
 """
 
 from __future__ import annotations
@@ -16,47 +15,35 @@ import click
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-# Opik HTTP statuses that mean "your credential was rejected" (a present-but-invalid OPIK_API_KEY).
-_OPIK_AUTH_STATUSES = frozenset({401, 403})
+_LANGFUSE_AUTH_STATUSES = frozenset({401, 403})
 
 
-def _opik_error_as_click(exc: Exception) -> click.ClickException:
-    """Turn a raw Opik REST ``ApiError`` into ONE friendly CLI line (ADR-0017 §9; task 121).
-
-    A present-but-invalid ``OPIK_API_KEY`` otherwise dumps a ~40-line ``ApiError`` traceback (HTTP
-    headers and all) from ``make eval-regression-dataset`` — the ritual the docs tell every developer to
-    type. An auth status (401/403) names the key exactly as the missing-key guard does; any other
-    Opik failure still collapses to a single line naming the status. No secret is ever echoed.
-    """
+def _langfuse_error_as_click(exc: Exception) -> click.ClickException:
+    """Turn a Langfuse SDK failure into one safe, actionable CLI line."""
     status = getattr(exc, "status_code", None)
-    if status in _OPIK_AUTH_STATUSES:
+    if status in _LANGFUSE_AUTH_STATUSES:
         message = (
-            f"Opik rejected the API key ({status}) — check OPIK_API_KEY "
-            "(see the Evals block in .env.example)."
+            f"Langfuse rejected the API keys ({status}) — check LANGFUSE_PUBLIC_KEY and "
+            "LANGFUSE_SECRET_KEY (see the Evals block in .env.example)."
         )
     else:
         detail = f" ({status})" if status is not None else ""
         message = (
-            f"Opik request failed{detail} — check OPIK_API_KEY and your Opik workspace "
+            f"Langfuse request failed{detail} — check Langfuse credentials and project "
             "(see the Evals block in .env.example)."
         )
     return click.ClickException(f"evals: {message}")
 
 
 @contextmanager
-def opik_boundary() -> Iterator[None]:
-    """Translate a raw Opik ``ApiError`` raised inside the block into a friendly ``ClickException``.
-
-    Wraps each opik-reaching command body so a wrong key exits like a missing one — one line,
-    non-zero, no traceback. ``opik`` is imported lazily here (not at module scope) so the CLI stays
-    opik-free at build time and ``--help`` never needs keys or a network (ADR-0017 §1).
-    """
-    from opik.rest_api.core.api_error import ApiError
-
+def langfuse_boundary() -> Iterator[None]:
+    """Translate Langfuse API exceptions without leaking response bodies or credentials."""
     try:
         yield
-    except ApiError as exc:
-        raise _opik_error_as_click(exc) from exc
+    except Exception as exc:
+        if not type(exc).__module__.startswith("langfuse."):
+            raise
+        raise _langfuse_error_as_click(exc) from exc
 
 
 def _validate_job_name(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
@@ -64,8 +51,8 @@ def _validate_job_name(ctx: click.Context, param: click.Parameter, value: str | 
 
     The harness owns the rule (``evals.harness.benchmark.validate_job_name``) because every caller
     of ``new_job_dir`` must obey it; this callback only re-dresses it as the same one-line
-    ``Invalid value for '--job-name'`` the other flags produce. Imported lazily so ``--help``, which
-    exits before non-eager callbacks run, still pulls in no ``opik`` (ADR-0017 §1).
+    ``Invalid value for '--job-name'`` the other flags produce. Imported lazily so ``--help``
+    remains network- and credential-free.
     """
     if value is None:
         return None
@@ -75,6 +62,17 @@ def _validate_job_name(ctx: click.Context, param: click.Parameter, value: str | 
         return validate_job_name(value)
     except ValueError as exc:
         raise click.BadParameter(str(exc), ctx=ctx, param=param) from exc
+
+
+def _echo_langfuse_reporting(track: str, reported: int | None) -> None:
+    """Make whether Langfuse received evaluation scores visible in the CLI."""
+    if reported is None:
+        click.echo(
+            f"evals {track}: Langfuse score reporting skipped — configure "
+            "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY."
+        )
+    else:
+        click.echo(f"evals {track}: reported {reported} score(s) to Langfuse.")
 
 
 @click.group()
@@ -107,19 +105,19 @@ def cli() -> None:
     type=click.IntRange(min=1),
     default=1,
     show_default=True,
-    help="Trials per task (Opik trial_count) — the pass@k / pass^k / flakiness axis.",
+    help="Trials per task — the pass@k / pass^k / flakiness axis.",
 )
 @click.option(
     "--threads",
     type=click.IntRange(min=1),
     default=None,
-    help="Trials to run at once (Opik task_threads) [default: 1 for docker, 4 for modal].",
+    help="Trials to run at once [default: 1 for docker, 4 for modal].",
 )
 @click.option(
     "--job-name",
     default=None,
     callback=_validate_job_name,
-    help="Name the job: the Opik experiment AND the Trial Dir parent [default: bench-<UTC stamp>].",
+    help="Name the job: the Langfuse experiment and Trial Dir parent [default: bench-<UTC stamp>].",
 )
 @click.option(
     "--model",
@@ -135,7 +133,7 @@ def benchmark(
     job_name: str | None,
     model: str | None,
 ) -> None:
-    """Run the outcome benchmark as one Opik Experiment (ADR-0022 §1,§3,§6).
+    """Run the outcome benchmark as one Langfuse experiment (ADR-0022 §1,§3,§6).
 
     Each selected task runs ``--trials`` Benchmark Trials: a subprocess ``decode run`` against a
     fresh Seed Repo with ``SANDBOX_MODE=--sandbox``, graded host-side by the hidden ``tests/test.sh``
@@ -144,20 +142,21 @@ def benchmark(
     / pass^k / flakiness / cost ride ``experiment_scoring_functions`` onto the experiment row and are
     printed here as a Rich table with per-tier rollups, followed by one spend line — the job's wall
     clock, summed agent-run seconds and summed tokens, the raw axes a $/hour or a $/Mtok price
-    multiplies (ADR-0022 Amendment §14). Opik + the harness are imported lazily so ``--help`` never
+    multiplies (ADR-0022 Amendment §14). Langfuse + the harness are imported lazily so ``--help`` never
     needs keys or a network (ADR-0017 §1).
     """
     from rich.console import Console
 
     from evals.harness.aggregates import render_spend_line, render_summary_table
     from evals.harness.benchmark import BenchmarkSelectionError, run_benchmark, summarize
+    from evals.harness.langfuse_reporting import report_benchmark_scores
 
     # One ``--task`` stays a plain id (the common spelling); several become the subset.
     task_id: str | tuple[str, ...] | None = (
         None if not task_ids else task_ids[0] if len(task_ids) == 1 else task_ids
     )
     try:
-        with opik_boundary():
+        with langfuse_boundary():
             run = run_benchmark(
                 task_id=task_id,
                 difficulty=difficulty,
@@ -177,10 +176,11 @@ def benchmark(
         f"evals benchmark: experiment {run.experiment_name} logged under "
         f"{settings_project_name()}; trial dirs in {run.job_dir}."
     )
+    _echo_langfuse_reporting("benchmark", report_benchmark_scores(run.result))
 
 
 def settings_project_name() -> str:
-    """The Opik project eval runs log under — read lazily so the CLI stays opik/settings-light."""
+    """The Langfuse project eval runs log under; read lazily so CLI help stays credential-free."""
     from decode.config.settings import settings
 
     return settings.eval_project_name
@@ -195,23 +195,25 @@ def settings_project_name() -> str:
     help="Run only the cases of this difficulty tier.",
 )
 def regression(case_id: str | None, difficulty: str | None) -> None:
-    """Run the behavior Regression Cases host-native as an Opik experiment (ADR-0022 §8).
+    """Run the behavior Regression Cases host-native as a Langfuse experiment (ADR-0022 §8).
 
     Each selected case seeds a fresh temp Workspace, runs the real agent HOST-NATIVE (``none`` mode —
     no docker) under the case's gate policy, and scores its behavior with the case's deterministic
     metrics. ``--difficulty`` slices the run to one tier and names the experiment after it
-    (``decode-regression-gate-hard``), so a tier's baseline stays its own. Opik + the harness are
+    (``decode-regression-gate-hard``), so a tier's baseline stays its own. Langfuse + the harness are
     imported lazily so ``--help`` never needs keys or a network (ADR-0017 §1).
     """
+    from evals.harness.langfuse_reporting import report_regression_scores
     from evals.harness.regression import RegressionSelectionError, run_regression
 
     try:
-        with opik_boundary():
-            run_regression(case_id=case_id, difficulty=difficulty)
+        with langfuse_boundary():
+            result = run_regression(case_id=case_id, difficulty=difficulty)
     except RegressionSelectionError as exc:
         raise click.ClickException(str(exc)) from exc
 
     click.echo(f"evals regression: experiment logged under {settings_project_name()}.")
+    _echo_langfuse_reporting("regression", report_regression_scores(result))
 
 
 @cli.command()
@@ -223,16 +225,17 @@ def regression(case_id: str | None, difficulty: str | None) -> None:
     help="Run only the cases of this difficulty tier.",
 )
 def suite(case_id: str | None, difficulty: str | None) -> None:
-    """Run the Opik Test Suite regression surface — natural-language assertions (ADR-0022 §8).
+    """Run the Langfuse experiment regression surface — natural-language assertions (ADR-0022 §8).
 
     The CONTRAST to ``regression``: the same cases, graded by an LLM judge against each case's
     ``assertion`` (plus the suite's global bars) instead of deterministic metrics, gated on the run's
-    ``pass_rate``. Since ``run_tests`` has no per-item filter, ``decode-regression-suite`` is first
-    reconciled to exactly the selected cases — Opik versions it on every change, and the line below
-    names the version the run billed. Opik + the
+    ``pass_rate``. ``decode-regression-suite`` is first reconciled to exactly the selected cases;
+    its checksum version is included in experiment metadata and the line below names the run.
+    Langfuse + the
     harness are imported lazily so ``--help`` never needs keys or a network (ADR-0017 §1).
     """
     from evals.harness.datasets import REGRESSION_SUITE_NAME
+    from evals.harness.langfuse_reporting import report_suite_scores
     from evals.harness.test_suite import (
         SUITE_PASS_BAR,
         SuiteJudgeRouteError,
@@ -243,7 +246,7 @@ def suite(case_id: str | None, difficulty: str | None) -> None:
     )
 
     try:
-        with opik_boundary():
+        with langfuse_boundary():
             run = run_test_suite(case_id=case_id, difficulty=difficulty)
     except (SuiteSelectionError, SuiteJudgeRouteError) as exc:
         raise click.ClickException(str(exc)) from exc
@@ -252,6 +255,14 @@ def suite(case_id: str | None, difficulty: str | None) -> None:
     click.echo(
         f"evals suite: {REGRESSION_SUITE_NAME} {run.suite_version} pass rate {pass_rate:.0%} (bar {SUITE_PASS_BAR:.0%}), "
         f"logged under {settings_project_name()}; report in {run.report_path}."
+    )
+    _echo_langfuse_reporting(
+        "suite",
+        report_suite_scores(
+            run.session_ids,
+            pass_rate=pass_rate,
+            suite_version=run.suite_version,
+        ),
     )
     try:
         assert_pass_rate(pass_rate)
@@ -283,11 +294,11 @@ def suite(case_id: str | None, difficulty: str | None) -> None:
 def mine(preset: str, since: str | None, limit: int, as_json: bool) -> None:
     """Mine the LIVE project for regressions worth turning into cases (ADR-0022 §8).
 
-    Searches the live Opik project (never `EVAL_PROJECT_NAME`) with the preset's filter, clusters
+    Searches live Langfuse observations (never `EVAL_PROJECT_NAME`), clusters
     every hit by its Signature — (preset, error, last tool, model) — and prints one table per
     signature with the trace ids to pick from; `--json` emits the same groups, uncapped, for task
-    164's case authoring. Read-only, so it skips friendly (no error) without `OPIK_API_KEY` alone;
-    Opik + the harness are imported lazily so `--help` never needs keys or a network (ADR-0017 §1).
+    164's case authoring. Read-only, so it skips without inference-provider credentials;
+    Langfuse + the harness are imported lazily so `--help` never needs keys or a network (ADR-0017 §1).
     """
     from evals.harness.keys import eval_keys_missing
     from evals.harness.mine import (
@@ -298,7 +309,7 @@ def mine(preset: str, since: str | None, limit: int, as_json: bool) -> None:
         render_group_table,
     )
 
-    # Opik-only: mining is a read-only trace query, never an inference call.
+    # Mining is a read-only trace query, never an inference call.
     missing = eval_keys_missing(require_provider=False)
     if missing:
         click.echo("evals mine: skipped — set " + ", ".join(missing) + " to search live traces.")
@@ -307,7 +318,7 @@ def mine(preset: str, since: str | None, limit: int, as_json: bool) -> None:
     from evals.harness.mine import mine as mine_traces
 
     try:
-        with opik_boundary():
+        with langfuse_boundary():
             source = open_source()
             groups = mine_traces(source, preset=preset, since=since, limit=limit)
     except MineError as exc:
@@ -337,7 +348,7 @@ def mine(preset: str, since: str | None, limit: int, as_json: bool) -> None:
     "benchmark",
     default=True,
     show_default=True,
-    help="Sync the benchmark tasks into the decode-benchmark Opik dataset.",
+    help="Sync the benchmark tasks into the decode-benchmark Langfuse dataset.",
 )
 @click.option(
     "--regression/--no-regression",
@@ -353,7 +364,7 @@ def mine(preset: str, since: str | None, limit: int, as_json: bool) -> None:
     help="Sync only the tasks / cases of this difficulty tier.",
 )
 def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
-    """Upsert the eval tracks' Opik surfaces (ADR-0022 §6,8).
+    """Upsert the eval tracks' Langfuse datasets (ADR-0022 §6,8).
 
     ``--benchmark`` loads ``evals/benchmark/tasks/`` into ``decode-benchmark``; ``--regression``
     loads the case registry into BOTH regression surfaces from one pass — the ``decode-regression``
@@ -361,16 +372,16 @@ def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
     natural-language assertions are judged in, reconciled to exactly the synced cases so an edit
     replaces its stale item instead of adding a second (both on by default, and the line below names
     the suite version it left). A skip-guarded case stays in the registry but is
-    not registered: the Opik surfaces carry what actually runs. ``--difficulty`` slices the upsert to
+    not registered: Langfuse datasets carry what actually runs. ``--difficulty`` slices the upsert to
     one tier, so ``make eval-regression-dataset ARGS='--difficulty hard'`` syncs and gates the same eight
-    cases. Opik is imported lazily here (not at CLI build time) so ``--help`` never needs keys or a
+    cases. Langfuse is imported lazily here (not at CLI build time) so ``--help`` never needs keys or a
     network.
     """
     if not benchmark and not regression:
         click.echo("evals sync: nothing selected (pass --benchmark and/or --regression).")
         return
 
-    # Lazy import: keeps the CLI module opik-free at import time (ADR-0017 §1).
+    # Lazy import: keeps the CLI module credential-free at import time (ADR-0017 §1).
     from evals.harness.datasets import (
         BENCHMARK_DATASET_NAME,
         REGRESSION_DATASET_NAME,
@@ -379,7 +390,7 @@ def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
         sync_regression_cases,
     )
 
-    with opik_boundary():
+    with langfuse_boundary():
         if benchmark:
             from evals.harness.benchmark import select_tasks
             from evals.harness.task_loader import load_benchmark_tasks
@@ -404,7 +415,7 @@ def sync(benchmark: bool, regression: bool, difficulty: str | None) -> None:
 
 @cli.group("kitaru")
 def kitaru() -> None:
-    """Join decode's Opik traces to Kitaru Sessions (ADR-0022 §11).
+    """Join decode's Langfuse traces to Kitaru Sessions (ADR-0022 §11).
 
     Two thin commands over ONE join key, the decode session id: ``import`` backfills Sessions for
     traces decode never recorded, ``cohort from-experiment`` freezes a benchmark job's FAILING trials
@@ -436,7 +447,7 @@ def _kitaru_skip(command: str, purpose: str) -> bool:
 @click.option(
     "--project",
     default=None,
-    help="Opik project to read the traces from [default: the LIVE project].",
+    help="Langfuse project to read the traces from [default: the configured project].",
 )
 @click.option(
     "--limit",
@@ -446,7 +457,11 @@ def _kitaru_skip(command: str, purpose: str) -> bool:
 )
 @click.option("--agent", default="decode", show_default=True, help="Kitaru agent (NAME or NAME@N).")
 @click.option(
-    "--importer", "importer", default="opik", show_default=True, help="Importer (NAME or NAME@N)."
+    "--importer",
+    "importer",
+    default="langfuse@1",
+    show_default=True,
+    help="Importer (NAME or NAME@N).",
 )
 @click.option(
     "--tag", default="regression-case", show_default=True, help="Tag every imported Session."
@@ -467,15 +482,15 @@ def kitaru_import(
     tag: str,
     wait: bool,
 ) -> None:
-    """Backfill Kitaru Sessions from Opik traces (ADR-0022 §11).
+    """Backfill Kitaru Sessions from Langfuse traces (ADR-0022 §11).
 
     No trace id and no ``--thread`` = the whole project, newest thread first, capped by ``--limit``.
-    Each trace id is expanded to its whole THREAD — one decode session — fetched with the Opik SDK,
-    written as the ``opik`` importer's own envelope under ``.decode/kitaru-imports/<thread>.json``
+    Each trace id is expanded to its whole THREAD — one decode session — fetched from Langfuse,
+    written in the ``langfuse`` importer's envelope under ``.decode/kitaru-imports/<thread>.json``
     and handed to ``kitaru session import``. A thread Kitaru already has is skipped (matched on the
     importer's ``external_id``), so re-running costs one read. A live Worker must be claiming
     (``uv run kitaru worker start``) or ``--wait`` times out: the server executes nothing (ADR-0019).
-    Opik + kitaru are imported lazily so ``--help`` needs no keys and no network (ADR-0017 §1).
+    Langfuse + kitaru are imported lazily so ``--help`` needs no keys and no network (ADR-0017 §1).
     """
     if limit is not None and (trace_ids or threads):
         raise click.UsageError("--limit applies only when no trace id / --thread is given.")
@@ -492,7 +507,7 @@ def kitaru_import(
 
     server = kitaru_server()
     try:
-        with opik_boundary():
+        with langfuse_boundary():
             source = open_source(project)
             if not trace_ids and not threads:
                 threads = tuple(source.recent_threads(limit))
@@ -510,7 +525,7 @@ def kitaru_import(
         raise click.ClickException(f"evals kitaru import: {exc}") from exc
 
     if not outcomes:
-        click.echo("evals kitaru import: nothing to import (the Opik project has no threads).")
+        click.echo("evals kitaru import: nothing to import (the Langfuse project has no sessions).")
         return
     for outcome in outcomes:
         click.echo(format_outcome(outcome))
@@ -539,12 +554,12 @@ def kitaru_cohort() -> None:
 def kitaru_cohort_from_experiment(experiment_name: str, cohort_name: str, agent: str) -> None:
     """Freeze a benchmark job's FAILING trials into the next Cohort version (ADR-0022 §11).
 
-    Reads the Opik experiment's items, keeps the trials that scored 0 (a ``scoring_failed`` score and
+    Reads the Langfuse experiment's items, keeps the trials that scored 0 (an unscorable evaluation and
     an Infra Error are neither pass nor fail, so both are excluded), resolves each one's Kitaru
     Session by Session Name = the trial's decode ``session_id``, and adds the sessions the cohort
     does not already have. Refuses with ONE line when the experiment recorded no
     ``kitaru_agent_id`` or when no Session resolves — an empty or half-resolved cohort would make a
-    replay experiment lie. Opik + kitaru are imported lazily (ADR-0017 §1).
+    replay experiment lie. Langfuse + kitaru are imported lazily (ADR-0017 §1).
     """
     if _kitaru_skip("cohort", "freeze a cohort"):
         return
@@ -554,7 +569,7 @@ def kitaru_cohort_from_experiment(experiment_name: str, cohort_name: str, agent:
 
     server = kitaru_server()
     try:
-        with opik_boundary():
+        with langfuse_boundary():
             items, config = open_experiment(experiment_name)
             outcome = build_cohort(items, config, cohort=cohort_name, agent=agent, server=server)
     except (CohortError, KitaruCommandError) as exc:

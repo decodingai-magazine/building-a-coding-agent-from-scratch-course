@@ -19,7 +19,7 @@ echo 'DECODE_ENV=prod' >> .env      # or, this shell only:  export DECODE_ENV=pr
 
 ## 2. Create the `decode-headless-<env>` Secret
 
-The container has no `.env`: **its Secret is its whole config**. Pass every key on every create (a Secret is replaced, never patched), and never put `DECODE_ENV` in it (baked in at deploy; a Secret that disagrees is refused at startup). Pick your provider's block; it loads `.env` into the shell and copies the keys. Optional lines, empty reads as unset: `OPIK_API_KEY` (+ `OPIK_WORKSPACE`) traces every remote run under `decode-<env>`; `SANDBOX_GIT_TOKEN` (§4 table).
+The container has no `.env`: **its Secret is its whole config**. Pass every key on every create (a Secret is replaced, never patched), and never put `DECODE_ENV` in it (baked in at deploy; a Secret that disagrees is refused at startup). Pick your provider's block; it loads `.env` into the shell and copies the keys. Langfuse credentials enable remote tracing; leave them empty to disable it. `SANDBOX_GIT_TOKEN` is described in the §4 table.
 
 **Modal model** (`LLM_PROVIDER=modal`, [02](02_modal_endpoints.md); drop the two `MODAL_PROXY_TOKEN_*` lines if served `--unauthenticated`):
 
@@ -32,8 +32,9 @@ uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or expo
   MODAL_ENDPOINT_MODEL="${MODAL_ENDPOINT_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}" \
   MODAL_PROXY_TOKEN_ID="$MODAL_PROXY_TOKEN_ID" \
   MODAL_PROXY_TOKEN_SECRET="$MODAL_PROXY_TOKEN_SECRET" \
-  OPIK_API_KEY="$OPIK_API_KEY" \
-  OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
+  LANGFUSE_PUBLIC_KEY="${LANGFUSE_PUBLIC_KEY:-}" \
+  LANGFUSE_SECRET_KEY="${LANGFUSE_SECRET_KEY:-}" \
+  LANGFUSE_BASE_URL="${LANGFUSE_BASE_URL:-${LANGFUSE_HOST:-https://cloud.langfuse.com}}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 ```
 
@@ -46,8 +47,9 @@ uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or expo
   LLM_PROVIDER=gemini \
   GEMINI_API_KEY="$GEMINI_API_KEY" \
   GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.8-flash}" \
-  OPIK_API_KEY="$OPIK_API_KEY" \
-  OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
+  LANGFUSE_PUBLIC_KEY="${LANGFUSE_PUBLIC_KEY:-}" \
+  LANGFUSE_SECRET_KEY="${LANGFUSE_SECRET_KEY:-}" \
+  LANGFUSE_BASE_URL="${LANGFUSE_BASE_URL:-${LANGFUSE_HOST:-https://cloud.langfuse.com}}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 ```
 
@@ -60,8 +62,9 @@ uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or expo
   LLM_PROVIDER=openrouter \
   OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
   OPENROUTER_MODEL="${OPENROUTER_MODEL:-openrouter/free}" \
-  OPIK_API_KEY="$OPIK_API_KEY" \
-  OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
+  LANGFUSE_PUBLIC_KEY="${LANGFUSE_PUBLIC_KEY:-}" \
+  LANGFUSE_SECRET_KEY="${LANGFUSE_SECRET_KEY:-}" \
+  LANGFUSE_BASE_URL="${LANGFUSE_BASE_URL:-${LANGFUSE_HOST:-https://cloud.langfuse.com}}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 ```
 
@@ -204,7 +207,7 @@ Containers and nested sandboxes bill per run-second, nothing idle.
 | `Decode: Modal credentials are missing or rejected …`              | `uv run modal token set …`.                                                                   |
 | `Decode: set GEMINI_API_KEY in your environment` in the run's log  | the Secret lacks the provider key: re-create it (§2), then redeploy.                          |
 | `Decode: this deployment is DECODE_ENV=… but its Secret carries …` | remove `DECODE_ENV` from the Secret, or redeploy at the env the Secret names.                 |
-| Runs land in the wrong Opik project / sandbox app                  | `DECODE_ENV` at deploy names both; redeploy with the one you meant.                           |
+| Runs land in the wrong Langfuse project / sandbox app | use the Langfuse project keys intended for that environment and deploy with the matching `DECODE_ENV`. |
 | A remote run behaves like last week's code                         | `uv run decode remote deploy`.                                                                |
 | Attempts read `NOT SHIPPED`                                        | `none` mode discards its clone; `modal` mode needs a `SANDBOX_GIT_TOKEN` that can push there. |
 | Webhook `401` / `403`                                              | wrong or missing `Modal-Key` / `Modal-Secret`.                                                |
@@ -212,4 +215,4 @@ Containers and nested sandboxes bill per run-second, nothing idle.
 
 ---
 
-**Next:** [05_evals.md](05_evals.md) — measure whether a change made the agent better or worse, with Opik.
+**Next:** [05_evals.md](05_evals.md) — measure whether a change made the agent better or worse, with Langfuse.

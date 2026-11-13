@@ -1,6 +1,6 @@
 """Guard: no G-Eval judge may phrase its rubric as a numeric verdict (ADR-0017 §6,7; task 121).
 
-Task 114 proved with live Opik experiments that a criterion written as "Score 1.0 when … Score 0.0
+Task 114 proved with live eval runs that a criterion written as "Score 1.0 when … Score 0.0
 when …" collides with the judge's internal 0-10 scale and produces incoherent scores (a *perfect*
 answer scored 0.1). Cases 17/18/19
 carry the "Phrased qualitatively — NOT as 'Score 1.0/0.0'" comment. This test makes the ban
@@ -18,8 +18,7 @@ from __future__ import annotations
 
 import re
 
-from opik.evaluation.metrics import GEval
-
+from evals.harness.judges import LLMJudgeMetric
 from evals.regression.loader import load_cases
 
 # A numeric verdict anchor: the word "Score" immediately followed by a 0 or 1 (optionally decimal).
@@ -38,7 +37,7 @@ def test_no_regression_case_judge_uses_a_numeric_anchor():
     violations: list[str] = []
     for case in load_cases():
         for metric in case.metrics:
-            if not isinstance(metric, GEval):
+            if not isinstance(metric, LLMJudgeMetric):
                 continue
             for field in (metric.task_introduction, metric.evaluation_criteria):
                 if _NUMERIC_ANCHOR.search(field):

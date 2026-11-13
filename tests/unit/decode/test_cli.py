@@ -1087,7 +1087,7 @@ def test_cli_version_option_exists():
     result = CliRunner().invoke(cli, ["--version"])
     assert result.exit_code == 0
     assert "decode" in result.output
-    assert "0.1.0" in result.output
+    assert "0.2.0" in result.output
 
 
 def test_version_option_does_not_trigger_startups():

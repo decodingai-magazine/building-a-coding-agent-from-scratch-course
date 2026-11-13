@@ -1,15 +1,16 @@
-"""Offline unit tests for the custom Opik code metrics (ADR-0017 §4,7; task 104).
+"""Offline unit tests for the local code metrics (ADR-0017 §4,7; task 104).
 
 Every metric is scored against crafted inputs in BOTH outcomes plus a malformed / missing-field
 case, proving the contract from the task: a :class:`ScoreResult` with ``value`` in ``[0, 1]`` and a
 non-empty ``reason``, and a graceful ``0.0`` (never a raise) when the field the metric needs is
-absent or the wrong shape. No network, no keys, no Opik backend.
+absent or the wrong shape. No network or keys.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
-from opik.evaluation.metrics.score_result import ScoreResult
 from pydantic import BaseModel
 
 from evals.harness.driver import ToolCallRecord
@@ -23,12 +24,14 @@ from evals.harness.metrics import (
     NewFileNameMetric,
     OutputContainsMetric,
     RewardMetric,
+    ScoreResult,
     ToolArgsMetric,
     ToolArgsNeverMetric,
     ToolCalledMetric,
     ToolNotCalledMetric,
     ToolNotSucceededMetric,
 )
+from evals.harness.regression import mean_per_metric
 
 
 class _SampleSchema(BaseModel):
@@ -50,7 +53,7 @@ def _assert_well_formed(result: ScoreResult) -> None:
     assert result.reason
 
 
-# --- Hermeticity: metrics never phone Opik ---------------------------------------------------
+# --- Local metric contract ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -69,28 +72,8 @@ def _assert_well_formed(result: ScoreResult) -> None:
         JsonSchemaMetric(_SampleSchema),
     ],
 )
-def test_metrics_disable_opik_tracking(metric: object) -> None:
-    # track=False keeps score() from wrapping in opik.track(...), which would open a real outbound
-    # HTTPS round-trip to comet.com — breaking the "all tests offline" AC (ADR-0017 §9).
-    assert metric.track is False
-
-
-def test_metrics_never_install_the_opik_track_decorator(mocker) -> None:
-    # BaseMetric wraps score/ascore in opik.track(...) ONLY when track=True; that decorator is what
-    # flushes a span to comet.com. Patch it and prove constructing our metrics never reaches it —
-    # a direct, deterministic guard (the SDK flushes on a background thread, so watching sockets is
-    # not reliable).
-    track = mocker.patch("opik.track")
-
-    ToolCalledMetric("read")
-    ToolNotCalledMetric("write")
-    MaxStepsMetric()
-    DiffLinesMetric(max_lines=5)
-    FileDiffLinesMetric(path="config.py", baseline="PORT = 8000\n", max_lines=2)
-    OutputContainsMetric("broken.py")
-    ToolNotSucceededMetric("write")
-
-    track.assert_not_called()
+def test_metrics_use_the_local_score_contract(metric: object) -> None:
+    assert hasattr(metric, "score")
 
 
 # --- ToolCalledMetric ------------------------------------------------------------------------
@@ -204,7 +187,7 @@ def test_reward_metric_scores_a_lost_trial_with_its_reason() -> None:
 
 
 def test_reward_metric_marks_an_infra_error_as_scoring_failed() -> None:
-    """An Infra Error is excluded, not zeroed — Opik's own axis for "this was not measurable"."""
+    """An Infra Error is excluded, not zeroed — the trial was not measurable."""
     result = RewardMetric().score(
         status="infra_error", reward=None, reason="the Verifier timed out after 600s"
     )
@@ -222,43 +205,31 @@ def test_reward_metric_marks_a_missing_reward_as_scoring_failed() -> None:
 
 
 def test_reward_metric_is_graceful_on_a_missing_payload() -> None:
-    """Opik hands the metric whatever the task fn returned; a shapeless payload never raises."""
+    """A shapeless task payload never raises."""
     result = RewardMetric().score()
 
     assert result.value == 0.0
     assert result.scoring_failed is True
 
 
-def test_opik_excludes_a_failed_reward_from_the_aggregate() -> None:
-    """The ADR-0022 §4 rule, proven against the INSTALLED opik: a failed score is not a 0.
-
-    ``calculate_aggregated_statistics`` is what feeds Opik's per-experiment / per-item score view;
-    it skips ``scoring_failed`` results entirely, so an Infra Error leaves the mean of the two graded
-    trials at 0.5 rather than dragging it to 0.33.
-    """
-    from opik.evaluation.score_statistics import calculate_aggregated_statistics
-    from opik.evaluation.test_case import TestCase
-    from opik.evaluation.test_result import TestResult
-
+def test_local_aggregate_excludes_failed_reward_scores() -> None:
+    """Unmeasurable infra trials do not drag down the mean of graded results."""
     metric = RewardMetric()
     scores = [
-        metric.score(status="agent_ok", reward=1.0, reason=None),
-        metric.score(status="agent_fail", reward=0.0, reason="wrong answer"),
-        metric.score(status="infra_error", reward=None, reason="the sandbox did not start"),
-    ]
-    results = [
-        TestResult(
-            test_case=TestCase(trace_id=f"t{i}", dataset_item_id="item-1", task_output={}),
-            score_results=[score],
-            trial_id=i,
-        )
-        for i, score in enumerate(scores)
+        SimpleNamespace(score_results=[metric.score(status="agent_ok", reward=1.0, reason=None)]),
+        SimpleNamespace(
+            score_results=[metric.score(status="agent_fail", reward=0.0, reason="wrong answer")]
+        ),
+        SimpleNamespace(
+            score_results=[
+                metric.score(status="infra_error", reward=None, reason="the sandbox did not start")
+            ]
+        ),
     ]
 
-    aggregated = calculate_aggregated_statistics(results)
+    aggregated = mean_per_metric(scores)
 
-    assert aggregated["reward"].values == [1.0, 0.0]  # the infra trial is absent entirely
-    assert aggregated["reward"].mean == 0.5
+    assert [(score.name, score.value) for score in aggregated] == [("mean_reward", 0.5)]
 
 
 # --- DiffLinesMetric -------------------------------------------------------------------------
@@ -635,7 +606,7 @@ def test_answered_without_error_missing_output_scores_zero() -> None:
 
 
 def test_answered_without_error_an_infra_failure_is_unscorable_never_a_pass() -> None:
-    # A fixture/setup failure means the case never ran: Opik must DROP the score (RewardMetric's
+    # A fixture/setup failure means the case never ran: aggregation must DROP the score (RewardMetric's
     # rule), not read a None agent_error as a green run.
     result = AnsweredWithoutErrorMetric().score(
         output="", agent_error=None, infra_error="fixture raised: no such file"

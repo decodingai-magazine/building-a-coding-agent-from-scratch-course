@@ -1,9 +1,10 @@
 """Case 21 (MINED) — a run ends with an answer, not with three empty model responses (ADR-0022 §8).
 
-Mined from the LIVE ``decode-prod`` project on 2026-09-11 (``evals/regression/mining/``): signature
+Originally mined from the ``decode-prod`` project on 2026-09-11, before the Langfuse migration
+(``evals/regression/mining/``): signature
 ``errors | pydantic_ai.exceptions.UnexpectedModelBehavior | - | -``, trace
-``019f5cd5-7cfd-7498-b10e-3d62f6d776af`` (thread ``c72c45fb-a22a-4ed7-b5ac-06c80daf2e81``, tagged
-``regression-case`` in Opik so the online view links back here).
+``019f5cd5-7cfd-7498-b10e-3d62f6d776af`` (thread ``c72c45fb-a22a-4ed7-b5ac-06c80daf2e81``).
+These IDs are retained as provenance; historical Opik traces are not imported.
 
 **What the trace shows.** The user asked for one shell command and its output. Four ``chat
 gemini-2.5-flash`` spans fired back to back, each returning

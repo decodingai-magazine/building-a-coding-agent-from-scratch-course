@@ -22,7 +22,6 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from opik.evaluation.metrics import GEval
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.usage import RunUsage
 from support.eval_models import constant_text, echo_line, read_then_finish, write_then_finish
@@ -37,6 +36,7 @@ from decode.memory.service import assemble_memory
 from decode.permissions.gate import PermissionGate
 from decode.permissions.types import PermissionMode
 from decode.tools.askuser import deny_user_question_resolver
+from evals.harness.judges import LLMJudgeMetric
 from evals.harness.regression import run_case
 from evals.regression.case import RegressionCase
 from evals.regression.cases.compaction_survival import (
@@ -66,7 +66,7 @@ def _score_mechanical_metrics(case: RegressionCase, payload: dict[str, Any]) -> 
     """Every non-judge metric on ``case`` scores 1.0 against ``payload`` (judges are skipped)."""
     graded = 0
     for metric in case.metrics:
-        if isinstance(metric, GEval):
+        if isinstance(metric, LLMJudgeMetric):
             continue  # a judge needs a live LLM call — not scored offline
         result = metric.score(**payload)
         assert result.value == 1.0, (
@@ -268,7 +268,7 @@ def test_grounded_answer_fixture_seeds_the_source_doc(tmp_path: Path) -> None:
 
 
 def test_grounded_answer_carries_a_faithfulness_judge() -> None:
-    assert any(isinstance(m, GEval) for m in case_by_id("17-grounded-answer").metrics)
+    assert any(isinstance(m, LLMJudgeMetric) for m in case_by_id("17-grounded-answer").metrics)
 
 
 def test_grounded_answer_runs_offline_without_scoring_the_judge(install_model) -> None:
@@ -294,7 +294,9 @@ def test_no_hallucinated_files_fixture_omits_the_missing_file(tmp_path: Path) ->
 
 
 def test_no_hallucinated_files_carries_a_judge() -> None:
-    assert any(isinstance(m, GEval) for m in case_by_id("18-no-hallucinated-files").metrics)
+    assert any(
+        isinstance(m, LLMJudgeMetric) for m in case_by_id("18-no-hallucinated-files").metrics
+    )
 
 
 def test_no_hallucinated_files_runs_offline_without_scoring_the_judge(install_model) -> None:
@@ -325,7 +327,7 @@ def test_template_compliance_prompt_embeds_every_required_header() -> None:
 
 
 def test_template_compliance_carries_an_adherence_judge() -> None:
-    assert any(isinstance(m, GEval) for m in case_by_id("19-template-compliance").metrics)
+    assert any(isinstance(m, LLMJudgeMetric) for m in case_by_id("19-template-compliance").metrics)
 
 
 def test_template_compliance_runs_green_offline(install_model) -> None:
@@ -363,7 +365,7 @@ def test_json_contract_fixture_seeds_the_module(tmp_path: Path) -> None:
 def test_json_contract_binds_is_json_and_schema_metrics() -> None:
     names = {metric.name for metric in case_by_id("20-json-output-contract").metrics}
 
-    assert "is_json_metric" in names
+    assert "is_json" in names
     assert "json_matches_review_summary" in names
 
 

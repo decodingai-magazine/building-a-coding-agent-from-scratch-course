@@ -82,11 +82,11 @@ def test_a_blank_server_url_reads_as_unset(monkeypatch):
 
 
 def test_the_keyless_skip_names_both_halves_of_the_join(monkeypatch, mocker):
-    """A bridge command needs Opik (to read traces) AND a Kitaru Server (to write sessions)."""
+    """A bridge command needs Langfuse (to read traces) and a Kitaru Server (to write sessions)."""
     monkeypatch.delenv(KITARU_API_URL_ENV, raising=False)
-    mocker.patch.object(kitaru_cli, "eval_keys_missing", return_value=["OPIK_API_KEY"])
+    mocker.patch.object(kitaru_cli, "eval_keys_missing", return_value=["LANGFUSE_PUBLIC_KEY"])
 
-    assert kitaru_keys_missing() == ["OPIK_API_KEY", KITARU_API_URL_ENV]
+    assert kitaru_keys_missing() == ["LANGFUSE_PUBLIC_KEY", KITARU_API_URL_ENV]
 
 
 def test_nothing_is_missing_when_both_halves_resolve(monkeypatch, mocker):
@@ -217,19 +217,19 @@ def test_an_explicit_version_reference_is_passed_through_without_a_lookup(mocker
 
 
 def test_a_bare_name_resolves_to_the_latest_registered_version(mocker):
-    fake = install(mocker, {"ok": True, "item": {"name": "opik", "latest_version": 3}})
+    fake = install(mocker, {"ok": True, "item": {"name": "langfuse", "latest_version": 3}})
 
-    assert resolve_ref("importer", "opik", server=SERVER) == "opik@3"
+    assert resolve_ref("importer", "langfuse", server=SERVER) == "langfuse@3"
     assert fake.calls[0][:3] == ["kitaru", "importer", "get"]
 
 
 def test_a_name_with_no_version_yet_is_refused_with_one_line(mocker):
-    install(mocker, {"ok": True, "item": {"name": "opik", "latest_version": 0}})
+    install(mocker, {"ok": True, "item": {"name": "langfuse", "latest_version": 0}})
 
     with pytest.raises(KitaruCommandError) as error:
-        resolve_ref("importer", "opik", server=SERVER)
+        resolve_ref("importer", "langfuse", server=SERVER)
 
-    assert "opik" in str(error.value)
+    assert "langfuse" in str(error.value)
 
 
 def test_sessions_are_paged_to_exhaustion_so_a_cohort_is_never_short(mocker):

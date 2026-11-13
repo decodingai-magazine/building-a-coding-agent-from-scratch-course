@@ -19,7 +19,7 @@
 > uv run decode
 > ```
 >
-> Then type `/demo-` and pick a demo. See [what they do](#-see-it-work) below. [Full setup guide.](#-running-the-code)
+> Then type `/demo-` and pick a demo. [Full setup guide.](#-running-the-code)
 
 ## About This Repo
 
@@ -42,9 +42,21 @@ async with agent.iter(prompt, message_history=history) as run:
 
 That's the _entire_ tool-calling agent. Everything else in this repo (the tools, skills, permission layer, sandbox, steering queue, memory, compaction, session recording & replay, remote execution, subagent fan-out, and evals) **is the harness**.
 
-<p align="center">
-  <img src="assets/architecture.png" alt="Diagram of a coding agent harness: two interfaces (Interactive TUI with steering queue and priority gate; Remote Modal runtime running N headless harnesses via CLI, webhook, or cron) drive one Headless Harness made of a Context Window with compaction, an LLM-to-Tools Agent Loop, and six modules (LLM Providers, Memory, Skills, Sandbox, Permissions, LSP Server). An Evals and Observability layer (benchmarks, regressions, replays via Opik and Kitaru) sits underneath." width="620">
-</p>
+```mermaid
+flowchart LR
+    User --> TUI["Interactive TUI"]
+    Triggers["Modal CLI / webhook / cron"] --> Harness["Headless harness"]
+    TUI --> Harness
+    Harness --> Context["Context window + compaction"]
+    Context --> Agent["Pydantic AI agent loop"]
+    Agent <--> Tools["File, shell, web, and task tools"]
+    Tools --> Sandbox["Host / Docker / Modal workspace"]
+    Agent --> Providers["Gemini / OpenRouter / Modal"]
+    Harness <--> Langfuse["Langfuse: traces, datasets, experiments, scores"]
+    Harness <--> Kitaru["Kitaru: session recording and replay"]
+    Agent --> Memory["Memory, skills, permissions, LSP"]
+```
+
 <p align="center"><i>The harness architecture of the coding agent </i></p>
 
 ### Tech Stack
@@ -54,7 +66,7 @@ The code is written in Python, with the following frameworks and libraries:
 - **Agent Framework:** [Pydantic AI](https://ai.pydantic.dev)
 - **LLM Providers:** [Modal](https://modal.com/docs/guide/endpoints?source=decodingai&campaign=harnesseng) (open weights you serve yourself via SGLang), OpenRouter (open weights as a service), or Gemini (proprietary).
 - **Session Recording & Replays:** [Kitaru](https://www.zenml.io/product/kitaru?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=brand)
-- **Observability & Evals:** [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course)
+- **Tracing, eval orchestration, and trace mining:** [Langfuse](https://langfuse.com)
 - **Sandboxing:** local Docker & remote [Modal sandboxes](https://modal.com/docs/guide/sandboxes?source=decodingai&campaign=harnesseng)
 - **Deploying:** [Modal](https://modal.com/?source=decodingai&campaign=harnesseng) as headless agents (fired by hand, by cron, or by webhook)
 
@@ -66,12 +78,12 @@ Otherwise, we build all the functionality from scratch to teach you the foundati
 
 One Python package; each module maps to one part of the architecture:
 
-```
+```text
 .
 ├── docs/
 │   ├── adr/                  # Architecture Decision Records — the "why" of every choice
 │   └── glossary.md           # one canonical name per concept
-├── evals/                    # benchmark tasks + regression cases + the Opik harness
+├── evals/                    # benchmark tasks + regression cases + the Langfuse harness
 ├── scripts/                  # operator scripts: Kitaru bootstrap + eval table generation
 ├── tests/{unit,integration}/ # mirrors src/ 1:1; milestone capstones prove each milestone
 └── src/decode/
@@ -88,7 +100,7 @@ One Python package; each module maps to one part of the architecture:
     ├── remote/               # decode remote deploy|run|attempts|logs — the Modal Headless App (CLI, webhook, cron)
     ├── context/              # compaction + conversation log (JSONL)
     ├── memory/               # AGENTS.md / MEMORY.md loading + write-back
-    ├── observability/        # Opik tracing
+    ├── observability/        # Langfuse tracing + evaluation scores
     └── config/, entities/    # settings singleton · shared models
 ```
 
@@ -103,7 +115,7 @@ The guides live under [`running_the_code/`](running_the_code/). Follow them in o
 | [02_modal_endpoints.md](running_the_code/02_modal_endpoints.md)     | Serving open models on Modal                                       |
 | [03_sandboxing.md](running_the_code/03_sandboxing.md)               | Docker (local) / Modal (remote) sandboxing + the sandbox git token |
 | [04_deploy.md](running_the_code/04_deploy.md)                       | The headless harness on Modal — CLI, webhook, cron                 |
-| [05_evals.md](running_the_code/05_evals.md)                         | Benchmarks and regression cases on Opik                            |
+| [05_evals.md](running_the_code/05_evals.md)                         | Benchmarks and regression cases on Langfuse                        |
 | [06_evals_replays.md](running_the_code/06_evals_replays.md)         | Kitaru on your laptop: record, replay & the full evals loop        |
 
 ## Contributing

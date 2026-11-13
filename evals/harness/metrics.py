@@ -1,37 +1,50 @@
-"""Custom Opik code metrics for the eval harness (ADR-0017 §4,7; task 104).
-
-Every metric here subclasses :class:`opik.evaluation.metrics.base_metric.BaseMetric` and returns a
-:class:`~opik.evaluation.metrics.score_result.ScoreResult` — a ``value`` in ``[0, 1]`` plus a
-human-readable ``reason``. They grade the mechanical, code-decidable facts of a run (which tool was
-used, how many steps, how big the diff); anything a machine cannot
-score — quality, groundedness, minimal-diff judgement — is a G-Eval judge instead
-(``evals/harness/judges.py``).
-
-The inputs come from the task-fn output dict Opik hands each metric (built from an
-:class:`~evals.harness.driver.EvalRunRecord` plus the recorded verify result and diff, wired in task
-106) merged with the dataset item. Opik matches a metric's ``score`` parameter names against that
-dict; every parameter carries a default and every metric absorbs the rest through
-``**ignored_kwargs`` — so a missing or malformed field yields a graceful ``0.0`` with a reason,
-never a raise. The Opik built-ins (``Equals``, ``Contains``, ``IsJson``, ``RegexMatch``) are used
-directly where they fit and are deliberately NOT wrapped here.
-
-Every metric is constructed with ``track=False``: the ``BaseMetric`` default (``track=True``) wraps
-each ``score()`` in ``opik.track(...)``, which opens a real outbound HTTPS round-trip to comet.com —
-so the offline unit suite (and ``make ci``, ADR-0017 §9) would phone home. The eval-time span
-nesting comes from the enclosing ``evaluate()`` call, not from tracking each metric individually.
-"""
+"""Code-decidable evaluation metrics shared by the Langfuse eval tracks."""
 
 from __future__ import annotations
 
 import difflib
 import json
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import Any
 
-from opik.evaluation.metrics.base_metric import BaseMetric
-from opik.evaluation.metrics.score_result import ScoreResult
-
 from evals.harness.aggregates import DEFAULT_PASS_METRIC, INFRA_ERROR_STATUS
+
+
+@dataclass(frozen=True)
+class ScoreResult:
+    """One local evaluation result, independent of any tracing provider."""
+
+    name: str
+    value: float
+    reason: str
+    scoring_failed: bool = False
+
+
+class BaseMetric:
+    """Small shared metric contract; results are persisted by the Langfuse experiment runner."""
+
+    def __init__(self, *, name: str, track: bool = False) -> None:
+        self.name = name
+
+    def score(self, **kwargs: Any) -> ScoreResult:
+        raise NotImplementedError
+
+
+class IsJsonMetric(BaseMetric):
+    """Score whether the output is valid JSON."""
+
+    def __init__(self, *, name: str = "is_json", track: bool = False) -> None:
+        super().__init__(name=name, track=track)
+
+    def score(self, output: Any = None, **ignored_kwargs: Any) -> ScoreResult:
+        if not isinstance(output, str):
+            return ScoreResult(name=self.name, value=0.0, reason="output is not valid JSON")
+        try:
+            json.loads(output)
+        except json.JSONDecodeError:
+            return ScoreResult(name=self.name, value=0.0, reason="output is not valid JSON")
+        return ScoreResult(name=self.name, value=1.0, reason="output is valid JSON")
 
 
 def _tool_call_names(tool_calls: Any) -> list[str] | None:
@@ -273,7 +286,7 @@ class RewardMetric(BaseMetric):
     One Trial = one score. ``agent_ok`` / ``agent_fail`` are graded outcomes and carry the reward the
     ``tests/test.sh`` Verifier wrote (``1.0`` / ``0.0``; every task is binary) with the trial's own
     one-line ``reason``. An ``infra_error`` — the harness failing, not the agent — comes back as
-    ``scoring_failed=True``: Opik's aggregation skips such a score entirely, so the trial leaves both
+    ``scoring_failed=True``: local aggregation skips such a score entirely, so the trial leaves both
     the numerator and the denominator, which is exactly the taxonomy's rule. A graded status with no
     numeric reward is unscorable too: a ``None`` reward must NEVER be read as a zero.
 
@@ -493,7 +506,7 @@ class JsonSchemaMetric(BaseMetric):
     """Score ``1.0`` when the run's ``output`` is JSON that validates against a pydantic ``schema``.
 
     The JSON-output-contract case asks the agent to answer ONLY as JSON matching a schema; grading it
-    needs BOTH that the text parses as JSON (Opik's ``IsJson`` built-in covers that) AND that the parsed
+    needs BOTH that the text parses as JSON (``IsJsonMetric`` covers that) AND that the parsed
     object satisfies the declared shape. This metric closes the second half: it ``json.loads`` the
     ``output`` and calls ``schema.model_validate`` on the result. Any failure — non-string output, a
     parse error, a validation error, or JSON that is not an object the model accepts — is a graceful
@@ -609,7 +622,7 @@ class AnsweredWithoutErrorMetric(BaseMetric):
     ``output`` a non-blank string.
 
     ``infra_error`` (a fixture / setup failure, so the case never ran) comes back
-    ``scoring_failed=True`` — Opik drops such a score from aggregation entirely, exactly as
+    ``scoring_failed=True`` — aggregation drops such a score entirely, exactly as
     :class:`RewardMetric` does for an ``infra_error`` trial. Without that, a broken fixture would
     report a ``None`` ``agent_error`` and grade as a green run.
     """

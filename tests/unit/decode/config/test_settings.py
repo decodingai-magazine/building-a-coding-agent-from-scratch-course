@@ -59,16 +59,15 @@ _SUBAGENT_ENV_VARS = (
     "SUBAGENT_RESULT_MAX_BYTES",
 )
 
-# Observability: Opik vars (ADR-0014).
-_OPIK_ENV_VARS = (
-    "OPIK_API_KEY",
-    "OPIK_WORKSPACE",
-    "OPIK_PROJECT_NAME",
-    "OPIK_URL_OVERRIDE",
+# Observability: Langfuse vars (ADR-0024).
+_LANGFUSE_ENV_VARS = (
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_BASE_URL",
+    "LANGFUSE_HOST",
 )
 
-# Evals vars (ADR-0017). The eval suite is not shipped in the wheel, but its judges + Opik project
-# read off this same Settings surface.
+# Evals vars. The eval suite is not shipped in the wheel, but its judges read off this Settings surface.
 _EVAL_ENV_VARS = (
     "EVAL_JUDGE_MODEL",
     "EVAL_PROJECT_NAME",
@@ -140,11 +139,10 @@ def test_scrub_leaves_a_real_key_alone(monkeypatch):
 
 
 def test_scrub_covers_every_gated_secret(monkeypatch):
-    for var in ("OPIK_API_KEY", "MODAL_PROXY_TOKEN_ID", "MODAL_PROXY_TOKEN_SECRET"):
+    for var in ("MODAL_PROXY_TOKEN_ID", "MODAL_PROXY_TOKEN_SECRET"):
         monkeypatch.setenv(var, "changeme")
     monkeypatch.setenv("SANDBOX_GIT_TOKEN", "changeme")
     s = Settings(_env_file=None)
-    assert s.opik_api_key.get_secret_value() == ""
     assert s.modal_proxy_token_id.get_secret_value() == ""
     assert s.modal_proxy_token_secret.get_secret_value() == ""
     assert s.sandbox_git_token is not None
@@ -572,103 +570,59 @@ def test_rejects_non_positive_subagent_caps(monkeypatch, var, bad):
         Settings(_env_file=None)
 
 
-# Observability: Opik
+# Observability: Langfuse
 
 
-def test_opik_defaults(monkeypatch):
-    for var in _OPIK_ENV_VARS:
+def test_langfuse_defaults(monkeypatch):
+    for var in _LANGFUSE_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.delenv("DECODE_ENV", raising=False)
     s = Settings(_env_file=None)
-    assert s.opik_api_key.get_secret_value() == ""  # presence trigger — empty == tracing off
-    assert s.opik_workspace == "default"
-    assert s.opik_project_name == "decode-local"  # DERIVED: decode-<DECODE_ENV> (ADR-0015 §8)
-    assert s.opik_url_override is None  # None == Comet cloud OTLP base
+    assert s.langfuse_secret_key.get_secret_value() == ""
+    assert s.langfuse_public_key.get_secret_value() == ""
+    assert s.langfuse_base_url == "https://cloud.langfuse.com"
 
 
-def test_opik_project_name_is_derived_from_decode_env_when_unset(monkeypatch):
-    """A trace must name the environment that produced it: the default is ``decode-<DECODE_ENV>``.
-
-    At ``local`` (the default gate) that is ``decode-local`` — the suffix is applied ALWAYS, there is
-    no bare ``decode`` project any more (ADR-0015 §8, kept by ADR-0021).
-    """
-    for var in _OPIK_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.delenv("DECODE_ENV", raising=False)
-
+def test_reads_langfuse_vars_from_process_env(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "secret-123")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "public-456")
+    monkeypatch.setenv("LANGFUSE_BASE_URL", "https://jp.cloud.langfuse.com")
+    monkeypatch.setenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
     s = Settings(_env_file=None)
-
-    assert s.decode_env == "local"
-    assert s.opik_project_name == "decode-local"
-    # The mechanism: nobody supplied the field, so it is absent from ``model_fields_set`` — that (not
-    # a sentinel value) is what marks it derivable, and deriving must not forge an "explicit" mark.
-    assert "opik_project_name" not in s.model_fields_set
+    assert s.langfuse_secret_key.get_secret_value() == "secret-123"
+    assert s.langfuse_public_key.get_secret_value() == "public-456"
+    assert s.langfuse_base_url == "https://jp.cloud.langfuse.com"
 
 
-def test_an_explicit_opik_project_name_equal_to_the_derived_default_is_honoured(monkeypatch):
-    """Anti-sentinel: setting the field to the literal the default derives to is still an EXPLICIT set.
-
-    A sentinel/value comparison (``if opik_project_name == "decode-local"``) cannot tell this apart
-    from "nobody set it" — ``model_fields_set`` can, and the value must survive untouched.
-    """
-    for var in _OPIK_ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.delenv("DECODE_ENV", raising=False)
-    monkeypatch.setenv("OPIK_PROJECT_NAME", "decode-local")
-
+def test_reads_legacy_langfuse_host_from_process_env(monkeypatch):
+    monkeypatch.delenv("LANGFUSE_BASE_URL", raising=False)
+    monkeypatch.setenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
     s = Settings(_env_file=None)
-
-    assert s.opik_project_name == "decode-local"
-    assert "opik_project_name" in s.model_fields_set  # source-supplied → explicit
+    assert s.langfuse_base_url == "https://us.cloud.langfuse.com"
 
 
-def test_reads_opik_vars_from_process_env(monkeypatch):
-    monkeypatch.setenv("OPIK_API_KEY", "opik-secret-123")
-    monkeypatch.setenv("OPIK_WORKSPACE", "my-workspace")
-    monkeypatch.setenv("OPIK_PROJECT_NAME", "my-project")
-    monkeypatch.setenv("OPIK_URL_OVERRIDE", "http://localhost:5173/api/v1/private/otel")
-    s = Settings(_env_file=None)
-    assert s.opik_api_key.get_secret_value() == "opik-secret-123"
-    assert s.opik_workspace == "my-workspace"
-    # An explicit OPIK_PROJECT_NAME from the PROCESS ENV beats the derived decode-<env> default.
-    assert s.opik_project_name == "my-project"
-    assert "opik_project_name" in s.model_fields_set
-    assert s.opik_url_override == "http://localhost:5173/api/v1/private/otel"
-
-
-def test_loads_opik_vars_from_a_dotenv_file(tmp_path, monkeypatch):
-    for var in _OPIK_ENV_VARS:
+def test_loads_langfuse_vars_from_a_dotenv_file(tmp_path, monkeypatch):
+    for var in _LANGFUSE_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     env = tmp_path / ".env"
     env.write_text(
-        "OPIK_API_KEY=sk-opik-dotenv\n"
-        "OPIK_WORKSPACE=ws-dotenv\n"
-        "OPIK_PROJECT_NAME=proj-dotenv\n"
-        "OPIK_URL_OVERRIDE=https://opik.example.com/api/v1/private/otel\n"
+        "LANGFUSE_SECRET_KEY=secret-dotenv\n"
+        "LANGFUSE_PUBLIC_KEY=public-dotenv\n"
+        "LANGFUSE_BASE_URL=https://jp.cloud.langfuse.com\n"
     )
     s = Settings(_env_file=str(env))
-    assert s.opik_api_key.get_secret_value() == "sk-opik-dotenv"
-    assert s.opik_workspace == "ws-dotenv"
-    # An explicit OPIK_PROJECT_NAME from the DOTENV file beats the derived decode-<env> default.
-    assert s.opik_project_name == "proj-dotenv"
-    assert "opik_project_name" in s.model_fields_set
-    assert s.opik_url_override == "https://opik.example.com/api/v1/private/otel"
+    assert s.langfuse_secret_key.get_secret_value() == "secret-dotenv"
+    assert s.langfuse_public_key.get_secret_value() == "public-dotenv"
+    assert s.langfuse_base_url == "https://jp.cloud.langfuse.com"
 
 
-def test_opik_api_key_not_in_repr():
-    s = Settings(_env_file=None, opik_api_key="topsecretopik")
-    assert "topsecretopik" not in repr(s)
-
-
-# Evals (ADR-0017)
+# Evals
 
 
 def test_eval_defaults(monkeypatch):
     for var in _EVAL_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     s = Settings(_env_file=None)
-    # Empty judge model = derive from the active provider (task 104); the project keeps eval traces
-    # out of the live-REPL project (ADR-0014).
+    # Empty judge model = derive from the active provider; eval results use a separate project.
     assert s.eval_judge_model == ""
     assert s.eval_project_name == "decode-evals"
 
@@ -691,18 +645,14 @@ def test_loads_eval_vars_from_a_dotenv_file(tmp_path, monkeypatch):
     assert s.eval_project_name == "proj-evals"
 
 
-def test_copying_env_example_to_dotenv_does_not_activate_opik(monkeypatch):
-    """A copied .env.example must NOT set a truthy OPIK_API_KEY (presence-based silent-no-op default).
-
-    The Opik block ships fully commented out, so loading .env.example verbatim as the .env file leaves
-    ``opik_api_key`` empty — tracing stays off. Guards the task-091 regression where an uncommented
-    ``OPIK_API_KEY=changeme`` would make a copied .env try to trace against Comet with a bogus token.
-    """
-    for var in _OPIK_ENV_VARS:
+def test_copying_env_example_does_not_activate_langfuse(monkeypatch):
+    """A copied example file leaves cloud tracing and evaluation credentials unset."""
+    for var in (*_LANGFUSE_ENV_VARS, *_EVAL_ENV_VARS):
         monkeypatch.delenv(var, raising=False)
     env_example = Path(__file__).parents[4] / ".env.example"
     s = Settings(_env_file=str(env_example))
-    assert s.opik_api_key.get_secret_value() == ""
+    assert s.langfuse_secret_key.get_secret_value() == ""
+    assert s.langfuse_public_key.get_secret_value() == ""
 
 
 # .env.example drift is covered GLOBALLY (every field, both directions, no allowlist) by
@@ -743,7 +693,7 @@ def test_context_window_is_derived_from_the_gemini_model(monkeypatch):
     assert s.active_model == "gemini-3.8-flash"
     assert s.compaction_context_window_tokens == 1_048_576
     assert s.context_window_is_assumed is False
-    # Derived, not explicit — the mark must not be forged (same contract as opik_project_name).
+    # Derived, not explicit — the mark must not be forged.
     assert "compaction_context_window_tokens" not in s.model_fields_set
 
 

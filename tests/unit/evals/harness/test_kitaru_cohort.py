@@ -1,12 +1,13 @@
-"""``evals kitaru cohort from-experiment`` — failing trials → a frozen Cohort (task 165).
+"""``evals kitaru cohort from-experiment`` — failing Langfuse trials → a frozen Cohort.
 
-The Opik experiment is a fake whose items carry the real ``trial_payload`` shape, and the ``kitaru``
+The Langfuse experiment is a fake whose items carry the ``trial_payload`` shape, and the ``kitaru``
 CLI is faked at the ONE seam (:func:`evals.harness.kitaru_cli.run_kitaru`), so every assertion is
 either a pure rule over plain dicts or the exact argv an operator could re-type.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -30,7 +31,7 @@ SERVER = "http://localhost:8000"
 
 
 class Item:
-    """An ``opik`` ``ExperimentItemContent`` as far as this module cares."""
+    """A Langfuse experiment item as far as this module cares."""
 
     def __init__(
         self,
@@ -42,19 +43,19 @@ class Item:
         kitaru_session_id: str | None = None,
         scores: list[dict[str, Any]] | None = None,
     ) -> None:
-        self.dataset_item_data = {"task_id": task_id}
-        self.evaluation_task_output = {
+        self.input = {"task_id": task_id}
+        self.output = {
             "status": status,
             "reward": reward,
             "session_id": session_id,
             "kitaru_session_id": kitaru_session_id,
             "trial_dir": "/tmp/job/001__abcd",
         }
-        self.feedback_scores = scores if scores is not None else self._default_scores(reward)
+        self.scores = scores if scores is not None else self._default_scores(reward)
 
     @staticmethod
     def _default_scores(reward: float | None) -> list[dict[str, Any]]:
-        # Opik drops a `scoring_failed` score entirely — a `None` reward leaves NO score behind.
+        # A failed score is omitted from numeric Langfuse experiment score summaries.
         return [] if reward is None else [{"name": "reward", "value": reward}]
 
 
@@ -321,48 +322,41 @@ def test_unresolved_trials_ride_back_on_the_outcome(mocker):
     assert [t.session_id for t in outcome.unresolved] == ["never-recorded"]
 
 
-def test_the_module_reads_no_opik_at_import_time():
-    """`--help` must stay opik-free (ADR-0017 §1): the SDK is imported inside `open_experiment`."""
+def test_the_module_does_not_import_langfuse_at_module_scope():
+    """CLI help must stay credentials-free; the client is constructed only when needed."""
     import inspect
 
     source = inspect.getsource(kitaru_cohort)
-    assert "\nimport opik" not in source
+    assert "\nfrom langfuse import" not in source
 
 
-# --- the Opik lookup -------------------------------------------------------------------------------
+# --- the Langfuse lookup ---------------------------------------------------------------------------
 
 
 class FakeExperiment:
     def __init__(
-        self, name: str, *, metadata: dict[str, Any] | None = None, created: str = "1"
+        self,
+        name: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        created: str = "2026-09-01T00:00:00",
     ) -> None:
         self.name = name
-        self._metadata = metadata
-        self._created = created
-
-    def get_experiment_data(self) -> Any:
-        return type("Data", (), {"metadata": self._metadata, "created_at": self._created})()
-
-    def get_items(self) -> list[Any]:
-        return [Item()]
+        self.metadata = metadata
+        self.start_time = datetime.fromisoformat(created).replace(tzinfo=UTC)
+        self.id = f"id-{created}"
 
 
-def install_opik(mocker, experiments: list[Any] | Exception) -> None:
-    import opik
-
+def install_langfuse(mocker, experiments: list[Any]) -> Any:
     client = mocker.Mock()
-    if isinstance(experiments, Exception):
-        client.get_experiments_by_name.side_effect = experiments
-    else:
-        client.get_experiments_by_name.return_value = experiments
-    mocker.patch.object(opik, "Opik", return_value=client)
+    client.api.experiments.list.return_value.data = experiments
+    client.api.experiments.list_items.return_value.data = [Item()]
+    mocker.patch("evals.harness.datasets.langfuse_client", return_value=client)
+    return client
 
 
-def test_an_unknown_job_name_is_one_refusal_not_an_opik_traceback(mocker):
-    """Regression (live): `get_experiments_by_name` RAISES `ExperimentNotFound`, never returns []."""
-    from opik.exceptions import ExperimentNotFound
-
-    install_opik(mocker, ExperimentNotFound("No experiment(s) found with the name 'nope'."))
+def test_an_unknown_job_name_is_one_refusal_not_a_sdk_traceback(mocker):
+    install_langfuse(mocker, [])
 
     with pytest.raises(CohortError) as error:
         kitaru_cohort.open_experiment("nope")
@@ -370,20 +364,23 @@ def test_an_unknown_job_name_is_one_refusal_not_an_opik_traceback(mocker):
     assert "nope" in str(error.value)
 
 
-def test_a_substring_match_is_not_the_experiment_asked_for(mocker):
-    """`get_experiments_by_name` is a case-insensitive SUBSTRING search (opik SDK docstring)."""
-    install_opik(mocker, [FakeExperiment("bench-20260911-101500")])
+def test_a_non_exact_experiment_name_is_not_selected(mocker):
+    install_langfuse(mocker, [FakeExperiment("bench-20260911-101500")])
 
     with pytest.raises(CohortError):
         kitaru_cohort.open_experiment("bench-2026")
 
 
 def test_the_newest_experiment_of_that_exact_name_wins(mocker):
-    install_opik(
+    client = install_langfuse(
         mocker,
         [
-            FakeExperiment("bench-x", metadata={"kitaru_agent_id": "old"}, created="2026-09-01"),
-            FakeExperiment("bench-x", metadata={"kitaru_agent_id": "new"}, created="2026-09-11"),
+            FakeExperiment(
+                "bench-x", metadata={"kitaru_agent_id": "old"}, created="2026-09-01T00:00:00"
+            ),
+            FakeExperiment(
+                "bench-x", metadata={"kitaru_agent_id": "new"}, created="2026-09-11T00:00:00"
+            ),
         ],
     )
 
@@ -391,3 +388,7 @@ def test_the_newest_experiment_of_that_exact_name_wins(mocker):
 
     assert config == {"kitaru_agent_id": "new"}
     assert len(items) == 1
+    assert (
+        client.api.experiments.list_items.call_args.kwargs["experiment_id"]
+        == "id-2026-09-11T00:00:00"
+    )

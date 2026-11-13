@@ -240,7 +240,7 @@ async def test_a_crashed_turn_is_surfaced_as_agent_error(workspace, install_mode
 
 
 def test_run_agent_once_sync_wraps_the_async_driver(workspace, install_model):
-    """``run_agent_once_sync`` is a sync entrypoint (Opik ``evaluate()`` task fns cannot be async)."""
+    """``run_agent_once_sync`` exposes a synchronous entry point to experiment task adapters."""
     install_model(read_then_finish(_NOTES, _FINAL))
 
     record = run_agent_once_sync("read the notes file", cwd=workspace)

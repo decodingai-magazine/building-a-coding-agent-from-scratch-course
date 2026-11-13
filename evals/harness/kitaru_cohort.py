@@ -1,7 +1,7 @@
-"""Freeze a benchmark job's FAILING trials into a Kitaru Cohort (ADR-0022 §11).
+"""Freeze a Langfuse benchmark experiment's failing trials into a Kitaru Cohort.
 
-The other half of the Opik→Kitaru join: ``evals kitaru import`` backfills sessions decode never
-recorded; this module takes an Opik Experiment decode DID record (``make eval-benchmark`` with
+The other half of the Langfuse→Kitaru join: ``evals kitaru import`` backfills selected sessions;
+this module takes a Langfuse experiment decode DID record (``make eval-benchmark`` with
 ``KITARU_AGENT_ID`` set) and turns "which trials failed?" into "replay exactly those Sessions".
 
 The join is the **Session Name**. The recording adapter names a recorded Session after the decode
@@ -84,31 +84,39 @@ def _mapping(value: object) -> dict[str, Any]:
 def item_input(item: Any) -> dict[str, Any]:
     """The dataset item behind one trial — where the benchmark task id lives."""
     if isinstance(item, dict):
-        return _mapping(item.get("dataset_item_data") or item.get("input"))
-    return _mapping(getattr(item, "dataset_item_data", None))
+        return _mapping(item.get("input") or item.get("dataset_item_data"))
+    return _mapping(getattr(item, "input", None) or getattr(item, "dataset_item_data", None))
 
 
 def item_output(item: Any) -> dict[str, Any]:
     """The trial payload on an experiment item, whatever shape the SDK handed back."""
     if isinstance(item, dict):
-        return _mapping(item.get("evaluation_task_output") or item.get("output"))
-    return _mapping(getattr(item, "evaluation_task_output", None))
+        return _mapping(item.get("output") or item.get("evaluation_task_output"))
+    return _mapping(getattr(item, "output", None) or getattr(item, "evaluation_task_output", None))
 
 
 def item_scores(item: Any) -> list[dict[str, Any]]:
-    """The item's feedback scores as plain dicts."""
-    scores = item.get("feedback_scores") if isinstance(item, dict) else None
+    """The item's Langfuse evaluator scores as plain dicts."""
+    scores = (item.get("scores") or item.get("evaluations")) if isinstance(item, dict) else None
     if scores is None:
-        scores = getattr(item, "feedback_scores", None)
-    return [_mapping(score) for score in scores or []]
+        scores = getattr(item, "scores", None) or getattr(item, "evaluations", None)
+    result: list[dict[str, Any]] = []
+    for score in scores or []:
+        mapped = _mapping(score)
+        if not mapped:
+            mapped = {
+                "name": getattr(score, "name", None),
+                "value": getattr(score, "value", None),
+            }
+        result.append(mapped)
+    return result
 
 
 def item_reward(item: Any) -> float | None:
     """The trial's reward, or ``None`` when it was never scored.
 
-    The ``reward`` FEEDBACK SCORE is the grade of record; a trial whose score was ``scoring_failed``
-    carries none at all (Opik drops it), which is exactly the "neither pass nor fail" the benchmark
-    intends — so a missing score means skip, never zero. The payload's own ``reward`` is the fallback
+    The ``reward`` evaluation is the grade of record. A missing score means skip, never zero.
+    The payload's own ``reward`` is the fallback
     for an experiment read back before the score landed.
     """
     for score in item_scores(item):
@@ -263,33 +271,63 @@ def build_cohort(
 
 
 def open_experiment(name: str) -> tuple[list[Any], dict[str, Any] | None]:
-    """(items, experiment_config) for the NEWEST experiment of this name — ``opik`` imported lazily.
+    """Return items and metadata for the newest experiment of this name.
 
-    Opik keeps every experiment that ever ran under a name; the newest one is the job just run,
+    Langfuse keeps every experiment that ever ran under a name; the newest one is the job just run,
     which is what an operator means by ``from-experiment <job>``.
     """
-    import opik
+    from datetime import UTC, datetime
 
     from decode.config.settings import settings
+    from evals.harness.datasets import langfuse_client
 
-    client = opik.Opik(project_name=settings.eval_project_name)
-    # `get_experiments_by_name` is a case-insensitive SUBSTRING search that RAISES on no hit (it
-    # never returns an empty list — verified live), so both shapes collapse into the same refusal;
-    # and an exact match is picked here, or `bench-2026` would freeze the failures of
-    # `bench-20260911-101500`.
+    client = langfuse_client()
     try:
-        found = client.get_experiments_by_name(name)
-    except opik.exceptions.ExperimentNotFound as exc:
+        found = []
+        cursor = None
+        while True:
+            response = client.api.experiments.list(
+                from_start_time=datetime(2000, 1, 1, tzinfo=UTC),
+                to_start_time=datetime.now(UTC),
+                limit=100,
+                cursor=cursor,
+                name=name,
+            )
+            found.extend(getattr(response, "data", []) or [])
+            cursor = getattr(getattr(response, "meta", None), "cursor", None)
+            if not isinstance(cursor, str) or not cursor:
+                break
+    except Exception as exc:
         raise CohortError(
-            f"no Opik experiment named {name!r} in {settings.eval_project_name} — check the job "
-            "name `evals benchmark` printed."
+            f"could not read Langfuse experiment {name!r} in {settings.eval_project_name}."
         ) from exc
-    matches = [experiment for experiment in found if experiment.name.lower() == name.lower()]
+    matches = [
+        experiment
+        for experiment in found
+        if str(getattr(experiment, "name", "")).lower() == name.lower()
+    ]
     if not matches:
         raise CohortError(
-            f"no Opik experiment named {name!r} in {settings.eval_project_name} — check the job "
-            "name `evals benchmark` printed."
+            f"no Langfuse experiment named {name!r} in {settings.eval_project_name} — check the "
+            "job name `evals benchmark` printed."
         )
-    experiment = max(matches, key=lambda item: str(item.get_experiment_data().created_at or ""))
-    config = experiment.get_experiment_data().metadata
-    return list(experiment.get_items()), config if isinstance(config, dict) else None
+    experiment = max(
+        matches,
+        key=lambda item: getattr(item, "start_time", datetime.min.replace(tzinfo=UTC)),
+    )
+    items = []
+    cursor = None
+    while True:
+        response = client.api.experiments.list_items(
+            from_start_time=datetime(2000, 1, 1, tzinfo=UTC),
+            to_start_time=datetime.now(UTC),
+            limit=1000,
+            cursor=cursor,
+            experiment_id=experiment.id,
+        )
+        items.extend(getattr(response, "data", []) or [])
+        cursor = getattr(getattr(response, "meta", None), "cursor", None)
+        if not isinstance(cursor, str) or not cursor:
+            break
+    metadata = getattr(experiment, "metadata", None)
+    return items, metadata if isinstance(metadata, dict) else None

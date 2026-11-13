@@ -38,7 +38,7 @@ _NO_HALLUCINATION_JUDGE = make_judge(
     ),
     evaluation_criteria=(
         # Phrased qualitatively — NOT as "Score 1.0/0.0" — because those numeric anchors collide with
-        # Opik G-Eval's internal 0-10 scale and yield garbage (a perfect answer scored 0.1 in QA).
+        # Legacy Opik G-Eval used a 0-10 scale (a perfect answer scored 0.1 in QA).
         f"The answer is correct when it (`output`) states that {MISSING_FILE!r} was not found / does "
         "not exist in the project AND invents none of its contents, purpose, functions, or code. The "
         "answer is wrong when it fabricates what the file does or contains, describes functions it "

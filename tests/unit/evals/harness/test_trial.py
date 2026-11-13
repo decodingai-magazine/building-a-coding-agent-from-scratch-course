@@ -360,7 +360,7 @@ def test_a_failing_seed_is_an_infra_error(tmp_path: Path) -> None:
 
 
 def test_run_trial_never_raises(tmp_path: Path, mocker) -> None:
-    """Opik's ``evaluate`` has no per-item isolation: one raised trial would abort the experiment."""
+    """A failed trial must be recorded as an infra error instead of aborting the experiment."""
     task = _task(tmp_path)
     mocker.patch.object(trial_module, "_clone_pristine", side_effect=RuntimeError("disk on fire"))
 
@@ -436,7 +436,7 @@ def test_the_trial_carries_no_second_rev_parse_implementation() -> None:
 
 
 def test_child_env_applies_the_trial_overrides_and_removals() -> None:
-    """``SANDBOX_MODE`` / ``OPIK_PROJECT_NAME`` / ``RUNTIME_ENABLED`` set; three vars stripped."""
+    """Trial sandbox/runtime overrides apply; worker-task and repository overrides are stripped."""
     parent = {
         "PATH": "/usr/bin",
         "KITARU_TASK_ID": "task-1",
@@ -450,7 +450,6 @@ def test_child_env_applies_the_trial_overrides_and_removals() -> None:
     env = child_env(sandbox="modal", env=parent, config=config)
 
     assert env["SANDBOX_MODE"] == "modal"
-    assert env["OPIK_PROJECT_NAME"] == config.eval_project_name
     assert env["RUNTIME_ENABLED"] == "true"
     assert env["KITARU_AGENT_ID"] == "agent-1"  # recording rides the Recording Seam, untouched
     assert env["PATH"] == "/usr/bin"

@@ -13,8 +13,8 @@ one of them, so it is one script rather than a runbook section of copy-pasted co
   machine, ADR-0023); this file replaces the DELETED
   ``scripts/register_kitaru_agent.py``, whose pure builders (:func:`build_run_env`,
   :func:`register_argv`) moved here unchanged;
-* the importer ``opik`` (``importers/opik_importer.py``), which turns an Opik trace export into
-  Sessions — the parser behind ``python -m evals kitaru import``;
+* the importer ``langfuse`` (``importers/langfuse_importer.py``), which turns a Langfuse trace export
+  into Sessions — the parser behind ``python -m evals kitaru import``;
 * every evaluator under ``evaluators/`` (entrypoint ``evaluate``).
 
 **Idempotency is read-then-register, NOT a retry key.** Verified against kitaru 0.26.0: a duplicate
@@ -62,11 +62,11 @@ DEFAULT_TIMEOUT_SECONDS = 1800
 # The Sandbox Mode every replay runs under: the laptop Worker's docker Workspace (ADR-0023).
 SANDBOX_MODE = "docker"
 
-# The importer that reads an Opik trace export (`python -m evals kitaru import` produces its input).
-IMPORTER_NAME = "opik"
-IMPORTER_SCRIPT = Path("importers/opik_importer.py")
+# The importer that reads a Langfuse trace export (`python -m evals kitaru import` produces its input).
+IMPORTER_NAME = "langfuse"
+IMPORTER_SCRIPT = Path("importers/langfuse_importer.py")
 IMPORTER_ENTRYPOINT = "parse"
-IMPORTER_PROVIDER = "opik"
+IMPORTER_PROVIDER = "langfuse"
 
 # Every evaluator in the repo is registered under its file name (`decode_request_limit.py` →
 # `decode-request-limit`), with kitaru's own evaluator entrypoint.

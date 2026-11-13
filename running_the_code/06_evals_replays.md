@@ -11,7 +11,7 @@ Prerequisites:
 - **Node.js** — for `npx skills add`.
 - **`jq`** (`brew install jq`) — the commands below capture every id into a shell variable, so run each section in one terminal.
 - **One provider** in `.env`: a key (e.g. `GEMINI_API_KEY`, more in [01_install_and_usage](01_install_and_usage.md)) or your Modal endpoint (`LLM_PROVIDER=modal` + `MODAL_ENDPOINT_URL`, more in [02_modal_endpoints](02_modal_endpoints.md)).
-- **`OPIK_API_KEY`** — optional, for importing traces from Opik. Full setup in [01_install_and_usage](01_install_and_usage.md).
+- **Langfuse API keys** — required for evals and optional for importing traces from Langfuse. See [01_install_and_usage](01_install_and_usage.md).
 
 See [01_install_and_usage](01_install_and_usage.md) and [02_modal_endpoints](02_modal_endpoints.md) for the full setup of the coding agent; here we focus only on the setup of the Kitaru eval harness.
 
@@ -45,7 +45,7 @@ Pick one. For the course, the local server is enough.
 | Stop                           | run `uv run kitaru logout`                     | —                                                                                                                                                               |
 | Workers                        | your laptop                                    | your laptop; the workspace only stores results                                                                                                                  |
 
-Both commands from `Connect` register the `decode` agent, the `opik` importer and `evaluators/*.py` on that Kitaru server.
+Both commands from `Connect` register the `decode` agent, the Langfuse importer and `evaluators/*.py` on that Kitaru server.
 
 After running `make kitaru-local` or `make kitaru-bootstrap KITARU_API_URL=<url>`, at the bottom you will see the value of the `KITARU_API_URL` and `KITARU_AGENT_ID` env vars.
 
@@ -113,7 +113,7 @@ You can also visualize the sessions in the Kitaru dashboard, locally at [http://
 ## 3. Seed multiple sessions
 
 > [!NOTE]
-> A session is equal to an Opik thread.
+> A session is grouped by its Langfuse session id.
 
 To illustrate a real example we need a mix of 15-30 sessions. You can either run `decode run "<goal>"` yourself on ~20-30 examples or use `make kitaru-seed` to generate 30 examples (takes ~10 minutes):
 
@@ -165,13 +165,13 @@ uv run kitaru worker start --concurrency 1 --timeout 28800
 
 Check from another terminal: `uv run kitaru worker list` shows it with `Status: live`. Watch a job: `docker ps`, `tail -f ~/.decode-kitaru-worker/.decode/logs/decode.log`.
 
-## 5. Import traces from Opik
+## 5. Import traces from Langfuse
 
-Optional step to backfill Sessions from decode runs you already traced in Opik. Needs `OPIK_API_KEY` in `.env` and the Worker from §4.
+Optional step to backfill Kitaru Sessions from decode runs already recorded in Langfuse. Needs the Langfuse keys in `.env` and the Worker from §4.
 
-As you already seeded your Kitaru instance with decode runs in §3, you can skip this step, but importing more traces from Opik would add more variety to your dataset.
+As you already seeded your Kitaru instance with decode runs in §3, you can skip this step, but importing more traces from Langfuse can add variety to your dataset.
 
-Pull the newest threads (one thread = one decode session = one Kitaru Session) from the Opik project `decode-<DECODE_ENV>` (e.g. `decode-local`):
+Pull the newest Langfuse sessions (one session id = one decode session = one Kitaru Session) from the configured Langfuse project:
 
 ```bash
 uv run python -m evals kitaru import --limit 20
@@ -183,11 +183,11 @@ Or every thread in the project:
 uv run python -m evals kitaru import
 ```
 
-Prints `thread → session id`. Already-imported threads are skipped, so re-running is cheap. `--project <NAME>` reads another project; `--no-wait` files the jobs and returns.
+Prints `Langfuse session → Kitaru session id`. Already-imported sessions are skipped, so re-running is cheap; `--no-wait` files the jobs and returns. Historical Opik traces are not imported.
 
 ## 6. Harvest failures into a regression suite
 
-Now that we have our sessions prepared (via seed, Opik or both), we can sample them into an investigation, give each a verdict, freeze the `problematic` ones into a cohort, and create an evaluator per error type. Reference: [regression suite](https://docs.zenml.io/kitaru/guides/regression-suite?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs).
+Now that we have our sessions prepared (via seed, Langfuse or both), we can sample them into an investigation, give each a verdict, freeze the `problematic` ones into a cohort, and create an evaluator per error type. Reference: [regression suite](https://docs.zenml.io/kitaru/guides/regression-suite?utm_source=decodingai&utm_medium=referral&utm_campaign=coding-agent-course&utm_content=docs).
 
 Sample 20 of the newest 30 sessions, replays left out:
 
@@ -268,7 +268,7 @@ This creates two cohorts in Kitaru, one for each candidate:
 ![](../assets/kitaru_cohorts.png)
 
 > [!WARNING]
-> These are the results based on the synthetic seed. Traces imported from Opik or from other tests might change the results.
+> These are the results based on the synthetic seed. Traces imported from Langfuse or from other tests might change the results.
 
 Now, we need to either apply an existing evaluator or create a new one per cohort. As we already have the evaluators for these two, we prompt:
 

@@ -175,9 +175,8 @@ def run_trial(
     ``result.json`` lands in a ``finally``, so even a trial that fell over on its first phase leaves
     a readable record.
 
-    ``run_trial`` NEVER raises. Opik's ``evaluate`` runs task functions with no per-item isolation —
-    one raised trial aborts the whole experiment — so an unexpected exception becomes an
-    ``infra_error`` with its message as the ``reason`` and a full traceback in the log.
+    ``run_trial`` NEVER raises: an unexpected exception becomes an ``infra_error`` with its message
+    as the ``reason`` and a full traceback in the log.
     """
     # RESOLVED once, up front: the subprocess runs from ``home/`` and every path the trial hands it
     # (the Seed Repo, the summary file) must survive that cwd change (the same rule
@@ -229,7 +228,7 @@ def run_trial(
         logger.warning("[eval] trial %s/%s is an infra error: %s", task.id, trial_id, exc)
         status, reason = "infra_error", str(exc)
         reward = None
-    except Exception as exc:  # a raised trial would abort the WHOLE Opik experiment
+    except Exception as exc:  # preserve this item as an infra error instead of losing its result
         logger.exception("[eval] trial %s/%s raised", task.id, trial_id)
         status, reason = "infra_error", f"the trial raised: {exc}"
         reward = None
@@ -270,11 +269,10 @@ def child_env(
     NOT the ADR-0016 anti-pattern: that forbids pouring config into the sandbox WORKER; this is the
     harness handing its own child process its own config.
 
-    Three overrides and :data:`STRIPPED_ENV_VARS` make the child a trial rather than a normal run:
-    the sandbox mode is the trial's rung, tracing goes to the eval project (live tracing is never
-    polluted) and the headless runtime is on; a Kitaru Worker Task / replay id and an ambient
-    ``SANDBOX_REPO`` would each make the child do something other than this trial, and the
-    operator's ``SANDBOX_GIT_TOKEN`` has nothing to authenticate to against a local Seed Repo.
+    Two overrides and :data:`STRIPPED_ENV_VARS` make the child a trial rather than a normal run:
+    the sandbox mode is the trial's rung and the headless runtime is on; a Kitaru Worker Task /
+    replay id, ambient ``SANDBOX_REPO``, or ``SANDBOX_GIT_TOKEN`` would make the child do something
+    other than this trial or hand credentials to a local Seed Repo with nothing to authenticate to.
     ``KITARU_AGENT_ID`` passes through untouched — recording rides the Recording Seam exactly as it
     does for a user's run.
 
@@ -288,7 +286,6 @@ def child_env(
     child = dict(os.environ if env is None else env)
     child.update(_settings_env(config))
     child["SANDBOX_MODE"] = sandbox
-    child["OPIK_PROJECT_NAME"] = config.eval_project_name
     child["RUNTIME_ENABLED"] = "true"
     if workspace_dir is not None:
         child["SANDBOX_WORKSPACE_DIR"] = str(workspace_dir)
@@ -301,7 +298,7 @@ def agent_info(*, sandbox: str, model: str | None) -> dict[str, Any]:
     """What produced this trial: the code, the package version, the model, provider and rung.
 
     Enough to tell two Trial Dirs apart by what actually changed between them — the same provenance
-    the Opik ``experiment_config`` carries (ADR-0022 §6,§7).
+    the Langfuse experiment metadata carries (ADR-0022 §6,§7).
     """
     return {
         "git_sha": git_sha(),

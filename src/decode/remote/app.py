@@ -30,8 +30,8 @@ never runs an ephemeral app. Every decision a run is made of lives in :mod:`deco
 * **One environment, one deployment** (ADR-0021 §2). ``DECODE_ENV`` is read from the DEPLOYING
   laptop's env, names the app and its Secret — both ``decode-headless-<env>`` — and is baked into
   the image; the Secret carries credentials only. So ``DECODE_ENV=prod decode remote deploy``
-  publishes ``decode-headless-prod``, running with the Secret of that name, filing Opik traces under
-  ``decode-prod`` and nesting its sandboxes in ``decode-sandbox-prod``. The Secret IS the whole
+  publishes ``decode-headless-prod``, running with the Secret of that name and nesting its sandboxes
+  in ``decode-sandbox-prod``. The Secret IS the whole
   config surface at every environment — there is no second store to fall back to. Create it once,
   values never committed::
 

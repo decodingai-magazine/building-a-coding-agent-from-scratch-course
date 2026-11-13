@@ -1,11 +1,11 @@
-"""Unit tests for the per-turn Opik root span the loop opens (ADR-0014 §4, task 092).
+"""Unit tests for the per-turn Langfuse root span the loop opens (ADR-0024).
 
 :meth:`AgentTurnHandler.__call__` runs its whole turn inside ONE ``observability.root_span``
-named ``chat_turn`` carrying ``session_id`` as the Opik ``thread_id``. ``root_span`` is patched
+named ``chat_turn`` carrying the Langfuse ``session_id``. ``root_span`` is patched
 with a recording context manager (no logfire, no network) to assert: opened once per turn, right
 name + thread id, and closed exactly once — on a normal turn, a gated multi-leg turn, an abort,
 and a mid-leg exception. The agent runs against ``FunctionModel`` via ``agent.override``; the
-real-span nesting / usage assertions live in ``tests/integration/test_opik_repl_trace.py``.
+real-span nesting / usage assertions live in ``tests/integration/test_langfuse_repl_trace.py``.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from decode.tui.app import InputIntent
 class _SpanRecorder:
     """A stand-in for ``observability.root_span`` that records every open + enter/exit.
 
-    Each call records the ``(name, thread_id)`` it was opened with and returns a fresh context
+    Each call records the ``(name, session_id)`` it was opened with and returns a fresh context
     manager; entering/exiting bumps :attr:`enters` / :attr:`exits`, so a test can prove the span was
     opened once and closed **exactly once** (the load-bearing abort-safety property).
     """
@@ -47,11 +47,11 @@ class _SpanRecorder:
         self,
         name: str,
         *,
-        thread_id: str | None = None,
+        session_id: str | None = None,
         input: str | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> contextlib.AbstractContextManager[None]:
-        self.calls.append((name, thread_id))
+        self.calls.append((name, session_id))
         self.metadata.append(metadata)
         return self._span()
 
@@ -143,22 +143,22 @@ async def _run_one_turn(runner: Runner, prompt: str) -> None:
     await runner.wait_idle()
 
 
-async def test_call_opens_one_chat_turn_root_span_with_the_session_id_as_thread_id(agent, recorder):
+async def test_call_opens_one_chat_turn_root_span_with_the_session_id(agent, recorder):
     handler = AgentTurnHandler(agent, deps=_deps(), session_id="sess-42")
     runner = Runner(handler, on_event=lambda event: None)
 
     with agent.override(model=_text_model("hello ", "world")):
         await _run_one_turn(runner, "hi")
 
-    # Exactly one root span, named ``chat_turn``, carrying the wired session id as ``thread_id``.
+    # Exactly one root span, named ``chat_turn``, carrying the wired session id.
     assert recorder.calls == [("chat_turn", "sess-42")]
     # Opened once and closed EXACTLY once (entered/exited a single time).
     assert recorder.enters == 1
     assert recorder.exits == 1
 
 
-async def test_session_id_defaults_to_none_thread_id_when_not_wired(agent, recorder):
-    # A headless/test handler built with no session id passes ``thread_id=None`` (nullcontext-safe).
+async def test_session_id_defaults_to_none_when_not_wired(agent, recorder):
+    # A headless/test handler built with no session id passes ``session_id=None``.
     handler = AgentTurnHandler(agent, deps=_deps())
     runner = Runner(handler, on_event=lambda event: None)
 
@@ -184,7 +184,7 @@ async def test_a_gated_multi_leg_turn_stays_inside_one_root_span(agent, recorder
     assert recorder.exits == 1
 
 
-async def test_two_turns_open_two_root_spans_sharing_the_thread_id(agent, recorder):
+async def test_two_turns_open_two_root_spans_sharing_the_session_id(agent, recorder):
     handler = AgentTurnHandler(agent, deps=_deps(), session_id="sess-two")
     runner = Runner(handler, on_event=lambda event: None)
 
@@ -193,7 +193,7 @@ async def test_two_turns_open_two_root_spans_sharing_the_thread_id(agent, record
     with agent.override(model=_text_model("second")):
         await _run_one_turn(runner, "turn two")
 
-    # One root span per turn, both carrying the same session thread id.
+    # One root span per turn, both carrying the same session id.
     assert recorder.calls == [("chat_turn", "sess-two"), ("chat_turn", "sess-two")]
     assert recorder.enters == 2
     assert recorder.exits == 2

@@ -162,8 +162,8 @@ switch ($Target) {
         Write-Host "  kitaru-local             Start local Kitaru server and register agent"
         Write-Host "  kitaru-bootstrap         Register agent on KITARU_API_URL"
         Write-Host "  kitaru-seed              Record test sessions on server"
-        Write-Host "  eval-benchmark           Run Opik benchmark experiment"
+        Write-Host "  eval-benchmark           Run Langfuse benchmark experiment"
         Write-Host "  eval-regression-dataset  Sync cases & run threshold gate"
-        Write-Host "  eval-regression-suite    Run Opik test suite"
+        Write-Host "  eval-regression-suite    Run Langfuse regression suite"
     }
 }

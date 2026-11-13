@@ -1,7 +1,7 @@
 """The operator script that records a seed batch of Sessions for an investigation to judge.
 
 Hermetic: no ``decode run`` is spawned. The scenario table is the contract — thirty runs, the three
-shapes decode's Opik history shows, over ten prompts — and the orchestration is driven with a fake
+shapes decode's historical production traces showed, over ten prompts — and the orchestration is driven with a fake
 runner whose outcomes are what ``--summary-json`` would have said.
 """
 

@@ -47,13 +47,16 @@ GEMINI_API_KEY=your-key
 
 Both free tiers rate-limit (Gemini per minute, OpenRouter ~50 requests/day until you add $10). The course default is your own model on Modal: next tutorial.
 
-Optional, 30 seconds: tracing. Key from [comet.com](https://www.comet.com/signup?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course) → Settings → API Keys:
+Optional: Langfuse Cloud tracing and eval score reporting. Create API keys in your Langfuse project:
 
 ```bash
-OPIK_API_KEY=your-key
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+# LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
 
-Every turn then lands in Opik as a trace, one span per model/tool call.
+Every turn then lands in Langfuse as a trace, with one span per model/tool call. The same Langfuse
+project stores evaluation datasets, experiments, scores, and mined regression examples.
 
 ## 3. Run
 

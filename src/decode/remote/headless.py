@@ -371,7 +371,7 @@ def decode_run_env(
 
     ``DECODE_ENV`` is deliberately NOT set here either — it is INHERITED from ``base_env``, where the
     image baked it at deploy (ADR-0021 §3). The child therefore names its nested sandbox app
-    ``decode-sandbox-<env>`` and its Opik project ``decode-<env>`` off the same value that named the
+    ``decode-sandbox-<env>`` off the same value that named the
     app it is running in, and reads its config from this very env, as ``Settings`` does everywhere.
 
     ``SANDBOX_REPO`` is dropped in BOTH modes: a repo belongs to this invocation's ``--repo`` flag,

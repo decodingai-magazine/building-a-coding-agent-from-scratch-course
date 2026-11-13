@@ -4,14 +4,14 @@
 ``Runner`` — the exact stack ``tests/integration/test_milestone1_capstone.py`` proves — submits one
 prompt, and drives it to idle. What comes back is an :class:`EvalRunRecord` read entirely from the
 pydantic-ai message history: tool calls from ``ToolCallPart``s, usage summed from each
-``ModelResponse.usage``. Grading never parses Opik traces (that would couple it to the
+``ModelResponse.usage``. Grading never parses provider traces (that would couple it to the
 observability pipeline and lie under export lag).
 
 Configurable per case: the gate mode + optional rules, custom permission / question resolvers
 (default = headless auto-deny, mirroring ``runtime/headless.py``), a pre-filled ``message_history`` (the
 compaction case needs it), and ``max_requests`` — a hard cap on model requests so a runaway run
 stops gracefully instead of burning budget. :func:`run_agent_once_sync` wraps it in
-:func:`asyncio.run` because Opik ``evaluate()`` task fns cannot be async.
+:func:`asyncio.run` so regression task adapters have a synchronous entry point.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from pydantic_ai.messages import (
     ModelMessage,
@@ -96,6 +97,7 @@ class EvalRunRecord:
       fail-with-reason instead of silently empty (ADR-0017 §4; task 106).
     """
 
+    session_id: str
     output: str
     messages: list[ModelMessage]
     tool_calls: list[ToolCallRecord]
@@ -216,11 +218,13 @@ async def run_agent_once(
     # The summarizer reuses the agent's base model (before any request-cap wrap) so a scripted
     # offline model doubles as the summarizer and no real network call is made in the unit suite.
     compaction_source = agent.model if enable_compaction else None
+    session_id = str(uuid4())
     handler: AgentTurnHandler = AgentTurnHandler(
         agent,
         deps=deps,
         message_history=message_history,
         compaction_model=compaction_source,
+        session_id=session_id,
     )
     runner = Runner(handler, on_event=_capture_emit)
 
@@ -245,19 +249,21 @@ async def run_agent_once(
 
     return _build_record(
         handler.message_history,
+        session_id=session_id,
         agent_error=errors[0] if errors else None,
         compaction_events=compaction_events,
     )
 
 
 def run_agent_once_sync(prompt: str, **kwargs: Any) -> EvalRunRecord:
-    """Sync wrapper over :func:`run_agent_once` — Opik ``evaluate()`` task fns cannot be async."""
+    """Sync wrapper over :func:`run_agent_once` for synchronous experiment task adapters."""
     return asyncio.run(run_agent_once(prompt, **kwargs))
 
 
 def _build_record(
     messages: list[ModelMessage],
     *,
+    session_id: str,
     agent_error: str | None = None,
     compaction_events: int = 0,
 ) -> EvalRunRecord:
@@ -283,6 +289,7 @@ def _build_record(
         if isinstance(part, ToolReturnPart) and part.outcome == "denied"
     ]
     return EvalRunRecord(
+        session_id=session_id,
         output=_final_text(messages),
         messages=list(messages),
         tool_calls=tool_calls,

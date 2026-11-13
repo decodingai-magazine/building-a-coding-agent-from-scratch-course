@@ -271,26 +271,26 @@ def test_an_edited_script_no_longer_matches_its_registered_version(tmp_path):
 
 
 def test_the_digest_rides_in_the_registration_argv(tmp_path):
-    script = tmp_path / "opik_importer.py"
+    script = tmp_path / "langfuse_importer.py"
     script.write_text("parser = None\n")
 
     argv = importer_register_argv(
-        name="opik", script=script, entrypoint="parse", provider="opik", server=SERVER
+        name="langfuse", script=script, entrypoint="parse", provider="langfuse", server=SERVER
     )
 
     assert _option(argv, "--display-version") == script_digest(script)
-    assert _option(argv, "--provider") == "opik"
+    assert _option(argv, "--provider") == "langfuse"
     assert _option(argv, "--entrypoint") == "parse"
 
 
 def test_a_new_importer_version_carries_the_script_but_not_the_provider(tmp_path):
     """`importer version register` has no --provider: the provider belongs to the parent."""
-    script = tmp_path / "opik_importer.py"
+    script = tmp_path / "langfuse_importer.py"
     script.write_text("parser = None\n")
 
-    argv = importer_version_argv(name="opik", script=script, entrypoint="parse", server=SERVER)
+    argv = importer_version_argv(name="langfuse", script=script, entrypoint="parse", server=SERVER)
 
-    assert argv[:5] == ["kitaru", "importer", "version", "register", "opik"]
+    assert argv[:5] == ["kitaru", "importer", "version", "register", "langfuse"]
     assert "--provider" not in argv
 
 
@@ -435,7 +435,7 @@ class FakeKitaru:
 def repo_tree(tmp_path: Path) -> Path:
     """A repo-shaped tree with one evaluator and the importer script."""
     (tmp_path / "importers").mkdir()
-    (tmp_path / "importers" / "opik_importer.py").write_text("parser = None\n")
+    (tmp_path / "importers" / "langfuse_importer.py").write_text("parser = None\n")
     (tmp_path / "evaluators").mkdir()
     (tmp_path / "evaluators" / "decode_request_limit.py").write_text("def evaluate(s): ...\n")
     return tmp_path
@@ -449,7 +449,7 @@ def _bootstrap(fake: FakeKitaru, repo_tree: Path, **overrides: Any) -> list[Row]
         "harness_home": HOME,
         "server": SERVER,
         "evaluators_root": repo_tree / "evaluators",
-        "importer_script": repo_tree / "importers" / "opik_importer.py",
+        "importer_script": repo_tree / "importers" / "langfuse_importer.py",
     }
     return bootstrap(**{**kwargs, **overrides})
 
@@ -535,7 +535,7 @@ def test_dry_run_prints_the_argv_and_registers_nothing(repo_tree, capsys):
     assert fake.writes() == []
     assert any(line.startswith("kitaru agent register decode") for line in printed)
     assert any("--server http://localhost:8000" in line for line in printed)
-    assert any("importer register opik" in line for line in printed)
+    assert any("importer register langfuse" in line for line in printed)
 
 
 def test_dry_run_against_an_unreachable_server_still_shows_the_full_bootstrap(repo_tree):

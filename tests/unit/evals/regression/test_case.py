@@ -99,7 +99,7 @@ def test_a_case_without_metrics_is_rejected() -> None:
 
 def test_the_case_tiers_are_the_benchmark_tiers() -> None:
     """ONE Difficulty Tier vocabulary across both eval tracks (the case contract spells it out so it
-    stays importable without the Opik harness — see the module comment)."""
+    stays importable without the eval runner — see the module comment)."""
     from typing import get_args
 
     from evals.harness.task_loader import Difficulty
@@ -107,12 +107,12 @@ def test_the_case_tiers_are_the_benchmark_tiers() -> None:
     assert get_args(Difficulty) == DIFFICULTIES
 
 
-def test_importing_the_case_contract_pulls_no_opik() -> None:
-    """ADR-0017 §1: the contract is data, so the CLI can read it without the Opik harness."""
+def test_importing_the_case_contract_does_not_import_langfuse() -> None:
+    """ADR-0017 §1: the contract is data, so CLI help does not load the Langfuse SDK."""
     import subprocess
     import sys
 
-    probe = "import sys; import evals.regression.case; print('opik' in sys.modules)"
+    probe = "import sys; import evals.regression.case; print('langfuse' in sys.modules)"
     result = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )

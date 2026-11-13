@@ -1,13 +1,11 @@
 """Trace metadata — the fields an eval joins and filters traces on (ADR-0022 §10).
 
 :func:`trace_metadata` is just a small mapping of plain strings; landing it in the trace is
-:func:`decode.observability.root_span`'s job, which sets each key as an ``opik.metadata.<key>``
-attribute — the only spelling Opik ingests into a span's ``metadata`` (see
-:data:`decode.observability.tracing.OPIK_METADATA_PREFIX`). Four fields, the ones Trace Mining slices
-by: which build ran (``git_sha``), which model, which sandbox mode, which environment.
+:func:`decode.observability.root_span`'s job, which propagates these fields to Langfuse as trace
+metadata: which build ran (``git_sha``), which model, which sandbox mode, and which environment.
 ``kitaru_session_id`` rides along when a caller knows it — the join itself never depends on it,
-because the decode session id (= Opik ``thread_id`` = Kitaru ``session_name`` = the Session Branch's
-short id) is the join.
+because the decode session id (= Langfuse ``session_id`` = Kitaru ``session_name`` = the Session Branch's
+short id) is the join. Langfuse trace mining and eval workflows use the same session identifier.
 
 The sha is one ``git rev-parse`` per launch directory, cached: a run that is not launched from a
 checkout (a benchmark Trial's throwaway Harness Home) gets ``"unknown"`` rather than a missing key,

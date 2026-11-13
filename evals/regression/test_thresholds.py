@@ -7,8 +7,8 @@ runs only when invoked explicitly::
     make eval-regression-dataset          # -> uv run pytest evals/regression/test_thresholds.py
     uv run pytest evals/regression/test_thresholds.py
 
-It costs real money and needs ``OPIK_API_KEY`` plus the active provider's inference key (the agent
-runs and Opik stores the experiment), so with a required key absent it SKIPS with a friendly reason and
+It costs real money and needs Langfuse plus the active provider's inference key, so with a required
+key absent it SKIPS with a friendly reason and
 exits 0. The skip predicate is the suite's ONE shared, provider-aware, settings-backed preflight
 (:func:`evals.harness.keys.eval_keys_missing`) — the same guard the Makefile runs first and the online
 track uses — so an openrouter/modal operator's run is gated on the RIGHT key, not a hardcoded
@@ -55,8 +55,7 @@ from evals.regression.thresholds import (
 )
 
 if TYPE_CHECKING:
-    import opik
-    from opik.evaluation.evaluation_result import EvaluationResult
+    from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +70,8 @@ def difficulty(pytestconfig: pytest.Config) -> str | None:
 
 
 @pytest.fixture(scope="session")
-def regression_result(difficulty: str | None) -> EvaluationResult:
-    """Run the selected case suite ONCE and hand its Opik result to every gate test (ADR-0017 §6).
+def regression_result(difficulty: str | None) -> Any:
+    """Run the selected case suite ONCE and hand its Langfuse result to every gate test.
 
     Skips with a clear reason (exit 0) when a required key is absent, so the ritual is safe to invoke
     on a machine without eval credentials. The skip predicate is the shared, provider-aware
@@ -89,7 +88,7 @@ def regression_result(difficulty: str | None) -> EvaluationResult:
     return run_regression(difficulty=difficulty)
 
 
-def test_regression_meets_absolute_thresholds(regression_result: EvaluationResult) -> None:
+def test_regression_meets_absolute_thresholds(regression_result: Any) -> None:
     """The hard gate: every graded metric clears its floor (tool-discipline ≥ 0.8, judges ≥ 0.7)."""
     aggregated = regression_result.aggregate_evaluation_scores()
     scores = scores_from_aggregation(aggregated.aggregated_scores)
@@ -102,7 +101,7 @@ def test_regression_meets_absolute_thresholds(regression_result: EvaluationResul
     assert report.passed, format_failures(report)
 
 
-def test_per_tier_scores_are_reported(regression_result: EvaluationResult) -> None:
+def test_per_tier_scores_are_reported(regression_result: Any) -> None:
     """The readable signal: one table per Difficulty Tier, WARNed, never gated (ADR-0022 §8)."""
     tiers = {case.id: case.difficulty for case in load_cases()}
 
@@ -114,12 +113,9 @@ def test_per_tier_scores_are_reported(regression_result: EvaluationResult) -> No
     assert by_tier, "no result carried a known case id — the dataset and the registry disagree."
 
 
-def test_baseline_compare_surfaces_deltas(
-    regression_result: EvaluationResult, difficulty: str | None
-) -> None:
+def test_baseline_compare_surfaces_deltas(regression_result: Any, difficulty: str | None) -> None:
     """The soft signal: WARN on per-metric regressions vs the last experiment, never fail (§6)."""
-    import opik
-
+    from evals.harness.datasets import langfuse_client
     from evals.harness.regression import GATE_EXPERIMENT_NAME, scoped_name
 
     experiment_name = scoped_name(GATE_EXPERIMENT_NAME, difficulty=difficulty)
@@ -127,7 +123,9 @@ def test_baseline_compare_surfaces_deltas(
         regression_result.aggregate_evaluation_scores().aggregated_scores
     )
     baseline = _load_baseline(
-        opik.Opik(), experiment_name=experiment_name, current_id=regression_result.experiment_id
+        langfuse_client(),
+        experiment_name=experiment_name,
+        current_id=regression_result.experiment_id,
     )
 
     if baseline is None:
@@ -145,31 +143,41 @@ def test_baseline_compare_surfaces_deltas(
 
 
 def _load_baseline(
-    client: opik.Opik, *, experiment_name: str, current_id: str
+    client: Any, *, experiment_name: str, current_id: str
 ) -> BaselineCandidate | None:
-    """Fetch prior experiments of ``experiment_name`` and pick the newest scored one (not this run).
-
-    Thin Opik glue around the pure :func:`latest_baseline`: it excludes the current run by id, reads
-    each candidate's creation time + feedback-score averages, and lets the pure helper choose. Any Opik
-    hiccup is swallowed to a ``None`` baseline (a soft signal must never break the gate).
-    """
+    """Fetch prior Langfuse experiments and pick the newest scored one."""
     try:
-        experiments = client.get_experiments_by_name(experiment_name)
-    except Exception as exc:  # a baseline lookup failure must not fail the gate
+        from datetime import UTC, datetime
+
+        experiments = []
+        cursor = None
+        while True:
+            response = client.api.experiments.list(
+                from_start_time=datetime(2000, 1, 1, tzinfo=UTC),
+                to_start_time=datetime.now(UTC),
+                limit=100,
+                score_limit=100,
+                cursor=cursor,
+                name=experiment_name,
+            )
+            experiments.extend(getattr(response, "data", []) or [])
+            cursor = getattr(getattr(response, "meta", None), "cursor", None)
+            if not isinstance(cursor, str) or not cursor:
+                break
+    except Exception as exc:
         logger.warning("[eval] baseline lookup failed: %s", exc)
         return None
 
     candidates: list[BaselineCandidate] = []
     for experiment in experiments:
-        if experiment.id == current_id:
+        if getattr(experiment, "id", None) == current_id:
             continue
         try:
-            data = experiment.get_experiment_data()
             candidates.append(
                 BaselineCandidate(
                     experiment_id=experiment.id,
-                    created_at=data.created_at,
-                    scores=baseline_scores_from_feedback(data.feedback_scores or []),
+                    created_at=getattr(experiment, "start_time", None),
+                    scores=baseline_scores_from_feedback(getattr(experiment, "scores", None) or []),
                 )
             )
         except Exception as exc:  # skip a candidate we cannot read, keep comparing the rest

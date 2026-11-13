@@ -90,7 +90,7 @@ class AgentTurnHandler:
     enables the two-tier compaction cascade at would-stop (ADR-0006 §3-7; :meth:`compact` is also
     the body of ``/compact``) — it is the ACTIVE provider's built model so the summarizer rides the
     Provider Seam (ADR-0018 §5), and ``None`` disables the cascade; ``session_id=`` makes each turn
-    one Opik ``chat_turn`` root span grouped into a per-session Thread (ADR-0014 §4).
+    one ``chat_turn`` root span grouped into a Langfuse session (ADR-0024).
     """
 
     def __init__(
@@ -108,7 +108,7 @@ class AgentTurnHandler:
     ) -> None:
         self._agent = agent
         self._deps = deps
-        # Opik Thread id for this session's turns; ``None`` makes the root span a nullcontext.
+        # Langfuse session id for this session's turns; ``None`` makes the root span a nullcontext.
         self._session_id = session_id
         # The running conversation, carried across turns; ``--resume`` seeds the replayed history.
         self.message_history: list[ModelMessage] = list(message_history or [])
@@ -157,7 +157,7 @@ class AgentTurnHandler:
 
         with observability.root_span(
             "chat_turn",
-            thread_id=self._session_id,
+            session_id=self._session_id,
             input=ctx.prompt,
             # The same join/filter fields a headless run's root span carries (ADR-0022 §10), so a
             # mined REPL trace and a benchmark trial slice on one vocabulary.

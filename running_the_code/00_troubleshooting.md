@@ -35,7 +35,7 @@ Feature-specific tables live next to the feature: **Modal endpoints** [02_modal_
 | `/` shows no demo skills | launched outside the course repo — skills load from the launch directory | relaunch from the repo, or copy `.decode/skills/` into your project. |
 | `--resume` finds nothing | sessions are per-directory | relaunch from the same directory; transcripts in `.decode/sessions/`. |
 | LSP tools return nothing | `ty` server missing or slow; best-effort by design | dev-group dependency — `make install`, not `uv sync --no-dev`. |
-| Nothing in Opik | no `OPIK_API_KEY` → silent no-op | set it, plus `OPIK_WORKSPACE` if not `default`. Project = `decode-<DECODE_ENV>` unless `OPIK_PROJECT_NAME` overrides. |
+| Nothing in Langfuse | either Langfuse key is unset → tracing is disabled | set both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`; check `LANGFUSE_BASE_URL` for your region. The same project keys are used for evals. |
 
 ## Still stuck?
 

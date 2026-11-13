@@ -3,7 +3,7 @@
 :func:`~evals.harness.driver.run_agent_once` drives the REAL ``build_agent()`` + ``Runner`` and
 returns an :class:`~evals.harness.driver.EvalRunRecord` whose tool calls come from the message
 history's ``ToolCallPart``s and whose usage is summed from each ``ModelResponse`` — never parsed
-from Opik traces. It is the REGRESSION track's engine (ADR-0022 §1 keeps it there).
+from provider traces. It is the REGRESSION track's engine (ADR-0022 §1 keeps it there).
 
 The BENCHMARK half is the format-v2 Benchmark Task contract (ADR-0022 §2) plus the Trial:
 the loader, the Seed Repo builder (:func:`~evals.harness.seed.seed_task_repo`), the host-side grading

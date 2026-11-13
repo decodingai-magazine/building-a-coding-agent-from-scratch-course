@@ -55,14 +55,14 @@ One case is a `RegressionCase` (`evals/regression/case.py`) — pure data, no co
 
 | Field | Meaning |
 |---|---|
-| `id` | Stable case key; also the Opik dataset item key (`case_id`). Non-blank, unique across the suite. |
+| `id` | Stable case key; also the Langfuse dataset item's `case_id`. Non-blank, unique across the suite. |
 | `prompt` | What the agent is asked. |
 | `fixture` | `Callable[[Path], None]` — seeds the fresh temp Workspace (files, `AGENTS.md`, `.decode/settings.json`). |
-| `metrics` | The Opik metric instances that grade the run (from `evals/harness/metrics.py`, Opik built-ins, or G-Eval judges). At least one. |
+| `metrics` | The local metric instances that grade the run (from `evals/harness/metrics.py` or LLM judges). At least one. |
 | **`difficulty`** | `easy` \| `medium` \| `hard` — the Difficulty Tier `--difficulty` slices on (required). |
-| **`description`** | One sentence, `Tests that …` / `Tests whether …`, ≤ 160 chars: what this case tests, in plain words. It rides onto the Opik dataset item and into the table above (required, non-blank). |
+| **`description`** | One sentence, `Tests that …` / `Tests whether …`, ≤ 160 chars: what this case tests, in plain words. It rides onto the Langfuse dataset item and into the table above (required, non-blank). |
 | **`symptom`** | One line: the regression this case catches. An invented case phrases it `"harness invariant: <one line>"`; a mined one names the bad behavior its trace showed (required). |
-| **`assertion`** | The same bar in English — it becomes the Test Suite item's assertion, judged on the agent's ANSWER. States the quality without naming the expected value, so a judge cannot cheat off it (required, non-blank). |
+| **`assertion`** | The same bar in English — it becomes the natural-language experiment item's assertion, judged on the agent's ANSWER. States the quality without naming the expected value, so a judge cannot cheat off it (required, non-blank). |
 | `gate_mode` | `PermissionMode` — defaults to `BYPASS`. |
 | `permission_rules` | Optional `RuleSet` threaded into the gate. |
 | `resolve_permission` | Optional async approval resolver (default = headless auto-deny). |
@@ -72,9 +72,9 @@ One case is a `RegressionCase` (`evals/regression/case.py`) — pure data, no co
 | `settings_overrides` | Settings forced for the duration of one run (the compaction case shrinks the context window). |
 | `enable_compaction` | Wire the auto-compaction cascade for this run. |
 | `max_requests` | Optional model-request cap so a runaway run stops gracefully — a stop, never a grader of quality. **Observed, never guessed:** run the case alone three times (`python -m evals regression --case <id>`), set `max(legs) + 1`, and name the experiment ids at the call site so the next model bump can tell a calibrated number from an invented one. A case that needs far more legs than its tier's neighbours is a broken CASE (wrong prompt, thin fixture, flailing behavior), not a stale cap — say so and file it instead of inflating the number. |
-| `tags` | Slice labels carried onto the Opik dataset item. |
+| `tags` | Slice labels carried onto the Langfuse dataset item. |
 | `skip_reason` | Declared but not yet runnable (case 12, MCP): stays in the registry, never runs, never registers. |
-| **`source_trace_id` / `thread_id` / `fixed_in`** | Mined-case provenance — the Opik trace + thread the case came from and the commit that fixed it. `None` on an invented case. |
+| **`source_trace_id` / `thread_id` / `fixed_in`** | Mined-case provenance — the source trace + thread and the commit that fixed it. `None` on an invented case. |
 
 Everything the eval driver (`evals/harness/driver.py`) can vary per run is reachable straight from the
 declaration — gate mode, resolvers, and pre-filled history included.
@@ -116,7 +116,7 @@ CASE = RegressionCase(
 
 A mined case is the same drop with provenance attached (ADR-0022 §8). It lives **beside** the
 invented ones — `evals/regression/cases/mined_<slug>.py`, ids `21-…` onward, tag `mined` — and fills
-`source_trace_id` (the LIVE Opik trace it came from), `thread_id` (the decode session) and, once a
+`source_trace_id` (the source trace it came from), `thread_id` (the decode session) and, once a
 fix lands, `fixed_in` (the commit sha). Its `symptom` names the behavior the trace actually showed
 instead of the `harness invariant:` phrasing an invented case uses, and it grades on **one**
 deterministic metric — the one that names that symptom. Nothing is ever deleted to make room for one.
@@ -129,8 +129,8 @@ The first mining session (2026-09-11, over `decode-prod`; raw output and picks i
 | `21-empty-model-response` | easy | Three model turns came back with no parts at all, so the run died on the retry ceiling with no answer. | `answered_without_error` | `019f5cd5-…` | `unfixed` |
 | `22-guessed-file-path` | easy | The first tool call opened a guessed path (`README`) the tree does not hold, burning a leg on the retry — in both recorded runs. | `read_path_exists` | `01a08614-…` | `unfixed` |
 
-Each source trace is tagged `regression-case` in Opik, so the online view links back
-to the case.
+These cases were mined from historical Opik traces before the Langfuse migration. Their source IDs
+are provenance only; historical Opik traces are not imported.
 
 Two metrics were added for these (`evals/harness/metrics.py`): `AnsweredWithoutErrorMetric` (the run
 ended with an answer and no agent error) and
@@ -151,13 +151,13 @@ ended with an answer and no agent error) and
 ## Running
 
 ```bash
-python -m evals sync --regression                     # upsert BOTH surfaces (dataset + Test Suite)
+python -m evals sync --regression                     # upsert both regression datasets
 python -m evals regression                            # run the whole suite
 python -m evals regression --case smoke-read-tool     # run one case
 python -m evals regression --difficulty easy          # run one tier
 make eval-regression-dataset                          # sync + the pre-merge threshold gate
 make eval-regression-dataset ARGS='--difficulty hard' # …sliced to one tier (sync AND gate)
-make eval-regression-suite                            # the Test Suite: an LLM judge over each assertion
+make eval-regression-suite                            # an LLM judge over each assertion
 make eval-regression-suite ARGS='--difficulty hard'   # …sliced to one tier
 ```
 
@@ -165,14 +165,14 @@ make eval-regression-suite ARGS='--difficulty hard'   # …sliced to one tier
 $ uv run python -m evals regression --help
 Usage: python -m evals regression [OPTIONS]
 
-  Run the behavior Regression Cases host-native as an Opik experiment
+  Run the behavior Regression Cases host-native as a Langfuse experiment
   (ADR-0022 §8).
 
   Each selected case seeds a fresh temp Workspace, runs the real agent HOST-
   NATIVE (``none`` mode — no docker) under the case's gate policy, and scores
   its behavior with the case's deterministic metrics. ``--difficulty`` slices
   the run to one tier and names the experiment after it (``decode-regression-
-  gate-hard``), so a tier's baseline stays its own. Opik + the harness are
+  gate-hard``), so a tier's baseline stays its own. Langfuse + the harness are
   imported lazily so ``--help`` never needs keys or a network (ADR-0017 §1).
 
 Options:
@@ -185,18 +185,18 @@ Options:
 `suite` takes the same two filters; `sync` takes `--difficulty` as well, so a tier is synced and run
 as one set.
 
-Dataset items are **versioned by checksum** (`case_checksum()` over the case's id, tier, tags, symptom,
-assertion, description and prompt): editing a case mints a new item beside the old one — Opik never
-deletes — and a run selects only the item matching the case on disk, so a stale item is ignored, never
-deleted, and never graded twice. A selected case with no matching item stops the run with a
+Langfuse dataset items are **versioned by checksum** (`case_checksum()` over the case's id, tier, tags,
+symptom, assertion, description and prompt): editing a case appends a new item beside the old one.
+The deterministic regression run selects the item matching the case on disk; stale items are ignored
+and never deleted or graded twice. A selected case with no matching item stops the run with a
 `RegressionSelectionError` telling you to re-run `python -m evals sync --regression`.
-The Test Suite, `decode-regression-suite`, is **reconciled** instead: every sync deletes the items that
-are not exactly one of the synced cases and inserts the missing ones, so it holds one item per case and
-`run_tests` never judges an edited case twice. Opik versions the suite itself (`v1`, `v2`… on every
-change, each still readable), so names stay clean — no `-v2`, no hash (ADR-0022 Amendment §15). Both
-`sync --regression` and `suite` print the version they left.
 
-Each run is one Opik experiment under `EVAL_PROJECT_NAME` (`decode-evals`), named
+The natural-language surface uses Langfuse's experiment API with the selected cases passed directly
+from the case registry. Sync also stores those cases in `decode-regression-suite`; old items remain
+for history. Each run gets a checksum-derived version name, so the selected set is visible in the
+experiment metadata and the local suite report.
+
+Each run is one Langfuse experiment under `EVAL_PROJECT_NAME` (`decode-evals`), named
 `decode-regression-gate` — or `decode-regression-gate-<tier>` for a filtered one, so a tier's baseline
 compares against that tier and never against the whole suite. Every case declares its own metrics;
 `run_regression` wraps each in a `CaseScopedMetric` so a single `evaluate()` call scores every case
@@ -210,26 +210,24 @@ unchanged floors (tool discipline ≥ 0.8, judges ≥ 0.7). Regression runs cost
 
 There are **two** regression surfaces on purpose, and the contrast between them is the teaching point
 (ADR-0017 §6; ADR-0022 §8). One case declaration registers in both: `python -m evals sync --regression`
-walks the cases ONCE and writes the dataset item the metrics grade AND the Test Suite item the
-assertion is judged against.
+walks the cases ONCE and writes the deterministic-regression dataset items and the
+natural-language-regression dataset items.
 
 | | Surface (a) — `python -m evals regression` | Surface (b) — `python -m evals suite` |
 |---|---|---|
 | Grader | Deterministic `BaseMetric` code (`evals/harness/metrics.py`) + G-Eval judges | An LLM judge checks the case's **natural-language assertion** |
 | "Correct" is | A number over a threshold (`aggregate_evaluation_scores() >= thresholds`) | *"the response never invents a file that does not exist"* — an English quality bar |
-| Opik surface | `decode-regression` dataset → `evaluate()` → pytest threshold gate | `decode-regression-suite` Test Suite → `run_tests()` → `result.pass_rate` gate |
+| Langfuse surface | `decode-regression` dataset → experiment + local metrics → pytest threshold gate | `decode-regression-suite` dataset → experiment + local LLM evaluator → `result.pass_rate` gate |
 | Scope | Every runnable case (`--case` / `--difficulty` slice it) | The same cases and the same filters — a full run is twenty agent runs plus judging, so `--difficulty` is the cost knob here too |
 | Gate | Per-metric thresholds, global | Suite `pass_rate` below `SUITE_PASS_BAR` (0.8) → non-zero exit |
 
 Surface (b) reuses the **same** run-and-grade path: its task adapter (`evals/harness/test_suite.py`)
-calls the identical `regression_task_fn`, then reshapes the result to the Test Suites `{"input",
+calls the identical `regression_task_fn`, then shapes the result to Langfuse's `{"input",
 "output"}` contract — keeping `input` to just the prompt the agent received so a leaked expected answer
 can never let the judge cheat. Because the judge only reads the answer, an assertion states the bar in
 terms the ANSWER shows; the mechanical half (which tool was called) is surface (a)'s job. Deterministic
 metrics catch exact regressions cheaply; NL assertions catch "the answer got worse in a way no single
 number captures". Neither replaces the other.
 
-> `opik.run_tests` runs every item of the suite it is handed and takes no item filter, so
-> `python -m evals suite --difficulty hard` first narrows `decode-regression-suite` to just the hard
-> cases rather than billing every judged item. The suite's latest version then holds that slice; a
-> full `python -m evals sync` widens it back, and the earlier versions stay readable in Opik.
+The natural-language experiment receives only the selected cases, so `--difficulty` limits both
+agent runs and judging without rewriting or narrowing the stored Langfuse dataset.

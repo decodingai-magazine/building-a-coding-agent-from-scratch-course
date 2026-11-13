@@ -95,7 +95,7 @@ def runnable_cases(cases: list[RegressionCase]) -> list[RegressionCase]:
     A ``skip_reason`` case is DECLARED (discoverable via :func:`load_cases`) but not yet runnable —
     decode's MCP tool factory has not shipped, so case 12 would grade a behavior the agent cannot
     perform. It is excluded here rather than at load time so the registry still lists it and it
-    activates the moment its ``skip_reason`` is removed. Both Opik surfaces carry what actually runs;
+    activates the moment its ``skip_reason`` is removed. Both Langfuse datasets carry what actually runs;
     the registry is what keeps the declared-but-blocked case visible.
     """
     runnable: list[RegressionCase] = []

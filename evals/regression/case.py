@@ -7,8 +7,8 @@ retired "probe" contract carried, it adds what ADR-0022 §8 asks for: a ``diffic
 ``--difficulty`` slice), a one-line ``symptom`` (what a reader sees first), a natural-language
 ``assertion`` (the Test Suite's quality bar — the English form of the metrics), and the provenance a
 MINED case brings with it (``source_trace_id``, ``thread_id``, ``fixed_in``). ONE declaration
-therefore registers in BOTH Opik surfaces: a dataset item + deterministic metrics (the gate) and a
-Test Suite item + its assertion (the contrast).
+therefore registers in BOTH Langfuse datasets: a deterministic regression item and a natural-language
+suite item carrying its assertion.
 
 Everything the eval driver (:mod:`evals.harness.driver`) can vary per run is reachable straight from
 the declaration:
@@ -26,9 +26,8 @@ the declaration:
 * ``enable_compaction`` — wire the auto-compaction cascade for this run (the driver leaves it off by
   default, so only a case that grades compaction pays for a summarizer call).
 
-This module imports no Opik: ``metrics`` are duck-typed Opik metric instances (built in task 104 /
-Opik built-ins / G-Eval judges), kept as ``Any`` so the case contract stays light and the CLI can
-import it without pulling the Opik harness (ADR-0017 §1).
+This module imports no Langfuse SDK: ``metrics`` are duck-typed local metric instances, kept as
+``Any`` so the case contract stays light and CLI help does not load a provider client (ADR-0017 §1).
 """
 
 from __future__ import annotations
@@ -50,7 +49,7 @@ if TYPE_CHECKING:
 # The tiers a case may declare — the SAME three a Benchmark Task uses (ONE Difficulty Tier vocabulary
 # across both eval tracks; ``tests/unit/evals/regression/test_case.py`` pins the two to each other).
 # Spelled out here rather than imported from ``evals.harness.task_loader`` because importing a
-# submodule runs ``evals/harness/__init__.py``, which pulls the whole Opik harness — and this contract
+# submodule runs ``evals/harness/__init__.py``, which pulls the whole harness — and this contract
 # must stay importable without it (ADR-0017 §1). ``DIFFICULTIES`` is the runtime tuple the validation
 # below and the CLI's choices read.
 Difficulty = Literal["easy", "medium", "hard"]
@@ -74,21 +73,21 @@ UserQuestionResolver = Callable[[str], Awaitable[str]]
 class RegressionCase:
     """One declarative behavior case: what to run, how to gate it, how to grade it (ADR-0022 §8).
 
-    ``id`` is the case's stable key (the Opik dataset item id); ``prompt`` is what the agent is
-    asked; ``fixture`` seeds the fresh temp Workspace; ``metrics`` are the Opik metric instances that
+    ``id`` is the case's stable key (the Langfuse dataset item key); ``prompt`` is what the agent is
+    asked; ``fixture`` seeds the fresh temp Workspace; ``metrics`` are local metric instances that
     grade the run's behavior. ``difficulty`` places the case in a tier (easy = single-tool discipline,
     medium = planning / delegation / skills / memory / web / lsp, hard = compaction, the gate,
     destructive caution, judged answers, the json contract) so one tier can be run and reported alone.
     ``description`` is the plain what-it-tests line, ONE sentence opening ``"Tests that …"`` /
     ``"Tests whether …"`` and at most 160 characters — the line a reader skims the case table by
-    (``evals/regression/README.md``), and the line the Opik dataset item carries.
+    (``evals/regression/README.md``), and the line the Langfuse dataset item carries.
     ``symptom`` is the one-line regression this case exists to catch — an INVENTED case phrases it as
     ``"harness invariant: <one line>"``, a MINED one names the bad behavior the trace showed.
     ``assertion`` is that same bar in English: it becomes the Test Suite item's assertion, the
     natural-language contrast to the deterministic metrics (ADR-0017 §6).
 
     ``source_trace_id`` / ``thread_id`` / ``fixed_in`` are the MINED-case provenance (``python -m evals
-    mine``): the Opik trace and thread the case came from and the commit that fixed it. An invented
+    mine``): the Langfuse trace and session the case came from and the commit that fixed it. An invented
     case leaves all three ``None``.
 
     The remaining fields map one-to-one onto the eval driver's knobs and default to the headless

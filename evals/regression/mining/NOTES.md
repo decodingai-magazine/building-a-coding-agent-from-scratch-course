@@ -1,4 +1,7 @@
-# Mining session — 2026-09-11, `decode-prod`
+# Historical Opik mining session — 2026-09-11, `decode-prod`
+
+This predates the migration to Langfuse. Its trace IDs, outputs, and commands document provenance
+only; the active miner now queries Langfuse, and historical Opik traces are not imported.
 
 What one **Trace Mining** pass over the live project found, what became a
 [Regression Case](../README.md#mined-cases), and what was deliberately left alone (ADR-0022 §8,

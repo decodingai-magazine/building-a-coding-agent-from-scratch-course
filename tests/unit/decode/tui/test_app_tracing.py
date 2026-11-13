@@ -1,10 +1,10 @@
-"""Unit tests for the REPL's Opik tracing wiring in ``run_app`` (ADR-0014 §1,4-5, task 092).
+"""Unit tests for the REPL's Langfuse tracing wiring in ``run_app`` (ADR-0024).
 
 Covers: ``init_tracing()`` called once BEFORE the agent is built, the single startup line when
 tracing is active (never when inactive), and the session-log id passed to the turn handler as the
-Opik thread id. Driven through the real ``run_app`` on piped prompt_toolkit input, quitting
+Langfuse session id. Driven through the real ``run_app`` on piped prompt_toolkit input, quitting
 immediately. No network: ``build_agent`` is stubbed to a ``FunctionModel`` agent and
-``init_tracing`` is a mock; the rootdir ``_no_opik_tracing`` fixture blanks the key.
+``init_tracing`` is a mock; the rootdir fixture blanks the cloud credentials.
 """
 
 from __future__ import annotations
@@ -26,9 +26,7 @@ from decode.agent.deps import AgentDeps
 from decode.agent.loop import AgentTurnHandler
 from decode.tui import app as app_mod
 
-# The project is DERIVED — ``decode-<DECODE_ENV>`` unless explicitly set (ADR-0015 §8) — so the line
-# is built from the singleton rather than a literal, which would go stale per environment.
-_TRACING_LINE = f"Decode - Opik tracing on (project '{app_mod.settings.opik_project_name}')."
+_TRACING_LINE = f"Decode - Langfuse tracing on (host '{app_mod.settings.langfuse_base_url}')."
 
 
 @pytest.fixture(autouse=True)
@@ -105,17 +103,17 @@ async def test_run_app_prints_the_tracing_line_once_when_active(monkeypatch):
     output = await _run_until_quit(_quit_immediately)
 
     assert _TRACING_LINE in output
-    assert output.count("Opik tracing on") == 1, "the tracing line must appear exactly once"
+    assert output.count("Langfuse tracing on") == 1, "the tracing line must appear exactly once"
 
 
 async def test_run_app_prints_no_tracing_line_when_inactive(monkeypatch):
     monkeypatch.setattr(app_mod, "build_agent", _chat_agent)
-    # No init_tracing patch: the autouse ``_no_opik_tracing`` fixture blanks the key, so the real
+    # No init_tracing patch: the autouse fixture blanks the keys, so the real
     # ``init_tracing`` no-ops and returns False.
 
     output = await _run_until_quit(_quit_immediately)
 
-    assert "Opik tracing on" not in output
+    assert "Langfuse tracing on" not in output
 
 
 async def test_run_app_passes_the_session_log_id_to_the_turn_handler(monkeypatch):

@@ -1,8 +1,8 @@
 # decode
 
-**decode** — terminal **coding agent** ("agentic harness") built step by step as an educational open-source course (Apache-2.0). Single Python package `decode` (Python 3.12+, `cli-tool-python` shape): Click entrypoint launches a TUI (`prompt_toolkit` input + `Rich` output — a module *inside* the package, not a separate service); Pydantic-AI ReAct loop drives file/bash/web/MCP tools; pluggable inference (Gemini / OpenRouter / Modal); local + remote sandboxing; Opik observability; Kitaru session recording + replay. Depth references name **squid scaffold specs** (in `iusztinpaul/squid` plugin, not this repo) — read via plugin cache; package depth: `python-backend` + `cli-tool-python`.
+**decode** — terminal **coding agent** ("agentic harness") built step by step as an educational open-source course (Apache-2.0). Single Python package `decode` (Python 3.12+, `cli-tool-python` shape): Click entrypoint launches a TUI (`prompt_toolkit` input + `Rich` output — a module *inside* the package, not a separate service); Pydantic-AI ReAct loop drives file/bash/web/MCP tools; pluggable inference (Gemini / OpenRouter / Modal); local + remote sandboxing; Langfuse tracing, evals, and trace mining; Kitaru session recording + replay. Depth references name **squid scaffold specs** (in `iusztinpaul/squid` plugin, not this repo) — read via plugin cache; package depth: `python-backend` + `cli-tool-python`.
 
-# Project Structure
+## Project Structure
 
 Target tree. Create `src/` subpackages **at their step** — never pre-create empty packages. `tests/` mirrors `src/` 1:1. Only `config/`, `entities/`, `logging.py` foundational from day one.
 
@@ -37,7 +37,7 @@ Target tree. Create `src/` subpackages **at their step** — never pre-create em
     ├── remote/                    # `decode remote …`: the Modal Headless App + its launcher (ADR-0020)
     ├── context/                   # context engineering: compaction + conversation log (JSONL)
     ├── memory/                    # AGENTS.md / MEMORY.md loading
-    └── observability/             # Opik tracing
+    └── observability/             # Langfuse tracing + eval scores
 ```
 
 Conventions: async I/O for network/DB, sync for CPU; shared models in `entities/`, narrow types in `<module>/types.py`; operator scripts in `scripts/`; CLI entrypoint in `pyproject.toml` `[project.scripts]` (`decode = "decode.cli:cli"`). **Every entrypoint module calls `init_logger()` at module level before any project import.**
@@ -47,7 +47,7 @@ Conventions: async I/O for network/DB, sync for CPU; shared models in `entities/
 `uv`, `ruff`, `pytest`. **Python 3.12+.** Per-step libraries `uv add`-ed when reached (commented block in `pyproject.toml`) — initial install stays light.
 
 | Layer | Choice | Notes |
-|---|---|---|
+| --- | --- | --- |
 | Package/deps | `uv` (+ `hatchling` build) | `uv.lock` committed; `uv sync` installs. |
 | Lint/format | `ruff` | One config block in `pyproject.toml`; format + check separate passes. |
 | Test | `pytest` (+ `asyncio`, `mock`) | `filterwarnings=["error"]`. |
@@ -56,7 +56,7 @@ Conventions: async I/O for network/DB, sync for CPU; shared models in `entities/
 | MCP | `fastmcp` | MCP tool factory + servers. |
 | Code intelligence | `ty` (stdio LSP server) | `lsp` tool + post-edit diagnostics over hand-rolled stdio client; swappable (`pylsp`), dev-group, pre-1.0, best-effort (ADR-0007). |
 | Inference | `google-genai` (Gemini) · OpenRouter · Modal | One **LLM Gateway**; OpenRouter OpenAI-compatible. |
-| Observability | `opik` | Tracing + eval harness. |
+| Observability / evals | `langfuse` | Tracing, datasets, experiments, eval scores, and trace mining. |
 | Sandbox / serving | Docker (local) · `modal` (remote) — one `run` seam by `SANDBOX_MODE` | Executors: `none` (host, default) / `docker` / `modal`; docker via CLI (no SDK). gVisor/Kata free daemon-config upgrades; Firecracker non-goal (ADR-0011). Modal also **hosts the harness**: `decode-headless` (remote `decode run` + N attempts + a `nightly` cron + a proxy-authed `webhook` — the app lives in `decode/remote/`, launched from `decode remote …`, ADR-0020 Amendment §10) — in-app image, no server (ADR-0020). Kitaru Workers never run on Modal (ADR-0023). |
 | Recording / replay | `kitaru[cli,mcp,worker]` + `kitaru-pydantic-ai` | **Recording Seam** (`runtime/recording.py`) wraps `build_agent()` in `KitaruAgent` when configured — REPL and `decode run` alike record Kitaru Sessions on whatever `KITARU_API_URL` names (local OSS server by default — `make kitaru-local`); **Replays** run from the top on a Kitaru Worker on the operator's machine (ADR-0019, ADR-0023). Depend on `pydantic-ai-slim[google,openai]>=2.46,<2.47` — the slim package, never the meta one — which is the adapter's own cap (ADR-0009, ADR-0019 §2's `<2.23` lifted by ADR-0022 §12, again by §17); lift it again when the adapter does. |
 | Datastore | SQLite | Conversation log JSONL today; compaction on it (ADR-0006). SQLite = deferred persistent-store option. |
@@ -65,11 +65,11 @@ Conventions: async I/O for network/DB, sync for CPU; shared models in `entities/
 
 `context7` MCP server (when connected) for authoritative tech-stack usage; else web search. `llms.txt` links = *indexes* — fetch index, then only needed pages; never whole `llms-full.txt` unless truly required.
 
-- **Pydantic AI:** https://pydantic.dev/docs/ai/llms.txt — append `.md` to any doc page for raw markdown (e.g. `.../agents/index.md`).
-- **Modal:** https://modal.com/llms.txt — full: https://modal.com/llms-full.txt (large).
-- **OpenRouter:** https://openrouter.ai/docs/llms.txt
-- **Opik:** https://www.comet.com/docs/opik/llms.txt — append `/llms.txt` to any section URL for scoped index.
-- **Kitaru (by ZenML):** https://docs.zenml.io/llms.txt — full: https://docs.zenml.io/llms-full.txt.
+- **Pydantic AI:** <https://pydantic.dev/docs/ai/llms.txt> — append `.md` to any doc page for raw markdown (e.g. `.../agents/index.md`).
+- **Modal:** <https://modal.com/llms.txt> — full: <https://modal.com/llms-full.txt> (large).
+- **OpenRouter:** <https://openrouter.ai/docs/llms.txt>
+- **Langfuse:** <https://langfuse.com/docs/llms.txt>
+- **Kitaru (by ZenML):** <https://docs.zenml.io/llms.txt> — full: <https://docs.zenml.io/llms-full.txt>.
 
 Infra access **CLI-only** (no web UIs) — reproducible, spot-checkable:
 
@@ -77,7 +77,7 @@ Infra access **CLI-only** (no web UIs) — reproducible, spot-checkable:
 - **Gemini** — primary LLM API via `google-genai` SDK; `GEMINI_API_KEY` (no CLI).
 - **OpenRouter** — OpenAI-compatible inference; `openrouter` CLI.
 - **Modal** — remote sandbox, open-model serving/inference, and the Modal Headless App (`decode.remote.app`, driven by `decode remote deploy|run|attempts|logs`); `modal run` / `modal deploy` / `modal secret create` / `modal app logs|stop` / `modal token set`. Runbook: [`running_the_code/04_deploy.md`](running_the_code/04_deploy.md).
-- **Opik** — LLM tracing + evals; `opik` CLI.
+- **Langfuse** — traces + evals; Langfuse SDK and CLI.
 - **Kitaru** — session recording + replay on whatever `KITARU_API_URL` names (local OSS server by default, `make kitaru-local`); `kitaru` CLI (`status` / `session` / `replay` / `worker` / `agent` / `cohort`) + `kitaru` skills/docs.
 - **Project MCP servers:** *AGENT: fill in any MCP server this project's code talks to and the config it needs.*
 
@@ -87,7 +87,7 @@ Core verbs at repo root via [`Makefile`](Makefile) wrapping `uv` — `make help`
 
 **Manual QA order:** `format-fix → lint-fix → format-check → lint-check → pre-commit → unit-tests`.
 
-**Evals** (ADR-0017 as rebuilt by ADR-0022; never in `make ci`): `make eval-benchmark` (19 Terminal-Bench-layout tasks, one Trial = one `decode run` subprocess graded host-side by `tests/test.sh` → `reward.txt`; `--trials/--threads/--difficulty/--job-name/--model`) + `make eval-regression-dataset` (21 tiered behavior cases + mined ones, deterministic metrics, gate 0.8 tool discipline / 0.7 judges) + `make eval-regression-suite` (same cases, an LLM judge over each case's English assertion, pass bar 0.8), plus `python -m evals mine | kitaru …`. Need `OPIK_API_KEY` + the provider key, cost money, skip friendly without; full map in [`running_the_code/05_evals.md`](running_the_code/05_evals.md).
+**Evals** (never in `make ci`): `make eval-benchmark` (19 Terminal-Bench-layout tasks, one Trial = one `decode run` subprocess graded host-side by `tests/test.sh` → `reward.txt`; `--trials/--threads/--difficulty/--job-name/--model`) + `make eval-regression-dataset` (tiered behavior cases, deterministic metrics, gate 0.8 tool discipline / 0.7 judges) + `make eval-regression-suite` (same cases, an LLM judge over each case's English assertion, pass bar 0.8), plus Langfuse trace mining. Datasets, experiments, traces, and scores use Langfuse; no Opik credential or archive importer is supported. Full map: [`running_the_code/05_evals.md`](running_the_code/05_evals.md).
 
 **Deps & env vars.** Runtime: `uv add <pkg>`; dev: `uv add --group dev <pkg>` (PEP 735 — never `[project.optional-dependencies]`). New env vars → `.env.example` + `config/settings.py`; never read `os.environ` deep in call sites.
 
@@ -96,7 +96,7 @@ Core verbs at repo root via [`Makefile`](Makefile) wrapping `uv` — `make help`
 - Remove instructions over adding; minimum words that achieve the goal.
 - New memory rule → concise why + good/bad examples. Good: "a 200-token chunk size", "sub-100ms latency". Bad: "a powerful architecture", "a robust pipeline".
 - **Step by step.** Teaching codebase — simplest readable thing beats clever or speculative. One concept per step; no abstraction without a second concrete caller.
-- **Infrastructure imported, not abstracted.** Call `modal` / `opik` / `pydantic-ai` / `sqlite3` directly; interface only when a real second implementation arrives (e.g. local-vs-remote sandbox seam).
+- **Infrastructure imported, not abstracted.** Call `modal` / `langfuse` / `pydantic-ai` / `sqlite3` directly; interface only when a real second implementation arrives (e.g. local-vs-remote sandbox seam).
 - **Datetimes timezone-aware (UTC)** — reject naive `datetime` at every boundary. Type-annotate everything, incl. `-> None`. Library code never `print()`s — logger only; user-facing CLI output via `click.echo` / `rich`.
 
 # Developing New Features & Bug Fixes
@@ -104,7 +104,7 @@ Core verbs at repo root via [`Makefile`](Makefile) wrapping `uv` — `make help`
 **squid** agent team (`iusztinpaul/squid` plugin). Trivial edits: direct chat. Groomed task(s): **`/implement-task`**. Whole feature: **`/plan`** then **`/implement-night`** (standalone: **`/review`** / **`/review-ci`**). Per-role rules ship with plugin.
 
 | Role | Responsibility |
-|---|---|
+| --- | --- |
 | Product Architect (PA) | Grooms feature into Tasks Plan; ADRs + glossary; user-POV acceptance. |
 | Software Engineer | Code + tests; commits each task after Tester passes. |
 | Tester | Full suite + e2e adversarial QA. |
@@ -126,7 +126,7 @@ Invariants agents can't infer:
 - **Harness artifacts anchor to launch cwd; only tool scope moves into Workspace.** Sandbox mode: `deps.cwd` (file/search + `bash` scope) = Workspace; every harness artifact (`.decode/sessions`, `.decode/MEMORY.md`, logs, `.decode/skills`, `.decode/settings.json` permissions) anchors to launch cwd via `AgentDeps.harness_home` (**Harness Home**). Skills catalog/dispatcher + memory injection read `harness_home`; file/search tools + `bash` read `deps.cwd`. `none`: `harness_home == deps.cwd == launch cwd`. Good: session log header records Harness Home → `--resume` finds it. Bad: session log under `deps.cwd` — ships into user's branch, vanishes with sandbox (ADR-0012 §6).
 - **Workspace ships back as git branch, host-side only.** **Hand-back** (`sandbox/handback.py`): secures final Workspace onto deterministic `decode/<session-id>` **Session Branch** (auto-commits uncommitted model work; model's own commits never rewritten), `git push origin` — `--repo <URL>` → remote, `--repo <local path>` → local source repo — with **ambient host git creds**. Every git command runs host-side against `.decode/sandbox`; **hand-back puts no credential in the sandbox** — the property stands on its own, and holds whether or not `SANDBOX_GIT_TOKEN` is set (ADR-0016 §4). Local branch survives a failed push (friendly line names it + location). Triggers: **REPL exit**, idle-only **`/ship`**, **headless `decode run --repo` completion** (host-side, in the runner process — the "inside the flow" constraint died with the flow, ADR-0019 §1). Skips: no-repo / non-git / unchanged-vs-cloned-HEAD (ADR-0012 §8).
 - **Secrets never reach the model's context; the sandbox gets exactly what the user hands it, no more** (ADR-0016 — supersedes ADR-0011 §6 + ADR-0012 §10; the **Credential Proxy is deleted**, clean break, no shim). Two halves, both true in *every* mode: (a) **context** — `Settings` is never serialised into a prompt, secrets are `SecretStr`, log lines carry names never values; (b) **sandbox** — the **Worker** holds only the opt-in credential the user gives it: today `SANDBOX_GIT_TOKEN` and nothing else, direct-injected as `GITHUB_TOKEN` in **BOTH** backends (docker: value-less `-e GITHUB_TOKEN`, so the token never sits in a host-visible argv; modal: `modal.Secret`) + a git credential-helper (`x-access-token:$GITHUB_TOKEN`) so `git push` over HTTPS works and `gh` authenticates off it. **A sandboxed process CAN read `$GITHUB_TOKEN`** — hand it a **scoped, revocable** PAT. The harness's own config surface (a laptop's `.env`, a container's Modal Secret) is never poured into a worker env. Good: `SANDBOX_GIT_TOKEN` unset → sandbox holds no credential at all, host-side Hand-back still ships the branch. Bad: a deployment's whole Secret poured into the Worker env "so the tools just work".
-- **One config surface, ONE source chain; `DECODE_ENV` is a NAMING suffix** (ADR-0021, supersedes ADR-0015 §§1-3,5,7 + ADR-0020 §11 — the **Environment Bucket is deleted**, `make sync-secrets` with it, clean break, no shim). `Settings` reads `init > process env > .env > defaults` at EVERY environment; the store feeding it is the platform's own (a laptop's `.env`, a container's Modal Secret). `DECODE_ENV` changes only names — `decode-sandbox-<env>`, Opik `decode-<env>`, and the Modal app + its Secret, `decode-headless-<env>`. One environment = one deployment = one Secret, which carries CREDENTIALS ONLY and is that container's whole config surface. The environment is BAKED into the image at deploy (`DECODE_ENV=prod decode remote deploy`, passed explicitly to the `modal deploy` subprocess since a `.env` value never reaches `os.environ`); a Secret that carries a contradicting `DECODE_ENV` is refused at startup, an unknown one fails on the laptop. Tightened invariant (ADR-0021 §5): **kitaru is imported ONLY when recording is configured or under a Worker Task** — at any `DECODE_ENV`, the remote-bucket branch is gone. Good: `DECODE_ENV=prod decode remote logs` tails `decode-headless-prod`. Bad: a `decode-prod` Kitaru secret standing between a paid run and its first prompt.
+- **One config surface, ONE source chain; `DECODE_ENV` is a NAMING suffix** (ADR-0021, supersedes ADR-0015 §§1-3,5,7 + ADR-0020 §11 — the **Environment Bucket is deleted**, `make sync-secrets` with it, clean break, no shim). `Settings` reads `init > process env > .env > defaults` at EVERY environment; the store feeding it is the platform's own (a laptop's `.env`, a container's Modal Secret). `DECODE_ENV` changes only names — `decode-sandbox-<env>` and the Modal app + its Secret, `decode-headless-<env>`; Langfuse projects are selected by their API keys. One environment = one deployment = one Secret, which carries CREDENTIALS ONLY and is that container's whole config surface. The environment is BAKED into the image at deploy (`DECODE_ENV=prod decode remote deploy`, passed explicitly to the `modal deploy` subprocess since a `.env` value never reaches `os.environ`); a Secret that carries a contradicting `DECODE_ENV` is refused at startup, an unknown one fails on the laptop. Tightened invariant (ADR-0021 §5): **kitaru is imported ONLY when recording is configured or under a Worker Task** — at any `DECODE_ENV`, the remote-bucket branch is gone. Good: `DECODE_ENV=prod decode remote logs` tails `decode-headless-prod`. Bad: a `decode-prod` Kitaru secret standing between a paid run and its first prompt.
 - **Recording is an observer for a human, a precondition for a replay** (ADR-0019 §3). ONE **Recording Seam** (`runtime/recording.py`) wraps the built agent in `KitaruAgent` iff `KITARU_AGENT_ID` + `KITARU_API_URL` are set (exported or `.env` — the seam exports a `.env`-only URL for the adapter, whose client reads only `os.environ`; ADR-0022 §18) — REPL (turns grouped by `session_name` = decode session id) and headless `decode run` alike; decode owns no other recording machinery and no key setting (`kitaru login` keeps the token). Two failure modes, split on `KITARU_TASK_ID`: a **user-launched** run degrades to the bare agent with ONE warning line and still exits 0; a **Kitaru-Worker-spawned** run hard-fails, because an unrecorded replay is a lying experiment (which is also why a Worker Task counts as configured without an agent id — ADR-0019 Amendments §3). Good: workspace unreachable mid-demo → the paid run finishes, one stderr line says it was not recorded. Bad: a replay that quietly runs unrecorded.
 
 # Testing E2E
@@ -138,7 +138,7 @@ Manual e2e QA playbook — what to type at each surface and what "working" looks
 Recording and replay are an **operator** surface, not a code path: nothing here runs in CI (ADR-0019, "Test surface"). A **Kitaru Server** is whatever `KITARU_API_URL` names and is disposable — the local OSS deployment (`make kitaru-local` = `kitaru login --local` + `make kitaru-bootstrap`, which wraps `scripts/bootstrap_kitaru.py`) by default, the managed workspace (`https://f5ee9622-kitaru.cloudinfra.zenml.io`, deactivated today) as a URL switch (ADR-0022 §11); `kitaru status` names the current one. **Workers run only on the operator's machine** — the managed workspace is where results are pushed, never a host (ADR-0023). Runbook: [`running_the_code/06_evals_replays.md`](running_the_code/06_evals_replays.md).
 
 - **Record** — put `KITARU_API_URL` + `KITARU_AGENT_ID` in `.env` (both printed by `make kitaru-local`), then any REPL turn or `decode run` files a **Kitaru Session** (`kitaru session get <id>` shows it node by node; `make kitaru-seed` records 30 mixed runs for an investigation); freeze a set of them as a **Cohort** (`decode-request-limit@1`).
-- **Join to Opik** — two thin commands over ONE key, the decode session id (ADR-0022 §11): `python -m evals kitaru import [--limit N]` backfills Sessions for the Opik project's newest threads (or named `<trace-id>…` / `--thread`), `python -m evals kitaru cohort from-experiment <job>` freezes a benchmark job's reward-0 trials into a Cohort.
+- **Join evals to Kitaru** — Langfuse-backed eval runs can be joined to the Kitaru Sessions recorded by decode using the shared decode session id; historical Opik trace imports are not supported.
 - **Replay** — `kitaru replay create <session-id> --agent decode@<version>` re-runs a Session **from the top** on a **Kitaru Worker** you start yourself (`kitaru worker start` — the server executes nothing). No override = **Baseline Replay**, the control; overrides (model / system prompt / prompt / params) + `--tool-policy` make it a what-if.
 - **Agent Version** — the registered run spec the Worker spawns (`scripts/bootstrap_kitaru.py`, which registers everything decode needs on one server, idempotently): `decode run` with no inline prompt, `SANDBOX_MODE=docker`, repo clone, Harness Home outside the repo. A code change = a new version.
 - Investigating a bad session, authoring an evaluator → skill **kitaru-investigation**; designing/running a what-if replay or cohort experiment → skill **kitaru-replay-experiment**; pulling sessions in from another trace store → skill **kitaru-importer-builder**. Not vendored — install via `npx skills add zenml-io/kitaru-skills`.

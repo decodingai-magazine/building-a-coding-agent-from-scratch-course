@@ -1,15 +1,15 @@
 """The pre-merge threshold gate's key preflight is provider-aware, not a hardcoded copy (ADR-0017 §9).
 
 Regression guard for the Blocker in task 122: the gate module
-(``evals/regression/test_thresholds.py``) used to gate its own execution on a hardcoded
-``REQUIRED_KEYS = ("GEMINI_API_KEY", "OPIK_API_KEY")`` read from ``os.environ`` — a third, divergent
+(``evals/regression/test_thresholds.py``) used to gate its own execution on hardcoded
+provider keys read from ``os.environ`` — a third, divergent
 copy of the provider-aware, settings-backed preflight. An openrouter/modal operator then ran
 ``make eval-regression-dataset``, the harness key guard passed, ``evals sync`` ran, and the gate pytest SKIPPED
 demanding a ``GEMINI_API_KEY`` they neither had nor needed — ``make`` exiting 0 having gated nothing.
 
 These offline tests pin the shared predicate the gate now uses (``eval_keys_missing``): it names the
 active provider's key, and the gate wires that exact shared symbol so it cannot drift back into a
-divergent copy. No Opik, no keys, no agent run — the ``settings`` singleton is patched in place.
+divergent copy. No remote service or agent run — the ``settings`` singleton is patched in place.
 """
 
 from __future__ import annotations
@@ -40,18 +40,21 @@ def _set_provider_key(mocker, provider: str, *, value: str) -> None:
 
 
 @pytest.fixture
-def with_opik(mocker):
-    """Give ``settings`` a present ``OPIK_API_KEY`` — the always-required half of the preflight."""
+def with_langfuse(mocker):
+    """Give ``settings`` both required Langfuse keys."""
     mocker.patch.object(
-        settings, "opik_api_key", SimpleNamespace(get_secret_value=lambda: "opik-key")
+        settings, "langfuse_public_key", SimpleNamespace(get_secret_value=lambda: "pk-test")
+    )
+    mocker.patch.object(
+        settings, "langfuse_secret_key", SimpleNamespace(get_secret_value=lambda: "sk-test")
     )
 
 
 @pytest.mark.parametrize(("provider", "expected_key"), sorted(_PROVIDER_KEY.items()))
 def test_gate_predicate_names_the_active_providers_key_when_missing(
-    with_opik, mocker, provider, expected_key
+    with_langfuse, mocker, provider, expected_key
 ):
-    """With OPIK present but the active provider's inference key absent, the gate demands THAT key.
+    """With Langfuse configured but the provider's inference key absent, demand THAT key.
 
     This is the exact defect: an openrouter/modal (or .env-only) operator must not be told to set
     ``GEMINI_API_KEY`` — the skip reason names the provider-correct variable.
@@ -63,8 +66,10 @@ def test_gate_predicate_names_the_active_providers_key_when_missing(
 
 
 @pytest.mark.parametrize("provider", sorted(_PROVIDER_KEY))
-def test_gate_predicate_is_empty_when_provider_key_and_opik_present(with_opik, mocker, provider):
-    """The active provider's key + OPIK present → nothing missing → the gate RUNS (does not skip)."""
+def test_gate_predicate_is_empty_when_provider_and_langfuse_keys_present(
+    with_langfuse, mocker, provider
+):
+    """The provider key and Langfuse credentials are present, so the gate runs."""
     mocker.patch.object(settings, "llm_provider", provider)
     _set_provider_key(mocker, provider, value="present")
 

@@ -42,7 +42,7 @@ _GROUNDED_ANSWER_JUDGE = make_judge(
     ),
     evaluation_criteria=(
         # Phrased qualitatively — NOT as "Score 1.0/0.0" — because those numeric anchors collide with
-        # Opik G-Eval's internal 0-10 scale and yield garbage (a perfect answer scored 0.1 in QA).
+        # Legacy Opik G-Eval used a 0-10 scale (a perfect answer scored 0.1 in QA).
         f"The answer is fully correct when it (`output`) states the rate limit as {_RATE_LIMIT!r} — "
         "the value the served page contains. It is incorrect when it gives any other number, or "
         "refuses/guesses with a value not grounded in the fetched page."

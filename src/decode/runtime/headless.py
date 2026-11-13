@@ -13,7 +13,7 @@ primitives — so a headless run is now a plain async agent run:
   Session Branch from THIS host-side process (ADR-0012 §8) — the "runs inside the flow" constraint
   died with the flow.
 * **Tracing**: :func:`decode.observability.init_tracing` runs before the agent is built, exactly
-  like the TUI, and the run opens one root span keyed on the run's session id (ADR-0014 §4-5).
+  like the TUI, and the run opens one root span keyed on the run's session id (ADR-0024).
 * **Recording**: the Recording Seam (:mod:`decode.runtime.recording`) decides wrapped-vs-bare; when
   it degrades, this runner echoes its ONE notice line on stderr — stdout stays the answer alone
   (ADR-0019 §3).
@@ -229,7 +229,7 @@ async def _run_task(
     tool_scope = await _prepare_headless_tool_scope(repo, local)
     # The Recording Seam (ADR-0019 §3): the SAME agent back unless recording is configured, in which
     # case it comes back wrapped for Kitaru, with this run's session id naming the Kitaru Session —
-    # so a recorded session, the Opik trace thread and the Session Branch all carry one id.
+    # so a recorded session, the Langfuse trace session and the Session Branch all carry one id.
     agent, recording_notice = await wrap_for_recording(
         _build_headless_agent(model), session_name=session_id
     )
@@ -244,7 +244,7 @@ async def _run_task(
     # the metadata an eval filters and joins traces on (ADR-0022 §10).
     with observability.root_span(
         RUN_SPAN_NAME,
-        thread_id=session_id,
+        session_id=session_id,
         input=task,
         metadata=observability.trace_metadata(model),
     ) as span:
@@ -294,8 +294,7 @@ def run_headless_task(
     """
     session_id = str(uuid4())
     max_requests = resolve_max_requests(max_requests)
-    # A silent no-op without a key (ADR-0014 §4-5). An Environment-Bucket-hydrated OPIK_API_KEY is
-    # already in ``settings`` — hydration is process-scoped, at singleton construction (ADR-0015 §5).
+    # A silent no-op without Langfuse credentials.
     observability.init_tracing()
     logger.debug(
         "headless run starting (session_id=%s, model=%r, repo=%r, local=%s, max_requests=%r)",

@@ -1,38 +1,32 @@
-"""Opik observability — the presence-based tracing init seam (ADR-0014).
+"""Langfuse Cloud observability — the presence-based tracing init seam (ADR-0024).
 
-One :func:`init_tracing` wires the logfire integration + a settings-driven OTLP exporter to Opik,
-covering every pydantic-ai Agent in ONE global ``instrument_pydantic_ai`` call. With no
-``OPIK_API_KEY`` it is a silent no-op and decode is byte-identical. Export is configured
-programmatically from settings, never via global ``OTEL_*`` env vars — kitaru→zenml ships its own
-OpenTelemetry SDK, so polluting the global env could redirect its telemetry too. See ADR-0014 §5.
+One :func:`init_tracing` wires the logfire integration + a settings-driven OTLP exporter to Langfuse,
+covering every pydantic-ai Agent in ONE global ``instrument_pydantic_ai`` call. With no Langfuse
+credentials it is a silent no-op and decode is byte-identical. Export is configured programmatically
+from settings, never via global ``OTEL_*`` env vars — kitaru→zenml ships its own OpenTelemetry SDK,
+so polluting the global env could redirect its telemetry too.
 """
 
 from __future__ import annotations
 
+import base64
 import logging
-from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from typing import Any
 
 import logfire
+from langfuse import propagate_attributes
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
 
 from decode.config.settings import settings
-from decode.observability.cost import OPIK_COST_ATTRIBUTE, span_cost_usd
+from decode.observability.cost import GEN_AI_COST_ATTRIBUTE, span_cost_usd
 
 logger = logging.getLogger(__name__)
 
-# The Comet-cloud OTLP base used when ``opik_url_override`` is unset; the exporter appends
-# ``/v1/traces``, a self-hosted Opik overrides the whole base (ADR-0014 §2).
-_CLOUD_OTLP_BASE = "https://www.comet.com/opik/api/v1/private/otel"
-
-# Opik's documented span-attribute prefix for "put this in the span's metadata" — and a ROOT span's
-# metadata is the trace's metadata (docs: integrations/opentelemetry, "Opik-specific span
-# attributes"). NOT ours to rename: an attribute set without it is dropped on ingestion, which is
-# why the four join fields ride prefixed while ``thread_id`` — a key Opik maps itself — does not.
-OPIK_METADATA_PREFIX = "opik.metadata."
+_INGESTION_VERSION = "4"
 
 # Idempotency flag: ``logfire.configure`` installs a PROCESS-GLOBAL TracerProvider, so a second
 # configure would stack a second exporter. Cleared by :func:`reset_tracing` (test hermeticity).
@@ -68,11 +62,11 @@ class CostAnnotatingExporter(SpanExporter):
 def _with_cost(span: ReadableSpan) -> ReadableSpan:
     """``span`` plus a cost attribute, or ``span`` itself when it cannot be priced.
 
-    A span already carrying :data:`OPIK_COST_ATTRIBUTE` is left alone — whoever set it upstream is
+    A span already carrying :data:`GEN_AI_COST_ATTRIBUTE` is left alone — whoever set it upstream is
     closer to the provider's own numbers than a rate table is.
     """
     attributes = span.attributes or {}
-    if OPIK_COST_ATTRIBUTE in attributes:
+    if GEN_AI_COST_ATTRIBUTE in attributes:
         return span
     cost = span_cost_usd(attributes)
     if cost is None:
@@ -82,7 +76,7 @@ def _with_cost(span: ReadableSpan) -> ReadableSpan:
         context=span.get_span_context(),
         parent=span.parent,
         resource=span.resource,
-        attributes={**attributes, OPIK_COST_ATTRIBUTE: cost},
+        attributes={**attributes, GEN_AI_COST_ATTRIBUTE: cost},
         events=span.events,
         links=span.links,
         kind=span.kind,
@@ -93,8 +87,17 @@ def _with_cost(span: ReadableSpan) -> ReadableSpan:
     )
 
 
+def _preserve_langfuse_session_id(match: logfire.ScrubMatch) -> Any:
+    if match.path in {
+        ("attributes", "session.id"),
+        ("attributes", "langfuse.session.id"),
+    }:
+        return match.value
+    return None
+
+
 def init_tracing() -> bool:
-    """Configure Opik tracing when ``OPIK_API_KEY`` is present; a silent no-op otherwise (ADR-0014 §1-3).
+    """Configure Langfuse tracing when both keys are present; otherwise a silent no-op (ADR-0024).
 
     Presence-based + idempotent; returns whether tracing is active. With no key it builds nothing,
     emits no span, and mutates no ``os.environ`` — decode is byte-identical. No
@@ -106,17 +109,23 @@ def init_tracing() -> bool:
     if _active:
         # ``logfire.configure`` is process-global, so a repeat call must not re-configure.
         return True
-    key = settings.opik_api_key.get_secret_value()
-    if not key:
+    secret_key = settings.langfuse_secret_key.get_secret_value()
+    public_key = settings.langfuse_public_key.get_secret_value()
+    if not secret_key and not public_key:
         return False
-    # ``rstrip("/")`` so a trailing-slash ``opik_url_override`` can't produce a ``//v1/traces``.
-    base = (settings.opik_url_override or _CLOUD_OTLP_BASE).rstrip("/")
+    if not secret_key or not public_key:
+        raise ValueError(
+            "Langfuse tracing requires both LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY."
+        )
+    base = settings.langfuse_base_url.strip().rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        raise ValueError("LANGFUSE_BASE_URL must be an http(s) URL.")
+    authorization = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode("ascii")
     exporter = OTLPSpanExporter(
-        endpoint=f"{base}/v1/traces",
+        endpoint=f"{base}/api/public/otel/v1/traces",
         headers={
-            "Authorization": key,
-            "Comet-Workspace": settings.opik_workspace,
-            "projectName": settings.opik_project_name,
+            "Authorization": f"Basic {authorization}",
+            "x-langfuse-ingestion-version": _INGESTION_VERSION,
         },
     )
     logfire.configure(
@@ -126,16 +135,18 @@ def init_tracing() -> bool:
         # pins its prompt over with ``patch_stdout()``. That flooded the REPL with a raw span trace
         # (timestamps, nesting, ``running tool: grep``), bypassing decode's event bus and renderer
         # entirely. ``send_to_logfire=False`` only disables CLOUD egress; it does not touch this.
-        # Opik export is unaffected — it rides ``additional_span_processors`` below.
+        # Langfuse export rides ``additional_span_processors`` below.
         console=False,
-        # The cost wrapper sits between the batcher and the OTLP exporter, so every span Opik
+        # The cost wrapper sits between the batcher and the OTLP exporter, so every span Langfuse
         # receives carries a cost whenever decode can price it (ADR-0014 §8).
         additional_span_processors=[BatchSpanProcessor(CostAnnotatingExporter(exporter))],
+        # Langfuse uses ``session.id`` for trace grouping, but that key matches Logfire's default
+        # ``session`` scrub pattern. Preserve only decode's opaque session identifier.
+        scrubbing=logfire.ScrubbingOptions(callback=_preserve_langfuse_session_id),
     )
     logfire.instrument_pydantic_ai()
     _active = True
-    target = "self-hosted" if settings.opik_url_override else "cloud"
-    logger.info("Opik tracing active — project=%s target=%s", settings.opik_project_name, target)
+    logger.info("Langfuse tracing active — host=%s", base)
     return True
 
 
@@ -147,49 +158,52 @@ def is_tracing_active() -> bool:
 def root_span(
     name: str,
     *,
-    thread_id: str | None = None,
+    session_id: str | None = None,
     input: str | None = None,
     metadata: Mapping[str, str] | None = None,
 ) -> AbstractContextManager[Any]:
-    """Open a root span named ``name`` when tracing is active, else a ``nullcontext`` (ADR-0014 §4-5).
+    """Open a root span named ``name`` when tracing is active, else a ``nullcontext`` (ADR-0024).
 
-    ``thread_id`` rides as a span attribute Opik maps to a conversation Thread — the decode session
-    id: the REPL's, or the fresh per-run id ``decode run`` mints (ADR-0019 §1). ``input`` is set so
-    Opik buckets it into the **trace's** INPUT
-    (a prefix match on the attribute key) — without it the Thread view renders blank rows. The
-    paired :func:`record_output` sets the ``output`` half. Call sites open this unconditionally.
-
-    ``metadata`` (:func:`decode.observability.trace_metadata`) is set key by key as a FLAT
-    ``opik.metadata.<key>`` attribute, which is Opik's documented contract for landing a value in a
-    span's ``metadata`` — and the root span's metadata is the **trace's** metadata, which is what an
-    eval filters traces on (ADR-0022 §10). The prefix is load-bearing, not decoration: a plain
-    unmapped attribute is dropped on ingestion (``thread_id`` survives only because it is one of the
-    few keys Opik maps itself), so ``git_sha`` set bare never reaches a trace at all.
+    The decode session id becomes a Langfuse session id. Langfuse's propagation helper applies
+    session and metadata attributes to this span and its descendants. ``input`` and the paired
+    :func:`record_output` use Langfuse's trace-level OTEL attributes.
     """
     if not _active:
         return nullcontext()
-    attributes: dict[str, Any] = {"thread_id": thread_id}
+    attributes: dict[str, Any] = {}
     if isinstance(input, str) and input:
-        attributes["input"] = input
-    attributes.update(
-        {f"{OPIK_METADATA_PREFIX}{key}": value for key, value in (metadata or {}).items()}
-    )
-    return logfire.span(name, **attributes)
+        attributes["langfuse.trace.input"] = input
+
+    @contextmanager
+    def span_context() -> Iterator[Any]:
+        with (
+            logfire.span(name, **attributes) as span,
+            propagate_attributes(
+                session_id=session_id,
+                metadata=dict(metadata) if metadata else None,
+                trace_name=name,
+            ),
+        ):
+            if session_id:
+                span.set_attribute("langfuse.session.id", session_id)
+            yield span
+
+    return span_context()
 
 
 def record_output(span: Any, output: object) -> None:
-    """Set the ``output`` attribute on a root ``span`` so Opik populates the **trace's** OUTPUT (ADR-0014 §4).
+    """Set the output attribute on a root span so Langfuse populates the trace output (ADR-0024).
 
     The mirror of ``root_span``'s ``input``. A no-op when ``span`` is ``None`` (tracing off) or
     ``output`` is not non-empty text, so call sites invoke it unconditionally.
     """
     if span is None or not isinstance(output, str) or not output:
         return
-    span.set_attribute("output", output)
+    span.set_attribute("langfuse.trace.output", output)
 
 
 def reset_tracing() -> None:
-    """Clear the module flag so a later :func:`init_tracing` re-drives — test hermeticity (ADR-0014 §7).
+    """Clear the module flag so a later :func:`init_tracing` re-drives — test hermeticity.
 
     Only drops the ``_active`` flag; it does NOT tear down the process-global logfire TracerProvider
     a prior configure installed.

@@ -1,16 +1,11 @@
-"""`evals mine` — the trace-triage half of regression mining (task 163).
-
-Every fixture under ``tests/unit/evals/fixtures/traces/`` is a real Opik export shape: two
-anonymised live ``decode_run`` traces (pre-156, so no ``git_sha``/``model`` metadata — the ``-``
-path) plus hand-made error / denied / long / chat-only cases built from shapes observed live on
-``decode-prod``. The Opik client is a fake; every rule under test is pure over plain dicts.
-"""
+"""Offline tests for Langfuse observation-based trace mining."""
 
 from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -53,33 +48,64 @@ def spans_of(name: str) -> list[dict[str, Any]]:
     return load(name)["spans"]
 
 
-class FakeOpik:
-    """The Opik surface ``TraceSource`` touches: ``search_traces`` + ``search_spans``."""
+class FakeLangfuse:
+    """Provide Langfuse observation pages from normalized trace fixtures."""
 
     def __init__(
         self, entries: list[dict[str, Any]], *, filtered: dict[str, list[str]] | None = None
     ):
         self.entries = {str(entry["trace"]["id"]): entry for entry in entries}
         self.filtered = filtered or {}
-        self.trace_queries: list[tuple[str | None, int]] = []
-        self.span_queries: list[str] = []
+        self.observation_queries: list[tuple[datetime | None, int]] = []
+        self.observations = []
+        for trace_id, entry in self.entries.items():
+            trace = entry["trace"]
+            error = trace.get("error_info")
+            usage = trace.get("usage") or {}
+            self.observations.append(
+                {
+                    "id": f"root-{trace_id}",
+                    "trace_id": trace_id,
+                    "session_id": trace.get("thread_id"),
+                    "parent_observation_id": None,
+                    "name": trace.get("name"),
+                    "start_time": trace.get("start_time"),
+                    "level": "ERROR" if error else "DEFAULT",
+                    "status_message": error.get("message") if error else None,
+                    "metadata": {
+                        **(trace.get("metadata") or {}),
+                        **(
+                            {"exception_type": error.get("exception_type")}
+                            if error and error.get("exception_type")
+                            else {}
+                        ),
+                    },
+                    "usage_details": {
+                        "input": usage.get("prompt_tokens"),
+                        "output": usage.get("completion_tokens"),
+                        "total_tokens": usage.get("total_tokens"),
+                    },
+                }
+            )
+            self.observations.extend(entry["spans"])
+        self.api = SimpleNamespace(
+            observations=SimpleNamespace(get_many=self.get_many),
+        )
 
-    def search_traces(
-        self, *, project_name: str, filter_string: str | None, max_results: int
-    ) -> list[dict[str, Any]]:
-        self.trace_queries.append((filter_string, max_results))
-        wanted = self.filtered.get(filter_string or "", list(self.entries))
-        return [self.entries[key]["trace"] for key in wanted][:max_results]
-
-    def search_spans(
-        self, *, project_name: str, trace_id: str, max_results: int
-    ) -> list[dict[str, Any]]:
-        self.span_queries.append(trace_id)
-        return self.entries[trace_id]["spans"]
+    def get_many(self, *, limit: int, from_start_time: datetime | None):
+        self.observation_queries.append((from_start_time, limit))
+        observations = self.observations
+        if from_start_time is not None:
+            observations = [
+                observation
+                for observation in observations
+                if datetime.fromisoformat(observation["start_time"]) >= from_start_time
+            ]
+        return SimpleNamespace(data=observations[:limit])
 
 
 def source_over(*names: str, filtered: dict[str, list[str]] | None = None) -> TraceSource:
-    client = FakeOpik([load(name) for name in names], filtered=filtered)
+    client = FakeLangfuse([load(name) for name in names], filtered=filtered)
     return TraceSource(client=client, project="decode-prod")
 
 
@@ -102,7 +128,7 @@ def test_a_clean_trace_has_no_error_summary() -> None:
     assert error_summary(trace_of("real_decode_run_1")) is None
 
 
-def test_the_last_tool_is_read_in_start_time_order_not_in_the_order_opik_returned() -> None:
+def test_the_last_tool_is_read_in_start_time_order_not_in_observation_order() -> None:
     # The fixture deliberately lists the LATER `read` span before the earlier `glob` span.
     assert last_tool_name(spans_of("error_usage_limit")) == "read"
     # ...and this one lists the later `bash` before the earlier `edit`.
@@ -262,19 +288,15 @@ def test_a_table_shows_at_most_five_trace_ids_and_says_how_many_it_hid() -> None
 # --- filters -------------------------------------------------------------------------------------
 
 
-def test_every_preset_composes_the_oql_the_live_backend_accepts() -> None:
-    assert compose_filter("errors", None) == "error_info is_not_empty"
+def test_every_preset_uses_only_a_local_filter() -> None:
+    assert compose_filter("errors", None) is None
     assert compose_filter("long", None) is None
     assert compose_filter("denied", None) is None
 
 
 def test_since_narrows_every_preset_to_one_window() -> None:
-    assert compose_filter("errors", "2026-09-04T00:00:00+00:00") == (
-        'error_info is_not_empty AND start_time > "2026-09-04T00:00:00Z"'
-    )
-    assert compose_filter("denied", "2026-09-04T00:00:00Z") == (
-        'start_time > "2026-09-04T00:00:00Z"'
-    )
+    assert compose_filter("errors", "2026-09-04T00:00:00+00:00") == ("2026-09-04T00:00:00+00:00")
+    assert compose_filter("denied", "2026-09-04T00:00:00Z") == "2026-09-04T00:00:00+00:00"
 
 
 def test_a_naive_since_is_refused_rather_than_assumed_to_be_utc() -> None:
@@ -290,13 +312,12 @@ def test_an_unknown_preset_is_refused_before_any_request() -> None:
 # --- the run -----------------------------------------------------------------------------------
 
 
-def test_the_errors_preset_asks_opik_for_exactly_the_error_traces() -> None:
+def test_errors_are_filtered_locally_after_the_observation_query() -> None:
     source = source_over("error_usage_limit", "real_decode_run_1")
-    source.client.filtered = {"error_info is_not_empty": [trace_of("error_usage_limit")["id"]]}
 
     hits = mine_preset(source, "errors", limit=20)
 
-    assert source.client.trace_queries == [("error_info is_not_empty", 20)]
+    assert source.client.observation_queries == [(None, 1000)]
     assert [hit.id for hit in hits] == [trace_of("error_usage_limit")["id"]]
 
 
@@ -309,12 +330,12 @@ def test_the_denied_preset_keeps_only_runs_over_the_denial_bar() -> None:
     assert [hit.id for hit in hits] == [trace_of("denied_gate")["id"]]
 
 
-def test_a_trace_opik_says_has_no_tool_spans_is_never_queried_for_spans() -> None:
+def test_a_trace_without_tool_spans_stays_empty_without_a_second_query() -> None:
     source = source_over("quiet_run")
 
     mine_preset(source, "errors", limit=20)
 
-    assert source.client.span_queries == []
+    assert len(source.client.observation_queries) == 1
 
 
 def test_preset_all_pays_for_each_traces_spans_once_and_can_report_it_twice() -> None:
@@ -325,8 +346,8 @@ def test_preset_all_pays_for_each_traces_spans_once_and_can_report_it_twice() ->
     # The fake returns the one trace for every query, so it reports under the two presets whose
     # client-side rule it passes — and NOT under `denied`, which it fails (no denied calls).
     assert sorted(group.signature.preset for group in groups) == ["errors", "long"]
-    # One span query for the one trace, even though three presets looked at it.
-    assert source.client.span_queries == [trace_of("error_usage_limit")["id"]]
+    # Each preset requests observations; no per-trace span endpoint is queried.
+    assert len(source.client.observation_queries) == 3
 
 
 def test_mine_all_runs_every_preset_once() -> None:
@@ -334,9 +355,7 @@ def test_mine_all_runs_every_preset_once() -> None:
 
     mine(source, preset="all", limit=20)
 
-    assert [query[0] for query in source.client.trace_queries] == [
-        compose_filter(preset, None) for preset in PRESETS
-    ]
+    assert [query[0] for query in source.client.observation_queries] == [None] * len(PRESETS)
 
 
 def test_the_console_is_wide_enough_that_a_trace_id_is_never_ellipsised() -> None:

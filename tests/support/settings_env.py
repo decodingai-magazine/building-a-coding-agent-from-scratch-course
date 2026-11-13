@@ -3,8 +3,8 @@
 Two real leaks make ``Settings(_env_file=None, …)`` NOT hermetic once the whole suite has run, and
 both are out of scope to fix from the context-window task (task 123) that first tripped over them:
 
-1. **``litellm.load_dotenv()``** (noted in ``abf31e5``): importing litellm — which opik, and so the
-   evals tests, pull in — copies the developer's whole ``.env`` into ``os.environ``. Process env is
+1. **``litellm.load_dotenv()``** (noted in ``abf31e5``): importing the LiteLLM judge client copies
+   the developer's whole ``.env`` into ``os.environ``. Process env is
    the HIGHEST-precedence settings source, so ``_env_file=None`` no longer isolates anything: a
    developer with ``LLM_PROVIDER=modal`` + ``MODAL_ENDPOINT_URL`` in ``.env`` silently gets them
    injected into every ``Settings`` built afterwards, and tests pass alone but fail in the suite.
