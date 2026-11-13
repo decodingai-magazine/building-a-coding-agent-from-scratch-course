@@ -67,9 +67,7 @@ MODAL_PROXY_TOKEN_SECRET=ws-...
 ```
 
 Get the Modal endpoint URL:
-![](../assets/modal_get_endpoint_url.png)
 
-> [!NOTE]
 > `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` authenticate the CLI, are set only via `modal token set ...`, and are **not** `.env` settings. `MODAL_PROXY_TOKEN_*` are what decode uses to call the model.
 
 Then run `decode` as before to spin up an agent session.
@@ -77,8 +75,6 @@ Then run `decode` as before to spin up an agent session.
 ## 5. Cold starts and cost
 
 The endpoint scales to zero (Min 0), so the first turn of a session waits for a GPU. While iterating, open the endpoint in the dashboard, go to **AUTOSCALING → Edit → Override**, and set **Min 1**:
-
-![Min containers = 1](../assets/modal_setup_endpoint.gif)
 
 A warm container bills idle time. Switch it back to Min 0, or stop it, when done:
 
@@ -98,8 +94,6 @@ decode
 ```
 
 Then say `hello`:
-
-![](../assets/modal_say_hello.png)
 
 ## 7. Other models
 

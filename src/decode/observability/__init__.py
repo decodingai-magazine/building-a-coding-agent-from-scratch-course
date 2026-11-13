@@ -1,8 +1,9 @@
-"""Observability — decode's Opik tracing surface (ADR-0014).
+"""Observability — decode's Langfuse tracing surface (ADR-0024).
 
-Presence-based via ``OPIK_API_KEY``: a silent no-op when unset, so decode is byte-identical without
-a key. Re-exports the public surface so callers write ``observability.init_tracing()``. Importing
-this package is cheap and side-effect-free — nothing is configured until :func:`init_tracing` runs.
+Presence-based via Langfuse keys: a silent no-op when unset, so decode is byte-identical without
+credentials. Re-exports the public surface so callers write ``observability.init_tracing()``.
+Importing this package is cheap and side-effect-free — nothing is configured until
+:func:`init_tracing` runs.
 """
 
 from __future__ import annotations

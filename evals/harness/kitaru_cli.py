@@ -1,6 +1,6 @@
 """The ONE ``kitaru`` CLI seam the eval bridge commands shell out through (ADR-0022 §10, §11).
 
-Both bridge commands (``evals kitaru import``, ``evals kitaru cohort from-experiment``) join Opik to
+Both bridge commands (``evals kitaru import``, ``evals kitaru cohort from-experiment``) join Langfuse to
 Kitaru by shelling out to the ``kitaru`` CLI rather than by importing its client: what the command
 does is exactly what an operator could type, so a failure is reproducible by copy-pasting the argv,
 and ``evals`` keeps the CLI-only rule the project holds every other piece of infrastructure to. It
@@ -70,7 +70,7 @@ def kitaru_server() -> str | None:
 def kitaru_keys_missing() -> list[str]:
     """The env-var names the bridge commands need but do not have — empty means good to run.
 
-    Both halves of the join: ``OPIK_API_KEY`` to READ the traces (via the shared, settings-backed
+    Both halves of the join: Langfuse credentials to READ traces (via the shared, settings-backed
     preflight — no inference happens here, so no provider key is demanded) and an exported
     ``KITARU_API_URL`` to WRITE the sessions.
     """

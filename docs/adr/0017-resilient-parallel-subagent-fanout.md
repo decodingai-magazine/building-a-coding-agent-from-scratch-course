@@ -111,42 +111,50 @@ All of the following are one design; each numbered item is a facet, not a separa
 
 ```mermaid
 flowchart TD
-    model["parent model response:<br/>ONE agent(prompts=[p1..pN])"]:::call
-    guards{"deterministic guards<br/>empty? · width > 6? · any prompt under 8 words?"}:::gate
-    nag["ModelRetry — names the fix<br/>(tool registered with retries ≥ 2)"]:::retry
-    gather["asyncio.gather (prompt order)<br/>each attempt under the per-loop Semaphore<br/>subagent_max_parallel"]:::tool
+    model["parent model response:<br/>ONE agent(prompts=[p1..pN])"]
+    guards{"deterministic guards<br/>empty? · width > 6? · any prompt under 8 words?"}
+    nag["ModelRetry — names the fix<br/>(tool registered with retries ≥ 2)"]
+    gather["asyncio.gather (prompt order)<br/>each attempt under the per-loop Semaphore<br/>subagent_max_parallel"]
 
     model --> guards
     guards -- "bad input" --> nag --> model
     guards -- ok --> gather
 
     subgraph children["Explore children — fresh read-only deps, UsageLimits per child"]
-        c1["child 1"]:::child
-        c2["child 2"]:::child
-        cn["child N"]:::child
+        c1["child 1"]
+        c2["child 2"]
+        cn["child N"]
     end
     gather --> c1 & c2 & cn
 
-    validate{"report BAD?<br/>empty · zero tool calls<br/>(all_messages scan)"}:::gate
+    validate{"report BAD?<br/>empty · zero tool calls<br/>(all_messages scan)"}
     c1 --> validate
     c2 --> validate
     cn --> validate
-    validate -- "bad, 1st time" --> retry["ONE re-spawn<br/>same prompt + nudge"]:::retry --> validate
-    validate -- "bad again" --> note["failure note<br/>'no usable report'"]:::fail
-    validate -- good --> trunc["truncate() to<br/>subagent_result_max_bytes // N"]:::result
+    validate -- "bad, 1st time" --> retry["ONE re-spawn<br/>same prompt + nudge"] --> validate
+    validate -- "bad again" --> note["failure note<br/>'no usable report'"]
+    validate -- good --> trunc["truncate() to<br/>subagent_result_max_bytes // N"]
 
-    trunc --> agg["labelled aggregate<br/>## Subagent i — &quot;prompt&quot; …"]:::result
+    trunc --> agg["labelled aggregate<br/>## Subagent i — &quot;prompt&quot; …"]
     note --> agg
-    agg --> footer["+ Synthesis Footer:<br/>one answer, prose + text diagram"]:::result
+    agg --> footer["+ Synthesis Footer:<br/>one answer, prose + text diagram"]
     footer --> model
 
-    classDef call fill:#1e293b,stroke:#0ea5e9,color:#e2e8f0
-    classDef gate fill:#713f12,stroke:#eab308,color:#fef9c3
-    classDef retry fill:#4c1d95,stroke:#a855f7,color:#ede9fe
-    classDef tool fill:#334155,stroke:#a855f7,color:#e9d5ff
-    classDef child fill:#14532d,stroke:#22c55e,color:#dcfce7
-    classDef fail fill:#7f1d1d,stroke:#ef4444,color:#fecaca
-    classDef result fill:#334155,stroke:#38bdf8,color:#bae6fd
+    classDef modelcall fill:#1e293b,stroke:#0ea5e9,color:#e2e8f0;
+    classDef gate fill:#713f12,stroke:#eab308,color:#fef9c3;
+    classDef retry fill:#4c1d95,stroke:#a855f7,color:#ede9fe;
+    classDef tool fill:#334155,stroke:#a855f7,color:#e9d5ff;
+    classDef child fill:#14532d,stroke:#22c55e,color:#dcfce7;
+    classDef fail fill:#7f1d1d,stroke:#ef4444,color:#fecaca;
+    classDef result fill:#334155,stroke:#38bdf8,color:#bae6fd;
+
+    class model modelcall;
+    class guards,validate gate;
+    class nag,retry retry;
+    class gather tool;
+    class c1,c2,cn child;
+    class note fail;
+    class trunc,agg,footer result;
 ```
 
 ## Consequences

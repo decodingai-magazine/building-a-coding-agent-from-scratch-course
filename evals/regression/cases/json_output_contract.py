@@ -1,11 +1,11 @@
-"""Case 20 — an "answer ONLY as JSON" contract is honored (ADR-0017 §2,6).
+"""Case 20 — an "answer ONLY as JSON" contract is honored.
 
 Structured-output discipline: told to answer ONLY as JSON matching a named schema, the agent must emit
 raw JSON of that exact shape — no prose, no ```` ```json ```` fence, no trailing commentary. A small
 module is seeded so the requested summary has real content, and the prompt spells out the required JSON
 schema. Two mechanical graders (no judge — this is fully code-decidable):
 
-* Opik's ``IsJson`` built-in — the ``output`` parses as JSON at all (used directly per ADR-0017 §4);
+* :class:`IsJsonMetric` — the ``output`` parses as JSON at all;
 * :class:`JsonSchemaMetric` — the parsed JSON validates against the :class:`_ReviewSummary` pydantic
   model declared here, so a well-formed-but-wrong-shape answer still fails.
 
@@ -17,10 +17,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from opik.evaluation.metrics import IsJson
 from pydantic import BaseModel
 
-from evals.harness.metrics import JsonSchemaMetric, MaxStepsMetric
+from evals.harness.metrics import IsJsonMetric, JsonSchemaMetric, MaxStepsMetric
 from evals.regression.case import RegressionCase
 
 _MODULE = "inventory.py"
@@ -69,7 +68,7 @@ CASE = RegressionCase(
         "explanation, or Markdown code fence."
     ),
     metrics=[
-        IsJson(track=False),
+        IsJsonMetric(),
         JsonSchemaMetric(_ReviewSummary, name="json_matches_review_summary"),
         MaxStepsMetric(),
     ],

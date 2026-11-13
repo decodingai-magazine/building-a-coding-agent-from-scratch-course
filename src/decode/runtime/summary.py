@@ -2,7 +2,7 @@
 
 A Benchmark Trial is a subprocess ``decode run``; the harness needs to know what the run did (did it
 finish, did it hit its request cap, what did it cost, which branch carries the work) and must not
-have to reconstruct that from an Opik trace, which would couple grading to tracing being configured.
+have to reconstruct that from a Langfuse trace, which would couple grading to tracing being configured.
 So the runner writes ONE JSON object at the end of the run:
 
 ``{session_id, kitaru_session_id, exit_reason, error, requests, input_tokens, output_tokens,

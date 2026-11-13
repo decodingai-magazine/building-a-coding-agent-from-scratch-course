@@ -4,7 +4,7 @@
     uv run python scripts/seed_kitaru_sessions.py --dry-run    # print the 30 commands, run nothing
     uv run python scripts/seed_kitaru_sessions.py --only cutoff --limit 2
 
-Thirty scenarios over ten prompts, in the three shapes decode's own Opik history shows
+Thirty scenarios over ten prompts, in the three shapes decode's own Langfuse trace mining identifies
 (``python -m evals mine --preset errors``), so the verdicts in an investigation can draw a line:
 
 * ``good`` — a small task the agent finishes; verdict ``acceptable``;

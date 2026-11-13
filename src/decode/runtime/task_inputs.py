@@ -125,8 +125,8 @@ def _task_from_inputs(inputs: object) -> str:
     Three payloads carry a prompt, because three sources produce Worker Task inputs (task 137):
 
     * ``{"task": ...}`` — the canonical contract, what a hand-created Worker Task supplies;
-    * ``{"input": ...}`` — an **imported** Session's recorded inputs (the Opik importer's key), which
-      a replay hands on verbatim: kitaru 0.22.2 builds the replay's agent task with
+    * ``{"input": ...}`` — an imported Session's recorded inputs, which a replay hands on verbatim:
+      kitaru builds the replay's agent task with
       ``inputs=baseline.inputs``, so a replay never re-shapes the payload;
     * ``"<prompt>"`` — a Session recorded by ``kitaru-pydantic-ai`` itself, which stores
       ``inputs = ctx.prompt``, i.e. a bare JSON string.

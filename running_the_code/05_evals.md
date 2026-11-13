@@ -1,6 +1,6 @@
-# 05. Evals with Opik
+# 05. Evals with Langfuse
 
-Tracing shows what happened; it cannot say whether a change made the agent better or worse. The eval suite in [`evals/`](../evals/) does, on [Opik](https://www.comet.com/site/?utm_source=workshop&utm_medium=partner&utm_campaign=paul&utm_content=coding_agent_course), with two tracks:
+Tracing shows what happened; evaluation scores whether a change made the agent better or worse. The eval suite in [`evals/`](../evals/) uses [Langfuse datasets and experiments](https://langfuse.com/docs/evaluation/experiments):
 
 | Track            | Answers                           | Graded by                                                                                                    | Run                                                           |
 | ---------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
@@ -10,10 +10,10 @@ Tracing shows what happened; it cannot say whether a change made the agent bette
 ## 1. Setup
 
 1. **decode installed and a provider key in `.env`** — [01 §1](01_install_and_usage.md#1-install) and [01 §2](01_install_and_usage.md#2-add-a-key) (`GEMINI_API_KEY` by default; or `OPENROUTER_API_KEY`). To run the agent on your own Modal endpoint instead, finish [02](02_modal_endpoints.md) first and set `LLM_PROVIDER=modal` + `MODAL_ENDPOINT_URL` as in [02 §4](02_modal_endpoints.md#4-point-decode-at-the-endpoint).
-2. **`OPIK_API_KEY` in `.env`** — the optional tracing step at the end of [01 §2](01_install_and_usage.md#2-add-a-key) is required here.
+2. **Langfuse API keys in `.env`** — required for datasets, experiments, and scores. These are the same keys used for tracing in [01 §2](01_install_and_usage.md#2-add-a-key).
 3. **A sandbox for the benchmark** — [Docker](https://www.docker.com) running (the default, `--sandbox docker`); or a Modal token, per [02 §1](02_modal_endpoints.md#1-get-a-token-from-modal), for `--sandbox modal`.
 
-Runs cost money and never run in `make ci`. Missing a key prints one line and exits 0. Everything logs to the Opik project `EVAL_PROJECT_NAME` (`decode-evals`), apart from live tracing.
+Runs cost money and never run in `make ci`. Missing credentials print one actionable line and skip the Make target. Langfuse API keys select the project where eval datasets, experiments, and scores are stored; use the intended project keys in `.env`.
 
 ## 2. The CLI
 
@@ -24,20 +24,18 @@ $ uv run python -m evals --help
 Usage: python -m evals [OPTIONS] COMMAND [ARGS]...
 
 Commands:
-  benchmark   Run the outcome benchmark as one Opik Experiment.
+  benchmark   Run the outcome benchmark as one Langfuse Experiment.
   mine        Mine the LIVE project for regressions worth turning into cases.
-  regression  Run the behavior Regression Cases host-native as an Opik experiment.
-  suite       Run the Opik Test Suite regression surface — natural-language assertions.
-  sync        Upsert the eval tracks' Opik surfaces (datasets + Test Suite).
+  regression  Run the behavior Regression Cases host-native as a Langfuse experiment.
+  suite       Run the natural-language assertion regression surface.
+  sync        Upsert the eval tracks' Langfuse datasets.
 ```
 
-`benchmark`, `regression` and `suite` each upsert what they are about to grade before running, so `sync` is never a required step; it pushes task and case definitions to Opik without running anything.
+`benchmark`, `regression` and `suite` each sync what they are about to grade before running, so `sync` is never required; it uploads task and case definitions without running anything.
 
 ## 3. Benchmark
 
 Nineteen tasks (7 easy / 6 medium / 6 hard) in the Terminal-Bench layout: `task.toml`, `instruction.md`, an `environment/` seed, a hidden `tests/test.sh`, a `solution/solve.sh` oracle. Format: [`evals/benchmark/tasks/README.md`](../evals/benchmark/tasks/README.md).
-
-![](../assets/evals_harness_diagram.png)
 
 One **Trial** = one `decode run` subprocess in a real sandbox. The seed becomes a fresh git repo, the agent works on it, Hand-back pushes its branch, and only then, **host-side**, `tests/test.sh` runs on a pristine clone of that branch and writes one float to `reward.txt`. The agent never sees its grader.
 
@@ -50,13 +48,9 @@ make eval-benchmark ARGS='--sandbox modal --threads 4'    # remote sandbox, 4 tr
 make eval-benchmark ARGS='--job-name nightly-3 --model gemini-3.1-pro-preview'
 ```
 
-`--trials` = trials per task, `--threads` = trials in flight (default 1 on docker, 4 on modal). `--job-name` names both the Opik experiment and the on-disk run folder (default `bench-<UTC stamp>`). Each run first upserts the selected tasks into the `decode-benchmark` Opik dataset itself; there is no separate sync step to remember.
+`--trials` = trials per task, `--threads` = trials in flight (default 1 on docker, 4 on modal). `--job-name` names both the Langfuse experiment and the on-disk run folder (default `bench-<UTC stamp>`). Each run first syncs selected tasks into the `decode-benchmark` dataset; there is no separate sync step to remember.
 
-![](../assets/opik_benchmark_dataset.png)
-
-> ✅ **Working looks like:** a Rich table with one row per task (`n`, `pass@1`, at `k > 1` also `pass@k` / `pass^k` / `flaky`, `~$/trial`, `~s/trial`, `~tok/trial`, `infra`), a section per tier, a total row, then a `spend:` line (wall clock · agent seconds · tokens in/out) and one line naming the experiment and the trial dirs. The `infra` column must be ~0, or the row measures the harness, not the model. In Opik: Experiments → one row over the `decode-benchmark` dataset, tagged with model, provider, git sha, sandbox.
-
-![](../assets/opik_benchmark_one_experiment.png)
+> ✅ **Working looks like:** a Rich table with one row per task (`n`, `pass@1`, at `k > 1` also `pass@k` / `pass^k` / `flaky`, `~$/trial`, `~s/trial`, `~tok/trial`, `infra`), a section per tier, a total row, then a `spend:` line (wall clock · agent seconds · tokens in/out) and one line naming the experiment and the trial dirs. The `infra` column must be ~0, or the row measures the harness, not the model. In Langfuse, the experiment appears on the `decode-benchmark` dataset with model, provider, git sha, and sandbox metadata.
 
 Keyless sanity check, in every `make ci`: the oracle gate proves each task's grader scores `solution/solve.sh` 1 and an untouched seed 0.
 
@@ -95,7 +89,7 @@ Judge defaults when `EVAL_JUDGE_MODEL` is empty: `gemini` → `gemini/gemini-3.8
 
 ### Comparing runs
 
-Every job is one Opik experiment; a comparison is two rows side by side (Experiments → select → Compare). Keep tasks, `--trials` and `--threads` the same and change one variable. The row carries three groups of numbers; you multiply by the price:
+Every job is one Langfuse experiment; compare runs with matching tasks, `--trials`, and `--threads`, changing one variable at a time. The run carries three groups of numbers; you multiply by the price:
 
 | What you want | Experiment scores                                             | Read it as                                                                        |
 | ------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -109,15 +103,13 @@ Modal:       cost ≈ wall_clock_seconds / 3600 × $/GPU-hour
 OpenRouter:  cost ≈ input_tokens_total / 1e6 × $/Mtok_in + output_tokens_total / 1e6 × $/Mtok_out
 ```
 
-This is experiment 1 below, compared in Opik (Qwen3.6-35B as the baseline):
-
-![](../assets/opik_benchmark_compare_models.png)
+In Langfuse, compare the experiment runs on the same dataset and inspect their metadata and scores.
 
 Two experiments the course runs this way — same tasks, same `--trials`, same `--threads`, one variable each.
 
 > ⚠️ **Replace every `MODAL_ENDPOINT_URL` below with your own.** The `p-b-iusztin--…` URLs are the author's endpoints and will not answer your requests. Yours are the URLs `modal deploy` printed when you served the models in [02](02_modal_endpoints.md).
 
-The two sides of an experiment are independent jobs, so run them **in parallel, one per terminal** — each needs its own `--job-name`, and they share nothing but the Opik dataset.
+The two sides of a comparison are independent jobs, so run them **in parallel, one per terminal** — each needs its own `--job-name`, and they share the Langfuse dataset.
 
 **1. Two models, both on Modal** — does the bigger one earn its GPU? Compare `pass_at_1` (performance) and `wall_clock_seconds × each endpoint's $/GPU-hour` (cost).
 
@@ -188,13 +180,11 @@ Start any post-mortem at `result.json`, then `agent/stderr.txt`. Three statuses:
 
 A case checks design intent: the right tool, a minimal diff, the permission gate respected, compaction survived. Cases run host-native (no docker) in a fresh temp workspace, fast enough for a pre-merge ritual. Twenty-one cases tiered 5 easy / 8 medium / 8 hard, plus mined ones that carry the live trace they came from ([`evals/regression/README.md`](../evals/regression/README.md)).
 
-**Two surfaces, on purpose.** One case definition in `evals/regression/cases/` registers twice in Opik: as a `decode-regression` **dataset** item scored by deterministic metrics, and as an item in the `decode-regression-suite` **Test Suite** whose English `assertion` an LLM judge checks. Numbers catch exact regressions cheaply; assertions catch "the answer got worse in a way no single number captures".
+**Two surfaces, on purpose.** One case definition in `evals/regression/cases/` feeds the `decode-regression` **dataset** scored by deterministic metrics and the `decode-regression-suite` experiment whose English `assertion` an LLM judge checks. Numbers catch exact regressions cheaply; assertions catch "the answer got worse in a way no single number captures".
 
-![](../assets/opik_datasets.png)
+Two commands, one per surface. Each syncs the cases it is about to grade, runs them, then gates. There is no separate sync step: an edited case is what gets graded on the next run.
 
-Two commands, one per surface. Each first upserts the cases it is about to grade from disk into Opik, then runs them, then gates. There is no separate sync step: an edited case is what gets graded on the next run.
-
-**Dataset + experiment** — upsert the cases, run every one with deterministic metrics as one Opik experiment, apply the threshold gate:
+**Dataset + experiment** — sync the cases, run every one with deterministic metrics as one Langfuse experiment, apply the threshold gate:
 
 ```bash
 make eval-regression-dataset
@@ -202,25 +192,15 @@ make eval-regression-dataset
 
 > ✅ **Working looks like:** an `evals sync:` line counting the upserted cases, then one table **per tier**, gated **globally**: tool discipline ≥ 0.8, judges ≥ 0.7. A drop against the previous experiment prints a WARN. The experiment is `decode-regression-gate`.
 
-The experiment's feedback scores, one mean per deterministic metric (this run was named by hand, so it reads `decode-regression-via-dataset`):
+The experiment includes per-case metric scores and run-level aggregates.
 
-![](../assets/opik_regression_dataset_example.png)
-
-**Test Suite + validation** — upsert the cases, run every one, an LLM judge scores each case's English `assertion`, gated on pass rate ≥ 0.8. Opik's suite judge takes a bare model name, so it runs on `gemini` or `openrouter`, never on your Modal endpoint — with a Modal-served agent, route the judge explicitly:
+**Test Suite + validation** — sync the cases, run every one, and have an LLM judge score each case's English `assertion`; the gate requires pass rate ≥ 0.8. The judge route supports Gemini, OpenRouter, and the Modal endpoint; with a Modal-served agent, route the judge explicitly:
 
 ```bash
 EVAL_JUDGE_PROVIDER=gemini make eval-regression-suite
 ```
 
-One Test Suite item, with its English assertion and pass criteria:
-
-![](../assets/opik_test_case_example.png)
-
-> ✅ **Working looks like:** Opik's suite report box (items passed, pass rate), then one line naming the `decode-regression-suite` version that ran, the pass rate against the 80% bar and the report file under `.decode/evals/suite-reports/`. A modal judge route stops up front with one line telling you to set `EVAL_JUDGE_PROVIDER`.
-
-A suite run below the 80% bar, Passed/Failed per case (Opik names suite runs itself, so yours will not read `decode-regression-via-test-suites`):
-
-![](../assets/opik_test_case_experiment.png)
+> ✅ **Working looks like:** a report with one pass/fail result per case, the pass rate against the 80% bar, and a report file under `.decode/evals/suite-reports/`.
 
 **Options.** Both take the same knobs: `ARGS='--difficulty easy|medium|hard'` slices to one tier (upserted and gated together, experiment `decode-regression-gate-<tier>`, so a tier's baseline stays its own), and the four provider/model variables from [Providers and models](#providers-and-models) pick the agent and the judge:
 

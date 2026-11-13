@@ -1,4 +1,4 @@
-"""**Trace Mining**: search the LIVE Opik project, cluster the hits, print trace ids (ADR-0022 §8).
+"""Trace Mining: search Langfuse observations, cluster hits, and print trace ids.
 
 The discovery half of the mining loop (the glossary's Trace Mining). ``evals mine`` never writes
 a case (that is task 164): it
@@ -6,14 +6,11 @@ answers "what went wrong in production lately, and which of it is the SAME thing
 over the live project, each hit reduced to a **Signature**, one Rich table per signature with the
 trace ids a human then picks from.
 
-Three presets, ONE table (:data:`PRESET_FILTERS`). One is server-side OQL, two are client-side
-because Opik's query language cannot express them:
+Three presets, ONE table (:data:`PRESET_FILTERS`), evaluated locally over Langfuse observations:
 
-* ``errors`` — ``error_info is_not_empty``. (Verified against the live backend: ``error_info``
-  accepts only ``is_empty`` / ``is_not_empty``, and the operator takes NO value — ``error_info
-  is_not_empty ""`` is a parse error.)
+* ``errors`` — traces with an error-level observation.
 * ``long`` — the top decile of ``usage.total_tokens`` **within the fetched window**, computed here:
-  a decile is relative to what was fetched, which OQL has no way to say.
+  a decile is relative to what was fetched.
 * ``denied`` — traces with at least :data:`DENIED_TOOL_CALL_BAR` gate-denied tool calls, read off
   the spans (see :func:`denied_tool_calls`).
 
@@ -32,14 +29,8 @@ A **Signature** is ``(preset, error type or first line, last tool name, metadata
 facts that make two bad runs "the same bug". ``metadata.git_sha`` / ``metadata.model`` exist only on
 traces from task 156 onward; older ones render as ``-`` (and are ``null`` in ``--json``).
 
-Cost, deliberately: one ``search_spans`` call per candidate trace (skipped when the trace says
-``has_tool_spans`` is false, cached per trace id so ``--preset all`` pays once). That is
-O(``--limit``) requests per run — fine at the demo's 68-trace scale; if a run ever wants thousands
-of traces, switch to one windowed span query grouped client-side.
-
-``opik`` is imported lazily (:func:`open_source`), so ``python -m evals mine --help`` needs no key
-and no network (ADR-0017 §1). Everything above the source is pure over plain dicts — which is what
-the fixture-driven unit tests exercise.
+Observations are fetched in one bounded Langfuse API query and grouped locally by trace. The SDK
+client is imported lazily, so ``python -m evals mine --help`` needs no key and no network.
 """
 
 from __future__ import annotations
@@ -56,13 +47,6 @@ from typing import TYPE_CHECKING, Any
 # file from an arbitrary cwd — so it cannot import a sibling, and this caller imports from it
 # instead (task 165). Costs `evals mine` a `kitaru.task.importer` import, which is cheap and already
 # a dependency; `evals --help` never pays it, because this module is imported inside the command.
-from importers.opik_importer import (
-    is_tool_span,
-    tool_span_arguments,
-    tool_span_deferred,
-    tool_span_name,
-)
-
 if TYPE_CHECKING:
     from rich.console import Console
     from rich.table import Table
@@ -88,7 +72,7 @@ TABLE_MIN_WIDTH = 144
 SPAN_FETCH_CAP = 500
 
 PRESET_FILTERS: dict[str, str | None] = {
-    "errors": "error_info is_not_empty",
+    "errors": None,
     "long": None,
     "denied": None,
 }
@@ -100,40 +84,83 @@ class MineError(Exception):
 
 
 def live_project_name() -> str:
-    """The Opik project decode's REAL sessions trace into (ADR-0014) — what the live commands read.
-
-    Deliberately ``settings.opik_project_name`` (``decode``/``decode-<env>``), NOT
-    ``settings.eval_project_name``: mining looks for regressions in real traffic, so the benchmark's
-    "keep eval runs off the live project" rule is inverted here on purpose.
-    """
+    """The Langfuse project label used for live tracing."""
     from decode.config.settings import settings
 
-    return settings.opik_project_name
+    return getattr(settings, "langfuse_project_name", "decode")
 
 
 def _mapping(value: object) -> dict[str, Any]:
-    """The value as a dict, or an empty one — Opik omits absent fields from ``.dict()`` entirely."""
+    """The value as a dict, or an empty one."""
     return value if isinstance(value, dict) else {}
+
+
+def _span_metadata(span: dict[str, Any]) -> dict[str, Any]:
+    return _mapping(span.get("metadata"))
+
+
+def is_tool_span(span: dict[str, Any]) -> bool:
+    """Recognize tool observations from explicit metadata or their recorded name."""
+    metadata = _span_metadata(span)
+    return (
+        metadata.get("gen_ai.operation.name") == "execute_tool"
+        or span.get("type") == "TOOL"
+        or str(span.get("name", "")).startswith("execute_tool ")
+    )
+
+
+def tool_span_name(span: dict[str, Any]) -> str | None:
+    """Return a tool name from explicit metadata or the execute_tool observation name."""
+    metadata = _span_metadata(span)
+    name = metadata.get("logfire.msg")
+    if isinstance(name, str) and name.startswith("running tool: "):
+        return name.removeprefix("running tool: ").strip() or None
+    observation_name = span.get("name")
+    if isinstance(observation_name, str) and observation_name.startswith("execute_tool "):
+        return observation_name.removeprefix("execute_tool ").strip() or None
+    tool_name = metadata.get("tool_name")
+    return tool_name if isinstance(tool_name, str) and tool_name else None
+
+
+def tool_span_arguments(span: dict[str, Any]) -> Any:
+    """Read tool arguments from Langfuse input or OpenTelemetry metadata."""
+    inputs = _mapping(span.get("input"))
+    metadata = _span_metadata(span)
+    for key in ("gen_ai.tool.call.arguments", "tool_arguments"):
+        if key in inputs:
+            return inputs[key]
+        if key in metadata:
+            return metadata[key]
+    return inputs
+
+
+def tool_span_deferred(span: dict[str, Any]) -> bool:
+    """Detect a gated tool call that was deferred rather than executed."""
+    metadata = _span_metadata(span)
+    inputs = _mapping(span.get("input"))
+    return (
+        metadata.get("pydantic_ai.tool.deferral.name") == "ApprovalRequired"
+        or inputs.get("pydantic_ai.tool.deferral.name") == "ApprovalRequired"
+    )
 
 
 def _as_dict(record: Any) -> dict[str, Any]:
     """One shape for everything above the source: a plain dict.
 
-    Opik hands back pydantic ``TracePublic`` / ``SpanPublic`` models whose ``.dict()`` yields plain
-    dicts (with ``datetime`` values and nested ``error_info`` as a dict); the JSON fixtures are
-    already dicts with ISO strings. Normalising here is what lets every rule below be pure.
+    Langfuse SDK models and JSON fixtures are normalized to the same plain-dict shape.
     """
     if isinstance(record, dict):
         return record
+    if hasattr(record, "model_dump"):
+        return dict(record.model_dump())
     return dict(record.dict())
 
 
 def as_datetime(value: object) -> datetime | None:
-    """An aware UTC datetime from Opik's two spellings (``datetime`` live, ISO string exported).
+    """An aware UTC datetime from Langfuse's live or serialized timestamps.
 
     Naive values are rejected (``None``), never silently assumed UTC — the project rule for
-    datetimes at a boundary. Opik's exported form (``2026-09-09 12:19:00.836000+00:00``) parses
-    with :meth:`datetime.fromisoformat` as-is.
+    datetimes at a boundary.
     """
     if isinstance(value, datetime):
         return value.astimezone(UTC) if value.tzinfo is not None else None
@@ -171,8 +198,7 @@ def error_summary(trace: dict[str, Any]) -> str | None:
 def last_tool_name(spans: list[dict[str, Any]]) -> str | None:
     """The name of the LAST tool the run called, by span start time.
 
-    Opik returns a trace's spans unordered, so they are sorted here rather than trusted; a tool span
-    whose ``logfire.msg`` lost its name is skipped rather than reported as the answer.
+    Langfuse observations may be unordered, so they are sorted rather than trusted.
     """
     tools = [span for span in spans if is_tool_span(span)]
     tools.sort(
@@ -392,11 +418,10 @@ def render_group_table(group: SignatureGroup, *, cap: int = TABLE_TRACE_CAP) -> 
 
 
 def since_clause(since: str | None) -> str | None:
-    """``start_time > "<iso>"`` for a tz-aware ``--since``; ``None`` when unset.
+    """Return a normalized timestamp for a tz-aware ``--since``; ``None`` when unset.
 
     A naive timestamp is refused rather than assumed UTC (the project's datetime rule at a
-    boundary) — and the OQL parser validates the COLUMN, never the value, so a bad one would
-    otherwise reach the server.
+    boundary) rather than silently assuming UTC.
     """
     if since is None or not since.strip():
         return None
@@ -406,58 +431,111 @@ def since_clause(since: str | None) -> str | None:
             f"--since {since!r} is not a timezone-aware ISO timestamp — "
             "write it like 2026-09-04T00:00:00Z (or with an explicit offset)."
         )
-    return f'start_time > "{moment.strftime("%Y-%m-%dT%H:%M:%SZ")}"'
+    return moment.isoformat()
 
 
 def compose_filter(preset: str, since: str | None) -> str | None:
-    """The OQL a preset sends to Opik: its own clause AND the optional ``--since`` window."""
+    """The normalized time boundary used by the local preset filter."""
     if preset not in PRESET_FILTERS:
         raise MineError(f"unknown preset {preset!r} — pick one of {', '.join(PRESETS)}.")
-    clauses = [clause for clause in (PRESET_FILTERS[preset], since_clause(since)) if clause]
-    return " AND ".join(clauses) if clauses else None
+    return since_clause(since)
 
 
 @dataclass
 class TraceSource:
-    """The ONE Opik-touching seam: plain dicts up, one cached span query per trace (ADR-0022 §8)."""
+    """The Langfuse observation query seam: plain trace and span dicts up."""
 
     client: Any
     project: str
     _spans: dict[str, list[dict[str, Any]]] = field(default_factory=dict, init=False, repr=False)
 
     def traces(self, filter_string: str | None, limit: int) -> list[dict[str, Any]]:
-        """The matching traces, newest first as Opik returns them, as plain dicts."""
-        found = self.client.search_traces(
-            project_name=self.project, filter_string=filter_string, max_results=limit
+        """Fetch a bounded observation window and group observations into traces."""
+        from_start_time = as_datetime(filter_string) if filter_string else None
+        response = self.client.api.observations.get_many(
+            limit=min(max(limit * 50, 100), 1000),
+            from_start_time=from_start_time,
         )
-        return [_as_dict(record) for record in found]
+        observations = [_as_dict(record) for record in getattr(response, "data", []) or []]
+        by_trace: dict[str, list[dict[str, Any]]] = {}
+        for observation in observations:
+            trace_id = observation.get("trace_id")
+            if isinstance(trace_id, str) and trace_id:
+                by_trace.setdefault(trace_id, []).append(observation)
+
+        traces: list[dict[str, Any]] = []
+        self._spans.clear()
+        for trace_id, spans in by_trace.items():
+            spans.sort(
+                key=lambda span: (
+                    as_datetime(span.get("start_time")) or datetime.min.replace(tzinfo=UTC)
+                )
+            )
+            root = next(
+                (span for span in spans if not span.get("parent_observation_id")),
+                spans[0],
+            )
+            error = next(
+                (
+                    span
+                    for span in spans
+                    if str(getattr(span.get("level"), "value", span.get("level"))).upper()
+                    == "ERROR"
+                ),
+                None,
+            )
+            metadata = _mapping(root.get("metadata"))
+            usage = _mapping(root.get("usage_details"))
+            total = usage.get("total_tokens")
+            if not isinstance(total, int):
+                total = sum(
+                    value
+                    for value in (usage.get("input"), usage.get("output"))
+                    if isinstance(value, int)
+                )
+            trace = {
+                "id": trace_id,
+                "thread_id": root.get("session_id"),
+                "start_time": root.get("start_time"),
+                "metadata": metadata,
+                "usage": {"total_tokens": total} if total else {},
+                "has_tool_spans": any(is_tool_span(span) for span in spans),
+                "error_info": (
+                    {
+                        "exception_type": _span_metadata(error).get("exception_type"),
+                        "message": error.get("status_message") or error.get("output"),
+                    }
+                    if error
+                    else None
+                ),
+            }
+            if from_start_time is None or (
+                as_datetime(trace.get("start_time")) is not None
+                and as_datetime(trace["start_time"]) >= from_start_time
+            ):
+                traces.append(trace)
+                self._spans[trace_id] = spans
+        traces.sort(
+            key=lambda trace: (
+                as_datetime(trace.get("start_time")) or datetime.min.replace(tzinfo=UTC)
+            ),
+            reverse=True,
+        )
+        return traces[:limit]
 
     def spans(self, trace: dict[str, Any]) -> list[dict[str, Any]]:
-        """This trace's spans — skipped entirely when Opik says the trace has no tool spans."""
+        """Return the observations grouped for this trace."""
         if trace.get("has_tool_spans") is False:
             return []
-        trace_id = str(trace.get("id"))
-        cached = self._spans.get(trace_id)
-        if cached is None:
-            cached = [
-                _as_dict(record)
-                for record in self.client.search_spans(
-                    project_name=self.project, trace_id=trace_id, max_results=SPAN_FETCH_CAP
-                )
-            ]
-            self._spans[trace_id] = cached
-        return cached
+        return self._spans.get(str(trace.get("id")), [])
 
 
 def open_source(project: str | None = None) -> TraceSource:
-    """A :class:`TraceSource` over the LIVE project (``settings.opik_project_name``).
-
-    ``opik`` is imported here, not at module scope, so building the CLI never needs a key.
-    """
-    import opik
+    """A lazily constructed :class:`TraceSource` over the configured Langfuse project."""
+    from evals.harness.datasets import langfuse_client
 
     target = project or live_project_name()
-    return TraceSource(client=opik.Opik(project_name=target), project=target)
+    return TraceSource(client=langfuse_client(), project=target)
 
 
 def mine_preset(
@@ -465,6 +543,8 @@ def mine_preset(
 ) -> list[TraceHit]:
     """Run ONE preset: fetch its window, apply the client-side rules, reduce to hits."""
     traces = source.traces(compose_filter(preset, since), limit)
+    if preset == "errors":
+        traces = [trace for trace in traces if error_summary(trace)]
     if preset == "long":
         traces = top_decile(traces)
     hits: list[TraceHit] = []

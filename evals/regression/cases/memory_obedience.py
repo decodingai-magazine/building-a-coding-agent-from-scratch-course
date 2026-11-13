@@ -76,7 +76,7 @@ CASE = RegressionCase(
         MaxStepsMetric(),
     ],
     # Calibrated from observation (task 167), not guessed: three solo runs against the default
-    # model spent 7 / 7 / 9 legs (Opik experiments 01a09021-336b-7ea2-81ae-e9fec07a38c9,
+    # model spent 7 / 7 / 9 legs (historical Opik experiments 01a09021-336b-7ea2-81ae-e9fec07a38c9,
     # 01a09021-e557-7da0-81d5-adbf4f291db3, 01a09022-77ca-71dd-8bcb-a03920a599b1), so the budget
     # is max + 1. Those legs are real work: one ``write`` plus the model's own todo bookkeeping
     # and a verification ``bash`` — no thrash to hide behind the cap. CAVEAT: the gate run that

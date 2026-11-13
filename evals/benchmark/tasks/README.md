@@ -226,7 +226,7 @@ Trial Dir under `.decode/evals/runs/<job>/<task>__<short-id>/` keeps every trial
 $ uv run python -m evals benchmark --help
 Usage: python -m evals benchmark [OPTIONS]
 
-  Run the outcome benchmark as one Opik Experiment (ADR-0022 §1,§3,§6).
+  Run the outcome benchmark as one Langfuse experiment (ADR-0022 §1,§3,§6).
 
   Each selected task runs ``--trials`` Benchmark Trials: a subprocess ``decode
   run`` against a fresh Seed Repo with ``SANDBOX_MODE=--sandbox``, graded
@@ -235,7 +235,7 @@ Usage: python -m evals benchmark [OPTIONS]
   under ``.decode/evals/runs/<job>/``. The reward is the score of record;
   pass@1 / pass@k / pass^k / flakiness / cost ride
   ``experiment_scoring_functions`` onto the experiment row and are printed
-  here as a Rich table with per-tier rollups. Opik + the harness are imported
+  here as a Rich table with per-tier rollups. Langfuse + the harness are imported
   lazily so ``--help`` never needs keys or a network (ADR-0017 §1).
 
 Options:
@@ -244,13 +244,13 @@ Options:
                                   Run only tasks of this difficulty tier.
   --sandbox [docker|modal]        The sandbox rung each Trial's `decode run`
                                   executes in.  [default: docker]
-  --trials INTEGER RANGE          Trials per task (Opik trial_count) — the
+  --trials INTEGER RANGE          Trials per task — the
                                   pass@k / pass^k / flakiness axis.  [default:
                                   1; x>=1]
-  --threads INTEGER RANGE         Trials to run at once (Opik task_threads)
+  --threads INTEGER RANGE         Trials to run at once
                                   [default: 1 for docker, 4 for modal].
                                   [x>=1]
-  --job-name TEXT                 Name the job: the Opik experiment AND the
+  --job-name TEXT                 Name the job: the Langfuse experiment AND the
                                   Trial Dir parent [default: bench-<UTC
                                   stamp>].
   --model TEXT                    Override the model every Trial runs on
@@ -260,11 +260,11 @@ Options:
 
 `make eval-benchmark ARGS='…'` is the same command behind the key preflight.
 
-## Syncing to Opik
+## Syncing to Langfuse
 
 `python -m evals sync --benchmark` upserts one item per task (`task_id`, `difficulty`, `category`,
-`tags`, `instruction`, `checksum`) into
-the `decode-benchmark-v2` dataset. Idempotent — Opik deduplicates by content.
+`tags`, `instruction`, `checksum`) into the `decode-benchmark` dataset. Items are versioned by a
+content checksum; changing a task adds a new item without deleting its earlier version.
 
 ## Audit table
 

@@ -20,26 +20,16 @@ Or in a sandbox that pulls a public GitHub repository with your Python code and 
 
 ```bash
 # --repo clones only into an EMPTY Workspace; a populated one is reused silently
-rm -rf .decode/sandbox
 
 SANDBOX_MODE=docker decode \
-  --repo https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course
+  --repo https://github.com/HanishDhanwalkar/decode-ollama.git
 ```
-
-Then ask it to list the current directory:
-![](../assets/sandbox_docker.png)
-
-Or ask decode what operating system it is running on:
-![](../assets/docker_sandbox_showing_output.png)
-
-This is what it looks like in Docker Desktop:
-![](../assets/sandbox_docker_session.png)
 
 It works similarly in headless mode:
 
 ```bash
 SANDBOX_MODE=docker decode run \
-  --repo https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course \
+  --repo https://github.com/HanishDhanwalkar/decode-ollama.git \
   "list the current dir"
 ```
 
@@ -68,13 +58,11 @@ rm -rf .decode/sandbox
 
 SANDBOX_GIT_TOKEN=<fine-grained-PAT> SANDBOX_MODE=docker \
   uv run decode run \
-  --repo https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course \
+  --repo https://github.com/HanishDhanwalkar/decode-ollama.git \
   "create NOTES.md with one line, commit it, push the branch, then open a PR against main"
 ```
 
 Now your agent can create new branches, push code to them, and open PRs against main:
-
-![](../assets/github_pr.png)
 
 For context, `SANDBOX_GIT_TOKEN` is injected into the worker env as `GITHUB_TOKEN`, along with a Git credential helper ([ADR-0016 §2](../docs/adr/0016-drop-credential-proxy.md)).
 
@@ -84,8 +72,6 @@ For context, `SANDBOX_GIT_TOKEN` is injected into the worker env as `GITHUB_TOKE
 ## 3. Creating pull requests (PRs)
 
 A `--repo` run can leave two kinds of branches on GitHub, created by two different actors: the agent, from inside the sandbox, and decode's **Hand-back**, which ships the sandbox's work to GitHub at the end of the session so that nothing is lost. A prompt that asks for a PR (like the one above) gives you both, pointing at the same commit. In the screenshot below, PR #69 comes from the agent, while the "Compare & pull request" banner for `decode/f236a8e8` is only GitHub suggesting a PR for the Hand-back branch:
-
-![](../assets/github_pr_both_options.png)
 
 **Agent-named branch (e.g. `feat/notes-md`).** The agent creates it only when your prompt asks for it (or it decides to), using `git push` and `gh pr create` inside the sandbox. This requires `SANDBOX_GIT_TOKEN`, and it is the only path that opens a PR. Check what it opened:
 
@@ -146,7 +132,7 @@ Or operate within a GitHub repository, such as decode's own:
 
 ```shell
 SANDBOX_MODE=modal decode \
-  --repo https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course
+  --repo https://github.com/HanishDhanwalkar/decode-ollama.git
 ```
 
 Or Kitaru:
@@ -160,11 +146,7 @@ For write commands (creating branches, commits, and PRs), make sure that `SANDBO
 
 Test it by asking decode what operating system it is running on:
 
-![](../assets/modal_sandbox_showing_output.png)
-
 To see your running sandboxes, go to Modal -> Apps -> `decode-sandbox-local` or `decode-sandbox-prod` (depending on the value of the `DECODE_ENV` env var):
-
-![](../assets/modal_sandbox_dashboard.png)
 
 ## 7. Troubleshooting
 

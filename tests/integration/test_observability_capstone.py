@@ -1,18 +1,18 @@
-"""Opik-observability capstone (ADR-0014): one turn's whole span tree through the REAL stack.
+"""Langfuse-observability capstone (ADR-0024): one turn's whole span tree through the REAL stack.
 
-Proves the integrated M10 tracing story (the per-AC span assertions live in
-test_opik_repl_trace / test_opik_headless_trace): real build_agent (incl. the set-once
+Proves the Langfuse tracing story (the per-AC span assertions live in
+test_langfuse_repl_trace / test_langfuse_headless_trace): real build_agent (incl. the set-once
 subagent-spawn seam), real Runner + AgentTurnHandler + gate + the per-turn ``root_span``,
-real render_event on every event, real SessionLog (its session_id IS the Opik thread id),
+real render_event on every event, real SessionLog (its session_id IS the Langfuse session id),
 and the one GLOBAL ``instrument_pydantic_ai``. Swapped/faked: one scripted FunctionModel
 drives the parent turn AND the subagent children; capfire's in-memory TestExporter stands in
-for the OTLP→Opik exporter; ``tracing._active`` is forced True with a fake opik_api_key
+for the OTLP→Langfuse exporter; ``tracing._active`` is forced True with fake Langfuse keys
 (init_tracing's real ``logfire.configure`` would replace capfire's exporter). The hermetic
 tests pin: child spans nest in the parent turn trace with child tokens visible (the flagship,
 ADR-0013 §9); one chat_turn tree with usage; in-turn compaction nests under the turn root;
 no key → zero spans + a byte-identical event stream. Offline vs live: the hermetic slice
-always runs with no network/key; only test_live_opik_export_smoke is skipif-gated on
-OPIK_API_KEY + GEMINI_API_KEY.
+always runs with no network/key; only test_live_langfuse_export_smoke is skipif-gated on
+Langfuse keys + GEMINI_API_KEY.
 """
 
 from __future__ import annotations
@@ -74,8 +74,8 @@ _CHILD_REPORT = "explore-subagent report"
 def _configured_key(field: str) -> str:
     """A real provider key (env / ``.env``), snapshotted at import — before the autouse scrubbers.
 
-    The rootdir ``_no_real_provider_key`` / ``_no_opik_tracing`` fixtures blank ``gemini_api_key`` /
-    ``opik_api_key`` on the settings singleton for every test, so the live smoke cannot read them at
+    The rootdir fixtures blank provider and Langfuse keys on the settings singleton for every test,
+    so the live smoke cannot read them at
     run time. We snapshot here at collection (before any fixture runs) from a fresh
     :class:`~decode.config.settings.Settings` — which reads the process env + ``.env`` exactly as the
     app does — and the live smoke re-injects them in its body (mirrors the M9 capstone).
@@ -83,7 +83,8 @@ def _configured_key(field: str) -> str:
     return getattr(Settings(), field).get_secret_value()
 
 
-_LIVE_OPIK_KEY = _configured_key("opik_api_key")
+_LIVE_LANGFUSE_SECRET_KEY = _configured_key("langfuse_secret_key")
+_LIVE_LANGFUSE_PUBLIC_KEY = _configured_key("langfuse_public_key")
 _LIVE_GEMINI_KEY = _configured_key("gemini_api_key")
 
 
@@ -100,7 +101,7 @@ def _fake_gemini_key(mocker) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_tracing_state() -> Iterator[None]:
+def _isolate_tracing_state(monkeypatch) -> Iterator[None]:
     """Save/restore the GLOBAL pydantic-ai instrumentation + the module flag, so nothing leaks.
 
     ``instrument_pydantic_ai`` mutates the process-global ``Agent._instrument_default``; without this
@@ -111,6 +112,15 @@ def _isolate_tracing_state() -> Iterator[None]:
     """
     prior_instrument = Agent._instrument_default
     prior_active = tracing._active
+    configure = logfire.configure
+
+    def configure_with_session_id_scrubbing(*args, **kwargs):
+        kwargs["scrubbing"] = logfire.ScrubbingOptions(
+            callback=tracing._preserve_langfuse_session_id
+        )
+        return configure(*args, **kwargs)
+
+    monkeypatch.setattr(logfire, "configure", configure_with_session_id_scrubbing)
     yield
     Agent.instrument_all(prior_instrument)
     tracing._active = prior_active
@@ -118,15 +128,16 @@ def _isolate_tracing_state() -> Iterator[None]:
 
 
 @pytest.fixture
-def active_tracing(monkeypatch, capfire) -> CaptureLogfire:  # noqa: F811
+def active_tracing(_isolate_tracing_state, monkeypatch, capfire) -> CaptureLogfire:  # noqa: F811
     """Turn tracing ON against ``capfire``'s in-memory exporter and instrument pydantic-ai.
 
     ``capfire`` configures logfire with the in-memory exporter FIRST (fixture dependency), then we
     instrument pydantic-ai so its model/tool spans emit into it and set ``_active`` so ``root_span``
-    opens real spans. A fake ``opik_api_key`` is set only for fidelity with the production activation
+    opens real spans. Fake Langfuse keys are set only for fidelity with the production activation
     trigger — the span path never reads it. Restored by :func:`_isolate_tracing_state`.
     """
-    monkeypatch.setattr(settings, "opik_api_key", SecretStr("fake-opik-key"), raising=False)
+    monkeypatch.setattr(settings, "langfuse_secret_key", SecretStr("fake-secret"), raising=False)
+    monkeypatch.setattr(settings, "langfuse_public_key", SecretStr("fake-public"), raising=False)
     monkeypatch.setattr(tracing, "_active", True)
     logfire.instrument_pydantic_ai()
     return capfire
@@ -353,7 +364,7 @@ async def test_subagent_child_spans_nest_in_the_parent_turn_trace_with_child_tok
 ):
     """A parent turn's ``agent(...)`` fan-out nests the child model+tool spans in the turn trace (§9).
 
-    Closes ADR-0013 §9 ("child token spend invisible until Opik lands (M10)") — the one assertion no
+    Closes ADR-0013 §9 ("child token spend invisible until tracing") — the one assertion no
     other file makes. The parent turn fans out two ``agent(...)`` calls; each child runs a real
     read-only ``glob`` then reports. Because the children re-enter the SAME instrumented agent in the
     parent's task/contextvars (``asyncio.create_task`` copies the OTel context), their ``agent.run()``
@@ -381,7 +392,7 @@ async def test_subagent_child_spans_nest_in_the_parent_turn_trace_with_child_tok
     assert len(roots) == 1, [s["name"] for s in spans]
     root = roots[0]
     assert root["parent"] is None
-    assert root["attributes"]["thread_id"] == _SESSION_ID
+    assert root["attributes"]["langfuse.session.id"] == _SESSION_ID
     trace_id = root["context"]["trace_id"]
 
     by_id = _by_span_id(spans)
@@ -414,13 +425,13 @@ async def test_subagent_child_spans_nest_in_the_parent_turn_trace_with_child_tok
 async def test_full_turn_is_one_chat_turn_tree_with_nested_spans_and_usage(
     active_tracing, tmp_path
 ):
-    """One turn → one ``chat_turn`` tree: root (thread_id = session id) → nested chat/tool spans + usage.
+    """One turn → one ``chat_turn`` tree: root (session id) → nested chat/tool spans + usage.
 
     The milestone-level restatement (one test, not the seven per-AC ones in 092): a real ``read`` turn
     through ``build_agent`` + ``Runner`` + ``AgentTurnHandler`` + the gate + the REAL ``SessionLog`` +
-    ``render_event`` on every event. Exactly one ``chat_turn`` root carries the session id as its Opik
-    ``thread_id``; the pydantic-ai ``chat`` + ``execute_tool`` spans nest under it; a leaf model span
-    carries ``gen_ai.usage.input_tokens`` > 0. The session log's id IS the thread id (production wiring).
+    ``render_event`` on every event. Exactly one ``chat_turn`` root carries the Langfuse session id;
+    the pydantic-ai ``chat`` + ``execute_tool`` spans nest under it; a leaf model span
+    carries ``gen_ai.usage.input_tokens`` > 0. The session log's id IS the Langfuse session id.
     """
     working_dir = tmp_path / "ws"
     working_dir.mkdir()
@@ -437,7 +448,7 @@ async def test_full_turn_is_one_chat_turn_tree_with_nested_spans_and_usage(
         agent,
         deps=_deps(sink, resolvers, working_dir),
         session_log=log,
-        session_id=log.session_id,  # exactly how run_app wires the Opik thread id (ADR-0014 §4)
+        session_id=log.session_id,  # exactly how run_app wires the Langfuse session id
     )
     runner = Runner(handler, on_event=sink)
 
@@ -449,7 +460,7 @@ async def test_full_turn_is_one_chat_turn_tree_with_nested_spans_and_usage(
     assert len(roots) == 1, [s["name"] for s in spans]
     root = roots[0]
     assert root["parent"] is None, "the chat_turn span must be the trace root"
-    assert root["attributes"]["thread_id"] == log.session_id == _SESSION_ID
+    assert root["attributes"]["langfuse.session.id"] == log.session_id == _SESSION_ID
     trace_id = root["context"]["trace_id"]
 
     model_spans = _model_spans(spans)
@@ -522,12 +533,12 @@ async def test_in_turn_compaction_nests_under_the_turn_root(active_tracing, tmp_
 async def test_untraced_turn_is_a_noop_zero_spans_and_byte_identical_events(capfire, tmp_path):  # noqa: F811
     """No key → the real ``init_tracing()`` returns ``False`` and the identical turn emits ZERO spans.
 
-    Mutation-proofs the activation guard (ADR-0014 §1): the ``if not key: return False`` presence check
+    Mutation-proofs the activation guard (ADR-0024): the ``if not key: return False`` presence check
     in ``init_tracing``. If it were dropped, ``init_tracing()`` would configure + instrument + return
     ``True`` (failing the ``is False`` assert) AND the untraced run would emit spans (failing the
     ``== []`` assert). The same read turn is then run with tracing ON, and the two event streams are
     compared: tracing adds spans but leaves the emitted event stream **byte-identical** — decode behaves
-    the same whether or not ``OPIK_API_KEY`` is set.
+    the     same whether or not Langfuse keys are set.
     """
     # No ``active_tracing`` fixture: no key (the autouse conftest blanked it), nothing instrumented.
     assert tracing._active is False, "tracing state leaked from a prior test — isolation is broken"
@@ -576,7 +587,7 @@ async def test_untraced_turn_is_a_noop_zero_spans_and_byte_identical_events(capf
     assert on_sink.type_sequence() == off_sink.type_sequence()
 
 
-# 5. Live Opik export smoke — ONE real Gemini turn + real Opik export; SKIPPED without both keys.
+# 5. Live Langfuse export smoke — ONE real Gemini turn + real Langfuse export; SKIPPED without keys.
 
 
 async def _close_live_gemini_client(agent: Agent) -> None:
@@ -596,23 +607,23 @@ async def _close_live_gemini_client(agent: Agent) -> None:
 
 @pytest.mark.filterwarnings("ignore::ResourceWarning")
 @pytest.mark.skipif(
-    not (_LIVE_OPIK_KEY and _LIVE_GEMINI_KEY),
-    reason="OPIK_API_KEY and GEMINI_API_KEY must both be set for the live Opik export smoke",
+    not (_LIVE_LANGFUSE_SECRET_KEY and _LIVE_LANGFUSE_PUBLIC_KEY and _LIVE_GEMINI_KEY),
+    reason="Langfuse keys and GEMINI_API_KEY must be set for the live Langfuse export smoke",
 )
-async def test_live_opik_export_smoke(monkeypatch, caplog, tmp_path):
-    """ONE REAL Gemini turn exported to REAL Opik — presence only (export shipped; priceable attrs ride).
+async def test_live_langfuse_export_smoke(monkeypatch, caplog, tmp_path):
+    """ONE REAL Gemini turn exported to REAL Langfuse — presence only (export shipped; attrs ride).
 
     The single non-hermetic proof: the real :func:`decode.observability.init_tracing` configures the
-    real OTLP→Opik exporter, one short Gemini turn runs, and ``logfire.force_flush()`` pushes the batch
-    to Opik. Correctness is Opik's server side, so this asserts only what is **locally visible**:
+    real OTLP→Langfuse exporter, one short Gemini turn runs, and ``logfire.force_flush()`` pushes the batch
+    to Langfuse. Correctness is Langfuse's server side, so this asserts only what is **locally visible**:
 
     * **export succeeded** — no OTLP-exporter ERROR was logged during the flush (a bad key / unreachable
-      Opik logs one). ``logfire.force_flush()``'s bool is recorded but NOT asserted True: logfire's
+      Langfuse host logs one). ``logfire.force_flush()``'s bool is recorded but NOT asserted True: logfire's
       internal ``CheckSuppressInstrumentationProcessorWrapper.force_flush()`` returns ``False`` even on a
       clean flush, so the return value is not a reliable success signal — the no-error log is.
     * **priceable attributes ride the real Gemini span** — ``gen_ai.usage.*`` tokens (> 0) plus the model
-      identity (``gen_ai.request.model`` / ``gen_ai.system``) Opik needs to price the call. Per the
-      task's out-of-scope we do NOT hit the Opik API to assert cost: **cost appears in the Opik UI for
+      identity (``gen_ai.request.model`` / ``gen_ai.system``) Langfuse needs to price the call. We do
+      NOT hit the Langfuse API to assert cost: **cost appears in the Langfuse UI for
       priced Gemini models** (tokens-only is acceptable for open models — ADR-0014 §8). An in-memory
       ``TestExporter`` is tapped onto the same provider purely to read those attributes locally.
 
@@ -621,16 +632,21 @@ async def test_live_opik_export_smoke(monkeypatch, caplog, tmp_path):
     ``_isolate_tracing_state`` (plus a best-effort ``reset_tracing`` here) unwinds the real activation so
     the global config never leaks into a later test.
     """
-    monkeypatch.setattr(settings, "opik_api_key", SecretStr(_LIVE_OPIK_KEY), raising=False)
+    monkeypatch.setattr(
+        settings, "langfuse_secret_key", SecretStr(_LIVE_LANGFUSE_SECRET_KEY), raising=False
+    )
+    monkeypatch.setattr(
+        settings, "langfuse_public_key", SecretStr(_LIVE_LANGFUSE_PUBLIC_KEY), raising=False
+    )
     monkeypatch.setattr(settings, "gemini_api_key", SecretStr(_LIVE_GEMINI_KEY))
     monkeypatch.setattr(factory.settings, "gemini_api_key", SecretStr(_LIVE_GEMINI_KEY))
     monkeypatch.setattr(settings, "llm_provider", "gemini")
 
-    # REAL activation — the real OTLP→Opik exporter is configured (returns True with a key present).
+    # REAL activation — the real OTLP→Langfuse exporter is configured.
     assert tracing.init_tracing() is True
 
     # Tap the SAME provider with an in-memory exporter so the Gemini span's attributes are readable
-    # locally (the real export ships to Opik; we assert attributes here, never via the Opik API).
+    # locally (the real export ships to Langfuse; assertions stay on locally visible attributes).
     tap = TestExporter()
     provider = logfire.DEFAULT_LOGFIRE_INSTANCE.config.get_tracer_provider()
     provider.add_span_processor(SimpleSpanProcessor(tap))
@@ -645,7 +661,7 @@ async def test_live_opik_export_smoke(monkeypatch, caplog, tmp_path):
         await _run_turn(runner, "Reply with exactly the single word: traced.")
         flushed = (
             logfire.force_flush()
-        )  # push the batch to Opik; bool recorded, not asserted (quirk)
+        )  # push the batch to Langfuse; bool recorded, not asserted (quirk)
 
     # EXPORT SUCCEEDED: no OTLP exporter error logged during the run + flush (bad key / down → error).
     otlp_errors = [
@@ -655,16 +671,20 @@ async def test_live_opik_export_smoke(monkeypatch, caplog, tmp_path):
     ]
     assert not otlp_errors, [r.getMessage() for r in otlp_errors]
 
-    # PRICEABLE ATTRS on the REAL Gemini leaf span (tokens + model identity Opik prices server-side).
+    # Priceable attributes on the real Gemini leaf span (tokens + model identity).
     chat_spans = _model_spans(tap.exported_spans_as_dict())
     assert chat_spans, "the real Gemini turn must emit at least one 'chat' model span"
     leaf = chat_spans[-1]
     assert leaf["attributes"].get("gen_ai.usage.input_tokens", 0) > 0, leaf["attributes"]
     assert leaf["attributes"].get("gen_ai.request.model"), (
-        "model identity is needed for Opik pricing"
+        "model identity is needed for Langfuse pricing"
     )
-    assert leaf["attributes"].get("gen_ai.system"), "provider identity is needed for Opik pricing"
+    assert leaf["attributes"].get("gen_ai.system"), (
+        "provider identity is needed for Langfuse pricing"
+    )
 
-    logging.getLogger(__name__).info("live Opik smoke: force_flush()=%s (not asserted)", flushed)
+    logging.getLogger(__name__).info(
+        "live Langfuse smoke: force_flush()=%s (not asserted)", flushed
+    )
     reset_tracing()  # best-effort: the autouse fixture also unwinds the real activation
     await _close_live_gemini_client(agent)

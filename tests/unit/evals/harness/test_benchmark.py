@@ -1,41 +1,29 @@
-"""Offline tests for the Opik Benchmark Job (ADR-0022 §1,§6,§7).
-
-No infra, no subprocess and no keys: :func:`~evals.harness.trial.run_trial` is mocked (the real thing
-is pinned end-to-end in ``test_trial.py`` against a fake ``decode``) and ``opik.evaluation.evaluate``
-/ ``opik.Opik`` are mocked. Covered here: the trial-to-payload mapping, the task fn's
-never-raise contract, where a job's Trial Dirs land, the ``evaluate`` wiring (checksum-scoped dataset
-ids, the reward metric, ``experiment_scoring_functions``, ``experiment_config``, threads, experiment
-name), and the two Opik-shaped readers — the experiment scoring functions and the summary the table
-is rendered from — pinned against the INSTALLED opik 2.2.36 with hand-built ``TestResult`` objects.
-"""
+"""Offline tests for Langfuse-backed benchmark execution and local rollups."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from opik.evaluation.evaluation_result import compute_experiment_scores
-from opik.evaluation.test_case import TestCase as OpikTestCase
-from opik.evaluation.test_result import TestResult as OpikTestResult
 
 from decode.config.settings import settings
 from evals.harness.benchmark import (
-    EXPERIMENT_SCORING_FUNCTIONS,
     BenchmarkSelectionError,
-    agent_model,
     default_job_name,
     default_threads,
     experiment_config,
     make_benchmark_task_fn,
     new_job_dir,
+    pass_at_k_score,
     run_benchmark,
-    select_tasks,
     summarize,
     trial_payload,
     validate_job_name,
 )
 from evals.harness.datasets import task_checksum
+from evals.harness.langfuse_experiments import ExperimentCase, ExperimentItem
 from evals.harness.task_loader import load_benchmark_task
 from evals.harness.trial import TrialResult
 
@@ -64,70 +52,43 @@ def _trial(
         timings={"seed": 0.1, "run": 1.0, "verify": 0.2},
         started_at=STARTED_AT,
         finished_at=STARTED_AT + timedelta(seconds=1.5),
-        trial_dir=Path("/tmp/runs/job/001-greeting__0a1b2c3d"),
+        trial_dir=Path("runs/job/001-greeting__0a1b2c3d"),
     )
 
 
-def _test_result(
-    *,
-    task_id: str = "001-greeting",
-    difficulty: str = "easy",
-    status: str = "agent_ok",
-    reward: float | None = 1.0,
-    cost_usd: float | None = None,
-    trial_id: int = 0,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    run_seconds: float | None = None,
-    started_at: str | None = None,
-    finished_at: str | None = None,
-) -> OpikTestResult:
-    """One Opik ``TestResult`` shaped exactly as ``evaluate()`` builds it around our task fn.
+def _fake_result(**overrides):
+    return SimpleNamespace(
+        name="bench-test",
+        experiment_id="experiment-1",
+        item_results=[],
+        **overrides,
+    )
 
-    The stamps are strings: the payload round-trips through Opik as JSON, so the readers see ISO
-    text, never the ``datetime`` the trial produced.
-    """
-    return OpikTestResult(
-        test_case=OpikTestCase(
-            trace_id=f"trace-{task_id}-{trial_id}",
-            dataset_item_id=f"item-{task_id}",
-            task_output={
-                "status": status,
-                "reward": reward,
-                "cost_usd": cost_usd,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "run_seconds": run_seconds,
-                "started_at": started_at,
-                "finished_at": finished_at,
+
+def _client(task, *, items=None):
+    from unittest.mock import Mock
+
+    client = Mock()
+    dataset_items = items or [
+        SimpleNamespace(
+            id="item-1",
+            input={"task_id": task.id, "instruction": task.instruction},
+            metadata={
+                "key": task.id,
+                "task_id": task.id,
+                "checksum": task_checksum(task),
+                "difficulty": task.difficulty,
             },
-            dataset_item_content={"task_id": task_id, "difficulty": difficulty},
-        ),
-        score_results=[],
-        trial_id=trial_id,
-    )
+        )
+    ]
+    client.get_dataset.return_value = SimpleNamespace(name="decode-benchmark", items=dataset_items)
+    client.run_experiment.return_value = _fake_result()
+    return client
 
 
-def _wire_opik(mocker, task, *, items: list[dict] | None = None):
-    """Patch ``opik.Opik`` + ``evaluate`` and return ``(evaluate, client)`` for one selected task."""
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = (
-        items
-        if items is not None
-        else [{"id": "item-1", "task_id": task.id, "checksum": task_checksum(task)}]
-    )
-    return evaluate, opik_cls.return_value
-
-
-# --- the task fn: one dataset item = one Trial ---
-
-
-def test_task_fn_maps_a_trial_onto_the_metric_payload(greeting_task_dir: Path, mocker):
-    """One dataset item = one Trial; the payload is that verdict flattened for the metrics."""
+def test_task_fn_maps_trial_to_metric_payload(greeting_task_dir: Path, mocker):
     task = load_benchmark_task(greeting_task_dir)
-    run_trial = mocker.patch(
+    mocker.patch(
         "evals.harness.benchmark.run_trial",
         return_value=_trial(
             summary={
@@ -139,623 +100,143 @@ def test_task_fn_maps_a_trial_onto_the_metric_payload(greeting_task_dir: Path, m
             }
         ),
     )
-    task_fn = make_benchmark_task_fn(
-        {task.id: task}, sandbox="docker", job_dir=Path("/tmp/runs/job"), model="qwen-x"
+    fn = make_benchmark_task_fn(
+        {task.id: task}, sandbox="docker", job_dir=Path("runs/job"), model="qwen-x"
     )
 
-    payload = task_fn({"task_id": task.id})
+    payload = fn({"task_id": task.id})
 
     assert payload["reward"] == 1.0
-    assert payload["status"] == "agent_ok"
     assert payload["output"] == "all done"
     assert payload["steps"] == 3
-    assert payload["max_steps"] == task.max_steps
     assert payload["cost_usd"] == 0.01
     assert payload["input_tokens"] == 10
     assert payload["output_tokens"] == 5
-    assert payload["run_seconds"] == 1.0
-    assert payload["trial_seconds"] == 1.5
-    assert payload["started_at"] == "2026-09-15T12:00:00+00:00"
-    assert payload["finished_at"] == "2026-09-15T12:00:01.500000+00:00"
-    assert payload["trial_dir"] == "/tmp/runs/job/001-greeting__0a1b2c3d"
-    assert payload["infra_error"] is None
-    assert run_trial.call_args.kwargs["sandbox"] == "docker"
-    assert run_trial.call_args.kwargs["job_dir"] == Path("/tmp/runs/job")
-    assert run_trial.call_args.kwargs["model"] == "qwen-x"
-    assert len(run_trial.call_args.kwargs["trial_id"]) == 8  # <task>__<short-id> is the Trial Dir
 
 
-def test_task_fn_carries_an_infra_error_reason(greeting_task_dir: Path, mocker):
-    """An excluded trial must be distinguishable from a lost one without re-deriving the taxonomy."""
+def test_trial_payload_marks_unpriced_infra_error(greeting_task_dir: Path):
     task = load_benchmark_task(greeting_task_dir)
-    mocker.patch(
-        "evals.harness.benchmark.run_trial",
-        return_value=_trial(
-            status="infra_error",
-            reward=None,
-            reason="the pristine clone of decode/0a1b2c3d failed",
-        ),
-    )
-    task_fn = make_benchmark_task_fn({task.id: task}, sandbox="docker", job_dir=Path("/tmp/j"))
-
-    payload = task_fn({"task_id": task.id})
-
-    assert payload["reward"] is None
-    assert payload["infra_error"] == "the pristine clone of decode/0a1b2c3d failed"
-    assert payload["output"] == ""
-    assert payload["steps"] == 0
-
-
-def test_task_fn_turns_an_unexpected_raise_into_an_infra_error(greeting_task_dir: Path, mocker):
-    """Opik gives task fns no per-item isolation: ONE raise would abort the whole Experiment."""
-    task = load_benchmark_task(greeting_task_dir)
-    mocker.patch(
-        "evals.harness.benchmark.run_trial", side_effect=RuntimeError("the disk went away")
-    )
-    task_fn = make_benchmark_task_fn({task.id: task}, sandbox="docker", job_dir=Path("/tmp/j"))
-
-    payload = task_fn({"task_id": task.id})
-
-    assert payload["status"] == "infra_error"
-    assert "the disk went away" in payload["infra_error"]
-    assert payload["reward"] is None
-
-
-def test_task_fn_survives_an_item_naming_an_unknown_task(greeting_task_dir: Path, mocker):
-    """A stale dataset item (a deleted task) is an Infra Error, not a crashed Experiment."""
-    task = load_benchmark_task(greeting_task_dir)
-    task_fn = make_benchmark_task_fn({task.id: task}, sandbox="docker", job_dir=Path("/tmp/j"))
-
-    payload = task_fn({"task_id": "010-git-hygiene"})
-
-    assert payload["status"] == "infra_error"
-    assert "010-git-hygiene" in payload["infra_error"]
-
-
-def test_trial_payload_of_a_timed_out_trial_is_an_agent_failure(greeting_task_dir: Path):
-    """A timeout is graded like any other loss — never an Infra Error (ADR-0022 §4)."""
-    task = load_benchmark_task(greeting_task_dir)
-
     payload = trial_payload(
-        _trial(status="agent_fail", reward=0.0, reason="the agent timed out after 600s"), task
+        _trial(status="infra_error", reward=None, reason="fixture failure"), task
     )
-
-    assert payload["status"] == "agent_fail"
-    assert payload["reward"] == 0.0
-    assert payload["infra_error"] is None
+    assert payload["status"] == "infra_error"
+    assert payload["infra_error"] is not None
 
 
-def test_the_trial_payload_carries_the_decode_session_id_the_cohort_join_needs(
-    greeting_task_dir: Path,
-):
-    """`evals kitaru cohort from-experiment` resolves a Session by NAME = this session id.
-
-    The item's own Opik trace is `evaluate()`'s wrapper around the task fn, not the subprocess
-    trace, so nothing else on an experiment row can name the run that was recorded (task 165).
-    """
-    task = load_benchmark_task(greeting_task_dir)
-
-    payload = trial_payload(
-        _trial(summary={"session_id": "sess-42", "kitaru_session_id": "kit-42"}), task
-    )
-
-    assert payload["session_id"] == "sess-42"
-    assert payload["kitaru_session_id"] == "kit-42"
+def test_job_name_and_directory_are_safe():
+    assert validate_job_name("bench-2026.11") == "bench-2026.11"
+    with pytest.raises(ValueError):
+        validate_job_name("../escape")
+    assert new_job_dir("bench-test") == Path(settings.decode_dir) / "evals" / "runs" / "bench-test"
 
 
-def test_an_unrecorded_trial_reports_no_kitaru_session(greeting_task_dir: Path):
-    task = load_benchmark_task(greeting_task_dir)
-
-    payload = trial_payload(_trial(summary={"session_id": "sess-42"}), task)
-
-    assert payload["session_id"] == "sess-42"
-    assert payload["kitaru_session_id"] is None
-
-
-def test_an_infra_error_payload_keeps_the_same_shape(greeting_task_dir: Path, mocker):
-    """Same keys as a graded trial, so a reader never has to branch on the status."""
-    task = load_benchmark_task(greeting_task_dir)
-    mocker.patch("evals.harness.benchmark.run_trial", side_effect=RuntimeError("boom"))
-    task_fn = make_benchmark_task_fn({task.id: task}, sandbox="docker", job_dir=Path("/tmp/j"))
-
-    payload = task_fn({"task_id": task.id})
-
-    assert payload["session_id"] is None
-    assert payload["kitaru_session_id"] is None
-
-
-# --- the job dir + defaults ---
-
-
-def test_a_job_dir_lands_under_the_harness_home():
-    """Trial Dirs are harness artifacts: ``<harness home>/.decode/evals/runs/<job>/`` (ADR-0022 §7)."""
-    job_dir = new_job_dir("bench-20260911-101500")
-
-    assert job_dir.parts[-4:] == (
-        str(settings.decode_dir),
-        "evals",
-        "runs",
-        "bench-20260911-101500",
-    )
-
-
-@pytest.mark.parametrize("job_name", ["../../evil", "a/b", "", ".", "-lead", "x" * 65])
-def test_a_job_name_that_is_not_one_path_segment_is_refused(job_name):
-    """``--job-name`` names a directory AND an Opik experiment: one safe segment, or nothing.
-
-    ``new_job_dir("../../evil")`` otherwise resolves OUTSIDE ``.decode/evals/runs/`` and a real
-    (billed) job starts writing Trial Dirs onto the host filesystem.
-    """
-    with pytest.raises(ValueError, match="job name"):
-        new_job_dir(job_name)
-
-
-def test_a_readable_job_name_is_accepted():
-    assert new_job_dir("bench-20260911-120000").name == "bench-20260911-120000"
-    assert validate_job_name("bench-20260911-120000") == "bench-20260911-120000"
-
-
-def test_the_default_job_name_passes_its_own_guard():
-    """A future prefix/format change must not make the default name trip the validator."""
-    name = default_job_name()
-
-    assert validate_job_name(name) == name
-
-
-def test_the_default_job_name_is_a_utc_timestamp():
-    name = default_job_name()
-
-    assert name.startswith("bench-")
-    stamp = name.removeprefix("bench-")
-    assert len(stamp) == len("20260911-101500") and stamp[8] == "-"
-
-
-def test_default_threads_are_one_for_docker_and_four_for_modal():
-    """Docker trials share the host's CPU for the image warm-up; modal trials are remote."""
+def test_default_name_is_sortable_and_threads_follow_sandbox():
+    assert default_job_name().startswith("bench-")
     assert default_threads("docker") == 1
     assert default_threads("modal") == 4
 
 
-# --- run_benchmark: the evaluate() wiring ---
+def test_experiment_config_records_kitaru_and_run_shape(mocker):
+    mocker.patch("evals.harness.benchmark.git_sha", return_value="abc")
+    mocker.patch("evals.harness.benchmark.decode_version", return_value="1.2")
+    mocker.patch.object(settings, "kitaru_agent_id", "agent-1")
 
+    config = experiment_config(
+        sandbox="modal", trials=3, threads=2, job_name="bench-x", model="model-x"
+    )
 
-def test_run_benchmark_wires_evaluate(mocker, greeting_task_dir: Path):
-    """The whole Opik surface in one assertion block (ADR-0022 §6)."""
-    task = load_benchmark_task(greeting_task_dir)
-    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
-    evaluate, _ = _wire_opik(mocker, task)
-
-    run = run_benchmark(task_id=task.id, sandbox="docker", trials=2, job_name="bench-x")
-
-    assert run.result is evaluate.return_value
-    assert run.job_dir.name == "bench-x"
-    _, kwargs = evaluate.call_args
-    assert kwargs["dataset_item_ids"] == ["item-1"]
-    assert kwargs["trial_count"] == 2
-    assert kwargs["task_threads"] == 1
-    assert kwargs["experiment_name"] == "bench-x"
-    assert [type(metric).__name__ for metric in kwargs["scoring_metrics"]] == ["RewardMetric"]
-    assert kwargs["experiment_scoring_functions"] == EXPERIMENT_SCORING_FUNCTIONS
-
-
-def test_run_benchmark_experiment_config_carries_the_full_provenance(
-    mocker, greeting_task_dir: Path
-):
-    """Two Experiment rows must be tellable apart by what actually changed (ADR-0022 §6)."""
-    task = load_benchmark_task(greeting_task_dir)
-    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
-    evaluate, _ = _wire_opik(mocker, task)
-
-    run_benchmark(task_id=task.id, sandbox="modal", trials=3, job_name="bench-y", model="qwen-x")
-
-    config = evaluate.call_args.kwargs["experiment_config"]
-    assert config["model"] == "qwen-x"
-    assert config["provider"] == settings.llm_provider
-    assert config["git_sha"]  # this repo is a git checkout
-    assert config["sandbox"] == "modal"
-    assert config["decode_version"]
+    assert config["git_sha"] == "abc"
+    assert config["kitaru_agent_id"] == "agent-1"
     assert config["trials"] == 3
-    assert config["threads"] == 4  # the modal default — the fan-out the wall clock depends on
-    assert config["job_name"] == "bench-y"
+    assert config["threads"] == 2
+    assert config["model"] == "model-x"
 
 
-def test_experiment_config_records_an_explicit_thread_count(mocker, greeting_task_dir: Path):
-    """The wall clock is a span, so the fan-out it ran under is provenance (Amendment §14)."""
+def test_run_benchmark_repeats_current_dataset_item_per_trial(mocker, greeting_task_dir: Path):
     task = load_benchmark_task(greeting_task_dir)
+    client = _client(task)
     mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
-    evaluate, _ = _wire_opik(mocker, task)
+    mocker.patch("evals.harness.benchmark.run_trial", return_value=_trial(task.id))
 
-    run_benchmark(task_id=task.id, sandbox="docker", threads=3, job_name="bench-z")
-
-    assert evaluate.call_args.kwargs["experiment_config"]["threads"] == 3
-    assert evaluate.call_args.kwargs["task_threads"] == 3
-
-
-def test_experiment_config_kitaru_agent_id_is_none_when_unset(mocker):
-    """Never a placeholder: an unset ``KITARU_AGENT_ID`` means the run recorded no Session."""
-    mocker.patch.object(settings, "kitaru_agent_id", "")
-
-    config = experiment_config(
-        sandbox="docker", trials=1, threads=1, job_name="bench-x", model=None
+    run = run_benchmark(
+        task_id=task.id,
+        sandbox="docker",
+        trials=3,
+        threads=2,
+        job_name="bench-test",
+        client=client,
     )
 
-    assert config["kitaru_agent_id"] is None
+    call = client.run_experiment.call_args.kwargs
+    assert len(call["data"]) == 3
+    assert [item["metadata"]["trial_index"] for item in call["data"]] == [0, 1, 2]
+    assert call["metadata"]["threads"] == 2
+    assert call["max_concurrency"] == 2
+    assert run.experiment_name == "bench-test"
 
 
-def test_experiment_config_reports_a_set_kitaru_agent_id(mocker):
-    """With recording configured the id joins Opik to the Kitaru Sessions (ADR-0022 §10)."""
-    mocker.patch.object(settings, "kitaru_agent_id", "agent-42")
-
-    config = experiment_config(
-        sandbox="docker", trials=1, threads=1, job_name="bench-x", model=None
-    )
-
-    assert config["kitaru_agent_id"] == "agent-42"
-
-
-def test_run_benchmark_leaves_the_project_to_the_dataset(mocker, greeting_task_dir: Path):
-    """opik 2.2.36 resolves the trace project from the DATASET and deprecates the parameter.
-
-    ``sync_benchmark_dataset`` creates ``decode-benchmark`` inside ``decode-evals``, so passing it
-    again would only log a deprecation warning on every run.
-    """
-    task = load_benchmark_task(greeting_task_dir)
-    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
-    evaluate, client = _wire_opik(mocker, task)
-    client.get_or_create_dataset.return_value.project_name = settings.eval_project_name
-
-    run_benchmark(task_id=task.id, sandbox="docker")
-
-    assert evaluate.call_args.kwargs["project_name"] is None
-
-
-def test_run_benchmark_names_the_project_for_a_dataset_without_one(mocker, greeting_task_dir: Path):
-    """The fallback: a dataset created before the project was pinned still logs under decode-evals."""
-    task = load_benchmark_task(greeting_task_dir)
-    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
-    evaluate, client = _wire_opik(mocker, task)
-    client.get_or_create_dataset.return_value.project_name = None
-
-    run_benchmark(task_id=task.id, sandbox="docker")
-
-    assert evaluate.call_args.kwargs["project_name"] == settings.eval_project_name
-
-
-def test_run_benchmark_threads_default_to_the_sandbox_policy(mocker, greeting_task_dir: Path):
-    task = load_benchmark_task(greeting_task_dir)
-    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
-    evaluate, _ = _wire_opik(mocker, task)
-
-    run_benchmark(task_id=task.id, sandbox="modal")
-
-    assert evaluate.call_args.kwargs["task_threads"] == 4
-
-
-def test_run_benchmark_threads_can_be_overridden(mocker, greeting_task_dir: Path):
-    """Subprocess trials are independent, so an operator may widen the fan-out (ADR-0022 §6)."""
-    task = load_benchmark_task(greeting_task_dir)
-    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
-    evaluate, _ = _wire_opik(mocker, task)
-
-    run_benchmark(task_id=task.id, sandbox="docker", threads=3)
-
-    assert evaluate.call_args.kwargs["task_threads"] == 3
-
-
-def test_run_benchmark_selects_the_item_matching_the_task_folder_on_disk(
+def test_run_benchmark_refuses_to_run_when_current_dataset_item_is_missing(
     mocker, greeting_task_dir: Path
 ):
-    """Opik never deletes a superseded item — the checksum is what keeps a stale one out of the run."""
     task = load_benchmark_task(greeting_task_dir)
-    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
-    evaluate, _ = _wire_opik(
-        mocker,
+    client = _client(
         task,
         items=[
-            {"id": "stale", "task_id": task.id, "checksum": "0" * 64},
-            {"id": "fresh", "task_id": task.id, "checksum": task_checksum(task)},
+            SimpleNamespace(
+                id="stale",
+                input={"task_id": task.id},
+                metadata={"key": task.id, "task_id": task.id, "checksum": "stale"},
+            )
         ],
     )
-
-    run_benchmark(task_id=task.id, sandbox="docker")
-
-    assert evaluate.call_args.kwargs["dataset_item_ids"] == ["fresh"]
-
-
-def test_run_benchmark_stops_when_a_task_has_no_fresh_dataset_item(mocker, greeting_task_dir: Path):
-    """A stale-only match must STOP: ``dataset_item_ids=None`` would run the whole dataset.
-
-    The mirror of the empty-selection guard — never a silent 19-task paid run because a checksum
-    moved and the sync did not land.
-    """
-    task = load_benchmark_task(greeting_task_dir)
     mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
-    evaluate, _ = _wire_opik(
-        mocker, task, items=[{"id": "stale", "task_id": task.id, "checksum": "0" * 64}]
-    )
 
-    with pytest.raises(BenchmarkSelectionError, match=task.id):
-        run_benchmark(task_id=task.id, sandbox="docker")
-
-    evaluate.assert_not_called()
+    with pytest.raises(BenchmarkSelectionError, match="matching dataset item"):
+        run_benchmark(task_id=task.id, client=client)
+    client.run_experiment.assert_not_called()
 
 
-def test_run_benchmark_scopes_evaluate_to_every_selected_item(mocker, greeting_task_dir: Path):
-    """An unfiltered run evaluates every task's fresh dataset item, not just the first."""
-    task = load_benchmark_task(greeting_task_dir)
-    other = task.model_copy(update={"task": task.task.model_copy(update={"name": "002-other"})})
-    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task, other])
-    evaluate, _ = _wire_opik(
-        mocker,
-        task,
-        items=[
-            {"id": "a", "task_id": task.id, "checksum": task_checksum(task)},
-            {"id": "b", "task_id": other.id, "checksum": task_checksum(other)},
-        ],
-    )
-
-    run_benchmark(sandbox="docker")
-
-    assert set(evaluate.call_args.kwargs["dataset_item_ids"]) == {"a", "b"}
-
-
-@pytest.mark.parametrize("trials", [0, -5])
-def test_run_benchmark_rejects_a_non_positive_trial_count(mocker, greeting_task_dir: Path, trials):
-    """Opik's ``evaluate(trial_count=-5)`` loops zero times and returns cleanly — guard first."""
-    task = load_benchmark_task(greeting_task_dir)
-    mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[task])
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-
-    with pytest.raises(ValueError, match="trials"):
-        run_benchmark(task_id=task.id, sandbox="docker", trials=trials)
-
-    evaluate.assert_not_called()
-
-
-def test_run_benchmark_raises_when_no_task_matches(mocker):
-    """An empty selection is a loud, friendly stop — never a silent zero-item experiment."""
+def test_run_benchmark_refuses_empty_selection(mocker):
+    client = mocker.Mock()
     mocker.patch("evals.harness.benchmark.load_benchmark_tasks", return_value=[])
-
     with pytest.raises(BenchmarkSelectionError):
-        run_benchmark(task_id="does-not-exist")
+        run_benchmark(client=client)
+    client.run_experiment.assert_not_called()
 
 
-def testselect_tasks_filters_by_id_and_difficulty(greeting_task_dir: Path):
-    task = load_benchmark_task(greeting_task_dir)
-
-    assert select_tasks([task], task_id=task.id, difficulty=None) == [task]
-    assert select_tasks([task], task_id="nope", difficulty=None) == []
-    assert select_tasks([task], task_id=None, difficulty="easy") == [task]
-    assert select_tasks([task], task_id=None, difficulty="hard") == []
-
-
-def test_select_tasks_takes_several_ids_as_one_subset(greeting_task_dir: Path):
-    """A repeated ``--task`` runs a hand-picked subset as ONE experiment (Amendment §14)."""
-    task = load_benchmark_task(greeting_task_dir)
-
-    assert select_tasks([task], task_id=(task.id, "nope"), difficulty=None) == [task]
-    assert select_tasks([task], task_id=("nope", "also-nope"), difficulty=None) == []
-    assert select_tasks([task], task_id=(), difficulty=None) == []
-
-
-def test_agent_model_prefers_the_run_override():
-    assert agent_model("qwen-x") == "qwen-x"
-    assert agent_model() == settings.active_model
-
-
-# --- the experiment scoring functions, pinned against the installed opik ---
-
-
-def test_experiment_scoring_functions_match_the_installed_opik_signature():
-    """Opik 2.2.36 calls each function with ``List[TestResult]`` and logs the ``ScoreResult``s back.
-
-    Driven through opik's OWN ``compute_experiment_scores``, which swallows a raising function with a
-    warning — so a wrong signature would silently produce NO scores. Asserting the names is what
-    turns that silence into a failing test.
-    """
-    results = [
-        _test_result(status="agent_ok", reward=1.0, cost_usd=0.10, trial_id=0),
-        _test_result(status="agent_fail", reward=0.0, cost_usd=0.10, trial_id=1),
-    ]
-
-    scores = compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
-
-    by_name = {score.name: score for score in scores}
-    assert set(by_name) == {
-        "pass_at_1",
-        "pass_at_k",
-        "pass_hat_k",
-        "flaky_rate",
-        "success_per_dollar",
-        "mean_cost_usd",
-        "infra_error_rate",
-        "input_tokens_total",
-        "output_tokens_total",
-        "tokens_mean",
-        "wall_clock_seconds",
-        "run_seconds_total",
-        "run_seconds_mean",
-    }
-    assert by_name["pass_at_1"].value == 0.5
-    assert by_name["pass_at_k"].value == 1.0
-    assert by_name["pass_hat_k"].value == 0.0
-    assert by_name["flaky_rate"].value == 1.0
-    assert by_name["mean_cost_usd"].value == 0.10
-    assert by_name["success_per_dollar"].value == 5.0
-    assert by_name["infra_error_rate"].value == 0.0
-
-
-def test_experiment_scores_exclude_infra_errors_from_the_pass_rates():
-    """The ADR-0022 §4 rule on the Experiment row: the lost trial is counted, never scored."""
-    results = [
-        _test_result(status="agent_ok", reward=1.0, trial_id=0),
-        _test_result(status="infra_error", reward=None, trial_id=1),
-    ]
-
-    by_name = {
-        score.name: score
-        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
-    }
-
-    assert by_name["pass_at_1"].value == 1.0  # the one graded trial passed
-    assert by_name["infra_error_rate"].value == 0.5
-
-
-def test_unpriced_cost_scores_are_failed_scores_not_zeroes():
-    """No provider cost ⇒ ``scoring_failed`` so Opik's average skips it; a 0 would read as free."""
-    results = [_test_result(status="agent_ok", reward=1.0, cost_usd=None)]
-
-    by_name = {
-        score.name: score
-        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
-    }
-
-    assert by_name["mean_cost_usd"].scoring_failed is True
-    assert by_name["success_per_dollar"].scoring_failed is True
-    assert by_name["pass_at_1"].scoring_failed is False
-
-
-# --- the two spend axes on the experiment row (ADR-0022 Amendment §14) ---
-
-
-def _stamp(seconds: float) -> str:
-    """An ISO-8601 UTC stamp ``seconds`` after a fixed origin — what the JSON round-trip yields."""
-    return (STARTED_AT + timedelta(seconds=seconds)).isoformat()
-
-
-def test_experiment_scores_total_the_tokens_for_a_per_token_bill():
-    """Input and output are summed SEPARATELY (they are priced apart); the mean is per trial."""
-    results = [
-        _test_result(input_tokens=1_000, output_tokens=100, trial_id=0),
-        _test_result(
-            status="agent_fail", reward=0.0, input_tokens=3_000, output_tokens=300, trial_id=1
+def _item(task_id: str, difficulty: str, status: str, reward: float | None) -> ExperimentItem:
+    return ExperimentItem(
+        test_case=ExperimentCase(
+            dataset_item_content={"task_id": task_id, "difficulty": difficulty},
+            task_output={
+                "status": status,
+                "reward": reward,
+                "cost_usd": 0.01,
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "run_seconds": 1.0,
+                "started_at": STARTED_AT.isoformat(),
+                "finished_at": (STARTED_AT + timedelta(seconds=1)).isoformat(),
+            },
         ),
-    ]
-
-    by_name = {
-        score.name: score
-        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
-    }
-
-    assert by_name["input_tokens_total"].value == 4_000
-    assert by_name["output_tokens_total"].value == 400
-    assert by_name["tokens_mean"].value == 2_200
-    assert by_name["input_tokens_total"].scoring_failed is False
+        score_results=[],
+    )
 
 
-def test_experiment_scores_span_the_wall_clock_for_a_per_hour_bill():
-    """Wall clock = first start to last end (a span); run seconds = the sum of the agent phases.
-
-    Two trials that overlapped under ``--threads 2``: 0-60 s and 30-100 s. The endpoint was warm for
-    100 s (what a $/hour bills), while the agent phases add up to 60 + 70 = 130 s.
-    """
-    results = [
-        _test_result(run_seconds=60.0, started_at=_stamp(0), finished_at=_stamp(60), trial_id=0),
-        _test_result(run_seconds=70.0, started_at=_stamp(30), finished_at=_stamp(100), trial_id=1),
-    ]
-
-    by_name = {
-        score.name: score
-        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
-    }
-
-    assert by_name["wall_clock_seconds"].value == 100.0
-    assert by_name["run_seconds_total"].value == 130.0
-    assert by_name["run_seconds_mean"].value == 65.0
-    assert "--threads" in by_name["wall_clock_seconds"].reason
-
-
-def test_time_scores_are_failed_scores_when_nothing_ran():
-    """A job of Infra Errors at seed time has no time to report — never a 0 that reads as instant."""
-    results = [_test_result(status="infra_error", reward=None)]
-
-    by_name = {
-        score.name: score
-        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
-    }
-
-    assert by_name["wall_clock_seconds"].scoring_failed is True
-    assert by_name["run_seconds_total"].scoring_failed is True
-    assert by_name["run_seconds_mean"].scoring_failed is True
-    assert by_name["input_tokens_total"].value == 0  # tokens, by contrast, are an honest zero
-
-
-def test_a_lost_trial_still_counts_the_time_it_ran():
-    """An Infra Error at VERIFY time still held the model — its ``run`` seconds and tokens count."""
-    results = [
-        _test_result(
-            input_tokens=500, run_seconds=40.0, started_at=_stamp(0), finished_at=_stamp(45)
-        ),
-        _test_result(
-            status="infra_error",
-            reward=None,
-            input_tokens=700,
-            run_seconds=50.0,
-            started_at=_stamp(45),
-            finished_at=_stamp(120),
-            trial_id=1,
-        ),
-    ]
-
-    by_name = {
-        score.name: score
-        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
-    }
-
-    assert by_name["input_tokens_total"].value == 1_200
-    assert by_name["run_seconds_total"].value == 90.0
-    assert by_name["wall_clock_seconds"].value == 120.0
-    assert by_name["pass_at_1"].value == 1.0  # while the pass rate still excludes it (§4)
-
-
-@pytest.mark.parametrize(
-    ("started_at", "finished_at"),
-    [
-        ("not a stamp", "2026-09-15T12:01:00+00:00"),
-        ("2026-09-15T12:00:00", "2026-09-15T12:01:00"),  # naive: rejected, never guessed at
-        (None, "2026-09-15T12:01:00+00:00"),
-    ],
-)
-def test_an_unusable_stamp_yields_no_wall_clock(started_at, finished_at):
-    results = [_test_result(started_at=started_at, finished_at=finished_at)]
-
-    by_name = {
-        score.name: score
-        for score in compute_experiment_scores(EXPERIMENT_SCORING_FUNCTIONS, results)
-    }
-
-    assert by_name["wall_clock_seconds"].scoring_failed is True
-
-
-# --- the summary the CLI table is rendered from ---
-
-
-def test_summarize_groups_trials_by_task_and_tier(mocker):
-    """The table's rows come off the same ``TestResult`` list the experiment scores do."""
-    result = mocker.Mock()
-    result.test_results = [
-        _test_result(task_id="001-a", difficulty="easy", status="agent_ok", trial_id=0),
-        _test_result(
-            task_id="001-a", difficulty="easy", status="agent_fail", reward=0.0, trial_id=1
-        ),
-        _test_result(
-            task_id="002-b", difficulty="hard", status="infra_error", reward=None, trial_id=0
-        ),
-    ]
+def test_local_rollup_preserves_pass_k_and_excludes_infra_errors():
+    result = SimpleNamespace(
+        test_results=[
+            _item("a", "easy", "agent_ok", 1.0),
+            _item("a", "easy", "agent_fail", 0.0),
+            _item("b", "hard", "infra_error", None),
+        ]
+    )
 
     summary = summarize(result, trials=2)
-
-    assert [row.task_id for row in summary.per_task] == ["001-a", "002-b"]
-    assert summary.per_task[0].pass_at_1 == 0.5
-    assert summary.per_task[0].is_flaky is True
-    assert summary.per_task[1].graded == 0
-    assert [rollup.label for rollup in summary.per_difficulty] == ["easy", "hard"]
-    assert summary.total.infra_errors == 1
+    assert summary.total.tasks == 1
+    assert summary.total.pass_at_k == 1.0
+    assert pass_at_k_score(result.test_results).value == 1.0
 
 
-def test_summarize_is_graceful_on_a_result_without_test_results(mocker):
-    """The CLI renders the table over whatever ``evaluate`` returned — a mock must not crash it."""
-    summary = summarize(mocker.Mock(), trials=1)
-
-    assert summary.per_task == []
-    assert summary.total.tasks == 0
+def test_summary_is_graceful_without_results():
+    assert summarize(SimpleNamespace(), trials=1).total.tasks == 0

@@ -13,7 +13,7 @@ os.environ["DECODE_LOG_FILE"] = ""
 # import to name its app + Secret, and the ``settings`` singleton is built at import too — both are
 # fixed long before the autouse :func:`_default_decode_env` fixture (below) can monkeypatch anything,
 # so a developer with ``DECODE_ENV=prod`` exported saw failures no one else got.
-# PINNED, not deleted, on purpose: importing litellm (opik pulls it in, so the evals tests do) runs
+# PINNED, not deleted, on purpose: importing litellm (the eval judge backend) runs
 # ``load_dotenv()``, which copies the repo ``.env`` into ``os.environ`` — a deleted var comes right
 # back as whatever ``.env`` says, an already-present one is left alone. The per-test fixture still
 # DELETES it so spawned subprocesses stay clean.
@@ -104,33 +104,33 @@ def _no_context_window_probe(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_opik_tracing(monkeypatch):
-    """Hermeticity guard — no test may configure real Opik export (ADR-0014 §7, task 091).
+def _no_live_observability(monkeypatch):
+    """Hermeticity guard — no test may configure real cloud tracing or evaluation access.
 
     ``decode.config.settings.settings`` is built at import time and may have loaded a real
-    ``OPIK_API_KEY`` from a developer's local ``.env``. Once :func:`decode.observability.init_tracing`
-    is wired into ``run_app`` / the headless flows (tasks 092+), that key would make the suite configure
-    a live OTLP exporter to Comet on the first turn/run — a real network side effect. Mirroring
-    :func:`_no_real_provider_key`, we delete the env var and blank the singleton's key so
-    ``init_tracing()`` no-ops everywhere.
+    Langfuse key from a developer's local ``.env``. It could configure a live exporter from
+    ``run_app`` / headless flows or authenticate eval tests. Delete the env vars and blank the
+    singleton fields so both paths stay offline.
 
     Span-asserting tracing tests opt in with their own fake key + ``logfire.testing``'s in-memory
-    exporter (which wins, running after this conftest fixture) and reset the module flag via
-    ``reset_tracing()`` themselves. Kept separate from the settings-block tests, which build explicit
-    ``Settings(_env_file=…)`` objects untouched by this singleton blanking.
+    exporter (which wins, running after this conftest fixture) and reset the module flag themselves.
+    Settings tests that build explicit ``Settings(_env_file=…)`` objects are untouched by this
+    singleton blanking.
     """
-    monkeypatch.delenv("OPIK_API_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
 
     from decode.config.settings import settings
 
-    monkeypatch.setattr(settings, "opik_api_key", SecretStr(""), raising=False)
+    monkeypatch.setattr(settings, "langfuse_secret_key", SecretStr(""), raising=False)
+    monkeypatch.setattr(settings, "langfuse_public_key", SecretStr(""), raising=False)
 
 
 @pytest.fixture(autouse=True)
 def _default_decode_env(monkeypatch):
     """Hermeticity guard — pin ``DECODE_ENV=local`` for the whole suite (ADR-0021 §1, task 097).
 
-    ``DECODE_ENV`` is a naming suffix (sandbox app, Opik project, Modal apps + Secrets), and tests
+    ``DECODE_ENV`` is a naming suffix (sandbox app, Langfuse project, Modal apps + Secrets), and tests
     assert those names. A developer who exported ``DECODE_ENV=staging`` (or put it in ``.env``)
     would flip every derived name and see failures no one else gets — the same class of leak
     :func:`_default_sandbox_mode` / :func:`_no_sandbox_git_token` exist for, and it has bitten this

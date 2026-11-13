@@ -706,7 +706,7 @@ _VARIED_PROMPTS = [
     # imperative, no punctuation, no path token, no interrogative, no report keyword
     "Tell me every place the harness shells out to git during hand back and quote the exact commands",
     # phrasal verb, no report keyword
-    "Poke around the observability wiring in src/decode/observability/ and pin down where the Opik "
+    "Poke around the observability wiring in src/decode/observability/ and pin down where the Langfuse "
     "span is opened.",
     # terse but substantive — just over the floor
     "Trace the ASK path through src/decode/permissions/gate.py; cite line numbers.",

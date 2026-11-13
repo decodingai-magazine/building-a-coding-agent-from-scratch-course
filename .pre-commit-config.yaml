@@ -7,12 +7,12 @@ repos:
       - id: format-check
         name: format check
         language: system
-        entry: make format-check
+        entry: uv run ruff format --check
         pass_filenames: false
       - id: lint-check
         name: lint check
         language: system
-        entry: make lint-check
+        entry: uv run ruff check
         pass_filenames: false
       # - id: unit-tests
       #   name: unit tests

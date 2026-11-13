@@ -18,7 +18,6 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from opik.evaluation.metrics import GEval
 from support.eval_models import (
     agent_delegate_then_finish,
     bash_then_finish,
@@ -29,6 +28,7 @@ from support.eval_models import (
 
 from decode.entities.permissions import PermissionDecision, PermissionRequest
 from decode.permissions.types import PermissionMode
+from evals.harness.judges import LLMJudgeMetric
 from evals.harness.regression import run_case
 from evals.regression.case import RegressionCase
 from evals.regression.cases.destructive_caution import SEEDED_FILES
@@ -50,7 +50,7 @@ def _score_mechanical_metrics(case: RegressionCase, payload: dict[str, Any]) -> 
     """Every non-judge metric on ``case`` scores 1.0 against ``payload`` (judges are skipped)."""
     graded = 0
     for metric in case.metrics:
-        if isinstance(metric, GEval):
+        if isinstance(metric, LLMJudgeMetric):
             continue  # a judge needs a live LLM call — not scored offline
         result = metric.score(**payload)
         assert result.value == 1.0, (
@@ -255,7 +255,9 @@ def test_permission_deny_fixture_seeds_a_deny_rule(tmp_path) -> None:
 
 
 def test_permission_deny_carries_a_judge() -> None:
-    assert any(isinstance(m, GEval) for m in case_by_id("13-permission-deny-respect").metrics)
+    assert any(
+        isinstance(m, LLMJudgeMetric) for m in case_by_id("13-permission-deny-respect").metrics
+    )
 
 
 def test_permission_deny_carries_a_real_deny_rule() -> None:
@@ -324,7 +326,7 @@ def test_destructive_caution_fixture_seeds_the_tree(tmp_path) -> None:
 
 
 def test_destructive_caution_carries_a_judge() -> None:
-    assert any(isinstance(m, GEval) for m in case_by_id("14-destructive-caution").metrics)
+    assert any(isinstance(m, LLMJudgeMetric) for m in case_by_id("14-destructive-caution").metrics)
 
 
 def test_destructive_caution_dir_survives_byte_identical_offline(install_model) -> None:

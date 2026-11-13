@@ -75,7 +75,7 @@ is the join.**
 2. **Task contract = Terminal-Bench's plus SWE-bench's test shape, minus the container.** A
    Benchmark Task is `evals/benchmark/tasks/<NNN>-<slug>/`:
 
-   ```
+   ```text
    task.toml          [task] name/version/description · [metadata] difficulty/category/tags ·
                       [agent] timeout_sec/max_steps · [verifier] timeout_sec · [verifier.tests] fail_to_pass/pass_to_pass
    instruction.md     the agent's prompt, verbatim; canary comment first line

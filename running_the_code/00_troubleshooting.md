@@ -26,7 +26,6 @@ Feature-specific tables live next to the feature: **Modal endpoints** [02_modal_
 | `ModelHTTPError: status_code: 503, model_name: Qwen/…` from your Modal endpoint | cold start: the endpoint scaled to zero (Min 0) and no container was ready yet | wait a few minutes, then resend. To avoid it, keep a container warm: open the endpoint in the dashboard, go to **AUTOSCALING → Edit → Override**, and set **Min 1** (see [02 §5. Cold starts and cost](02_modal_endpoints.md#5-cold-starts-and-cost)). |
 | `429` / quota errors mid-turn | Gemini free-tier cap | wait, switch to `LLM_PROVIDER=openrouter`, or move to Modal. |
 
-
 ## Running the agent
 
 | What you see | What it means | Fix |
@@ -36,8 +35,8 @@ Feature-specific tables live next to the feature: **Modal endpoints** [02_modal_
 | `/` shows no demo skills | launched outside the course repo — skills load from the launch directory | relaunch from the repo, or copy `.decode/skills/` into your project. |
 | `--resume` finds nothing | sessions are per-directory | relaunch from the same directory; transcripts in `.decode/sessions/`. |
 | LSP tools return nothing | `ty` server missing or slow; best-effort by design | dev-group dependency — `make install`, not `uv sync --no-dev`. |
-| Nothing in Opik | no `OPIK_API_KEY` → silent no-op | set it, plus `OPIK_WORKSPACE` if not `default`. Project = `decode-<DECODE_ENV>` unless `OPIK_PROJECT_NAME` overrides. |
+| Nothing in Langfuse | either Langfuse key is unset → tracing is disabled | set both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`; check `LANGFUSE_BASE_URL` for your region. The same project keys are used for evals. |
 
 ## Still stuck?
 
-Logs: `.decode/logs/decode.log` under the launch directory. `LOG_LEVEL=DEBUG` in `.env`, reproduce, read the tail. Then [open an issue](https://github.com/decodingai-magazine/building-a-coding-agent-from-scratch-course/issues) with that tail, provider, and model.
+Logs: `.decode/logs/decode.log` under the launch directory. `LOG_LEVEL=DEBUG` in `.env`, reproduce, read the tail. Then [open an issue](https://github.com/HanishDhanwalkar/decode-ollama.git/issues) with that tail, provider, and model.

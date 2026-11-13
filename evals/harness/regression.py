@@ -1,28 +1,22 @@
-"""The Opik glue that runs the behavior cases host-native and scores them (ADR-0017 §3,4,6).
+"""The Langfuse experiment runner for host-native regression cases.
 
 Two pieces sit on top of the eval driver (:mod:`evals.harness.driver`) and the case registry
 (:mod:`evals.regression.loader`):
 
-* :func:`make_regression_task_fn` builds the sync Opik task fn. For one dataset item it builds the
+* :func:`make_regression_task_fn` builds the dataset task fn. For one dataset item it builds the
   case's fixture in a fresh ``tempfile`` dir, runs the REAL agent HOST-NATIVE (``sandbox_mode`` forced
   to ``none`` — fast, no docker) under the case's gate policy / resolvers / pre-filled history / request
   cap, snapshots the resulting file tree, and returns the flat payload the code metrics + judges read.
   The task fn NEVER raises: a crashed agent run grades as fail-with-reason (``agent_error``) and a
-  fixture / setup failure grades as fail-with-reason (``infra_error``), because Opik's ``evaluate`` gives
-  task fns no per-item isolation — one raise would abort the whole experiment (task 106 lesson). The
+  fixture / setup failure grades as fail-with-reason (``infra_error``). The
   temp dir is always removed.
 * :func:`run_regression` loads + filters the cases (``--case`` / ``--difficulty``), upserts the
-  selection into ``decode-regression``, and calls ``opik.evaluation.evaluate`` scoped to those
-  items with the case-scoped metrics, ``experiment_scoring_functions=[mean_per_metric]`` folding the
-  run into one mean per metric ON the Experiment row, and ``experiment_config`` carrying the agent
+  selection into ``decode-regression``, and runs only those items with case-scoped metrics,
+  ``mean_per_metric`` folding the run into one mean per metric, and metadata carrying the agent
   model + provider + git sha + the run's shape. The dataset names ``settings.eval_project_name``, so
   eval runs never pollute live REPL tracing.
 
-Per-case metric binding: ``evaluate`` applies ONE metric list to EVERY item, but each case declares
-its OWN metrics. :class:`CaseScopedMetric` wraps every case's metric so it scores only the item whose
-``case_id`` matches and returns ``[]`` (zero scores) for every other item — so a single ``evaluate``
-call returns one :class:`~opik.evaluation.evaluation_result.EvaluationResult` (what the task-115
-threshold gate aggregates) with clean per-case scores, no cross-case noise.
+Each metric is bound to the case id in dataset metadata so it scores only its own item.
 """
 
 from __future__ import annotations
@@ -34,30 +28,31 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from opik.evaluation.metrics.base_metric import BaseMetric
-from opik.evaluation.metrics.score_result import ScoreResult
-
 from decode.config.settings import settings
 from decode.tools.bash import reset_executor
+from evals.harness.datasets import dataset_items, langfuse_client, regression_items_for_dataset
 from evals.harness.driver import run_agent_once_sync
+from evals.harness.langfuse_experiments import (
+    experiment_result,
+    item_input,
+    item_metadata,
+    result_items,
+)
+from evals.harness.metrics import BaseMetric, ScoreResult
 from evals.regression.case import RegressionCase
 from evals.regression.loader import load_cases, runnable_cases, select_cases
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
-    import opik
-    from opik.evaluation.evaluation_result import EvaluationResult
-    from opik.evaluation.test_result import TestResult
-
     from evals.harness.driver import EvalRunRecord
 
 logger = logging.getLogger(__name__)
 
-# The Opik task fn Opik hands one dataset item and expects one flat output dict back.
+# A dataset task returns one flat case result.
 RegressionTaskFn = Callable[[dict[str, Any]], dict[str, Any]]
 
-# Cap the per-file snapshot so a case that writes a huge file can't bloat the Opik payload; a file
+# Cap the per-file snapshot so a case that writes a huge file can't bloat the Langfuse payload; a file
 # over this size is recorded as an elision marker instead of its bytes.
 _MAX_SNAPSHOT_BYTES = 64 * 1024
 
@@ -82,9 +77,8 @@ class CaseScopedMetric(BaseMetric):
     ``evaluate`` runs every metric against every item; a case's metric is only meaningful on its own
     item (a read-discipline metric grading another case's output is noise — the same reasoning that
     keeps a benchmark's per-task judge off other tasks, ADR-0017 §7). This wrapper reads the item's
-    ``case_id`` and delegates to ``inner`` only on a match, else returns ``[]`` — Opik treats an empty
-    list as zero score results, so the metric simply does not apply to that item. ``track=False`` for
-    the same offline reason the code metrics use (ADR-0017 §9).
+    ``case_id`` and delegates to ``inner`` only on a match, else returns ``[]`` — the Langfuse
+    adapter treats an empty list as no scores, so the metric does not apply to that item.
     """
 
     def __init__(self, case_id: str, inner: BaseMetric) -> None:
@@ -95,20 +89,21 @@ class CaseScopedMetric(BaseMetric):
     def score(self, case_id: Any = None, **kwargs: Any) -> ScoreResult | list[ScoreResult]:
         if case_id != self._case_id:
             return []
-        # Forward the full scoring dict (case_id included) exactly as Opik would to a bare metric;
-        # ``inner`` absorbs what it does not name through its own ``**ignored_kwargs``.
+        # Forward the case id and payload; metrics absorb fields they do not use.
         return self._inner.score(case_id=case_id, **kwargs)
 
 
 def make_regression_task_fn(cases_by_id: dict[str, RegressionCase]) -> RegressionTaskFn:
-    """Build the sync Opik task fn that runs + grades one case item (ADR-0017 §4,6).
+    """Build the task fn that runs + grades one case item (ADR-0017 §4,6).
 
-    The returned closure looks the case up by ``item["case_id"]`` and runs it host-native. Sync
-    because Opik ``evaluate()`` task fns cannot be async.
+    The returned closure looks the case up by its input or metadata case id and runs it host-native.
     """
 
     def regression_task_fn(item: dict[str, Any]) -> dict[str, Any]:
-        case = cases_by_id[item["case_id"]]
+        item_data = item_input(item) if "input" in item else item
+        metadata = item_metadata(item)
+        case_id = item_data.get("case_id") or metadata.get("case_id")
+        case = cases_by_id[str(case_id)]
         return run_case(case)
 
     return regression_task_fn
@@ -226,7 +221,7 @@ def _payload(
     """The flat output dict the regression metrics + judges read (ADR-0017 §4,6).
 
     ``tool_calls`` is de-dataclassed to plain ``{"name", "args"}`` dicts so the payload is
-    JSON-serializable for Opik storage; ``file_state`` maps each Workspace-relative path to its text so
+    JSON-serializable for experiment storage; ``file_state`` maps each Workspace-relative path to its text so
     a metric can assert a file was created / edited. ``max_steps`` mirrors the case's request cap for
     :class:`~evals.harness.metrics.MaxStepsMetric` (``None`` when the case sets no cap).
     ``compaction_events`` reports how many times the auto-compaction cascade fired (the
@@ -239,6 +234,8 @@ def _payload(
         [{"name": call.name, "args": call.args} for call in record.tool_calls] if record else []
     )
     return {
+        "case_id": case.id,
+        "session_id": record.session_id if record else None,
         "output": record.output if record else "",
         "tool_calls": tool_calls,
         "steps": record.steps if record else 0,
@@ -285,30 +282,19 @@ def run_regression(
     case_id: str | None = None,
     difficulty: str | None = None,
     experiment_name: str | None = None,
-    client: opik.Opik | None = None,
-) -> EvaluationResult:
-    """Run the selected cases as one Opik experiment and return its result (ADR-0022 §8).
+    client: Any = None,
+) -> Any:
+    """Run selected cases through one Langfuse experiment (ADR-0022 §8).
 
     Loads every case, applies the optional ``--case`` / ``--difficulty`` filters, upserts the
-    selection into ``decode-regression`` (the dataset ALONE — a billed gate run never depends on
-    the Test Suite API), and calls ``evaluate`` scoped (via ``dataset_item_ids``) to the items whose
-    ``checksum`` matches the cases declared on disk, with the case-scoped metrics. Opik never deletes a
-    superseded item, so without that scoping an EDITED case would be graded once per historical
-    version — double cost and duplicated rows. ``experiment_scoring_functions=[mean_per_metric]``
-    writes one mean per metric onto the Experiment row, so the run's aggregate is readable without
-    re-deriving it. Runs single-threaded — the ``bash`` executor seam is process-global. Raises
-    :class:`RegressionSelectionError` when the filters match no runnable case OR when a matched case
-    has no fresh dataset item (``dataset_item_ids=None`` would run the WHOLE dataset).
+    selection into ``decode-regression`` and selects current checksums only. Runs single-threaded
+    because the ``bash`` executor seam is process-global.
 
     ``experiment_name`` defaults to :func:`scoped_name` over the filters — one STABLE name per SLICE
     (``decode-regression-gate`` for the whole suite, ``decode-regression-gate-hard`` for a tier), so
     the threshold ritual's baseline compare finds prior runs by name and compares like-for-like
     instead of diffing a tier against the full suite.
     """
-    import opik
-    from opik.evaluation import evaluate
-
-    from evals.harness.benchmark import evaluate_project_name
     from evals.harness.datasets import case_checksum, sync_regression_dataset
 
     all_cases = load_cases()
@@ -319,32 +305,61 @@ def run_regression(
             f"{len(all_cases)} case(s) available."
         )
 
-    client = client or opik.Opik()
+    client = client or langfuse_client()
     dataset = sync_regression_dataset(selected, client=client)
     item_ids = _selected_item_ids(dataset, {case.id: case_checksum(case) for case in selected})
     missing = {case.id for case in selected} - set(item_ids)
     if missing:
-        # Never a silent WHOLE-dataset experiment: ``evaluate(dataset_item_ids=None)`` runs every
-        # item, so an empty/partial match must stop the run rather than quietly bill 22 cases.
         raise RegressionSelectionError(
             "the sync did not produce a matching dataset item for "
-            f"{sorted(missing)} in {dataset.name!r} — re-run `python -m evals sync --regression`."
+            f"{sorted(missing)} in {getattr(dataset, 'name', 'decode-regression')!r} — "
+            "re-run `python -m evals sync --regression`."
         )
 
     cases_by_id = {case.id: case for case in all_cases}
     task_fn = make_regression_task_fn(cases_by_id)
-    return evaluate(
-        dataset=dataset,
-        task=task_fn,
-        scoring_metrics=_scoring_metrics(selected),
-        experiment_scoring_functions=[mean_per_metric],
-        experiment_config=experiment_config(case_count=len(selected), difficulty=difficulty),
-        experiment_name=experiment_name
-        or scoped_name(GATE_EXPERIMENT_NAME, case_id=case_id, difficulty=difficulty),
-        project_name=evaluate_project_name(dataset),
-        dataset_item_ids=list(item_ids.values()),
-        task_threads=1,
+    metadata = experiment_config(case_count=len(selected), difficulty=difficulty)
+    run_name = experiment_name or scoped_name(
+        GATE_EXPERIMENT_NAME, case_id=case_id, difficulty=difficulty
     )
+    by_id = {str(getattr(item, "id", "")): item for item in dataset_items(dataset)}
+    data = []
+    for case in selected:
+        source = by_id.get(item_ids[case.id])
+        source_input = getattr(source, "input", None) if source is not None else None
+        source_metadata = getattr(source, "metadata", None) if source is not None else None
+        data.append(
+            {
+                "input": source_input
+                if isinstance(source_input, dict)
+                else {"case_id": case.id, "prompt": case.prompt},
+                "metadata": {
+                    **(source_metadata if isinstance(source_metadata, dict) else {}),
+                    "case_id": case.id,
+                    "difficulty": case.difficulty,
+                    "source_dataset_item_id": item_ids[case.id],
+                },
+            }
+        )
+
+    evaluators = [_metric_evaluator(metric) for metric in _scoring_metrics(selected)]
+    raw_result = client.run_experiment(
+        name=run_name,
+        run_name=run_name,
+        description="Deterministic decode regression gate",
+        data=data,
+        task=lambda *, item, **_: task_fn(
+            {
+                **(item.get("input", {}) if isinstance(item, dict) else {}),
+                **(item.get("metadata", {}) if isinstance(item, dict) else {}),
+            }
+        ),
+        evaluators=evaluators,
+        run_evaluators=[_mean_evaluator],
+        max_concurrency=1,
+        metadata=metadata,
+    )
+    return experiment_result(raw_result, name=run_name, metadata=metadata)
 
 
 def scoped_name(base: str, *, case_id: str | None = None, difficulty: str | None = None) -> str:
@@ -361,25 +376,8 @@ def scoped_name(base: str, *, case_id: str | None = None, difficulty: str | None
 
 
 def _selected_item_ids(dataset: Any, checksums: dict[str, str]) -> dict[str, str]:
-    """``{case_id: item id}`` for the items whose ``checksum`` matches the case declared on disk.
-
-    The mirror of :func:`evals.harness.benchmark._selected_item_ids`, and for the same reason: Opik's
-    ``insert`` dedupes by content hash but never deletes, so an EDITED case leaves its stale item in
-    ``decode-regression`` forever. Matching on ``case_id`` ALONE would hand ``evaluate`` both ids
-    and grade that case twice — double cost, duplicated rows. Matching on ``(case_id, checksum)``
-    selects the current version and simply never selects a stale one (it stays in the dataset as
-    history). ONE id per case (the first match), which also keeps the two items a provenance-only edit
-    mints from billing twice; an item missing an ``id`` (an unexpected Opik shape) is skipped, and a
-    case with no matching item is absent — :func:`run_regression` turns that into a loud stop.
-    """
-    selected: dict[str, str] = {}
-    for item in dataset.get_items():
-        case_id = item.get("case_id")
-        if case_id in selected or item.get("id") is None:
-            continue
-        if checksums.get(case_id) == item.get("checksum"):
-            selected[case_id] = item["id"]
-    return selected
+    """Return current dataset item ids by case checksum."""
+    return regression_items_for_dataset(dataset, checksums)
 
 
 def _scoring_metrics(cases: list[RegressionCase]) -> list[BaseMetric]:
@@ -391,8 +389,50 @@ def _scoring_metrics(cases: list[RegressionCase]) -> list[BaseMetric]:
     return [CaseScopedMetric(case.id, metric) for case in cases for metric in case.metrics]
 
 
+def _metric_evaluator(metric: CaseScopedMetric) -> Callable[..., Any]:
+    """Adapt one local metric to Langfuse's item evaluator."""
+    from langfuse.experiment import Evaluation
+
+    def evaluate(*, output: Any, metadata: dict[str, Any] | None = None, **_: Any) -> Any:
+        payload = output if isinstance(output, dict) else {}
+        case_id = (metadata or {}).get("case_id")
+        result = metric.score(case_id=case_id, **payload)
+        if not result:
+            return []
+        results = result if isinstance(result, list) else [result]
+        return [
+            Evaluation(
+                name=score.name,
+                value=score.value,
+                comment=score.reason,
+                metadata={"scoring_failed": score.scoring_failed},
+            )
+            for score in results
+        ]
+
+    return evaluate
+
+
+def _mean_evaluator(*, item_results: list[Any], **_: Any) -> Any:
+    """Persist per-metric means on the Langfuse experiment run."""
+    from types import SimpleNamespace
+
+    from langfuse.experiment import Evaluation
+
+    adapted = result_items(SimpleNamespace(item_results=item_results))
+    return [
+        Evaluation(
+            name=score.name,
+            value=score.value,
+            comment=score.reason,
+            metadata={"scoring_failed": score.scoring_failed},
+        )
+        for score in mean_per_metric(adapted)
+    ]
+
+
 def experiment_config(*, case_count: int, difficulty: str | None) -> dict[str, Any]:
-    """The Opik ``experiment_config`` for a regression run — what two rows differ by (ADR-0022 §8).
+    """The Langfuse experiment metadata for a regression run — what two rows differ by (ADR-0022 §8).
 
     The model + provider driving the agent, the code the run was on (``git rev-parse HEAD``), and the
     SHAPE of the run: how many cases it graded and which tier it was sliced to (``None`` = the whole
@@ -413,20 +453,18 @@ def experiment_config(*, case_count: int, difficulty: str | None) -> dict[str, A
     }
 
 
-def mean_per_metric(test_results: Sequence[TestResult]) -> list[ScoreResult]:
+def mean_per_metric(test_results: Sequence[Any]) -> list[ScoreResult]:
     """Fold the run into one ``mean_<metric>`` score per metric, ON the Experiment row (ADR-0022 §8).
 
-    The ``experiment_scoring_functions`` entry every regression run carries: opik 2.2.36 calls it with
-    the run's ``List[TestResult]`` and logs what comes back onto the Experiment, so the per-metric
-    means are readable straight off the row instead of being re-derived post-hoc from the result.
+    The run evaluator every regression run carries receives item results and logs per-metric means
+    onto the Langfuse experiment row instead of deriving them post-hoc from the result.
     Scores are macro-averaged over the items that actually produced them — a case-scoped metric
     contributes nothing to the cases it does not grade (:class:`CaseScopedMetric`).
 
-    Names are prefixed ``mean_`` because Opik keeps experiment scores in their own bag beside the
+    Names are prefixed ``mean_`` because experiment-level scores sit beside the
     item-metric averages: an unprefixed name would put two different numbers under one label on the
     same row. A ``scoring_failed`` score is EXCLUDED — a metric that crashed scored nothing, and
-    folding its 0.0 in would read as a behavior regression. Total by construction: opik swallows a
-    raising scoring function with a warning, so this one never raises.
+    folding its 0.0 in would read as a behavior regression. This adapter is total and never raises.
     """
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}

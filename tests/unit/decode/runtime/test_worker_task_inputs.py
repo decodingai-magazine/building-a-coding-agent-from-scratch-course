@@ -137,7 +137,7 @@ def test_a_recorded_prompt_string_is_the_task(monkeypatch, _worker):
 
 
 def test_an_imported_sessions_input_key_is_the_task(monkeypatch, _worker):
-    """An Opik-imported session records ``{"input": "<prompt>", ...}`` — the shape a cohort of
+    """A Langfuse-imported session records ``{"input": "<prompt>", ...}`` — the shape a cohort of
     imported sessions replays with."""
     _worker_inputs(
         monkeypatch,

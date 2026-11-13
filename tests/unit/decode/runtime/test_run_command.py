@@ -445,7 +445,7 @@ def test_run_model_does_not_bypass_the_disabled_runtime_guard(monkeypatch, _prov
 
 
 # ADR-0021 §1: every DECODE_ENV reads the same chain, so a remote environment has no extra way to
-# fail at pre-flight — it just names the Opik project and the nested sandbox app after itself.
+# fail at pre-flight — it just names the Langfuse project and the nested sandbox app after itself.
 
 
 @pytest.mark.parametrize("env", ["local", "staging", "prod"])

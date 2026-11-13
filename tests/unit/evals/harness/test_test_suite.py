@@ -1,25 +1,20 @@
-"""Offline tests for the Opik Test Suites regression surface (ADR-0022 §8; ADR-0017 §6).
-
-No infra, no keys: ``opik.run_tests`` and the client's ``get_or_create_test_suite`` are mocked. The
-tests cover the case selection (``--case`` / ``--difficulty``, skip-guarded cases excluded), the
-content-versioned suite name a run registers (the same one ``sync --regression`` resolves), the
-``{"input", "output"}`` adapter (and that it never
-leaks an expected answer into ``input``), the serial run wiring, and the pass-rate gate.
-"""
+"""Offline tests for the Langfuse-backed natural-language regression suite."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from decode.config.settings import settings
-from evals.harness.datasets import REGRESSION_SUITE_NAME
+from evals.harness.datasets import REGRESSION_SUITE_NAME, RegressionSurfaces
+from evals.harness.metrics import ScoreResult
 from evals.harness.test_suite import (
     SUITE_PASS_BAR,
-    SuiteJudgeRouteError,
     SuitePassRateError,
     SuiteSelectionError,
+    _suite_judge,
     assert_pass_rate,
     make_suite_task_fn,
     run_test_suite,
@@ -27,21 +22,11 @@ from evals.harness.test_suite import (
 from evals.regression.case import RegressionCase
 
 
-@pytest.fixture(autouse=True)
-def _gemini_judge(mocker):
-    """Pin the judge route to gemini: a developer's ``.env`` (``LLM_PROVIDER=modal``) must not decide
-    whether ``run_test_suite`` refuses to run — the modal-route test flips it explicitly."""
-    mocker.patch("evals.harness.test_suite.judge_provider", return_value="gemini")
-    mocker.patch("evals.harness.test_suite.judge_model", return_value="gemini/gemini-3.8-flash")
-
-
 def _case(case_id: str, prompt: str = "do the thing", **overrides: object) -> RegressionCase:
-    """A minimal case standing in for a real one — the suite surface reads id / prompt / tier."""
     fields: dict[str, object] = {
         "id": case_id,
         "prompt": prompt,
         "fixture": lambda _w: None,
-        # the suite surface never scores with these; one is enough to construct
         "metrics": [object()],
         "difficulty": "easy",
         "description": "Tests that it behaves.",
@@ -52,178 +37,158 @@ def _case(case_id: str, prompt: str = "do the thing", **overrides: object) -> Re
     return RegressionCase(**fields)  # type: ignore[arg-type]
 
 
-# --- the {"input", "output"} adapter ----------------------------------------------------------------
+def _experiment_result(*, passed: bool = True):
+    evaluation = SimpleNamespace(
+        name="assertion_pass",
+        value=1.0 if passed else 0.0,
+        comment="checked",
+        metadata={},
+    )
+    item = SimpleNamespace(
+        input={"case_id": "a", "prompt": "do the thing"},
+        metadata={"case_id": "a"},
+    )
+    item_result = SimpleNamespace(
+        item=item,
+        output={"input": {"prompt": "do the thing"}, "output": "done"},
+        evaluations=[evaluation],
+    )
+    return SimpleNamespace(
+        name=REGRESSION_SUITE_NAME,
+        experiment_id="experiment-1",
+        item_results=[item_result],
+    )
 
 
-def test_suite_task_fn_shapes_input_and_output_from_the_regression_payload(mocker):
-    """The adapter reuses the regression task fn and returns the ``{input, output}`` Test Suite contract."""
+def test_suite_task_fn_keeps_only_the_prompt_and_answer(mocker):
     case = _case("17-grounded-answer", prompt="what is the Quibbler responsible for?")
-    fake_regression = mocker.Mock(return_value={"output": "The Quibbler deduplicates webhooks."})
-    mocker.patch("evals.harness.test_suite.make_regression_task_fn", return_value=fake_regression)
-
-    task = make_suite_task_fn({case.id: case})
-    result = task({"case_id": case.id})
-
-    fake_regression.assert_called_once_with({"case_id": case.id})
-    assert result["output"] == "The Quibbler deduplicates webhooks."
-    assert result["input"] == {"prompt": case.prompt}
-
-
-def test_suite_task_fn_input_never_leaks_an_expected_answer(mocker):
-    """Even if the regression payload carries file_state / errors, ``input`` stays the prompt alone (§6).
-
-    The docs warn a leaked expectation in ``input`` lets the NL judge cheat, so the adapter must forward
-    ONLY the prompt the agent actually received — never the graded payload's internals.
-    """
-    case = _case("18-no-hallucinated-files", prompt="what does does_not_exist.py do?")
     fake_regression = mocker.Mock(
         return_value={
-            "output": "That file does not exist in the project.",
+            "output": "The Quibbler deduplicates webhooks.",
             "file_state": {"README.md": "# Sample"},
             "agent_error": None,
+            "session_id": "session-1",
         }
     )
     mocker.patch("evals.harness.test_suite.make_regression_task_fn", return_value=fake_regression)
+    session_ids: dict[str, str] = {}
 
-    task = make_suite_task_fn({case.id: case})
-    result = task({"case_id": case.id})
+    task = make_suite_task_fn({case.id: case}, session_ids=session_ids)
+    result = task({"input": {"case_id": case.id}})
 
-    assert result["input"] == {"prompt": case.prompt}
+    fake_regression.assert_called_once_with({"case_id": case.id})
+    assert result == {
+        "input": {"prompt": case.prompt},
+        "output": "The Quibbler deduplicates webhooks.",
+    }
+    assert session_ids == {case.id: "session-1"}
     assert "file_state" not in result["input"]
-    assert set(result.keys()) == {"input", "output"}
 
 
-# --- selection + run wiring -------------------------------------------------------------------------
+def test_suite_judge_passes_prompt_and_answer_to_local_judge(mocker):
+    judge = mocker.Mock()
+    judge.score.return_value = ScoreResult(name="llm_judge", value=0.8, reason="grounded")
+    make_judge = mocker.patch("evals.harness.test_suite.make_judge", return_value=judge)
+
+    evaluation = _suite_judge(
+        input={"case_id": "a", "prompt": "do the thing"},
+        output={"input": {"prompt": "do the thing"}, "output": "done"},
+        expected_output={"assertions": ["The answer is grounded."]},
+        metadata={"case_id": "a"},
+    )
+
+    assert make_judge.call_args.args[1] == "- The answer is grounded."
+    judge.score.assert_called_once_with(
+        input={"case_id": "a", "prompt": "do the thing"}, output="done"
+    )
+    assert evaluation.name == "assertion_pass"
+    assert evaluation.value == 1.0
+    assert evaluation.comment == "grounded"
 
 
-def test_run_test_suite_registers_the_cases_and_runs_the_suite_serially(mocker):
-    """The happy path: sync both surfaces → ``opik.run_tests`` with the adapter, one item at a time."""
-    run_tests = mocker.patch("opik.run_tests", create=True)
-    sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
-    mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a"), _case("b")])
+def test_run_test_suite_uses_langfuse_experiments_serially(mocker):
+    cases = [_case("a"), _case("b")]
+    mocker.patch("evals.harness.test_suite.load_cases", return_value=cases)
+    sync = mocker.patch(
+        "evals.harness.test_suite.sync_regression_cases",
+        return_value=RegressionSurfaces(dataset=object(), suite=object(), suite_version="v1"),
+    )
     client = mocker.Mock()
+    client.run_experiment.return_value = _experiment_result()
 
     run = run_test_suite(client=client)
 
-    assert run.result is run_tests.return_value
-    assert run.suite_version is sync.return_value.suite_version
+    assert run.result.pass_rate == 1.0
+    assert run.suite_version == "v1"
     assert [case.id for case in sync.call_args.args[0]] == ["a", "b"]
-    kwargs = run_tests.call_args.kwargs
-    assert kwargs["test_suite"] is sync.return_value.suite
-    assert callable(kwargs["task"])
-    # The agent runs host-native through the process-global bash seam — two items at once would clash.
-    assert kwargs["worker_threads"] == 1
-    # The assertion judge is OUR judge route, never Opik's silent default (gpt-5-nano, no key here).
-    assert kwargs["model"] == "gemini/gemini-3.8-flash"
-    # The JSON report lands under the git-ignored ``.decode/``, never Opik's ``./opik_test_suite_reports/``.
-    report = Path(kwargs["report_output_path"])
-    assert report == run.report_path
-    assert report.parent == Path(settings.decode_dir) / "evals" / "suite-reports"
-    assert report.suffix == ".json"
-    assert "opik_test_suite_reports" not in report.parts
+    kwargs = client.run_experiment.call_args.kwargs
+    assert kwargs["name"] == REGRESSION_SUITE_NAME
+    assert kwargs["run_name"] == "v1"
+    assert len(kwargs["data"]) == 2
+    assert kwargs["data"][0]["input"]["case_id"] == "a"
+    assert kwargs["max_concurrency"] == 1
+    assert kwargs["evaluators"]
+    assert Path(run.report_path).parent == Path(settings.decode_dir) / "evals" / "suite-reports"
 
 
-def test_the_suite_judge_follows_the_eval_judge_model_route(mocker):
-    """``EVAL_JUDGE_PROVIDER`` / ``EVAL_JUDGE_MODEL`` reach ``run_tests`` as its ``model`` (ADR-0022 §7)."""
-    run_tests = mocker.patch("opik.run_tests", create=True)
-    mocker.patch("evals.harness.datasets.sync_regression_cases")
+def test_suite_pass_rate_counts_failed_judgments(mocker):
     mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a")])
-    mocker.patch("evals.harness.test_suite.judge_provider", return_value="openrouter")
-    mocker.patch("evals.harness.test_suite.judge_model", return_value="openrouter/some/judge")
-
-    run_test_suite(client=mocker.Mock())
-
-    assert run_tests.call_args.kwargs["model"] == "openrouter/some/judge"
-
-
-def test_a_modal_judge_route_is_refused_before_anything_is_synced_or_billed(mocker):
-    """Opik's suite judge takes a bare model name — a modal judge (base url + proxy headers) cannot ride
-    it, so the run stops up front and names both ways out."""
-    run_tests = mocker.patch("opik.run_tests", create=True)
-    sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
-    mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a")])
-    mocker.patch("evals.harness.test_suite.judge_provider", return_value="modal")
-
-    with pytest.raises(SuiteJudgeRouteError, match="EVAL_JUDGE_PROVIDER=gemini") as excinfo:
-        run_test_suite(client=mocker.Mock())
-
-    assert "eval-regression-dataset" in str(excinfo.value)
-    sync.assert_not_called()
-    run_tests.assert_not_called()
-
-
-def test_a_filtered_run_reconciles_the_suite_to_its_slice(mocker):
-    """``run_tests`` has no item filter, so a tier run hands ``sync`` ONLY its cases — the reconcile
-    narrows the one suite to them instead of billing them all."""
-    mocker.patch("opik.run_tests", create=True)
-    sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
     mocker.patch(
-        "evals.harness.test_suite.load_cases",
-        return_value=[_case("a"), _case("b", difficulty="hard")],
+        "evals.harness.test_suite.sync_regression_cases",
+        return_value=RegressionSurfaces(dataset=object(), suite=object(), suite_version="v1"),
     )
+    client = mocker.Mock()
+    client.run_experiment.return_value = _experiment_result(passed=False)
 
-    run_test_suite(difficulty="hard", client=mocker.Mock())
+    run = run_test_suite(client=client)
+
+    assert run.result.pass_rate == 0.0
+
+
+def test_a_filtered_run_syncs_only_selected_cases(mocker):
+    cases = [_case("a"), _case("b", difficulty="hard")]
+    mocker.patch("evals.harness.test_suite.load_cases", return_value=cases)
+    sync = mocker.patch(
+        "evals.harness.test_suite.sync_regression_cases",
+        return_value=RegressionSurfaces(dataset=object(), suite=object(), suite_version="v1"),
+    )
+    client = mocker.Mock()
+    client.run_experiment.return_value = _experiment_result()
+
+    run_test_suite(difficulty="hard", client=client)
 
     assert [case.id for case in sync.call_args.args[0]] == ["b"]
+    assert len(client.run_experiment.call_args.kwargs["data"]) == 1
 
 
-def test_the_run_registers_the_suite_with_one_item_per_case(mocker):
-    """End to end through the REAL sync: the one clean-named suite holds one item per runnable case.
-
-    Only ``opik.run_tests`` is mocked; the fake client records what ``sync_regression_cases`` asked
-    Opik for — the same call ``python -m evals sync --regression`` makes.
-    """
-    mocker.patch("opik.run_tests", create=True)
-    cases = [_case("a"), _case("b"), _case("skipped", skip_reason="MCP has not shipped")]
+def test_skip_guarded_cases_are_not_registered_or_run(mocker):
+    cases = [_case("a"), _case("skipped", skip_reason="MCP has not shipped")]
     mocker.patch("evals.harness.test_suite.load_cases", return_value=cases)
-    client = mocker.Mock()
-    suite = client.get_or_create_test_suite.return_value
-    suite.get_items.return_value = []
-    suite.get_current_version_name.return_value = "v1"
-
-    run = run_test_suite(client=client)
-
-    assert run.suite_version == "v1"
-    assert client.get_or_create_test_suite.call_args.kwargs["name"] == REGRESSION_SUITE_NAME
-    inserted = suite.insert.call_args.args[0]
-    assert [item["data"]["case_id"] for item in inserted] == ["a", "b"]
-
-
-def test_a_skip_guarded_case_is_never_registered_or_run(mocker):
-    """A declared-but-blocked case (MCP) stays in the registry and out of the judged suite."""
-    mocker.patch("opik.run_tests", create=True)
-    sync = mocker.patch("evals.harness.datasets.sync_regression_cases")
-    mocker.patch(
-        "evals.harness.test_suite.load_cases",
-        return_value=[_case("a"), _case("skipped", skip_reason="MCP has not shipped")],
+    sync = mocker.patch(
+        "evals.harness.test_suite.sync_regression_cases",
+        return_value=RegressionSurfaces(dataset=object(), suite=object(), suite_version="v1"),
     )
+    client = mocker.Mock()
+    client.run_experiment.return_value = _experiment_result()
 
-    run_test_suite(client=mocker.Mock())
+    run_test_suite(client=client)
 
     assert [case.id for case in sync.call_args.args[0]] == ["a"]
+    assert len(client.run_experiment.call_args.kwargs["data"]) == 1
 
 
 def test_run_test_suite_raises_when_the_filter_matches_nothing(mocker):
-    """An empty selection is a friendly stop, never a silent zero-item (vacuously green) suite run."""
-    mocker.patch("opik.run_tests", create=True)
     mocker.patch("evals.harness.test_suite.load_cases", return_value=[_case("a")])
 
     with pytest.raises(SuiteSelectionError):
         run_test_suite(case_id="nope", client=mocker.Mock())
 
 
-# --- the pass-rate gate -----------------------------------------------------------------------------
-
-
 def test_assert_pass_rate_passes_at_and_above_the_bar():
-    """A pass rate at or above the bar clears the gate (no raise)."""
     assert_pass_rate(SUITE_PASS_BAR)
     assert_pass_rate(1.0)
 
 
 def test_assert_pass_rate_raises_below_the_bar():
-    """A pass rate below the bar fails the gate loudly — the CLI turns this into a non-zero exit."""
-    with pytest.raises(SuitePassRateError) as excinfo:
+    with pytest.raises(SuitePassRateError, match="below"):
         assert_pass_rate(SUITE_PASS_BAR - 0.01)
-
-    assert "below" in str(excinfo.value)

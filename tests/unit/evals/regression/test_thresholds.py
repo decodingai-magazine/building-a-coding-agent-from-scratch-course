@@ -2,7 +2,7 @@
 
 The pytest ritual module (``evals/regression/test_thresholds.py``) stays thin: it runs the suite and
 delegates every judgement to the pure helpers here. These tests exercise those helpers with crafted
-score dicts — no Opik, no keys, no agent run — so the gate's contract is proven in ``make ci``.
+score dicts — no network, no keys, no agent run — so the gate's contract is proven in ``make ci``.
 """
 
 from __future__ import annotations
@@ -31,14 +31,14 @@ from evals.regression.thresholds import (
 
 
 class _Stat:
-    """A stand-in for opik's ``ScoreStatistics`` — only ``.mean`` is read by the extractor."""
+    """A stand-in for an aggregate result — only ``.mean`` is read by the extractor."""
 
     def __init__(self, mean: float) -> None:
         self.mean = mean
 
 
 class _Feedback:
-    """A stand-in for opik's ``FeedbackScoreAveragePublic`` (``.name`` / ``.value``)."""
+    """A stand-in for a Langfuse score (``.name`` / ``.value``)."""
 
     def __init__(self, name: str, value: float) -> None:
         self.name = name
@@ -52,7 +52,7 @@ def test_threshold_for_uses_default_for_code_metrics() -> None:
 
 
 def test_threshold_for_uses_judge_floor_for_the_judge_metric() -> None:
-    """Every GEval judge reports under one name, held to the lower judge floor."""
+    """Every local LLM judge reports under one name, held to the lower judge floor."""
     assert threshold_for(JUDGE_METRIC_NAME) == JUDGE_METRIC_THRESHOLD
     assert THRESHOLDS[JUDGE_METRIC_NAME] == JUDGE_METRIC_THRESHOLD
     assert JUDGE_METRIC_THRESHOLD < DEFAULT_THRESHOLD  # judges sit below the discipline floor
@@ -117,7 +117,7 @@ def test_absent_metric_is_never_gated() -> None:
 
 
 def test_scores_from_aggregation_reads_the_means() -> None:
-    """The extractor collapses opik's per-metric statistics to a flat ``{name: mean}`` dict."""
+    """The extractor collapses per-metric aggregation to a flat ``{name: mean}`` dict."""
     aggregated = {"tool_called_read": _Stat(1.0), JUDGE_METRIC_NAME: _Stat(0.66)}
 
     scores = scores_from_aggregation(aggregated)
@@ -180,7 +180,7 @@ def test_latest_baseline_ignores_candidates_without_scores() -> None:
 
 
 def test_latest_baseline_handles_mixed_none_and_datetime_created_at() -> None:
-    """A ``created_at=None`` candidate (opik's ``Optional[datetime]``) must not crash the newest pick.
+    """A ``created_at=None`` candidate must not crash the newest pick.
 
     The Tester's exact repro: mixing an undated candidate with a dated one previously raised a
     ``TypeError`` inside ``max`` — an unhandled crash of the gate. The dated candidate wins regardless
@@ -230,7 +230,7 @@ def test_format_deltas_marks_regressions() -> None:
 
 
 class _Score:
-    """A stand-in for opik's ``ScoreResult`` — the fields the per-tier report reads."""
+    """A stand-in for a local experiment score — the fields the per-tier report reads."""
 
     def __init__(self, name: str, value: float, scoring_failed: bool = False) -> None:
         self.name = name
@@ -239,7 +239,7 @@ class _Score:
 
 
 class _Case:
-    """A stand-in for opik's ``TestCase`` — the item content carries the case id."""
+    """A stand-in for an experiment item — its content carries the case id."""
 
     def __init__(self, case_id: str | None) -> None:
         self.dataset_item_content = {"case_id": case_id} if case_id else {}
@@ -247,7 +247,7 @@ class _Case:
 
 
 class _Result:
-    """A stand-in for opik's ``TestResult`` — one item's case plus its scores."""
+    """A stand-in for one experiment item plus its scores."""
 
     def __init__(self, case_id: str | None, scores: list[_Score]) -> None:
         self.test_case = _Case(case_id)

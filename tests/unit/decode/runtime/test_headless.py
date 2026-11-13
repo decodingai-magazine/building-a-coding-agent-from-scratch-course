@@ -4,7 +4,7 @@ Drives the REAL :func:`decode.runtime.headless.run_headless_task` with only the 
 swapped (a scripted ``FunctionModel`` agent through the ``_build_headless_agent`` seam), so every
 property the deleted Durable Flow used to own is proved on the plain path: bypass permissions,
 ``ask_user`` as a headless no-op, the Workspace warm-up, the sandbox executor reap on a dedicated
-loop, the host-side Hand-back, and Opik tracing init. No kitaru, no local stack, no network.
+loop, the host-side Hand-back, and Langfuse tracing init. No kitaru, no local stack, no network.
 """
 
 from __future__ import annotations
@@ -279,9 +279,9 @@ def test_the_run_goes_through_the_recording_seam_named_by_its_session_id(monkeyp
     spans: list[str | None] = []
     real_root_span = hl.observability.root_span
 
-    def _root_span(name, *, thread_id=None, **kwargs):
-        spans.append(thread_id)
-        return real_root_span(name, thread_id=thread_id, **kwargs)
+    def _root_span(name, *, session_id=None, **kwargs):
+        spans.append(session_id)
+        return real_root_span(name, session_id=session_id, **kwargs)
 
     monkeypatch.setattr(hl.observability, "root_span", _root_span)
 
@@ -381,16 +381,16 @@ def test_tracing_is_initialized_before_the_agent_is_built(monkeypatch):
     assert order == ["init_tracing", "build_agent"]
 
 
-def test_the_run_opens_one_root_span_whose_thread_id_is_the_hand_back_session_id(
+def test_the_run_opens_one_root_span_whose_session_id_is_the_hand_back_session_id(
     monkeypatch, mocker
 ):
-    """ONE run id names both the Opik trace thread and the ``decode/<session-id>`` Session Branch."""
+    """ONE run id names both the Langfuse session and the ``decode/<session-id>`` Session Branch."""
     spans: list[dict] = []
     real_root_span = hl.observability.root_span
 
-    def _root_span(name, *, thread_id=None, input=None, **kwargs):
-        spans.append({"name": name, "thread_id": thread_id, "input": input})
-        return real_root_span(name, thread_id=thread_id, input=input, **kwargs)
+    def _root_span(name, *, session_id=None, input=None, **kwargs):
+        spans.append({"name": name, "session_id": session_id, "input": input})
+        return real_root_span(name, session_id=session_id, input=input, **kwargs)
 
     monkeypatch.setattr(hl.observability, "root_span", _root_span)
     monkeypatch.setattr(hl.settings, "sandbox_mode", "docker")
@@ -403,7 +403,7 @@ def test_the_run_opens_one_root_span_whose_thread_id_is_the_hand_back_session_id
     assert len(spans) == 1
     assert spans[0]["name"] == hl.RUN_SPAN_NAME
     assert spans[0]["input"] == "trace me"
-    assert ship.call_args.kwargs["session_id"] == spans[0]["thread_id"]
+    assert ship.call_args.kwargs["session_id"] == spans[0]["session_id"]
 
 
 # --- sandbox executor reap ---------------------------------------------------------------------
@@ -639,7 +639,7 @@ def test_a_completed_run_writes_its_summary_after_the_hand_back(monkeypatch, moc
     assert summary["handback"] == {"branch": "decode/abc12345", "pushed": True}
     assert summary["requests"] == 1
     assert summary["input_tokens"] > 0
-    assert UUID(summary["session_id"])  # the run's session id — the Opik thread + branch id
+    assert UUID(summary["session_id"])  # the run's session id — the Langfuse session + branch id
 
 
 def test_the_summary_session_id_is_the_hand_back_session_id(monkeypatch, mocker, tmp_path):

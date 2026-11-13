@@ -1,10 +1,8 @@
 """The benchmark's reliability + cost math — pure functions over trial matrices (ADR-0022 §4,§6).
 
-Opik 2.2.36 takes the aggregates on its own axis: ``evaluate(experiment_scoring_functions=[...])``
-hands each callable the run's ``TestResult`` list and logs what it returns onto the Experiment row.
-That adapter lives with the rest of the Opik surface in :mod:`evals.harness.benchmark`; **this module
-is deliberately opik-free**. It holds the math and the Rich table, so every number the benchmark
-reports can be checked on a hand-built matrix with no client, no keys and no network.
+Langfuse experiment run evaluators receive item results and persist aggregate scores on the experiment.
+Their adapters live in :mod:`evals.harness.benchmark`; this module holds only pure math and the Rich
+table, so every number the benchmark reports can be checked with no client, keys, or network.
 
 Two layers:
 
@@ -37,7 +35,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from rich.table import Table
 
-# The Opik score whose value IS the grade of record: the Verifier's reward (ADR-0022 §3).
+# The evaluation score whose value IS the grade of record: the Verifier's reward (ADR-0022 §3).
 DEFAULT_PASS_METRIC = "reward"
 
 # The two statuses this module cares about out of the ADR-0022 §4 taxonomy.
@@ -53,7 +51,7 @@ class TrialOutcome:
     """One Trial as the aggregates see it: how it ended, what it scored, what it cost.
 
     Mirrors the fields of ``result.json`` the math needs (:class:`evals.harness.trial.TrialResult`)
-    so a Trial Dir on disk and an Opik ``TestResult`` fold into the same shape. ``cost_usd`` is
+    so a Trial Dir on disk and a Langfuse experiment item fold into the same shape. ``cost_usd`` is
     ``None`` when the provider reported no dollar figure — never 0.0, which would read as "free".
     ``input_tokens`` / ``output_tokens`` are the run's own usage totals (``0`` for a trial that never
     reached a summary); ``run_seconds`` is the agent's ``run`` phase and ``started_at`` /
@@ -345,20 +343,21 @@ def _aggregate_task(task: TaskTrials) -> TaskAggregate:
 def _rollup(label: str, tasks: Sequence[TaskTrials]) -> Rollup:
     """Macro-average a group of tasks into one row (a tier, or the whole run)."""
     aggregates = [_aggregate_task(task) for task in tasks]
+    scored_aggregates = [aggregate for aggregate in aggregates if aggregate.graded]
     outcomes = [outcome for task in tasks for outcome in task.outcomes]
     graded = _graded_passes(outcomes)
     costs = [outcome.cost_usd for outcome in outcomes]
     run_seconds = [outcome.run_seconds for outcome in outcomes]
     return Rollup(
         label=label,
-        tasks=len(aggregates),
+        tasks=len(scored_aggregates),
         trials=len(outcomes),
         graded=len(graded),
         infra_errors=sum(1 for outcome in outcomes if not outcome.graded),
-        pass_at_1=_mean(aggregate.pass_at_1 for aggregate in aggregates),
-        pass_at_k=_mean(aggregate.pass_at_k for aggregate in aggregates),
-        pass_hat_k=_mean(aggregate.pass_hat_k for aggregate in aggregates),
-        flaky_rate=_mean(1.0 if aggregate.is_flaky else 0.0 for aggregate in aggregates),
+        pass_at_1=_mean(aggregate.pass_at_1 for aggregate in scored_aggregates),
+        pass_at_k=_mean(aggregate.pass_at_k for aggregate in scored_aggregates),
+        pass_hat_k=_mean(aggregate.pass_hat_k for aggregate in scored_aggregates),
+        flaky_rate=_mean(1.0 if aggregate.is_flaky else 0.0 for aggregate in scored_aggregates),
         infra_error_rate=infra_error_rate([outcome.status for outcome in outcomes]),
         mean_cost_usd=mean_cost_usd(costs),
         success_per_dollar=success_per_dollar(graded, costs),
@@ -474,7 +473,7 @@ def render_spend_line(summary: BenchmarkSummary) -> str:
 
     ``wall clock`` is first trial start to last trial end (times your $/hour = a warm endpoint's bill),
     ``agent run`` the sum of every trial's ``run`` phase, and the tokens the sum over every trial
-    (times the route's $/Mtok = a per-token bill). The same three numbers ride the Opik experiment row.
+    (times the route's $/Mtok = a per-token bill). The same three numbers ride the Langfuse experiment row.
     """
     total = summary.total
     return (

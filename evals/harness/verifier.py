@@ -17,8 +17,8 @@ empty or non-numeric reward is ``None``, a verifier ERROR that callers must neve
 
 The Verifier gets an ALLOW-LISTED environment (:func:`host_script_env`), never the parent's
 ``os.environ``: most Verifiers execute the AGENT'S OWN code host-side, and the benchmark process
-carries the operator's provider keys and GitHub PAT (opik imports litellm, whose ``load_dotenv()``
-copies the repo ``.env`` into ``os.environ``). The same helper is what the two other repo-authored
+carries the operator's provider keys and GitHub PAT (the LiteLLM judge client calls ``load_dotenv()``,
+which copies the repo ``.env`` into ``os.environ``). The same helper is what the two other repo-authored
 host-side scripts run with — ``environment/setup.sh`` and ``solution/solve.sh`` — so a reward really
 is reproducible from a bare shell rather than from one operator's laptop.
 """

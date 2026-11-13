@@ -1,12 +1,8 @@
-"""Backfill Kitaru Sessions from Opik traces — the acquisition half of the ``opik`` importer.
+"""Backfill Kitaru Sessions from selected Langfuse traces.
 
-``importers/opik_importer.py`` has always been able to PARSE one Opik export
-(``{schema_version, workspace, project, traces: [{trace, spans}]}``); nothing in the repo produced
-one (its own docstring said "see ``scripts/`` once wired"). This module is that producer
-(ADR-0022 §11): the Opik SDK fetches the traces a human picked (usually out of ``evals mine``),
-expands each one to its whole THREAD — a decode thread is one session's turns — writes the envelope
-under ``.decode/kitaru-imports/`` and shells ``kitaru session import`` through
-:mod:`evals.harness.kitaru_cli`.
+The Langfuse SDK fetches traces selected from ``evals mine``, expands each one to its whole session,
+writes a normalized JSON envelope under ``.decode/kitaru-imports/`` and invokes the registered
+``langfuse@1`` Kitaru importer.
 
 Everything above :class:`ThreadSource` is pure over plain dicts, which is what lets the envelope
 builder be tested against the importer's OWN ``parse`` (round-trip) with no network and no kitaru
@@ -26,7 +22,7 @@ built envelope.
 
 **Why ``external_id`` and not the Session Name.** An imported Session is named by the importer after
 the first trace's NAME (``ImportedSession.name = first.get("name") or key``), so a decode backfill
-is called ``agent run``, never the thread id — only ``external_id`` (and ``metadata.opik_thread_id``)
+is called ``agent run``, never the thread id — only ``external_id`` (and ``metadata.langfuse_thread_id``)
 identify it. Recorded sessions are the other way round: the adapter names them by the decode session
 id, which is the join :mod:`evals.harness.kitaru_cohort` uses.
 
@@ -50,7 +46,7 @@ from evals.harness.kitaru_cli import KitaruCommandError
 
 logger = logging.getLogger(__name__)
 
-# The envelope version `importers/opik_importer.py::parse` reads.
+# The envelope version `importers/langfuse_importer.py::parse` reads.
 SCHEMA_VERSION = 1
 
 # Envelopes live under the Harness Home's `.decode/` (ADR-0012 §6) — never in the user's tree.
@@ -92,8 +88,13 @@ class ImportOutcome:
 
 
 def _mapping(value: object) -> dict[str, Any]:
-    """The value as a dict, or an empty one — Opik omits absent fields entirely."""
-    return value if isinstance(value, dict) else {}
+    """The value as a dict, or an empty one."""
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        result = value.model_dump()
+        return result if isinstance(result, dict) else {}
+    return {}
 
 
 def thread_key(trace: dict[str, Any]) -> str | None:
@@ -113,10 +114,10 @@ def session_external_id(workspace: str, project: str, key: str) -> str:
 def build_envelope(
     *, workspace: str, project: str, entries: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    """The ``opik@N`` importer payload for one thread — pure, no I/O.
+    """The ``langfuse@N`` importer payload for one thread — pure, no I/O.
 
     Trace order is left as fetched: the parser sorts turns by ``start_time`` itself, so an envelope
-    never depends on the order Opik answered in.
+    never depends on the order Langfuse answered in.
     """
     return {
         "schema_version": SCHEMA_VERSION,
@@ -184,7 +185,10 @@ def existing_session(
         if session.get("external_id") == external_id:
             return session
         metadata = _mapping(session.get("metadata"))
-        if metadata.get("opik_thread_id") == key and metadata.get("opik_project") == project:
+        if (
+            metadata.get("langfuse_thread_id") == key
+            and metadata.get("langfuse_project") == project
+        ):
             return session
     return None
 
@@ -204,43 +208,114 @@ def format_outcome(outcome: ImportOutcome) -> str:
 
 @dataclass(slots=True)
 class ThreadSource:
-    """The ONE Opik-touching seam: traces + spans as plain dicts, one project, one workspace."""
+    """The Langfuse observation seam: traces and spans as plain dictionaries."""
 
     client: Any
     project: str
     workspace: str
 
+    def _observations(self, **filters: Any) -> list[dict[str, Any]]:
+        observations: list[dict[str, Any]] = []
+        cursor = None
+        while True:
+            response = self.client.api.observations.get_many(limit=1000, cursor=cursor, **filters)
+            observations.extend(_as_dict(record) for record in getattr(response, "data", []) or [])
+            cursor = getattr(getattr(response, "meta", None), "cursor", None)
+            if not isinstance(cursor, str) or not cursor:
+                return observations
+
+    @staticmethod
+    def _trace_record(observations: list[dict[str, Any]]) -> dict[str, Any]:
+        roots = [item for item in observations if not item.get("parent_observation_id")]
+        root = min(roots or observations, key=lambda item: str(item.get("start_time") or ""))
+        metadata = _mapping(root.get("metadata"))
+        level = str(getattr(root.get("level"), "value", root.get("level"))).upper()
+        return {
+            "id": root.get("trace_id"),
+            "name": root.get("name"),
+            "thread_id": root.get("session_id") or metadata.get("thread_id"),
+            "start_time": root.get("start_time"),
+            "end_time": root.get("end_time"),
+            "input": root.get("input"),
+            "output": root.get("output"),
+            "metadata": metadata,
+            "error_info": {"message": root.get("status_message")} if level == "ERROR" else None,
+        }
+
+    @staticmethod
+    def _span_record(observation: dict[str, Any]) -> dict[str, Any]:
+        metadata = _mapping(observation.get("metadata"))
+        usage = _mapping(observation.get("usage_details"))
+        cost = _mapping(observation.get("cost_details"))
+        observation_type = str(
+            getattr(observation.get("type"), "value", observation.get("type"))
+        ).upper()
+        level = str(getattr(observation.get("level"), "value", observation.get("level"))).upper()
+        return {
+            "id": observation.get("id"),
+            "parent_span_id": observation.get("parent_observation_id"),
+            "name": observation.get("name"),
+            "type": "llm" if observation_type == "GENERATION" else "general",
+            "model": observation.get("model"),
+            "provider": metadata.get("gen_ai.system") or metadata.get("provider"),
+            "input": observation.get("input"),
+            "output": observation.get("output"),
+            "metadata": metadata,
+            "usage": {
+                "prompt_tokens": usage.get("input"),
+                "completion_tokens": usage.get("output"),
+                "details.cached_content_tokens": usage.get("input_cached"),
+                "details.thoughts_tokens": usage.get("output_reasoning"),
+            },
+            "total_estimated_cost": cost.get("total"),
+            "start_time": observation.get("start_time"),
+            "end_time": observation.get("end_time"),
+            "error_info": {"message": observation.get("status_message")}
+            if level == "ERROR"
+            else None,
+        }
+
     def trace(self, trace_id: str) -> dict[str, Any]:
         """One trace by id, or one friendly error naming the id that is not there."""
         try:
-            return _as_dict(self.client.get_trace_content(trace_id))
-        except Exception as exc:  # opik raises its own ApiError / KeyError shapes
+            observations = self._observations(trace_id=trace_id)
+            if not observations:
+                raise KeyError(trace_id)
+            return self._trace_record(observations)
+        except Exception as exc:
             raise TraceImportError(
-                f"no trace {trace_id!r} in Opik project {self.project!r} ({type(exc).__name__})."
+                f"no trace {trace_id!r} in Langfuse project {self.project!r} "
+                f"({type(exc).__name__})."
             ) from exc
 
     def thread_traces(self, key: str) -> list[dict[str, Any]]:
-        """Every trace of one thread — ``thread_id`` is a server-side OQL field."""
-        found = self.client.search_traces(
-            project_name=self.project,
-            filter_string=f'thread_id = "{key}"',
-            max_results=THREAD_TRACE_CAP,
-        )
-        return [_as_dict(record) for record in found]
+        """Every trace recorded in one Langfuse session."""
+        observations = self._observations(session_id=key)
+        by_trace: dict[str, list[dict[str, Any]]] = {}
+        for observation in observations:
+            trace_id = observation.get("trace_id")
+            if isinstance(trace_id, str):
+                by_trace.setdefault(trace_id, []).append(observation)
+        traces = [self._trace_record(items) for items in by_trace.values()]
+        traces.sort(key=lambda item: str(item.get("start_time") or ""))
+        return traces[:THREAD_TRACE_CAP]
 
     def recent_threads(self, limit: int | None = None) -> list[str]:
-        """The project's thread ids, newest first (Opik's own order), at most ``limit`` of them."""
-        found = self.client.search_threads(
-            project_name=self.project, max_results=limit or PROJECT_THREAD_CAP
-        )
-        return [str(_as_dict(record)["id"]) for record in found]
+        """Recent Langfuse session ids, newest first."""
+        observations = self._observations(is_root_observation=True)
+        observations.sort(key=lambda item: str(item.get("start_time") or ""), reverse=True)
+        return list(
+            dict.fromkeys(
+                str(item["session_id"]) for item in observations if item.get("session_id")
+            )
+        )[: limit or PROJECT_THREAD_CAP]
 
     def spans(self, trace_id: str) -> list[dict[str, Any]]:
-        """Every span of one trace — no ``has_tool_spans`` shortcut: an envelope wants them all."""
-        found = self.client.search_spans(
-            project_name=self.project, trace_id=trace_id, max_results=SPAN_FETCH_CAP
-        )
-        return [_as_dict(record) for record in found]
+        """Every observation of one trace, normalized for the Langfuse importer."""
+        return [
+            self._span_record(record)
+            for record in self._observations(trace_id=trace_id)[:SPAN_FETCH_CAP]
+        ]
 
     def entries(self, traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """``[{trace, spans}]`` for every trace, the envelope's own shape."""
@@ -248,20 +323,23 @@ class ThreadSource:
 
 
 def _as_dict(record: Any) -> dict[str, Any]:
-    """One shape for everything above the source: a plain dict (Opik answers pydantic models)."""
-    return record if isinstance(record, dict) else dict(record.dict())
+    """One shape for everything above the source: a plain dict."""
+    if isinstance(record, dict):
+        return record
+    return dict(record.model_dump() if hasattr(record, "model_dump") else record.dict())
 
 
 def open_source(project: str | None = None) -> ThreadSource:
-    """A :class:`ThreadSource` over the live Opik project — ``opik`` imported lazily (ADR-0017 §1)."""
-    import opik
-
+    """A :class:`ThreadSource` over the configured Langfuse project."""
     from decode.config.settings import settings
+    from evals.harness.datasets import langfuse_client
     from evals.harness.mine import live_project_name
 
     target = project or live_project_name()
     return ThreadSource(
-        client=opik.Opik(project_name=target), project=target, workspace=settings.opik_workspace
+        client=langfuse_client(),
+        project=target,
+        workspace=getattr(settings, "langfuse_project_name", "decode"),
     )
 
 
@@ -371,7 +449,7 @@ def _import_thread(
     directory.mkdir(parents=True, exist_ok=True)
     path = envelope_path(key, directory)
     envelope = build_envelope(workspace=source.workspace, project=source.project, entries=entries)
-    # ``default=str`` because a live Opik record carries real ``datetime`` values; the importer
+    # ``default=str`` because a live Langfuse record carries real ``datetime`` values; the importer
     # parses the ISO strings this produces (``datetime.fromisoformat``).
     path.write_text(json.dumps(envelope, default=str), encoding="utf-8")
 

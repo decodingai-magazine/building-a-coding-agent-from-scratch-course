@@ -767,10 +767,10 @@ async def run_app(
     """
     console = console or Console()
 
-    # Opik tracing (ADR-0014 §4-5): configure ONCE, before the agent is built, so the global
-    # ``instrument_pydantic_ai`` covers every downstream Agent. No key → silent no-op, byte-identical.
-    # The one startup console line is emitted near the banner below, where ``emit_line`` exists.
-    opik_tracing_active = observability.init_tracing()
+    # Langfuse tracing (ADR-0024): configure ONCE before the agent is built, so the global
+    # ``instrument_pydantic_ai`` covers every downstream Agent. No credentials → silent no-op.
+    # The startup line is emitted near the banner below, where ``emit_line`` exists.
+    langfuse_tracing_active = observability.init_tracing()
 
     # ``agent`` is rebound below to the built Pydantic AI Agent, so save the persona name first
     # (the persona rides ``deps.active_agent``, not the Agent object — ADR-0003 §7).
@@ -857,7 +857,7 @@ async def run_app(
     # The Recording Seam (ADR-0019 §3), the REPL's half: the SAME agent back unless recording is
     # configured, in which case it comes back wrapped for Kitaru — so real interactive usage feeds
     # the replay corpus, not just headless runs. ``session_name`` is the decode session id, the one
-    # id that already names the JSONL log, the Opik thread and the Hand-back Session Branch, so a
+    # id that already names the JSONL log, the Langfuse session and the Hand-back Session Branch, so a
     # whole multi-turn conversation groups under one recognisable Kitaru Session name. Wrapping
     # once here (never per turn) is what makes that grouping true. The wrapper is a pydantic-ai
     # ``WrapperAgent``, so the handler's ``iter()`` and the ``agent.model`` read below are
@@ -874,7 +874,7 @@ async def run_app(
         agent,
         deps=deps,
         session_log=session_log,
-        # Also the Opik Thread id grouping the session's per-turn traces (ADR-0014 §4).
+        # Also the Langfuse session id grouping the session's per-turn traces (ADR-0024).
         session_id=session_log.session_id,
         message_history=resumed_history,
         compaction_model=agent.model,
@@ -911,9 +911,9 @@ async def run_app(
                 f"Decode: sandbox startup failed ({exc}); will retry on the first bash command."
             )
 
-    # One tracing line near the banner when Opik is active (ADR-0014 §1,4); no-op when off.
-    if opik_tracing_active:
-        emit_line(f"Decode - Opik tracing on (project '{settings.opik_project_name}').")
+    # One tracing line near the banner when Langfuse is active; no-op when off.
+    if langfuse_tracing_active:
+        emit_line(f"Decode - Langfuse tracing on (host '{settings.langfuse_base_url}').")
 
     # One recording line near the banner when the seam degraded (ADR-0019 §3): the user asked for a
     # recorded session and is not getting one, so a line filed only under ``.decode/logs`` would be

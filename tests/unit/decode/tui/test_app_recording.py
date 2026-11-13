@@ -8,11 +8,11 @@ workspace, no credentials, no network. Three properties carry the design:
 * **Unconfigured is today.** No agent id → the handler drives the very object ``build_agent()``
   returned, no kitaru module is touched, and not one character of new output appears.
 * **Configured records under the decode session id.** ``session_name`` is ``session_log.session_id``
-  — the id that already names the JSONL log, the Opik thread and the Hand-back Session Branch — so a
+  — the id that already names the JSONL log, the Langfuse session and the Hand-back Session Branch — so a
   multi-turn conversation groups under one name, and the turn really runs through the wrapper's
   ``iter()`` (the REPL surface, not ``run()``).
 * **A dead workspace costs one line, not the REPL.** The degrade notice rides the SAME event/emit
-  surface as the Opik startup line (never raw stderr, which fights prompt_toolkit's redraw), appears
+  surface as the Langfuse startup line (never raw stderr, which fights prompt_toolkit's redraw), appears
   exactly once for the whole session, and every turn still answers on the bare agent.
 """
 

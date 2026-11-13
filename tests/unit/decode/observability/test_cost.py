@@ -1,4 +1,4 @@
-"""Unit tests for the Opik span cost attribute (ADR-0014 §8).
+"""Unit tests for the Langfuse span cost attribute (ADR-0024).
 
 Hermetic and keyless: :func:`span_cost_usd` is pure over an attribute mapping, and the exporter
 wrapper is driven with hand-built :class:`ReadableSpan` objects into a recording fake — no OTLP
@@ -22,7 +22,7 @@ from pydantic_ai.usage import RequestUsage
 
 from decode.config.settings import settings
 from decode.observability.cost import (
-    OPIK_COST_ATTRIBUTE,
+    GEN_AI_COST_ATTRIBUTE,
     PYDANTIC_AI_COST_ATTRIBUTE,
     run_cost_usd,
     span_cost_usd,
@@ -96,7 +96,7 @@ def test_unpriceable_span_reports_no_cost_when_no_rates_are_configured():
 def test_the_aggregating_agent_run_span_is_never_priced(rates):
     """The double-count guard: pydantic-ai repeats the run's usage on the parent ``agent run`` span.
 
-    That span carries no request model, and Opik SUMS span costs into the trace total — pricing it
+    That span carries no request model, and trace viewers may sum span costs into a trace total — pricing it
     too would report every run at double its real spend.
     """
     agent_run_attributes = {
@@ -120,11 +120,11 @@ def test_only_the_configured_side_of_the_rates_is_required(rates, monkeypatch):
     assert span_cost_usd(_model_span_attributes()) == pytest.approx(1.0)  # 0.5M output at $2
 
 
-# --- CostAnnotatingExporter: what reaches Opik ---
+# --- CostAnnotatingExporter: what reaches Langfuse ---
 
 
-def test_exporter_stamps_the_attribute_opik_reads(rates):
-    """The whole point: the forwarded span carries ``gen_ai.usage.cost``, the only key Opik ingests."""
+def test_exporter_stamps_the_genai_cost_attribute(rates):
+    """The forwarded span carries the GenAI cost attribute for Langfuse ingestion."""
     downstream = _RecordingExporter()
 
     result = CostAnnotatingExporter(downstream).export(
@@ -133,7 +133,7 @@ def test_exporter_stamps_the_attribute_opik_reads(rates):
 
     assert result is SpanExportResult.SUCCESS
     (exported,) = downstream.spans
-    assert exported.attributes[OPIK_COST_ATTRIBUTE] == pytest.approx(2.0)
+    assert exported.attributes[GEN_AI_COST_ATTRIBUTE] == pytest.approx(2.0)
     # The original attributes ride along untouched — the span is annotated, not replaced.
     assert exported.attributes["gen_ai.usage.input_tokens"] == 1_000_000
     assert exported.name == "chat qwen3"
@@ -147,18 +147,18 @@ def test_exporter_forwards_an_unpriceable_span_unchanged():
     CostAnnotatingExporter(downstream).export([span])
 
     assert downstream.spans == [span]
-    assert OPIK_COST_ATTRIBUTE not in (span.attributes or {})
+    assert GEN_AI_COST_ATTRIBUTE not in (span.attributes or {})
 
 
 def test_exporter_never_overwrites_a_cost_someone_else_set(rates):
     """An upstream cost is closer to the provider's own number than a rate table — leave it alone."""
     downstream = _RecordingExporter()
-    attributes = _model_span_attributes(**{OPIK_COST_ATTRIBUTE: 0.99})
+    attributes = _model_span_attributes(**{GEN_AI_COST_ATTRIBUTE: 0.99})
 
     CostAnnotatingExporter(downstream).export([_span("chat qwen3", attributes)])
 
     (exported,) = downstream.spans
-    assert exported.attributes[OPIK_COST_ATTRIBUTE] == 0.99
+    assert exported.attributes[GEN_AI_COST_ATTRIBUTE] == 0.99
 
 
 def test_exporter_delegates_shutdown_and_flush_to_the_wrapped_exporter():
@@ -198,7 +198,7 @@ async def test_a_real_agent_run_prices_the_model_span_and_only_the_model_span(
     """The guard that matters, pinned to what pydantic-ai actually emits (no network, scripted model).
 
     A run produces both a ``chat`` span and an aggregating ``agent run`` span carrying the SAME token
-    counts. Opik sums span costs, so exactly one of them may be priced — if a pydantic-ai upgrade ever
+    counts. Trace viewers may sum span costs, so exactly one of them may be priced — if a pydantic-ai upgrade ever
     starts putting a request model on the parent span, this test fails instead of the cost dashboard
     silently doubling.
     """
@@ -209,9 +209,9 @@ async def test_a_real_agent_run_prices_the_model_span_and_only_the_model_span(
     CostAnnotatingExporter(downstream).export(capfire.exporter.exported_spans)
 
     priced = {
-        span.name: span.attributes[OPIK_COST_ATTRIBUTE]
+        span.name: span.attributes[GEN_AI_COST_ATTRIBUTE]
         for span in downstream.spans
-        if OPIK_COST_ATTRIBUTE in (span.attributes or {})
+        if GEN_AI_COST_ATTRIBUTE in (span.attributes or {})
     }
     assert [name for name in priced] == ["chat test"], sorted(
         span.name for span in downstream.spans

@@ -1,10 +1,10 @@
-"""Offline tests for the trial aggregates — pure math, no Opik, no keys (ADR-0022 §4,§6).
+"""Offline tests for the trial aggregates — pure math, no keys or network (ADR-0022 §4,§6).
 
 Every function under test takes plain sequences or the module's own frozen dataclasses, so the whole
 file runs on hand-built trial matrices: all-pass, all-fail, mixed, ``k=1`` degenerate, empty, and the
 one that matters most — a matrix carrying an ``infra_error`` trial, which must vanish from BOTH the
-numerator and the denominator (ADR-0022 §4). The Opik seam moved to ``evals/harness/benchmark.py``
-(``test_benchmark.py`` covers it); nothing here imports opik.
+numerator and the denominator (ADR-0022 §4). The Langfuse experiment adapter lives in
+``evals/harness/benchmark.py``; nothing here needs a client.
 """
 
 from __future__ import annotations

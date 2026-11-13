@@ -1,26 +1,26 @@
 ---
 name: demo-5-sandbox-feature-pr
-description: Demo skill for the meta "decode improves decode" flow — launch decode in a sandboxed clone of the course repo, plan and build one small feature inside the Workspace, let Hand-back push the Session Branch, then open a draft PR against the course repo.
+description: Demo skill for the meta "decode improves decode" flow — launch decode in a sandboxed clone of the repo, plan and build one small feature inside the Workspace, let Hand-back push the Session Branch, then open a draft PR against the repo.
 ---
 
 The meta demo: **decode improves decode.** Run decode inside an isolated sandbox Workspace that is
-a clone of this very course repo, plan and implement one small self-contained feature there, and
+a clone of this very repo, plan and implement one small self-contained feature there, and
 let the harness ship the work back as a branch you turn into a draft PR.
 
 Nothing the model does touches your host checkout — the Workspace is an isolated clone, and the
 branch only lands on your host through Hand-back (ADR-0012 §8).
 
-## 1. Launch decode against a sandboxed clone of the course repo (human step)
+## 1. Launch decode against a sandboxed clone of the repo (human step)
 
 Sandbox mode is selected by the **`SANDBOX_MODE` environment variable** — it is an env var, not a
 command-line flag; the repo to clone into the Workspace is the **`--repo`** flag. Launch the local
 docker rung (Docker must be running):
 
 ```
-SANDBOX_MODE=docker decode --repo git@github.com:decodingai-magazine/building-a-coding-agent-from-scratch-course.git
+SANDBOX_MODE=docker decode --repo git@github.com:HanishDhanwalkar/decode-ollama.git.git
 ```
 
-This clones the course repo into the isolated Workspace (`/workspace` ≡ host `.decode/sandbox`)
+This clones the repo into the isolated Workspace (`/workspace` ≡ host `.decode/sandbox`)
 and drops you into the REPL, with `bash` and the file tools scoped to that clone.
 
 To run the same demo on the remote rung instead, swap `SANDBOX_MODE=docker` for
@@ -55,7 +55,7 @@ know which one you are in:
 - **Sandbox run (the intended demo, `SANDBOX_MODE=docker`/`modal`):** just leave the REPL (exit,
   or `/ship` while idle). On exit, **Hand-back** secures the final Workspace onto a deterministic
   `decode/<session-id>` **Session Branch**, auto-commits any uncommitted model work, and
-  `git push`es it back to the course repo with your ambient host git credentials — every git
+  `git push`es it back to the repo with your ambient host git credentials — every git
   command runs host-side, so no credential ever enters the sandbox. The friendly exit line names
   the branch it pushed. You do **not** push by hand in this path.
 
@@ -75,7 +75,7 @@ know which one you are in:
   push is supposed to enforce. Only fall back to `--no-verify` if the human explicitly tells you
   to.
 
-## 5. Open a draft PR against the course repo
+## 5. Open a draft PR against the repo
 
 Turn the pushed branch into a draft PR with the `gh` CLI — `--head decode/<session-id>` for the
 Hand-back path, or `--head <your-branch>` for the manual path. Build the body with a heredoc so
@@ -83,7 +83,7 @@ newlines and backticks land literally (never hand-escape `\n` into `--body`):
 
 ~~~
 gh pr create --draft \
-  --repo decodingai-magazine/building-a-coding-agent-from-scratch-course \
+  --repo HanishDhanwalkar/decode-ollama.git \
   --head <branch> --title "<feature>" \
   --body "$(cat <<'EOF'
 <what & why, 2-3 lines>

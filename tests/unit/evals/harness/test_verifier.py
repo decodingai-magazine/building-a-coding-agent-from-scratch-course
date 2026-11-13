@@ -3,7 +3,7 @@
 ``grade_checkout`` runs a task's ``tests/test.sh`` — a script that, for most real tasks, EXECUTES
 THE AGENT'S OWN CODE host-side (``python3 -m unittest`` over agent-edited modules). So the one
 property this module pins hardest is that the Verifier's environment is an ALLOW-LIST, never the
-parent's ``os.environ``: the benchmark process imports opik → litellm, whose ``load_dotenv()``
+parent's ``os.environ``: the benchmark process imports the LiteLLM judge client, whose ``load_dotenv()``
 copies the repo ``.env`` into ``os.environ`` (see ``tests/conftest.py``), and a model-authored file
 must never run with the operator's provider keys or GitHub PAT in its environment.
 

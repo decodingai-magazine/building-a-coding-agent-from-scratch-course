@@ -42,16 +42,15 @@ LEAKED_PROVIDER_SOCKET_FILTER = (
 # The SECOND exemption, same shape, also upstream: a ``modal`` judge (Qwen behind SGLang, ADR-0022 §7)
 # answers with fields litellm's own pydantic types do not model (``provider_specific_fields=
 # {'matched_stop': …}``, a ``Choices`` where ``StreamingChoices`` is declared). The judge call itself
-# is fine — G-Eval reads its score off the returned object — but AFTERWARDS litellm's logger and Opik's
-# ``@track`` decorator both ``model_dump()`` that response to record it, and pydantic emits
+# is fine — the local judge reads its score off the returned object — but AFTERWARDS litellm's logger
+# ``model_dump()``s that response to record it, and pydantic emits
 #
 #     UserWarning: Pydantic serializer warnings:
 #       PydanticSerializationUnexpectedValue(Expected 10 fields but got 5: Expected `Message` …)
 #
 # Under ``error`` that warning becomes an exception inside those two bookkeeping hooks, which both
-# catch it and print a full traceback per judge call (``Error creating standard logging object`` /
-# ``Unexpected exception happened when tried to finalize span``) — pages of noise, one per judged
-# item, and a judge span in Opik without its output. Scores are never touched. Message-scoped to
+# catches it and prints a full traceback per judge call (``Error creating standard logging object``) —
+# pages of noise, one per judged item. Scores are never touched. Message-scoped to
 # pydantic's exact prefix and to ``UserWarning``, so any other UserWarning still errors.
 JUDGE_RESPONSE_SERIALIZER_FILTER = r"ignore:Pydantic serializer warnings:UserWarning"
 

@@ -19,7 +19,7 @@ echo 'DECODE_ENV=prod' >> .env      # or, this shell only:  export DECODE_ENV=pr
 
 ## 2. Create the `decode-headless-<env>` Secret
 
-The container has no `.env`: **its Secret is its whole config**. Pass every key on every create (a Secret is replaced, never patched), and never put `DECODE_ENV` in it (baked in at deploy; a Secret that disagrees is refused at startup). Pick your provider's block; it loads `.env` into the shell and copies the keys. Optional lines, empty reads as unset: `OPIK_API_KEY` (+ `OPIK_WORKSPACE`) traces every remote run under `decode-<env>`; `SANDBOX_GIT_TOKEN` (§4 table).
+The container has no `.env`: **its Secret is its whole config**. Pass every key on every create (a Secret is replaced, never patched), and never put `DECODE_ENV` in it (baked in at deploy; a Secret that disagrees is refused at startup). Pick your provider's block; it loads `.env` into the shell and copies the keys. Langfuse credentials enable remote tracing; leave them empty to disable it. `SANDBOX_GIT_TOKEN` is described in the §4 table.
 
 **Modal model** (`LLM_PROVIDER=modal`, [02](02_modal_endpoints.md); drop the two `MODAL_PROXY_TOKEN_*` lines if served `--unauthenticated`):
 
@@ -32,8 +32,9 @@ uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or expo
   MODAL_ENDPOINT_MODEL="${MODAL_ENDPOINT_MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}" \
   MODAL_PROXY_TOKEN_ID="$MODAL_PROXY_TOKEN_ID" \
   MODAL_PROXY_TOKEN_SECRET="$MODAL_PROXY_TOKEN_SECRET" \
-  OPIK_API_KEY="$OPIK_API_KEY" \
-  OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
+  LANGFUSE_PUBLIC_KEY="${LANGFUSE_PUBLIC_KEY:-}" \
+  LANGFUSE_SECRET_KEY="${LANGFUSE_SECRET_KEY:-}" \
+  LANGFUSE_BASE_URL="${LANGFUSE_BASE_URL:-${LANGFUSE_HOST:-https://cloud.langfuse.com}}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 ```
 
@@ -46,8 +47,9 @@ uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or expo
   LLM_PROVIDER=gemini \
   GEMINI_API_KEY="$GEMINI_API_KEY" \
   GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.8-flash}" \
-  OPIK_API_KEY="$OPIK_API_KEY" \
-  OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
+  LANGFUSE_PUBLIC_KEY="${LANGFUSE_PUBLIC_KEY:-}" \
+  LANGFUSE_SECRET_KEY="${LANGFUSE_SECRET_KEY:-}" \
+  LANGFUSE_BASE_URL="${LANGFUSE_BASE_URL:-${LANGFUSE_HOST:-https://cloud.langfuse.com}}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 ```
 
@@ -60,8 +62,9 @@ uv run modal secret create "decode-headless-${DECODE_ENV:?set it in .env or expo
   LLM_PROVIDER=openrouter \
   OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
   OPENROUTER_MODEL="${OPENROUTER_MODEL:-openrouter/free}" \
-  OPIK_API_KEY="$OPIK_API_KEY" \
-  OPIK_WORKSPACE="${OPIK_WORKSPACE:-default}" \
+  LANGFUSE_PUBLIC_KEY="${LANGFUSE_PUBLIC_KEY:-}" \
+  LANGFUSE_SECRET_KEY="${LANGFUSE_SECRET_KEY:-}" \
+  LANGFUSE_BASE_URL="${LANGFUSE_BASE_URL:-${LANGFUSE_HOST:-https://cloud.langfuse.com}}" \
   SANDBOX_GIT_TOKEN="$SANDBOX_GIT_TOKEN" --force
 ```
 
@@ -76,20 +79,18 @@ uv run decode remote deploy       # → decode-headless-$DECODE_ENV
 ```
 
 > ✅ Ends with:
->
-> ```
-> Decode: deploying decode-headless-prod (DECODE_ENV=prod).
-> ├── 🔨 Created function run_task.
-> ├── 🔨 Created function nightly.
-> └── 🔨 Created web function webhook => https://<workspace>--decode-headless-prod-webhook.modal.run 🔑
-> ✓ App deployed in 46.102s! 🎉
-> ```
+
+```bash
+ Decode: deploying decode-headless-prod (DECODE_ENV=prod).
+ ├── 🔨 Created function run_task.
+ ├── 🔨 Created function nightly.
+ └── 🔨 Created web function webhook => https://<workspace>--decode-headless-prod-webhook.modal.run 🔑
+ ✓ App deployed in 46.102s!
+ ```
 
 `run_task` = the run, `nightly` = the cron (§6), `webhook` = the POST endpoint (§5). All three take the same knobs: `task`, `repo`, `sandbox-mode` (`none` | `modal`), `model`, `max-requests`, `timeout-seconds`.
 
 The same three in the dashboard, under **Apps → `decode-headless-<env>`** — idle, costing nothing. `nightly` carries its schedule badge only once §6 has set a cron:
-
-![The three entrypoints of a deployed decode-headless app](../assets/modal_3_entrypoints.png)
 
 ## 4. Run from the CLI
 
@@ -97,13 +98,13 @@ The same three in the dashboard, under **Apps → `decode-headless-<env>`** — 
 uv run decode remote run "run bash to print uname -a and pwd and report both" --sandbox-mode none
 ```
 
-> ✅ A gVisor kernel and an in-container path:
->
-> ```
-> - **`uname -a`**: `Linux modal 4.19.0-gvisor #1 SMP … x86_64 GNU/Linux`
-> - **`pwd`**: `/harness`
-> Decode: run finished — exit=0 sandbox=none session=346fbde2-… branch=None
-> ```
+✅ A gVisor kernel and an in-container path:
+
+```bash
+- **`uname -a`**: `Linux modal 4.19.0-gvisor #1 SMP … x86_64 GNU/Linux`
+- **`pwd`**: `/harness`
+Decode: run finished — exit=0 sandbox=none session=346fbde2-… branch=None
+```
 
 A change to a real repo, shipped back as a branch (use a repo of yours, or a fork of ours):
 
@@ -115,8 +116,6 @@ git ls-remote https://github.com/<you>/<repo> 'refs/heads/decode/*'
 ```
 
 A `--sandbox-mode modal` run is two live apps: `run_task` busy on `decode-headless-<env>`, and the nested Sandbox it opened under `decode-sandbox-<env>`:
-
-![One remote run in flight, with its nested Sandbox](../assets/modal_1_running.png)
 
 | `--sandbox-mode` | Where `bash` runs                                                            | Hand-back                                                              |
 | ---------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
@@ -137,17 +136,13 @@ uv run decode remote attempts "add a hello line to README and commit" \
 
 The fan-out is visible as one Function with three of everything — `run_task` at 3 containers / 3 inputs, and three live Sandboxes:
 
-![Three attempts running in parallel](../assets/modal_3_entrypoints_running.png)
-
 ## 5. Run from a webhook
 
 The deploy prints the URL once (§3). To read it again later, open **Apps → `decode-headless-<env>` → Functions → `webhook`** in the Modal dashboard: it sits under the function name, beside a globe and a key icon. The key is the point — it means proxy auth is enforced, so the bare URL is not a public "spend my tokens" button. The icon next to the `webhook` title copies it.
 
-![Where the webhook URL lives on the Modal dashboard](../assets/modal_webhook_url.png)
-
 The shape is deterministic, so you can also just write it out:
 
-```
+```curl
 https://<workspace>--decode-headless-<env>-webhook.modal.run
 ```
 
@@ -174,8 +169,6 @@ curl -s -X POST "$WEBHOOK_URL" \
 > ✅ `{"call_id": "fc-…", "status": "spawned", "watch": [...]}`. A bad body (`sandbox_mode: "docker"`, empty `task`) is a `400`, nothing spawned. Answer: `uv run decode remote logs`; branch: `git ls-remote`.
 
 The POST returns in milliseconds; the work shows up on `run_task`, not on `webhook` — the endpoint spawns and is done:
-
-![The run spawned by a webhook POST](../assets/modal_webhook.png)
 
 Callers: a GitHub Actions step, a ticket bot, a Slack slash command.
 
@@ -214,7 +207,7 @@ Containers and nested sandboxes bill per run-second, nothing idle.
 | `Decode: Modal credentials are missing or rejected …`              | `uv run modal token set …`.                                                                   |
 | `Decode: set GEMINI_API_KEY in your environment` in the run's log  | the Secret lacks the provider key: re-create it (§2), then redeploy.                          |
 | `Decode: this deployment is DECODE_ENV=… but its Secret carries …` | remove `DECODE_ENV` from the Secret, or redeploy at the env the Secret names.                 |
-| Runs land in the wrong Opik project / sandbox app                  | `DECODE_ENV` at deploy names both; redeploy with the one you meant.                           |
+| Runs land in the wrong Langfuse project / sandbox app | use the Langfuse project keys intended for that environment and deploy with the matching `DECODE_ENV`. |
 | A remote run behaves like last week's code                         | `uv run decode remote deploy`.                                                                |
 | Attempts read `NOT SHIPPED`                                        | `none` mode discards its clone; `modal` mode needs a `SANDBOX_GIT_TOKEN` that can push there. |
 | Webhook `401` / `403`                                              | wrong or missing `Modal-Key` / `Modal-Secret`.                                                |
@@ -222,4 +215,4 @@ Containers and nested sandboxes bill per run-second, nothing idle.
 
 ---
 
-**Next:** [05_evals.md](05_evals.md) — measure whether a change made the agent better or worse, with Opik.
+**Next:** [05_evals.md](05_evals.md) — measure whether a change made the agent better or worse, with Langfuse.

@@ -147,9 +147,9 @@ and the current Pydantic AI docs, because they shape the design:
 ```mermaid
 flowchart TD
     subgraph parent["Parent agent loop — build / plan / code-reviewer"]
-        model["model response:<br/>N × agent(prompt) in one turn"]:::call
-        atool["agent tool<br/>(READ_ONLY → runs inline, never prompts)"]:::tool
-        sem{{"per-loop asyncio.Semaphore<br/>subagent_max_parallel"}}:::gate
+        model["model response:<br/>N × agent(prompt) in one turn"]
+        atool["agent tool<br/>(READ_ONLY → runs inline, never prompts)"]
+        sem{{"per-loop asyncio.Semaphore<br/>subagent_max_parallel"}}
     end
 
     model --> atool --> sem
@@ -158,25 +158,32 @@ flowchart TD
     sem --> c3
 
     subgraph children["Explore subagents — in-process agent.run(), FRESH read-only deps"]
-        c1["child 1 · active_agent=explore<br/>read · glob · grep · lsp"]:::child
-        c2["child 2"]:::child
-        c3["child N"]:::child
+        c1["child 1 · active_agent=explore<br/>read · glob · grep · lsp"]
+        c2["child 2"]
+        c3["child N"]
     end
 
-    c1 -- "final text = compressed report" --> fold["truncate() → ToolResult"]:::result
+    c1 -- "final text = compressed report" --> fold["truncate() → ToolResult"]
     c2 --> fold
     c3 --> fold
     fold --> model
 
-    note["fresh gate + fresh task_store + no-op emit (silent TUI)<br/>no agent tool in child → no recursion<br/>no usage threading → parent gauge + compaction unchanged"]:::note
+    note["fresh gate + fresh task_store + no-op emit (silent TUI)<br/>no agent tool in child → no recursion<br/>no usage threading → parent gauge + compaction unchanged"]
     children -.-> note
 
-    classDef call fill:#1e293b,stroke:#0ea5e9,color:#e2e8f0
-    classDef tool fill:#334155,stroke:#a855f7,color:#e9d5ff
-    classDef gate fill:#713f12,stroke:#eab308,color:#fef9c3
-    classDef child fill:#14532d,stroke:#22c55e,color:#dcfce7
-    classDef result fill:#334155,stroke:#38bdf8,color:#bae6fd
-    classDef note fill:#0f172a,stroke:#64748b,color:#cbd5e1
+    classDef modelcall fill:#1e293b,stroke:#0ea5e9,color:#e2e8f0;
+    classDef tool fill:#334155,stroke:#a855f7,color:#e9d5ff;
+    classDef gate fill:#713f12,stroke:#eab308,color:#fef9c3;
+    classDef child fill:#14532d,stroke:#22c55e,color:#dcfce7;
+    classDef result fill:#334155,stroke:#38bdf8,color:#bae6fd;
+    classDef note fill:#0f172a,stroke:#64748b,color:#cbd5e1;
+
+    class model modelcall;
+    class atool tool;
+    class sem gate;
+    class c1,c2,c3 child;
+    class fold result;
+    class note note;
 ```
 
 ## Consequences

@@ -5,7 +5,7 @@ designed?" — right tool, gate respected, minimal steps, compaction survived (A
 case (:class:`~evals.regression.case.RegressionCase`) declares a fixture, a prompt, a gate policy,
 its Difficulty Tier, the symptom it catches, the natural-language assertion its answer must clear,
 and the metrics that grade its behavior; :func:`~evals.regression.loader.load_cases` discovers the
-case modules under :mod:`evals.regression.cases`. The Opik wiring that runs a case host-native and
+case modules under :mod:`evals.regression.cases`. The Langfuse wiring that runs a case host-native and
 scores it lives in :mod:`evals.harness.regression`.
 """
 

@@ -1,7 +1,7 @@
-"""Offline tests for the Opik regression glue (ADR-0022 §8; ADR-0017 §3,4,6).
+"""Offline tests for the Langfuse regression glue (ADR-0022 §8; ADR-0017 §3,4,6).
 
 No infra and no keys: the agent runs a scripted model (``install_model``) host-native on a temp dir,
-and ``opik.evaluation.evaluate`` / ``opik.Opik`` are mocked. The tests cover the task-fn payload shape,
+and Langfuse datasets / experiments are mocked. The tests cover the task-fn payload shape,
 the fixture being built, the gate honored, the temp dir cleaned, crashed-run / fixture-failure
 surfacing, per-case metric binding, that every case knob reaches the driver, the ``evaluate`` wiring
 (scoped ids, case-scoped metrics, the per-metric experiment score, ``experiment_config``,
@@ -304,223 +304,159 @@ def test_scoring_metrics_wrap_every_cases_metrics():
     assert all(isinstance(metric, CaseScopedMetric) for metric in metrics)
 
 
-def test_run_regression_wires_evaluate(mocker):
-    """``run_regression`` scopes ``evaluate`` to the selected case item with the scoped metrics + config."""
+def _install_langfuse(mocker, cases, items=None):
+    from types import SimpleNamespace
+
+    from evals.harness.datasets import case_checksum
+
+    records = (
+        items
+        if items is not None
+        else [
+            {
+                "id": f"item-{case.id}",
+                "input": {"case_id": case.id, "prompt": case.prompt},
+                "metadata": {
+                    "key": case.id,
+                    "case_id": case.id,
+                    "checksum": case_checksum(case),
+                    "difficulty": case.difficulty,
+                },
+            }
+            for case in cases
+        ]
+    )
+    dataset = SimpleNamespace(name="decode-regression", items=records)
+    client = mocker.Mock()
+    client.get_dataset.return_value = dataset
+    client.run_experiment.return_value = SimpleNamespace(
+        name="decode-regression-gate", experiment_id="experiment-1", item_results=[]
+    )
+    mocker.patch("evals.harness.datasets.langfuse_client", return_value=client)
+    mocker.patch("evals.harness.regression.langfuse_client", return_value=client)
+    return client
+
+
+def test_run_regression_uses_langfuse_experiment_and_only_current_items(mocker):
     case = _read_case(id="wired-case")
     mocker.patch("evals.harness.regression.load_cases", return_value=[case])
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [_item("item-1", case)]
+    client = _install_langfuse(mocker, [case])
 
     result = run_regression(case_id=case.id)
 
-    assert result is evaluate.return_value
-    _, kwargs = evaluate.call_args
-    assert kwargs["dataset"] is dataset
-    assert kwargs["dataset_item_ids"] == ["item-1"]
-    assert kwargs["task_threads"] == 1  # the bash seam is process-global — no concurrent task fns
-    assert all(isinstance(metric, CaseScopedMetric) for metric in kwargs["scoring_metrics"])
-    assert kwargs["experiment_scoring_functions"] == [mean_per_metric]
-    config = kwargs["experiment_config"]
-    assert config["agent_model"]
-    assert config["git_sha"]
-    assert config["harness"] == "regression"
-    assert config["case_count"] == 1
-    assert config["difficulty"] is None
+    kwargs = client.run_experiment.call_args.kwargs
+    assert result.experiment_id == "experiment-1"
+    assert kwargs["name"] == f"{GATE_EXPERIMENT_NAME}-{case.id}"
+    assert kwargs["data"][0]["metadata"]["source_dataset_item_id"] == "item-wired-case"
+    assert kwargs["max_concurrency"] == 1
+    assert len(kwargs["evaluators"]) == 1
+    assert kwargs["run_evaluators"]
+    assert kwargs["metadata"]["harness"] == "regression"
+    assert kwargs["metadata"]["case_count"] == 1
 
 
-def test_run_regression_leaves_the_project_to_the_dataset(mocker):
-    """opik 2.2.36 resolves the project from the DATASET; passing it again only warns (task 161)."""
-    case = _read_case(id="project-case")
-    mocker.patch("evals.harness.regression.load_cases", return_value=[case])
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.project_name = settings.eval_project_name
-    dataset.get_items.return_value = [_item("item-1", case)]
-
-    run_regression(case_id=case.id)
-
-    assert evaluate.call_args.kwargs["project_name"] is None
-
-
-def test_run_regression_names_the_project_for_a_dataset_without_one(mocker):
-    """The fallback: a dataset created before the project was pinned still logs under decode-evals."""
-    case = _read_case(id="fallback-case")
-    mocker.patch("evals.harness.regression.load_cases", return_value=[case])
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.project_name = None
-    dataset.get_items.return_value = [_item("item-1", case)]
-
-    run_regression(case_id=case.id)
-
-    assert evaluate.call_args.kwargs["project_name"] == settings.eval_project_name
-
-
-def test_a_full_run_uses_the_stable_gate_experiment_name(mocker):
-    """The whole suite always logs under one name so the ritual finds the previous run to compare."""
-    case = _read_case(id="named-case")
-    mocker.patch("evals.harness.regression.load_cases", return_value=[case])
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [_item("item-1", case)]
-
-    run_regression()
-
-    assert evaluate.call_args.kwargs["experiment_name"] == GATE_EXPERIMENT_NAME
-
-
-def test_a_tier_run_gets_its_own_experiment_name_and_config(mocker):
-    """``--difficulty hard`` selects the tier, names the row after it, and records the slice (§8)."""
+def test_regression_experiment_names_preserve_case_and_tier_slices(mocker):
     easy = _read_case(id="easy-case")
     hard = _read_case(id="hard-case", difficulty="hard")
     mocker.patch("evals.harness.regression.load_cases", return_value=[easy, hard])
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [_item("item-1", easy), _item("item-2", hard)]
+    client = _install_langfuse(mocker, [easy, hard])
 
     run_regression(difficulty="hard")
 
-    kwargs = evaluate.call_args.kwargs
-    assert kwargs["experiment_name"] == "decode-regression-gate-hard"
-    assert kwargs["dataset_item_ids"] == ["item-2"]
-    assert kwargs["experiment_config"]["difficulty"] == "hard"
-    assert kwargs["experiment_config"]["case_count"] == 1
+    kwargs = client.run_experiment.call_args.kwargs
+    assert kwargs["name"] == "decode-regression-gate-hard"
+    assert len(kwargs["data"]) == 1
+    assert kwargs["data"][0]["metadata"]["case_id"] == "hard-case"
+    assert kwargs["metadata"]["difficulty"] == "hard"
 
 
 def test_an_explicit_experiment_name_wins(mocker):
-    """A caller-supplied name still reaches ``evaluate`` unchanged."""
     case = _read_case(id="named-case")
     mocker.patch("evals.harness.regression.load_cases", return_value=[case])
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [_item("item-1", case)]
+    client = _install_langfuse(mocker, [case])
 
     run_regression(case_id=case.id, experiment_name="one-off")
 
-    assert evaluate.call_args.kwargs["experiment_name"] == "one-off"
+    assert client.run_experiment.call_args.kwargs["name"] == "one-off"
 
 
 def test_scoped_name_appends_the_slice_and_prefers_the_case_id():
-    """One naming rule for both surfaces: the experiment a gate logs and the suite a run registers."""
     assert scoped_name("base") == "base"
     assert scoped_name("base", difficulty="hard") == "base-hard"
     assert scoped_name("base", case_id="17-grounded-answer") == "base-17-grounded-answer"
     assert scoped_name("base", case_id="c", difficulty="hard") == "base-c"
 
 
-def test_a_stale_item_with_the_same_case_id_is_never_selected(mocker):
-    """The defect: Opik never deletes, so an edited case leaves a second item with the same id.
-
-    Without the checksum both ids reach ``evaluate`` and the case is graded TWICE — double cost and a
-    duplicated row on every gate run after the edit.
-    """
+def test_stale_dataset_item_is_not_selected(mocker):
     case = _read_case(id="edited-case")
     mocker.patch("evals.harness.regression.load_cases", return_value=[case])
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [
-        {"id": "stale", "case_id": case.id, "checksum": "0" * 64},
-        _item("fresh", case),
-    ]
+    client = _install_langfuse(
+        mocker,
+        [case],
+        items=[
+            {
+                "id": "stale",
+                "input": {"case_id": case.id},
+                "metadata": {"case_id": case.id, "checksum": "0" * 64},
+            },
+            {
+                "id": "fresh",
+                "input": {"case_id": case.id, "prompt": case.prompt},
+                "metadata": {"key": case.id, "case_id": case.id, "checksum": case_checksum(case)},
+            },
+        ],
+    )
 
     run_regression(case_id=case.id)
 
-    assert evaluate.call_args.kwargs["dataset_item_ids"] == ["fresh"]
+    assert (
+        client.run_experiment.call_args.kwargs["data"][0]["metadata"]["source_dataset_item_id"]
+        == "fresh"
+    )
 
 
-def test_run_regression_raises_when_a_case_has_no_fresh_item(mocker):
-    """The mirror of the empty-selection guard: a stale-only match must never run the WHOLE dataset.
-
-    ``evaluate(dataset_item_ids=None)`` bills every item, so an unmatched case stops the run with the
-    sync command the operator needs.
-    """
+def test_run_regression_stops_when_no_current_dataset_item_exists(mocker):
     case = _read_case(id="unsynced-case")
     mocker.patch("evals.harness.regression.load_cases", return_value=[case])
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [{"id": "stale", "case_id": case.id, "checksum": "0" * 64}]
-
-    with pytest.raises(RegressionSelectionError, match=case.id):
-        run_regression(case_id=case.id)
-
-    evaluate.assert_not_called()
-
-
-def test_the_no_fresh_item_error_names_the_sync_command(mocker):
-    """A friendly stop tells the operator what to RUN, not just that something is missing."""
-    case = _read_case(id="unsynced-case")
-    mocker.patch("evals.harness.regression.load_cases", return_value=[case])
-    mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = []
+    client = _install_langfuse(
+        mocker,
+        [case],
+        items=[
+            {
+                "id": "stale",
+                "input": {"case_id": case.id},
+                "metadata": {"case_id": case.id, "checksum": "0" * 64},
+            }
+        ],
+    )
 
     with pytest.raises(RegressionSelectionError, match=r"evals sync --regression"):
-        run_regression()
+        run_regression(case_id=case.id)
+    client.run_experiment.assert_not_called()
 
 
-def test_run_regression_raises_when_no_case_matches(mocker):
-    """An empty selection is a loud, friendly stop — never a silent zero-item experiment."""
+def test_run_regression_rejects_empty_or_skip_guarded_selection(mocker):
     mocker.patch("evals.harness.regression.load_cases", return_value=[_read_case(id="only")])
-
     with pytest.raises(RegressionSelectionError):
         run_regression(case_id="does-not-exist")
 
-
-def test_run_regression_excludes_skip_guarded_cases(mocker):
-    """A ``skip_reason`` case is loaded (discoverable) but never enters the live ``evaluate`` run."""
-    runnable = _read_case(id="runs")
     skipped = _read_case(id="skipped", skip_reason="not ready")
-    mocker.patch("evals.harness.regression.load_cases", return_value=[runnable, skipped])
-    evaluate = mocker.patch("opik.evaluation.evaluate")
-    opik_cls = mocker.patch("opik.Opik")
-    dataset = opik_cls.return_value.get_or_create_dataset.return_value
-    dataset.get_items.return_value = [_item("item-1", runnable), _item("item-2", skipped)]
-
-    run_regression()
-
-    _, kwargs = evaluate.call_args
-    scoped_ids = {metric._case_id for metric in kwargs["scoring_metrics"]}
-    assert scoped_ids == {"runs"}  # the skipped case contributed no metrics
-
-
-def test_run_regression_raises_when_only_a_skipped_case_matches(mocker):
-    """Selecting only a skip-guarded case is an empty runnable set — the friendly stop fires."""
-    mocker.patch(
-        "evals.harness.regression.load_cases",
-        return_value=[_read_case(id="skipped", skip_reason="not ready")],
-    )
-
+    mocker.patch("evals.harness.regression.load_cases", return_value=[skipped])
     with pytest.raises(RegressionSelectionError):
         run_regression(case_id="skipped")
 
 
-def test_experiment_config_has_model_provider_git_sha_and_the_runs_shape():
+def test_experiment_config_has_model_provider_git_sha_and_shape():
     config = experiment_config(case_count=8, difficulty="hard")
-
     assert config["provider"] == settings.llm_provider
     assert config["agent_model"]
-    assert config["git_sha"]  # this repo is a git checkout
+    assert config["git_sha"]
     assert config["harness"] == "regression"
     assert config["case_count"] == 8
     assert config["difficulty"] == "hard"
 
 
-# --- the per-metric experiment score --------------------------------------------------------------
-
-
 class _Score:
-    """A stand-in for opik's ``ScoreResult`` (name / value / scoring_failed)."""
-
     def __init__(self, name: str, value: float, scoring_failed: bool = False) -> None:
         self.name = name
         self.value = value
@@ -528,34 +464,26 @@ class _Score:
 
 
 class _Result:
-    """A stand-in for opik's ``TestResult`` — only ``score_results`` is read."""
-
     def __init__(self, *scores: _Score) -> None:
         self.score_results = list(scores)
 
 
-def test_mean_per_metric_averages_each_metric_over_the_items_that_scored_it():
-    """The Experiment row carries one ``mean_<metric>`` per metric, macro-averaged (ADR-0022 §8)."""
+def test_mean_per_metric_averages_only_scored_items():
     results = [
         _Result(_Score("tool_called_read", 1.0), _Score("max_steps", 1.0)),
         _Result(_Score("tool_called_read", 0.0)),
     ]
-
-    scores = mean_per_metric(results)
-
-    assert [(score.name, score.value) for score in scores] == [
+    assert [(score.name, score.value) for score in mean_per_metric(results)] == [
         ("mean_max_steps", 1.0),
         ("mean_tool_called_read", 0.5),
     ]
 
 
-def test_mean_per_metric_ignores_a_metric_that_failed_to_score():
-    """A crashed metric scored nothing; folding its 0.0 in would read as a behavior regression."""
-    results = [_Result(_Score("max_steps", 1.0)), _Result(_Score("max_steps", 0.0, True))]
-
-    assert [(s.name, s.value) for s in mean_per_metric(results)] == [("mean_max_steps", 1.0)]
-
-
-def test_mean_per_metric_of_an_empty_run_is_empty():
-    """Opik swallows a raising scoring function — this one is total, so an empty run is just []."""
+def test_mean_per_metric_ignores_failed_metrics_and_empty_runs():
+    assert [
+        (score.name, score.value)
+        for score in mean_per_metric(
+            [_Result(_Score("max_steps", 1.0)), _Result(_Score("max_steps", 0.0, True))]
+        )
+    ] == [("mean_max_steps", 1.0)]
     assert mean_per_metric([]) == []

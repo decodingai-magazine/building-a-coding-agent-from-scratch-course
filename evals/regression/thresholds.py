@@ -1,7 +1,7 @@
 """Pure threshold-gate + baseline-compare logic for the regression ritual (ADR-0017 §6; task 115).
 
 The pre-merge ritual (``evals/regression/test_thresholds.py``) runs the case suite once and then asks
-two questions this module answers with plain dicts — no Opik, no keys, no agent run — so both are
+two questions this module answers with plain dicts — no network, no keys, no agent run — so both are
 unit-tested offline in ``make ci``:
 
 * **Absolute gate (the hard contract).** :func:`evaluate_thresholds` checks each aggregated per-metric
@@ -21,9 +21,8 @@ cannot regress — this is how the skip-guarded case 12 (MCP, ADR-0017 §10) is 
 vacuously passes it. The ritual asserts the report is non-empty (some case DID run) so an all-absent
 suite can never pass silently.
 
-Everything here is duck-typed on the shapes opik hands back (``.mean`` on a statistics object,
-``.name`` / ``.value`` on a feedback-score average) so the module imports no Opik and the extractors are
-testable with plain stand-ins.
+Everything here is duck-typed on local experiment score shapes (``.mean`` on an aggregation and
+``.name`` / ``.value`` on a score object), so the extractors are testable with plain stand-ins.
 """
 
 from __future__ import annotations
@@ -36,13 +35,13 @@ from typing import Any, Protocol
 # The pre-merge contract, honest first numbers (ADR-0017 §6 — tune from the first real runs).
 # Tool-discipline metrics are deterministic code checks, so they must be met almost every run.
 TOOL_DISCIPLINE_THRESHOLD = 0.8
-# Judges (GEval) are nondeterministic LLM scores, so they sit at a lower, noise-tolerant floor.
+# LLM judges are nondeterministic scores, so they sit at a lower, noise-tolerant floor.
 JUDGE_METRIC_THRESHOLD = 0.7
 
-# Every GEval judge in the suite is built with the same metric name (evals/harness/judges.py), so all
+# Every local judge in the suite is built with the same metric name (evals/harness/judges.py), so all
 # judge scores across the judged cases aggregate under this one key — the single metric held to the
 # judge floor. Every OTHER aggregated metric is a mechanical code metric held to the discipline floor.
-JUDGE_METRIC_NAME = "g_eval_metric"
+JUDGE_METRIC_NAME = "llm_judge"
 
 # Per-metric overrides; any aggregated metric NOT named here falls back to :data:`DEFAULT_THRESHOLD`.
 THRESHOLDS: dict[str, float] = {
@@ -116,8 +115,8 @@ class MetricDelta:
 class BaselineCandidate:
     """A prior experiment considered as the baseline: its id, creation time, and per-metric means.
 
-    ``created_at`` is ``datetime | None`` because opik's ``ExperimentPublic.created_at`` is
-    ``Optional[datetime]`` — an undated candidate sorts oldest in :func:`latest_baseline` rather than
+    ``created_at`` is ``datetime | None`` because Langfuse experiment timestamps may be absent — an
+    undated candidate sorts oldest in :func:`latest_baseline` rather than
     crashing the newest-by-time pick.
     """
 
@@ -170,8 +169,8 @@ def scores_by_tier(
     filed under a guessed tier. A ``scoring_failed`` score is excluded: a metric that crashed scored
     nothing, and averaging its 0.0 in would read as a behavior regression.
 
-    Everything is duck-typed on the shapes opik hands back, so the report is testable with plain
-    stand-ins and this module still imports no Opik.
+    Everything is duck-typed on the local experiment result shape, so the report is testable with
+    plain stand-ins and does not import the Langfuse SDK.
     """
     sums: dict[tuple[str, str], float] = {}
     counts: dict[tuple[str, str], int] = {}
@@ -248,9 +247,9 @@ def latest_baseline(candidates: Iterable[BaselineCandidate]) -> BaselineCandidat
 
     An experiment with no feedback scores (a crashed / empty run) is not a usable baseline, so it is
     dropped first. Among the scored ones the newest by ``created_at`` wins; a ``created_at=None``
-    candidate (opik's ``Optional[datetime]``) sorts oldest — it is only chosen when NO scored candidate
+    candidate (Langfuse's optional timestamp) sorts oldest — it is only chosen when NO scored candidate
     carries a timestamp, and even then a candidate is returned rather than crashing on a ``None``/
-    ``datetime`` comparison. This keeps the pure helper total, upholding the ritual's "any Opik hiccup
+    ``datetime`` comparison. This keeps the pure helper total, upholding the ritual's "any Langfuse hiccup
     degrades to a ``None`` baseline, never a gate crash" invariant.
     """
     scored = [candidate for candidate in candidates if candidate.scores]
@@ -263,13 +262,19 @@ def latest_baseline(candidates: Iterable[BaselineCandidate]) -> BaselineCandidat
 
 
 def scores_from_aggregation(aggregated: Mapping[str, _HasMean]) -> dict[str, float]:
-    """Flatten opik's ``{name: ScoreStatistics}`` aggregation to a plain ``{name: mean}`` dict."""
+    """Flatten local ``{name: aggregate}`` values to a plain ``{name: mean}`` dict."""
     return {name: stat.mean for name, stat in aggregated.items()}
 
 
 def baseline_scores_from_feedback(feedback_scores: Iterable[_HasNameValue]) -> dict[str, float]:
-    """Flatten an experiment's feedback-score averages (``.name`` / ``.value``) to ``{name: value}``."""
-    return {score.name: score.value for score in feedback_scores}
+    """Flatten numeric experiment scores (``.name`` / ``.value``) to ``{name: value}``."""
+    return {
+        score.name: float(score.value)
+        for score in feedback_scores
+        if isinstance(score.name, str)
+        and isinstance(score.value, (int, float))
+        and not isinstance(score.value, bool)
+    }
 
 
 def format_failures(report: ThresholdReport) -> str:

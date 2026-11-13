@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from opik.evaluation.metrics import GEval
 from support.eval_models import (
     edit_then_finish,
     enter_plan_mode_then_finish,
@@ -32,6 +31,7 @@ from support.eval_models import (
 )
 
 from decode.services.lsp import service as lsp_service
+from evals.harness.judges import LLMJudgeMetric
 from evals.harness.regression import run_case
 from evals.regression.case import RegressionCase
 from evals.regression.cases.diff_minimality import _MODULE, _MODULE_BODY
@@ -53,7 +53,7 @@ def _score_mechanical_metrics(case: RegressionCase, payload: dict[str, Any]) -> 
     """Every non-judge metric on ``case`` scores 1.0 against ``payload`` (judges are skipped)."""
     graded = 0
     for metric in case.metrics:
-        if isinstance(metric, GEval):
+        if isinstance(metric, LLMJudgeMetric):
             continue  # a judge needs a live LLM call — not scored offline
         result = metric.score(**payload)
         assert result.value == 1.0, (
@@ -159,7 +159,7 @@ def test_diff_minimality_fixture_seeds_module(tmp_path: Path) -> None:
 def test_diff_minimality_carries_a_geval_judge() -> None:
     case = case_by_id("04-diff-minimality")
 
-    assert any(isinstance(metric, GEval) for metric in case.metrics)
+    assert any(isinstance(metric, LLMJudgeMetric) for metric in case.metrics)
 
 
 def test_diff_minimality_small_rename_runs_green_offline(install_model) -> None:
@@ -181,7 +181,7 @@ def test_web_fetch_case_has_a_context_and_judge() -> None:
     case = case_by_id("05-web-fetch-discipline")
 
     assert case.context is not None
-    assert any(isinstance(metric, GEval) for metric in case.metrics)
+    assert any(isinstance(metric, LLMJudgeMetric) for metric in case.metrics)
 
 
 def test_web_fetch_runs_green_against_the_local_server_offline(install_model) -> None:

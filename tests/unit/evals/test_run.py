@@ -1,9 +1,4 @@
-"""Unit tests for the ``python -m evals`` CLI skeleton (ADR-0017 §1).
-
-The subcommands are stubs until tasks 105/106; this proves the surface exists, ``--help`` works,
-and — the load-bearing bit — building the CLI imports no ``opik`` at module scope (the Opik harness
-is pulled in lazily by the tracks that need it, so ``--help`` never needs keys or a network).
-"""
+"""Unit tests for the ``python -m evals`` CLI surface."""
 
 from __future__ import annotations
 
@@ -80,13 +75,13 @@ def test_benchmark_subcommand_invokes_run_benchmark(mocker):
     }
     assert "decode-evals" in result.output
     assert "bench-x" in result.output
-    assert ".decode/evals/runs/bench-x" in result.output
+    assert str(Path(".decode/evals/runs/bench-x")) in result.output
 
 
 def test_benchmark_subcommand_refuses_a_traversing_job_name(mocker):
     """``--job-name '../../evil'`` is refused BEFORE any (billed) trial starts.
 
-    The name is both a directory under ``.decode/evals/runs/`` and the Opik experiment name, so a
+    The name is both a directory under ``.decode/evals/runs/`` and the experiment name, so a
     ``..`` component would write Trial Dirs outside the harness tree.
     """
     run_benchmark = mocker.patch("evals.harness.benchmark.run_benchmark")
@@ -259,7 +254,12 @@ def test_regression_subcommand_reports_an_empty_selection(mocker):
 def test_suite_subcommand_runs_and_reports_pass_rate(mocker):
     """``evals suite`` runs the Test Suite, reports the pass rate + project, and exits clean above bar."""
     run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
-    run_test_suite.return_value = mocker.Mock(suite_version="v3", result=mocker.Mock(pass_rate=1.0))
+    run_test_suite.return_value = mocker.Mock(
+        suite_version="v3",
+        result=mocker.Mock(pass_rate=1.0),
+        session_ids={},
+        report_path=Path(".decode/evals/suite-reports/report.json"),
+    )
 
     result = CliRunner().invoke(cli, ["suite"])
 
@@ -273,7 +273,12 @@ def test_suite_subcommand_runs_and_reports_pass_rate(mocker):
 def test_suite_subcommand_gates_non_zero_below_the_bar(mocker):
     """A pass rate under the suite bar is a friendly non-zero exit — the regression gate fires (§6)."""
     run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
-    run_test_suite.return_value = mocker.Mock(suite_version="v3", result=mocker.Mock(pass_rate=0.5))
+    run_test_suite.return_value = mocker.Mock(
+        suite_version="v3",
+        result=mocker.Mock(pass_rate=0.5),
+        session_ids={},
+        report_path=Path(".decode/evals/suite-reports/report.json"),
+    )
 
     result = CliRunner().invoke(cli, ["suite"])
 
@@ -284,7 +289,12 @@ def test_suite_subcommand_gates_non_zero_below_the_bar(mocker):
 def test_suite_subcommand_forwards_the_case_and_tier_filters(mocker):
     """``suite`` takes the SAME ``--case`` / ``--difficulty`` slice ``regression`` does (§8)."""
     run_test_suite = mocker.patch("evals.harness.test_suite.run_test_suite")
-    run_test_suite.return_value = mocker.Mock(suite_version="v3", result=mocker.Mock(pass_rate=1.0))
+    run_test_suite.return_value = mocker.Mock(
+        suite_version="v3",
+        result=mocker.Mock(pass_rate=1.0),
+        session_ids={},
+        report_path=Path(".decode/evals/suite-reports/report.json"),
+    )
 
     result = CliRunner().invoke(cli, ["suite", "--difficulty", "hard"])
 
@@ -339,7 +349,7 @@ def test_sync_regression_upserts_both_surfaces(mocker):
 
 
 def test_sync_regression_skips_a_skip_guarded_case(mocker):
-    """The Opik surfaces carry what actually RUNS; the registry keeps the blocked case visible."""
+    """The Langfuse datasets carry runnable cases; the registry keeps blocked cases visible."""
     sync_regression = mocker.patch("evals.harness.datasets.sync_regression_cases")
     runnable = mocker.Mock(skip_reason=None, difficulty="easy")
     skipped = mocker.Mock(skip_reason="MCP has not shipped", difficulty="medium")
@@ -392,16 +402,17 @@ def test_sync_nothing_selected_is_a_friendly_no_op():
 
 
 def _api_error(status_code: int = 401):
-    """A raw Opik REST ``ApiError`` — what a present-but-invalid ``OPIK_API_KEY`` surfaces (task 121)."""
-    from opik.rest_api.core.api_error import ApiError
+    """A raw Langfuse REST error, as a present-but-invalid API key surfaces."""
+    from langfuse.api.core.api_error import ApiError
 
     return ApiError(status_code=status_code, body={"errors": ["Unauthorized"]})
 
 
-def _assert_friendly_opik_key_error(result, *, status: str = "401") -> None:
-    """A raw ``ApiError`` must become ONE friendly line — non-zero, names the key, no traceback."""
+def _assert_friendly_langfuse_key_error(result, *, status: str = "401") -> None:
+    """A raw ``ApiError`` becomes one friendly line naming the Langfuse key."""
     assert result.exit_code != 0
-    assert "OPIK_API_KEY" in result.output
+    if status == "401":
+        assert "LANGFUSE_PUBLIC_KEY" in result.output
     assert ".env.example" in result.output
     assert status in result.output
     # No raw REST traceback / exception class leaks to the user.
@@ -409,25 +420,24 @@ def _assert_friendly_opik_key_error(result, *, status: str = "401") -> None:
     assert "ApiError" not in result.output
 
 
-def test_benchmark_subcommand_reports_an_invalid_opik_key(mocker):
-    """A present-but-invalid ``OPIK_API_KEY`` → one friendly line, not a raw ``ApiError`` traceback."""
+def test_benchmark_subcommand_reports_invalid_langfuse_credentials(mocker):
     mocker.patch("evals.harness.benchmark.run_benchmark", side_effect=_api_error(401))
 
     result = CliRunner().invoke(cli, ["benchmark", "--task", "001-greeting"])
 
-    _assert_friendly_opik_key_error(result)
+    _assert_friendly_langfuse_key_error(result)
 
 
-def test_regression_subcommand_reports_an_invalid_opik_key(mocker):
+def test_regression_subcommand_reports_invalid_langfuse_credentials(mocker):
     """The headline ``make eval-regression-dataset`` ritual: a wrong key stays friendly (twice-flagged; task 121)."""
     mocker.patch("evals.harness.regression.run_regression", side_effect=_api_error(401))
 
     result = CliRunner().invoke(cli, ["regression", "--case", "05-web-fetch-discipline"])
 
-    _assert_friendly_opik_key_error(result)
+    _assert_friendly_langfuse_key_error(result)
 
 
-def test_sync_subcommand_reports_an_invalid_opik_key(mocker):
+def test_sync_subcommand_reports_invalid_langfuse_credentials(mocker):
     """``evals sync`` (the first thing ``make eval-regression-dataset`` runs) friendly-fails on a wrong key."""
     case = mocker.Mock(skip_reason=None, difficulty="easy")
     mocker.patch("evals.regression.loader.load_cases", return_value=[case])
@@ -435,40 +445,36 @@ def test_sync_subcommand_reports_an_invalid_opik_key(mocker):
 
     result = CliRunner().invoke(cli, ["sync", "--no-benchmark", "--regression"])
 
-    _assert_friendly_opik_key_error(result)
+    _assert_friendly_langfuse_key_error(result)
 
 
-def test_suite_subcommand_reports_an_invalid_opik_key(mocker):
-    """``suite`` wraps ``run_test_suite`` in ``opik_boundary`` too — a wrong key stays friendly.
-
-    A present-but-invalid ``OPIK_API_KEY`` here must not dump the raw ``ApiError`` traceback the
-    other four subcommands already suppress (task 122, Nit 2).
-    """
+def test_suite_subcommand_reports_invalid_langfuse_credentials(mocker):
+    """A wrong Langfuse key produces a friendly one-line error."""
     mocker.patch("evals.harness.test_suite.run_test_suite", side_effect=_api_error(401))
 
     result = CliRunner().invoke(cli, ["suite"])
 
-    _assert_friendly_opik_key_error(result)
+    _assert_friendly_langfuse_key_error(result)
 
 
 def test_a_non_auth_api_error_is_still_friendly(mocker):
-    """A non-401 Opik failure (e.g. 500) is still one friendly line naming the status, not a traceback."""
+    """A non-auth Langfuse failure still produces one line naming its status."""
     mocker.patch("evals.harness.regression.run_regression", side_effect=_api_error(500))
 
     result = CliRunner().invoke(cli, ["regression", "--case", "05-web-fetch-discipline"])
 
-    _assert_friendly_opik_key_error(result, status="500")
+    _assert_friendly_langfuse_key_error(result, status="500")
 
 
-def test_importing_the_cli_does_not_import_opik():
-    """Building the CLI must not import ``opik`` at module scope (ADR-0017 §1).
+def test_importing_the_cli_does_not_import_langfuse():
+    """Building the CLI does not load the Langfuse SDK at module scope.
 
     Checked in a fresh subprocess so no other test's imports pollute ``sys.modules`` — the import
     must be clean on its own.
     """
     code = (
         "import evals.run, sys; "
-        "leaked = sorted(m for m in sys.modules if 'opik' in m); "
+        "leaked = sorted(m for m in sys.modules if m.startswith('langfuse')); "
         "assert not leaked, leaked"
     )
     result = subprocess.run(
@@ -481,11 +487,11 @@ def test_importing_the_cli_does_not_import_opik():
     assert result.returncode == 0, result.stderr
 
 
-def test_benchmark_help_imports_no_opik():
+def test_benchmark_help_imports_no_langfuse():
     """``evals benchmark --help`` must render with no keys and no network (ADR-0017 §1).
 
     A fresh subprocess so no other test's imports pollute ``sys.modules``: building AND invoking the
-    help of the one opik-heaviest command still pulls in nothing from opik.
+    help of the experiment command still pulls in no Langfuse SDK modules.
     """
     code = (
         "import sys\n"
@@ -494,7 +500,7 @@ def test_benchmark_help_imports_no_opik():
         "result = CliRunner().invoke(cli, ['benchmark', '--help'])\n"
         "assert result.exit_code == 0, result.output\n"
         "assert '--threads' in result.output, result.output\n"
-        "leaked = sorted(m for m in sys.modules if 'opik' in m)\n"
+        "leaked = sorted(m for m in sys.modules if m.startswith('langfuse'))\n"
         "assert not leaked, leaked\n"
     )
     result = subprocess.run(
@@ -526,7 +532,9 @@ def test_mine_does_not_demand_an_inference_key(mocker):
     Under the repo's committed ``.env`` (``LLM_PROVIDER=modal``) the full preflight would name
     ``MODAL_ENDPOINT_URL`` and skip a read-only query that never touches Modal (task 163 QA).
     """
-    guard = mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["OPIK_API_KEY"])
+    guard = mocker.patch(
+        "evals.harness.keys.eval_keys_missing", return_value=["LANGFUSE_PUBLIC_KEY"]
+    )
     mocker.patch("evals.harness.mine.open_source")
 
     result = CliRunner().invoke(cli, ["mine"])
@@ -536,13 +544,13 @@ def test_mine_does_not_demand_an_inference_key(mocker):
 
 
 def test_mine_skips_friendly_without_keys(mocker):
-    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["OPIK_API_KEY"])
+    mocker.patch("evals.harness.keys.eval_keys_missing", return_value=["LANGFUSE_PUBLIC_KEY"])
     open_source = mocker.patch("evals.harness.mine.open_source")
 
     result = CliRunner().invoke(cli, ["mine"])
 
     assert result.exit_code == 0
-    assert "evals mine: skipped — set OPIK_API_KEY" in result.output
+    assert "evals mine: skipped — set LANGFUSE_PUBLIC_KEY" in result.output
     open_source.assert_not_called()
 
 
@@ -645,16 +653,16 @@ def test_mine_rejects_a_naive_since_as_one_line(mocker):
     assert "Traceback" not in result.output
 
 
-def test_mine_reports_an_invalid_opik_key(mocker):
+def test_mine_reports_invalid_langfuse_credentials(mocker):
     mocker.patch("evals.harness.keys.eval_keys_missing", return_value=[])
     mocker.patch("evals.harness.mine.open_source", side_effect=_api_error(401))
 
     result = CliRunner().invoke(cli, ["mine"])
 
-    _assert_friendly_opik_key_error(result)
+    _assert_friendly_langfuse_key_error(result)
 
 
-def test_mine_help_imports_no_opik():
+def test_mine_help_imports_no_langfuse():
     """``mine --help`` renders with no keys and no network."""
     code = (
         "import sys\n"
@@ -663,7 +671,7 @@ def test_mine_help_imports_no_opik():
         "result = CliRunner().invoke(cli, ['mine', '--help'])\n"
         "assert result.exit_code == 0, result.output\n"
         "assert '--preset' in result.output\n"
-        "leaked = sorted(m for m in sys.modules if 'opik' in m)\n"
+        "leaked = sorted(m for m in sys.modules if m.startswith('langfuse'))\n"
         "assert not leaked, leaked\n"
     )
     result = subprocess.run(
@@ -676,7 +684,7 @@ def test_mine_help_imports_no_opik():
     assert result.returncode == 0, result.stderr
 
 
-# --- `evals kitaru`: the Opik → Kitaru bridge (task 165) ---
+# --- `evals kitaru`: the Langfuse → Kitaru bridge ---
 
 
 def test_help_lists_the_kitaru_bridge():
@@ -687,10 +695,10 @@ def test_help_lists_the_kitaru_bridge():
 
 
 def test_kitaru_import_skips_friendly_without_the_two_keys(mocker):
-    """Keyless checkout: one line, exit 0 — never a traceback inside opik or kitaru."""
+    """Keyless checkout: one line, exit 0 — never a traceback inside Langfuse or Kitaru."""
     mocker.patch(
         "evals.harness.kitaru_cli.kitaru_keys_missing",
-        return_value=["OPIK_API_KEY", "KITARU_API_URL"],
+        return_value=["LANGFUSE_PUBLIC_KEY", "KITARU_API_URL"],
     )
     open_source = mocker.patch("evals.harness.kitaru_import.open_source")
 
@@ -719,7 +727,8 @@ def test_kitaru_import_prints_one_line_per_thread(mocker):
     mocker.patch("evals.harness.kitaru_cli.kitaru_keys_missing", return_value=[])
     mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
     mocker.patch(
-        "evals.harness.kitaru_cli.resolve_ref", side_effect=lambda kind, name, **kw: f"{name}@1"
+        "evals.harness.kitaru_cli.resolve_ref",
+        side_effect=lambda kind, name, **kw: name if "@" in name else f"{name}@1",
     )
     source = mocker.patch("evals.harness.kitaru_import.open_source")
     source.return_value.project = "decode-prod"
@@ -739,7 +748,7 @@ def test_kitaru_import_prints_one_line_per_thread(mocker):
     assert run_import.call_args.kwargs["threads"] == ["t-2"]
     assert run_import.call_args.kwargs["trace_ids"] == ["trace-1"]
     assert run_import.call_args.kwargs["agent_ref"] == "decode@1"
-    assert run_import.call_args.kwargs["importer_ref"] == "opik@1"
+    assert run_import.call_args.kwargs["importer_ref"] == "langfuse@1"
 
 
 def test_kitaru_import_with_no_ids_pulls_the_projects_newest_threads(mocker):
@@ -777,7 +786,7 @@ def test_kitaru_import_turns_a_kitaru_failure_into_one_line(mocker):
     mocker.patch("evals.harness.kitaru_cli.kitaru_server", return_value="http://localhost:8000")
     mocker.patch(
         "evals.harness.kitaru_cli.resolve_ref",
-        side_effect=KitaruCommandError("importer 'opik' has no registered version yet"),
+        side_effect=KitaruCommandError("importer 'langfuse' has no registered version yet"),
     )
     mocker.patch("evals.harness.kitaru_import.open_source")
 
@@ -830,8 +839,8 @@ def test_kitaru_cohort_refusal_is_one_line(mocker):
     assert "Traceback" not in result.output
 
 
-def test_the_kitaru_bridge_help_imports_neither_opik_nor_kitaru():
-    """``--help`` must need no keys, no network and no kitaru install (ADR-0017 §1)."""
+def test_the_kitaru_bridge_help_imports_neither_langfuse_nor_kitaru():
+    """``--help`` needs no keys, network access, or Kitaru install."""
     code = (
         "import sys\n"
         "from click.testing import CliRunner\n"
@@ -841,7 +850,7 @@ def test_the_kitaru_bridge_help_imports_neither_opik_nor_kitaru():
         "    result = CliRunner().invoke(cli, argv)\n"
         "    assert result.exit_code == 0, result.output\n"
         "assert '--thread' in CliRunner().invoke(cli, ['kitaru', 'import', '--help']).output\n"
-        "leaked = sorted(m for m in sys.modules if 'opik' in m or m.startswith('kitaru'))\n"
+        "leaked = sorted(m for m in sys.modules if m.startswith('langfuse') or m.startswith('kitaru'))\n"
         "assert not leaked, leaked\n"
     )
     result = subprocess.run(

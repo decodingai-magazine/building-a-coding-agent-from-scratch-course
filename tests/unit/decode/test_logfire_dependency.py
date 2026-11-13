@@ -1,10 +1,8 @@
-"""Smoke test that the ``logfire`` runtime dependency resolves and brings the OTLP exporter (ADR-0014).
+"""Smoke test that the ``logfire`` runtime dependency resolves and brings the OTLP exporter (ADR-0024).
 
-Task 091 added ``logfire`` as the ONLY new top-level dependency for Opik observability; it transitively
-brings ``opentelemetry-exporter-otlp-proto-http`` + ``opentelemetry-sdk`` — the ``OTLPSpanExporter`` +
-``BatchSpanProcessor`` that ``observability.init_tracing`` wires to Opik. If a future resolver change
-drops one of these (or the logfire integration surface moves), this fails loudly here instead of deep
-inside the tracing seam.
+Logfire supplies the OpenTelemetry exporter and SDK used by Langfuse tracing. If a future resolver
+change drops one of these (or the logfire integration surface moves), this fails loudly here instead
+of deep inside the tracing seam.
 """
 
 import importlib

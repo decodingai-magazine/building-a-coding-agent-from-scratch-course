@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "decode"
-version = "0.1.0"
+version = "0.2.0"
 description = "A terminal coding agent (agentic harness) built from scratch, step by step — the artifact of the building-a-coding-agent-from-scratch course."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -39,6 +39,7 @@ dependencies = [
     "logfire>=4.37.0",
     "kitaru[cli,mcp,worker]>=0.27.0",
     "kitaru-pydantic-ai>=0.3.0",  # recording adapter: KitaruAgent wraps build_agent() (ADR-0019 §2)
+    "langfuse>=5.2,<6",
 ]
 
 [project.scripts]
@@ -52,11 +53,7 @@ dev = [
     "ruff>=0.15.21",
     "pre-commit>=4.6.0",
     "ty>=0.0.73",
-    "opik>=2.2.9",  # eval harness (ADR-0017); dev group — evals is not shipped in the wheel
-    # litellm is opik's transitive judge backend; pinned <1.78 because 1.92+ (what opik 2.x pulls)
-    # ships a Rust bridge that needs rustc >=1.86 to build from sdist. 1.77.x is pure-python wheels,
-    # so `uv sync` / `make ci` build everywhere without a Rust toolchain. Lift once opik 2.0 Test
-    # Suites are needed (ADR-0017 §6) and the build env has rustc >=1.86.
+    # Direct judge backend; pinned below the release requiring a Rust toolchain for source builds.
     "litellm<1.98",
 ]
 

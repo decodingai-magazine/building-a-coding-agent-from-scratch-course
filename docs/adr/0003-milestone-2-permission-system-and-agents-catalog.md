@@ -45,12 +45,12 @@ because they shape the design:
 1. **Four permission modes replace the single `ASK`.** `PermissionMode` becomes
    `{DEFAULT, PLAN, EDIT, BYPASS}` (the old `ASK` *mode* value is removed; the gate default is
    `DEFAULT`). The `PermissionOutcome` enum `allow/ask/deny` is unchanged. Semantics by tool kind:
-   - **default** — read-only tools auto-**ALLOW**; mutating tools **ASK** the human.
-   - **plan** — read-only auto-**ALLOW**; any mutating tool **DENY**, with a reason telling the
+   * **default** — read-only tools auto-**ALLOW**; mutating tools **ASK** the human.
+   * **plan** — read-only auto-**ALLOW**; any mutating tool **DENY**, with a reason telling the
      model to present its plan and call `exit_plan_mode`.
-   - **edit** — read-only auto-**ALLOW**; **file-edit** tools (`write`/`edit`) auto-**ALLOW**; other
+   * **edit** — read-only auto-**ALLOW**; **file-edit** tools (`write`/`edit`) auto-**ALLOW**; other
      mutating tools (`bash`) **ASK**.
-   - **bypass** — everything **ALLOW** (no prompt).
+   * **bypass** — everything **ALLOW** (no prompt).
 
 2. **A `ToolKind` classification (`READ_ONLY | FILE_EDIT | OTHER`) replaces the single `read_only`
    bool on the registry.** Edit mode must distinguish a file edit from a shell exec, which one bool
@@ -73,11 +73,11 @@ because they shape the design:
    or a bare `Tool`, matched (glob via `fnmatch`) against a per-kind **subject**: `bash` → the
    command; file tools → the path; `web_fetch` → the url; bare-`Tool` matches any call of that tool.
    Rules come from **two** sources:
-   - **User settings** — a project-level `.decode/settings.json`
+   * **User settings** — a project-level `.decode/settings.json`
      (`{"permissions": {"allow": [...], "deny": [...]}}`) that is the **user's optional
      personalization** file (its sole purpose is permission rules; no user/global/org tiers — YAGNI).
      A missing/malformed file is non-fatal.
-   - **Active-agent rules** — optional `allow`/`deny` lists in an agent's catalog frontmatter, so a
+   * **Active-agent rules** — optional `allow`/`deny` lists in an agent's catalog frontmatter, so a
      built-in agent's defaults live **in the catalog, not seeded into the user's settings.json**
      (e.g. code-reviewer carries `allow: ["bash(git *)"]`).
    The gate evaluates the **union**: `deny(user ∪ agent) → allow(user ∪ agent) → mode → ask` (a deny
@@ -94,12 +94,12 @@ because they shape the design:
    `AgentDef` entity (validated) is the parsed result; the loader fails with a clear error on an
    unknown tool name / bad mode / missing field. Four built-ins (main-agent only — **no subagent
    spawning** this milestone):
-   - **build** — all tools (incl. `todo_write`, `enter_plan_mode`/`exit_plan_mode`/`sleep`),
+   * **build** — all tools (incl. `todo_write`, `enter_plan_mode`/`exit_plan_mode`/`sleep`),
      `mode: default`.
-   - **plan** — read-only set + `todo_write` + `enter_plan_mode`/`exit_plan_mode` + `ask_user`,
+   * **plan** — read-only set + `todo_write` + `enter_plan_mode`/`exit_plan_mode` + `ask_user`,
      `mode: plan`.
-   - **explore** — read-only set + `ask_user`, `mode: default`.
-   - **code-reviewer** — read-only set + `bash` + `ask_user`, `mode: default`, with
+   * **explore** — read-only set + `ask_user`, `mode: default`.
+   * **code-reviewer** — read-only set + `bash` + `ask_user`, `mode: default`, with
      `allow: ["bash(git *)"]` so `git diff`/`log`/`show` auto-allow while other bash still asks.
 
 6. **Per-agent tool restriction via the per-tool `prepare=` callback (pydantic-ai 1.107).** Each
@@ -220,26 +220,26 @@ flowchart LR
 
 ## Consequences
 
-- **The M1 capstone changes.** Under `default` mode, read-only tools auto-allow, so the capstone's
+* **The M1 capstone changes.** Under `default` mode, read-only tools auto-allow, so the capstone's
   `read`, `todo_write`, and `web_fetch` steps no longer prompt and consume no permission verdict —
   only the two `write` steps still prompt (one approved, one denied). Task 017 updates
   `tests/integration/test_milestone1_capstone.py` and any "read prompts" unit test, keeping `make ci`
   green. The capstone still exercises all three outcomes (auto-allow + human allow + human deny). A
   deliberate behaviour change, not a regression.
-- **`PermissionMode.ASK` is removed.** The four real modes replace it; `PermissionDecision`'s default
+* **`PermissionMode.ASK` is removed.** The four real modes replace it; `PermissionDecision`'s default
   `mode=` moves to `DEFAULT`. The *outcome* `PermissionOutcome.ASK` (allow/ask/deny) stays.
-- **One Agent, swapped state — not swapped agents.** Per-agent prompt + tool restriction ride
+* **One Agent, swapped state — not swapped agents.** Per-agent prompt + tool restriction ride
   `ctx.deps` per turn (instructions hook + `prepare=`), so `/agent` mutates `deps.active_agent` with
   no Agent rebuild.
-- **Rules are user `.decode/settings.json` + agent-catalog only.** No user/global/org tiers (YAGNI);
+* **Rules are user `.decode/settings.json` + agent-catalog only.** No user/global/org tiers (YAGNI);
   adding tiers later is a precedence extension, not a rewrite. The user's settings.json is never
   pre-seeded with built-in agent defaults — those live in the catalog.
-- **`always`-persist writes to disk mid-turn** (to the user's settings.json); a write failure is
+* **`always`-persist writes to disk mid-turn** (to the user's settings.json); a write failure is
   non-fatal so persistence never breaks a turn.
-- **Seams left for later milestones:** subagent spawning (the catalog is main-agent-only here);
+* **Seams left for later milestones:** subagent spawning (the catalog is main-agent-only here);
   per-user/global rule tiers; richer plan-mode UX; hook-based permission decisions; the `model`
   frontmatter field (providers, step 3).
-- **Risks to confirm during implementation:** that `prepare=None` hides a tool under the real Gemini
+* **Risks to confirm during implementation:** that `prepare=None` hides a tool under the real Gemini
   path as it does under `TestModel`; that `s-tab` fires in the user's real terminal/$TERM; that
   `fnmatch` subjects (esp. bash command strings) match intuitively; that switching modes mid-turn
   lands at a turn boundary (the gate is read per `_decide`, so it does); that the `exit_plan_mode`

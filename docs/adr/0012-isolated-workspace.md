@@ -114,7 +114,7 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
    operations stay host-side, with their *effects* scoped to the Workspace where relevant:
 
    | Tool(s) | Placement | Scope |
-   |---|---|---|
+   | --- | --- | --- |
    | `read` / `write` / `edit` | host logic, byte transport through the backend seam | Workspace (`deps.cwd`) |
    | `glob` / `grep` | host logic; the search **executes in the sandbox** (`exec` find/grep) | Workspace |
    | `bash` | inside the sandbox | Workspace |
@@ -193,7 +193,7 @@ viable for the bootstrap). The docker CLI, the Credential Proxy topology, and th
     shares the host kernel, so keeping the secret out of the worker (inject after egress) earns its
     complexity; modal is a **remote, ephemeral** box, so a *scoped* token inside it has a bounded blast
     radius and buys real simplicity — mitigated by requiring a **fine-grained, repo-scoped PAT** (Contents
-    + Pull requests), not a broad classic token. `SANDBOX_GIT_TOKEN` empty — unset (the default) *or* an
+    - Pull requests), not a broad classic token. `SANDBOX_GIT_TOKEN` empty — unset (the default) *or* an
     explicit `SANDBOX_GIT_TOKEN=` — injects nothing on either backend and leaves the docker proxy down
     unless the flag opts it in, so the strict "no secret in the sandbox" invariant holds until an operator
     opts in; the host-side hand-back (§8) stays the credential-free way to ship results.

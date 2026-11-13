@@ -154,7 +154,7 @@ flowchart LR
 **2026-09-02 — §8 Two laptop-less triggers on the Modal Headless App; §9 a request ceiling for
 unwatched runs.** Extends §1 and §2; changes nothing in §3-§7.
 
-8. **Cron and webhook triggers, both thin callers of `run_task`.** The course's remote story
+1. **Cron and webhook triggers, both thin callers of `run_task`.** The course's remote story
    ("hooked to cron jobs, webhooks or any other event") had no code behind it: every remote run
    still began with a human typing `modal run`. Two Functions close that, and neither
    re-implements a run:
@@ -175,7 +175,7 @@ unwatched runs.** Extends §1 and §2; changes nothing in §3-§7.
      NO Secret: it spawns, it does not run. FastAPI is the one package the two apps' images no
      longer share — `build_image(extra_packages=…)` installs it into the same venv between the
      locked-deps layer and the source layer, so the expensive layer stays shared (amends §2).
-9. **A request ceiling for runs nobody watches.** `decode run --max-requests N` (default
+2. **A request ceiling for runs nobody watches.** `decode run --max-requests N` (default
    `RUNTIME_MAX_REQUESTS`, unset = unbounded, byte-identical to the REPL) bounds a headless run
    through pydantic-ai's `UsageLimits`; past the cap the run stops with one friendly line and
    exit 1, and the Hand-back still ships what the Workspace holds (extends ADR-0019 §1's plain
@@ -199,7 +199,7 @@ launcher-side loops over `run_task`, and belong to their own tasks.
 Amends §1 (the "operator scripts" framing for the headless app) and the Test surface note; changes
 nothing in §2-§9.
 
-10. **`decode remote …` replaces `modal run scripts/modal_headless.py::…`.** The headless app was
+ 1. **`decode remote …` replaces `modal run scripts/modal_headless.py::…`.** The headless app was
     the one remote surface a user reached through a *different* CLI than the one they were
     learning. It now lives in the package as `decode/remote/` — `headless.py` (every decision a
     run is made of, `modal`-free), `image.py` (the shared image build, formerly
@@ -233,7 +233,7 @@ worker` — no second caller yet.
 Supersedes §4's "`DECODE_ENV=local` in every container"; §4's two-Secret split and the
 no-`KITARU_AGENT_ID` rule for the Worker Secret stand.
 
-11. **`DECODE_ENV` comes from the Secret, like every other variable.** §4 pinned `local` in two
+ 1. **`DECODE_ENV` comes from the Secret, like every other variable.** §4 pinned `local` in two
     places — the shared image's env and `decode_run_env` for the headless child — so a container
     never touched an Environment Bucket. The cost showed up in the names: every remote run's
     nested sandbox landed in `decode-sandbox-local` and every trace in `decode-local`, next to

@@ -540,7 +540,7 @@ a:hover{color:var(--primary-hover)}
 <span style="width:9px;height:9px;border-radius:50%;background:#28c840;flex:none"></span>
 <span style="font-family:var(--font-mono);font-size:11px;color:#8a8c90;margin-left:6px">the architecture</span>
 </div>
-<div style="flex:1;display:flex;align-items:center;justify-content:center"><img src="assets/architecture.png" alt="Diagram of a coding agent harness: two interfaces (Interactive TUI with steering queue and priority gate; Remote Modal runtime running N headless harnesses via CLI, webhook, or cron) drive one Headless Harness made of a Context Window with compaction, an LLM-to-Tools Agent Loop, and six modules (LLM Providers, Memory, Skills, Sandbox, Permissions, LSP Server). An Evals and Observability layer (benchmarks, regressions, replays via Opik and Kitaru) sits underneath." style="width:100%;height:auto;display:block"></div>
+<div style="flex:1;display:flex;align-items:center;justify-content:center"><img src="assets/architecture.png" alt="Historical diagram of a coding agent harness, including benchmarks, regressions, and replays. The diagram predates the migration from Opik to Langfuse." style="width:100%;height:auto;display:block"></div>
 <figcaption style="padding:14px 18px;border-top:1px solid rgba(255,255,255,.07);font-size:13px;line-height:1.55;color:#8a8c90">The harness architecture of the coding agent you will build during this course.</figcaption>
 </figure>
 </div>
@@ -696,7 +696,7 @@ a:hover{color:var(--primary-hover)}
 <span style="font-family:var(--font-mono);font-size:11px;color:var(--fg-3)">⏱ 19-min read</span>
 </div>
 <h3 style="font-size:19px;font-weight:700;line-height:1.28;letter-spacing:-.012em;color:var(--fg);margin:12px 0 8px;text-wrap:pretty">Agent Evals 101</h3>
-<p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">Score your agent on a 19-task benchmark and a regression suite in Opik.</p>
+<p style="font-size:14px;line-height:1.6;color:var(--fg-2);margin:0 0 18px;flex:1">Score your agent on a 19-task benchmark and a regression suite in Langfuse.</p>
 <div style="display:flex;flex-wrap:wrap;gap:8px 18px;font-family:var(--font-mono);font-size:12.5px">
 <a href="https://www.decodingai.com/p/evaluate-ai-agents-benchmarks-regression-tests" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:700;text-decoration:none">read lesson <i data-lucide="arrow-right" style="width:13px;height:13px"></i></a>
 <div style="display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--font-mono);font-size:12.5px">
@@ -893,8 +893,8 @@ a:hover{color:var(--primary-hover)}
 <figcaption style="padding:16px 20px;border-top:1px solid var(--border)"><b style="display:block;font-size:14.5px;color:var(--fg);margin-bottom:4px">Powered by Open-Source Models</b><span style="font-size:13.5px;line-height:1.55;color:var(--fg-3)">Your own Qwen3.6-35B served on an H200 via a <a href="https://modal.com/docs/guide/endpoints?source=decodingai&amp;campaign=harnesseng" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">Modal endpoint</a></span></figcaption>
 </figure>
 <figure class="x5" style="margin:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;display:flex;flex-direction:column;transition:border-color .2s,transform .18s cubic-bezier(.2,.8,.2,1),box-shadow .2s">
-<div style="flex:1;background:#ffffff"><img src="assets/opik-threads.png" alt="Sessions traced in Opik with secrets scrubbed" style="width:100%;display:block"></div>
-<figcaption style="padding:16px 20px;border-top:1px solid var(--border)"><b style="display:block;font-size:14.5px;color:var(--fg);margin-bottom:4px">Adding AI Evals &amp; Observability</b><span style="font-size:13.5px;line-height:1.55;color:var(--fg-3)">Every session traced in <a href="https://www.comet.com/site/?utm_source=workshop&amp;utm_medium=partner&amp;utm_campaign=paul&amp;utm_content=coding_agent_course" target="_blank" rel="noopener" style="color:var(--primary);text-decoration:none">Opik</a></span></figcaption>
+<div style="flex:1;background:#ffffff"><img src="assets/opik-threads.png" alt="Historical Opik tracing screenshot from an earlier course version" style="width:100%;display:block"></div>
+<figcaption style="padding:16px 20px;border-top:1px solid var(--border)"><b style="display:block;font-size:14.5px;color:var(--fg);margin-bottom:4px">Adding AI Evals &amp; Observability</b><span style="font-size:13.5px;line-height:1.55;color:var(--fg-3)">This is a historical tracing screenshot; the current course code uses Langfuse for evals and observability.</span></figcaption>
 </figure>
 </div>
 </div>
@@ -1028,7 +1028,7 @@ a:hover{color:var(--primary-hover)}
 ├── docs/
 │   ├── adr/                  <span style="color:#6b6c6f"># Architecture Decision Records — the "why" of every choice</span>
 │   └── glossary.md           <span style="color:#6b6c6f"># one canonical name per concept</span>
-├── evals/                    <span style="color:#6b6c6f"># benchmark tasks + regression cases + the Opik harness</span>
+├── evals/                    <span style="color:#6b6c6f"># benchmark tasks + regression cases + the Langfuse harness</span>
 ├── scripts/                  <span style="color:#6b6c6f"># operator scripts: Kitaru bootstrap + eval table generation</span>
 ├── tests/{unit,integration}/ <span style="color:#6b6c6f"># mirrors src/ 1:1; milestone capstones prove each milestone</span>
 └── src/decode/
@@ -1045,7 +1045,7 @@ a:hover{color:var(--primary-hover)}
     ├── remote/               <span style="color:#6b6c6f"># decode remote deploy|run|attempts|logs — the Modal Headless App (CLI, webhook, cron)</span>
     ├── context/              <span style="color:#6b6c6f"># compaction + conversation log (JSONL)</span>
     ├── memory/               <span style="color:#6b6c6f"># AGENTS.md / MEMORY.md loading + write-back</span>
-    ├── observability/        <span style="color:#6b6c6f"># Opik tracing</span>
+    ├── observability/        <span style="color:#6b6c6f"># Langfuse tracing</span>
     └── config/, entities/    <span style="color:#6b6c6f"># settings singleton · shared models</span></pre>
 </div>
 </div>
